@@ -100,7 +100,7 @@ dialect → IR → emit (group entry, pure data) → Loader → materializer
         → ctx.skills.register → ctx.skills.list() → inventory
 ```
 
-The tree is either the Desktop installation or a released npm harness. D9 owns
+The tree is either the Desktop installation or a released npm harness. D22 owns
 the resolution order:
 
 ```
@@ -115,7 +115,7 @@ and materializers import (plus pinned `cordis`/`cordis-plugin-loader`/
 directory; it is idempotent and never runs during `npm test`. The directory is
 a plain `node_modules/@deepseek-ai` — not an asar archive — so `import()` of the
 real `cordis`, `cordis-plugin-loader` and `dsh-skill` works from ordinary
-Node. See D9 for why rc.2 from npm is the same product as the Desktop copy, and
+Node. See D22 for why rc.2 from npm is the same product as the Desktop copy, and
 ARCHITECTURE §10.4 for the two traps (one cordis only; registration is
 `ctx.effect`-scoped).
 

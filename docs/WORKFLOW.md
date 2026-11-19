@@ -99,9 +99,9 @@ the master rewrites it.
 ## What CI proves, and what it cannot
 
 `verify` on GitHub runs `npm run check:arch`, fetches the DSH harness pins, and
-runs `npm test` against each of them (`0.2.2-rc.5`, `0.2.2-rc.2`). A skipped
-DSH-side test is a failed job: a shell guard checks `DSH_HARNESS_DIR` before
-`npm test`.
+runs `npm run verify` against each of them (`0.2.2-rc.5`, `0.2.2-rc.2`). A
+skipped DSH-side test is a failed job: a shell guard checks `DSH_HARNESS_DIR`
+before running the suite.
 
 - **Proves**: the tree still has its declared shape; pure packages behave; the
   fidelity oracle agrees with both pinned npm harnesses; nothing needs a secret;

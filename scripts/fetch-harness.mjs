@@ -11,10 +11,10 @@
  * Only the packages the oracle and the materializers actually import are
  * installed. `@deepseek-ai/dsh` (the application) is deliberately absent: it
  * would drag in the whole product, and `harness.ts` reads the version from
- * `dsh-skill` when there is no `dsh` package. The two non-harness packages are
+ * `dsh-skill` when there is no `dsh` package. The supporting packages are
  * pinned because their versions are part of the tree the oracle boots:
- *   - cordis-plugin-loader / cordis-plugin-group: the loader resolves the
- *     emitted group entry by name;
+ *   - cordis and cordis-plugin-loader / cordis-plugin-group: the oracle creates
+ *     the `Context`, and the loader resolves the emitted group entry by name;
  *   - @modelcontextprotocol/client: materialize-mcp imports it from sdkRoot.
  *
  * Usage: node scripts/fetch-harness.mjs <version>

@@ -508,7 +508,7 @@ before removing anything.
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
   the emitted entry into the *pinned* harness and reads the same inventory
   back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  from 3/8 to 8/8.
+  table: 11 declared rows, 9 matched, 1 missing, 1 refused.
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
 
@@ -555,7 +555,7 @@ re-implementation would agree with itself. The oracle boots the packages a real
 DSH installation runs — the Desktop bundle or a released npm harness fetched
 into `.harness/<version>` — and imports `cordis`, `cordis-plugin-loader` and
 `dsh-skill` straight out of that tree (`4.1.0` / `1.1.0` / the pinned
-version). D9 owns the resolution order:
+version). D22 owns the resolution order:
 
 ```
 DSH_HARNESS_DIR      install root printed by scripts/fetch-harness.mjs <version>
@@ -565,7 +565,7 @@ DSH_INSTALL_DIR      the Desktop installation's @deepseek-ai/dsh package dir
 
 The first source that is named and usable wins; a named-but-unusable directory
 is an error. Nothing named means nothing resolves locally and the oracle tests
-skip with a reason; CI resolves in a guard step and fails before `npm test` if
+skip with a reason; CI resolves in a guard step and fails before the suite runs if
 it cannot.
 
 The enabling discovery: `$(dirname "$DSH_INSTALL_DIR")` is a **plain
@@ -573,8 +573,8 @@ directory**, not an `asar` archive — 338 `@deepseek-ai` packages that ordinary
 Node can `import()`. A fetched tree has the same shape: its
 `node_modules/@deepseek-ai` holds only the packages the oracle and
 materializers import, which is enough because the oracle imports each package by
-absolute path. (The original text said the oracle "never touches npm"; the D9
-amendment explains why that was wrong — rc.2 from npm is byte-identical, and the
+absolute path. (The original text said the oracle "never touches npm"; D22
+explains why that was wrong — rc.2 from npm is byte-identical, and the
 real rule is that the tree must be *pinned*.)
 
 ```

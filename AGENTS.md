@@ -118,7 +118,7 @@ ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" -e \
 ```
 
 That is only one source. The oracle resolves a pinned harness tree in this order,
-first match wins (D9):
+first match wins (D22):
 
 1. `DSH_HARNESS_DIR` — an install root made by `scripts/fetch-harness.mjs`;
 2. `DSH_INSTALL_DIR` — the Desktop installation's `@deepseek-ai/dsh` package

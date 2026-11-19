@@ -4,7 +4,7 @@
  * D9 originally said the oracle must boot the *installed* Desktop bundle and
  * never npm, because the products were believed to differ. They do not: the
  * published `@deepseek-ai/dsh-skill@0.2.2-rc.2` is byte-identical to the copy
- * inside the app. The corrected rule (D9 amendment) is that the oracle boots an
+ * inside the app. The corrected rule (D22) is that the oracle boots an
  * explicit harness *pin* — the Desktop install when that is what the user runs,
  * or a released npm harness fetched by `scripts/fetch-harness.mjs` — and never
  * an unpinned `latest`.

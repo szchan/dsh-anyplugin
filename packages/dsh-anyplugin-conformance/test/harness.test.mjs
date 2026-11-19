@@ -1,4 +1,4 @@
-// Resolution of the harness under test (D9 amendment).
+// Resolution of the harness under test (D22).
 //
 // These tests never boot anything: they build throwaway directory trees and
 // assert which one `resolveHarness` picks, which source it reports, and when it

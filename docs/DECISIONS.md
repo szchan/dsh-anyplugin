@@ -146,16 +146,50 @@ is a bug, not an upgrade.
 
 ---
 
-## D9 — The DSH oracle boots a pinned harness tree, installed or fetched from npm
+## D9 — The DSH oracle runs the installed harness, never npm
 
-**Status:** ratified 2026-11-18; **amended 2026-11-19** (#7) after a byte-level
-comparison of the released packages.
+**Status:** ratified 2026-11-18, forced by the first transplant.
 
-The rig's actual side boots a plain directory of `@deepseek-ai` packages and
-imports `cordis`, `cordis-plugin-loader` and `dsh-skill` from it via
-`pathToFileURL`. One `Context`, created by that cordis, owns both the loader
-and the registries. `harness.ts` resolves the tree in this order, first match
-wins:
+The rig's actual side boots the harness from
+`$(dirname "$DSH_INSTALL_DIR")` — a plain directory of 338 `@deepseek-ai`
+packages — and imports `cordis`, `cordis-plugin-loader` and `dsh-skill` from
+there via `pathToFileURL`. One `Context`, created by that cordis, owns both the
+loader and the registries.
+
+**Why:** the products differ. npm publishes `dsh-skill@0.0.1-rc.1` while the
+desktop installation runs `0.2.2-rc.2`, and some packages the harness uses
+(`dsh-command`) are not published at all. A comparison against npm would
+measure a different product and could pass while the real harness fails. The
+claim is about what the user runs.
+
+**Consequences:**
+
+- The DSH-side tests require a local installation and **skip** without
+  `DSH_INSTALL_DIR`; they are not meaningful in a bare checkout.
+- Tests assert the exact installed version (`0.2.2-rc.2` today), because the
+  pin is part of the claim (AGENTS §3.8). A harness upgrade is a deliberate
+  re-baseline, not a green run that silently moved.
+- If the Desktop bundle ever ships as a real `asar` archive again, the oracle
+  must switch to the `ELECTRON_RUN_AS_NODE=1` access path; that is the only
+  place the access mode is allowed to matter.
+
+---
+
+## D22 — The harness under test is resolved by version, not by the machine
+
+**Status:** ratified 2026-11-19, superseding D9's "never npm" clause. D9's
+desktop-first probe and its `asar` consequence stand.
+
+D9 inferred from npm's `@deepseek-ai` `latest` dist-tag (`0.0.1-rc.1`) and from
+unpublished packages (`dsh-command`) that the published tree was a different
+product. That inference was wrong: `0.0.1-rc.1` is a stale placeholder tag, not
+the package list. npm carries `0.2.2-rc.1` … `0.2.2-rc.5`, and
+`@deepseek-ai/dsh-skill@0.2.2-rc.2` has the same `src/index.ts` sha256
+(`af4fad67fb086c3f5c93aed4604830718b4535e7e59a60d680404b07ea08477c`) as the
+copy inside the Desktop app. A *pinned* npm tree is the same product D9 was
+protecting; the hazard was an *unpinned* install.
+
+The oracle now resolves the harness in this order, first match wins:
 
 1. `DSH_HARNESS_DIR` — an install root made by
    `scripts/fetch-harness.mjs <version>`;
@@ -163,38 +197,34 @@ wins:
    directory;
 3. `.harness/<DSH_HARNESS_VERSION>` — a fetched pin inside this checkout.
 
-A variable that is set but unusable is an error, never a silent fall through to
-the next source. With none set, a local run resolves nothing and the oracle
-tests skip with a reason. In CI a resolved harness is mandatory.
-
-**Why:** the claim is about what the user runs, so the oracle must boot the real
-packages rather than re-implement their registries. The original entry said npm
-was a different product because it "publishes `dsh-skill@0.0.1-rc.1`". That was
-wrong: `0.0.1-rc.1` is only the scope's `latest` dist-tag, and rc.1 … rc.5 are
-published. `@deepseek-ai/dsh-skill@0.2.2-rc.2` from npm has the same
-`src/index.ts` sha256
-(`af4fad67fb086c3f5c93aed4604830718b4535e7e59a60d680404b07ea08477c`) as the copy
-in the Desktop app. A *pinned* npm tree is
-the same product; what "never npm" protected against was an *unpinned* install.
+A named-but-unusable source is an error, never a silent fall-through. With no
+source named, a local run skips the oracle tests with a reason; in CI that is
+an error and the job fails before the suite runs. Fetching is an explicit,
+idempotent step; the tests themselves are offline.
 
 **Consequences:**
 
-- CI fetches `0.2.2-rc.5` and `0.2.2-rc.2` and runs the full suite against
-  each. A skipped DSH-side test on CI is a bug: a shell guard fails the job
-  before `npm test`. Fetching is an explicit step; tests stay offline.
-- Tests compare against the harness actually under test
-  (`HarnessLocation.version`), not a hardcoded "installed" version. A
-  `DSH_HARNESS_VERSION` that disagrees with the tree on disk is an error.
-- The fetched tree contains only the packages the oracle and materializers
-  import, plus pinned `cordis` 4.1.0, `cordis-plugin-loader` 1.1.0,
+- CI fetches `0.2.2-rc.5` and `0.2.2-rc.2` and runs the suite against each; a
+  failure to fetch or test either pin fails the job, and one pin's failure does
+  not prevent the other from running. A skipped DSH-side test on CI is a bug,
+  not a green run.
+- Tests compare against `HarnessLocation.version` — the tree actually booted —
+  rather than a hardcoded installed version. A `DSH_HARNESS_VERSION` that
+  disagrees with the tree on disk is an error.
+- The fetched tree contains the packages the oracle and materializers import
+  plus pinned `cordis` 4.1.0, `cordis-plugin-loader` 1.1.0,
   `cordis-plugin-group` 1.1.0 and `@modelcontextprotocol/client` 2.2.0. It
   deliberately omits `@deepseek-ai/dsh` (the application), so the version comes
   from `dsh-skill`; when both packages exist they must agree.
-- The Desktop install stays a first-class source: it is the artifact the user
-  runs, and probing it remains the pre-push evidence.
-- If the Desktop bundle ever ships as a real `asar` archive again, the oracle
-  must switch to the `ELECTRON_RUN_AS_NODE=1` access path; that is the only
-  place the access mode is allowed to matter.
+- Direct dependencies are pinned exactly. npm still re-resolves their
+  transitive ranges at fetch time (for example `@deepseek-ai/schemastery
+  ~3.19.0`), so the fetched tree is reproducible at the direct-package level,
+  not byte-for-byte; do not cite it as a lockfile claim.
+- The Desktop install remains a first-class source and the pre-push evidence.
+  D9's `asar` consequence stands: a truly archived bundle must be read with
+  `ELECTRON_RUN_AS_NODE=1`.
+
+---
 
 ## D10 — A command has two faces, and its human face needs two additive seams
 
