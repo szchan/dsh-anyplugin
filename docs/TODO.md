@@ -13,9 +13,6 @@ claude-code `2.1.322`.
 
 ## Now
 
-- [ ] **MCP materializer, HTTP arm.** `streamable-http` servers connect and
-      register their tools. Done when a fixture server over HTTP reports
-      `match` and the stdio arm still does (the stdio arm landed with 8/6/2).
 - [ ] **MCP name budget, enforced in anger.** The rule is in place and the rig
       asserts no `_[0-9a-f]{12}` suffix, but no fixture breaks it yet. Done when
       a fixture with an over-budget name reports `unsupported`.
@@ -88,8 +85,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Hook payload fixtures: 32 doc-derived payloads plus 6 live captures from
   2.1.322 (DeepSeek backend), run through `runChain`; the event table and
   matcher subject are derived from them (D15).
-- MCP: stdio servers connect under the materializer and expose
-  `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (8 / 6 / 2).
+- MCP: stdio and streamable-http servers connect under the materializer and
+  expose `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (9 / 7 / 2).
+  The HTTP fixture carries `${ANYPLUGIN_MCP_URL}`, so the materializer resolves
+  the URL from the environment at attach time instead of pinning a port.
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize
   with 0 diff against the pinned goldens.
 - D7 id escaping, D8 pin-gated surface mapping, D9 installed-oracle-only,

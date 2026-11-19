@@ -108,7 +108,7 @@ function transportOf(server: McpServerConfig, sdk: Sdk): any {
       cwd: server.cwd,
     })
   }
-  return new sdk.StreamableHTTPClientTransport(new URL(server.url as string), {
+  return new sdk.StreamableHTTPClientTransport(new URL(expandEnv(server.url as string)), {
     requestInit: server.headers === undefined ? undefined : { headers: expandRecord(server.headers) },
   })
 }

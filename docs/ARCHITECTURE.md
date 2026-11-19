@@ -576,7 +576,7 @@ Two traps that cost real time and are now load-bearing:
   the skill after the entry is removed — invisible in a green test, visible in
   a reload.
 
-Measured coverage across the six fixtures (declared components from the
+Measured coverage across the seven fixtures (declared components from the
 goldens, matched by the DSH oracle):
 
 | Fixture | Declared | Matched | Missing | What the gap needs |
@@ -587,7 +587,8 @@ goldens, matched by the DSH oracle):
 | `claude-commands-flat` | 2 | 2 | 0 | model face done; human face needs the two seams in D10 |
 | `claude-agents` | 1 | 0 | 1 | named-agent catalog seam |
 | `claude-hooks-mcp` | 2 | 1 | 1 | MCP done (D12); hook needs the interception kernel |
-| **total** | **8** | **6** | **2** | |
+| `claude-mcp-http` | 1 | 1 | 0 | streamable-http arm; the server is started by the test (D12) |
+| **total** | **9** | **7** | **2** | |
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,

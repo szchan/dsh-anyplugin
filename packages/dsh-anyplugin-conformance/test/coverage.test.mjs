@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { startHttpServer } from '../../../fixtures/claude-mcp-http/http-server.mjs'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { diffInventories, emptyInventory } from '../src/inventory.ts'
 import { probeWithDsh, dshVersion } from '../src/oracles/dsh.ts'
@@ -36,8 +37,27 @@ const EXPECTED_ROWS = {
   'claude-command-nested': [],
   'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
   'claude-hooks-mcp': ['hooks:PostToolUse:missing', 'mcpServers:probe:match'],
+  'claude-mcp-http': ['mcpServers:http-probe:match'],
   'claude-root-skill': ['skills:rooty:match'],
   'claude-skills-only': ['skills:greet:match', 'skills:hello:match'],
+}
+
+/**
+ * Fixtures that cannot answer without a live process. Keeping them in the same
+ * ratchet matters: "declared" is what the golden says, and excluding the HTTP
+ * arm would quietly shrink the denominator.
+ */
+const PREPARE = {
+  async 'claude-mcp-http'() {
+    const server = await startHttpServer()
+    const previous = process.env.ANYPLUGIN_MCP_URL
+    process.env.ANYPLUGIN_MCP_URL = server.url
+    return () => {
+      if (previous === undefined) delete process.env.ANYPLUGIN_MCP_URL
+      else process.env.ANYPLUGIN_MCP_URL = previous
+      return server.close()
+    }
+  },
 }
 
 async function inventoryFor(fixture) {
@@ -62,19 +82,24 @@ test(
       const golden = JSON.parse(
         readFileSync(join(repoRoot, 'fixtures', fixture, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
       )
-      const inventory = await inventoryFor(fixture)
-      assert.equal(inventory.pin?.tool, 'dsh', 'the actual side is DSH')
-      const report = diffInventories(golden, inventory, { allowPinMismatch: true })
-      assert.deepEqual(
-        report.rows.map((row) => `${row.surface}:${row.name}:${row.status}`),
-        EXPECTED_ROWS[fixture],
-        `${fixture}: the transplant result changed`,
-      )
-      totals.declared += report.summary.expected
-      totals.matched += report.summary.match
-      totals.missing += report.summary.missing
+      const cleanup = await PREPARE[fixture]?.()
+      try {
+        const inventory = await inventoryFor(fixture)
+        assert.equal(inventory.pin?.tool, 'dsh', 'the actual side is DSH')
+        const report = diffInventories(golden, inventory, { allowPinMismatch: true })
+        assert.deepEqual(
+          report.rows.map((row) => `${row.surface}:${row.name}:${row.status}`),
+          EXPECTED_ROWS[fixture],
+          `${fixture}: the transplant result changed`,
+        )
+        totals.declared += report.summary.expected
+        totals.matched += report.summary.match
+        totals.missing += report.summary.missing
+      } finally {
+        await cleanup?.()
+      }
     }
-    assert.deepEqual(totals, { declared: 8, matched: 6, missing: 2 })
+    assert.deepEqual(totals, { declared: 9, matched: 7, missing: 2 })
   },
 )
 
