@@ -15,8 +15,9 @@ permissions:
 jobs:
   # One job, deliberately not a matrix: branch protection requires the check
   # context to be exactly `verify`, and a matrix job reports as `verify (x)`.
-  # Both pins are fetched and verified in this job; a failure on one pin must
-  # not prevent the other from running.
+  # Both DSH pins are fetched and verified in this job; a failure on one pin
+  # must not prevent the other from running. The pinned Claude Code CLI is
+  # fetched once and serves the upstream half of every run.
   verify:
     name: verify
     runs-on: ubuntu-latest
@@ -31,6 +32,38 @@ jobs:
 
       # The shape of the tree is a gate, not a review comment.
       - run: npm run check:arch
+
+      # The upstream oracle needs the pinned Claude Code CLI, and CI has no
+      # Desktop installation to borrow one from. Like the DSH harness, fetching
+      # is an explicit step here: the tests themselves never touch the network.
+      # The cache follows the one file that owns the pin, so a bump is one edit
+      # and one cold cache. This step is not continue-on-error: without the CLI
+      # the upstream half would skip, and a skipped fidelity test on CI is a bug.
+      - name: Cache pinned Claude Code CLI
+        uses: actions/cache@v4
+        with:
+          path: .claude-code
+          key: claude-code-${{ hashFiles('packages/dsh-anyplugin-conformance/src/pin.ts', 'scripts/fetch-claude.mjs') }}
+
+      - name: Install pinned Claude Code CLI
+        id: claude
+        run: |
+          bin=$(node scripts/fetch-claude.mjs)
+          echo "CLAUDE_BIN=$bin" >> "$GITHUB_ENV"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      # The upstream twin of the DSH_HARNESS_DIR guard below: fail when the
+      # binary is missing, and check its version against the same constant the
+      # tests use, so a stale cache or a PATH fallback cannot pass silently.
+      - name: Guard the pinned Claude Code CLI
+        env:
+          CLAUDE_BIN: ${{ steps.claude.outputs.bin }}
+        run: |
+          if [ -z "${CLAUDE_BIN:-}" ]; then
+            echo "::error::CLAUDE_BIN is unset; the upstream oracle would skip and a skipped fidelity test on CI is a bug"
+            exit 1
+          fi
+          node scripts/fetch-claude.mjs --verify "$CLAUDE_BIN"
 
       # Fetching is an explicit step; the tests themselves never touch the
       # network. A fetch failure must not hide behind `set -e` inside a

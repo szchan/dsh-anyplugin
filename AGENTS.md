@@ -134,6 +134,21 @@ DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
   DSH_HARNESS_VERSION=0.2.2-rc.5 npm run verify
 ```
 
+The upstream oracle resolves its `claude` the same way (D24), and CI fetches it
+instead of borrowing a laptop install:
+
+1. `CLAUDE_BIN` — an explicit executable; CI sets it to the fetched pin. Empty
+   or whitespace-only counts as unset; any other unusable value is an error,
+   never a fall-through;
+2. `claude` on `PATH`;
+3. neither — a local run skips with a reason that names
+   `scripts/fetch-claude.mjs`; in CI that is a failed job.
+
+`node scripts/fetch-claude.mjs` installs the pinned
+`@anthropic-ai/claude-code@2.1.322` into `.claude-code/2.1.322/` with
+`--ignore-scripts` and prints the native binary. The version is
+`CLAUDE_CODE_PIN` in the conformance package; it is asserted before the suite.
+
 **Never install `latest`.** The `@deepseek-ai` scope's `latest` dist-tag points
 at `0.0.1-rc.1`, which is not a harness. Pin every version explicitly.
 
