@@ -830,7 +830,6 @@ function readMcp(root: string, plugin: string): {
   }
   for (const [surface, dir, reason] of [
     ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
-    ['outputStyles', 'output-styles', 'Output styles are prompt-level and byte-preservable; planned after the command seam (v0.4).'],
     ['themes', 'themes', 'Terminal colour palettes have no DSH palette seam yet (F2); planned for v0.4.'],
     ['workflows', 'workflows', 'Workflow scripts are close to dsh-tool-workflow but the agent()/pipeline() contract differs; planned for v0.4.'],
     ['bin', 'bin', 'bin/ must join the model shell PATH; dsh-shell-env only manages DSH_* keys (ARCHITECTURE §9). Planned for v0.3.'],
@@ -848,6 +847,67 @@ function readMcp(root: string, plugin: string): {
   return { servers, pending, unsupported }
 }
 
+/**
+ * Why an output style is planned rather than carried at this pin. S11 proves
+ * the seam exists and is per-agent: a command handler receives
+ * `invocation.agent`, and a section registered on that agent's context with
+ * `complete: true` replaces exactly that agent's system prompt. What is not
+ * settled is the activation surface and the remaining fidelity rules, so the
+ * dialect records the reachable seam without pretending it is wired.
+ */
+const OUTPUT_STYLE_SEAM =
+  'DSH 0.2.2-rc.5 can carry it: a command handler receives `invocation.agent`, and `invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces that agent\'s system prompt byte for byte; `createAgent(..., { setup })`, an `agent/created` listener, `dsh-persona`, and an agent preset reach the same scoped seam (S11). ' +
+  'Carrying output-styles waits on four gaps: (i) an at-start contribution needs plugin provenance — `agent/created` carries the agent but no plugin id — or a plugin-created agent; ' +
+  '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam, because a command name cannot contain `:` until that lands (a non-colon alias already carries the body as `equivalent`); ' +
+  '(iii) `claude plugin details` does not inventory output styles at 2.1.322, so the inventory oracle cannot anchor the row and a fixture must compare a dumped composed prompt; ' +
+  '(iv) `keep-coding-instructions: true` keeps Claude\'s built-in coding instructions, which a `complete` section cannot express because it replaces the whole prompt.'
+
+function outputStyleReason(name: string, description: string | undefined): string {
+  const label = description === undefined
+    ? `Output style ${JSON.stringify(name)}`
+    : `Output style ${JSON.stringify(name)} (${JSON.stringify(description)})`
+  return `${label} is prompt text applied at agent start; it is planned, not carried. ${OUTPUT_STYLE_SEAM}`
+}
+
+/**
+ * Claude's `output-styles/*.md` is F1: the body is the prompt the model reads at
+ * agent start. The files are read for their declared identity so a report can
+ * name each style individually instead of hiding the directory behind one row;
+ * every row is `planned` (not `unsupported`): S11 proves a per-agent section is
+ * reachable, and the remaining work is activation plus the four gaps named in
+ * the reason. Reading the frontmatter is not carrying it.
+ */
+function readOutputStyles(root: string): IrUnmaterialized[] {
+  const dir = join(root, 'output-styles')
+  if (!existsSync(dir)) return []
+  const rows: IrUnmaterialized[] = []
+  for (const file of markdownFiles(dir, root)) {
+    const fallback = basename(file.abs).replace(/\.md$/, '')
+    if (file.depth !== 1) {
+      rows.push({
+        surface: 'outputStyles',
+        name: fallback,
+        sourcePath: file.rel,
+        annotation: {
+          fidelity: 'planned',
+          reason: `A nested output-style file is outside the flat \`output-styles/*.md\` surface this dialect reads; it is planned with that surface. ${OUTPUT_STYLE_SEAM}`,
+        },
+      })
+      continue
+    }
+    const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
+    const name = stringField(parsed.data, 'name') ?? fallback
+    const description = stringField(parsed.data, 'description')
+    rows.push({
+      surface: 'outputStyles',
+      name,
+      sourcePath: file.rel,
+      annotation: { fidelity: 'planned', reason: outputStyleReason(name, description) },
+    })
+  }
+  return rows
+}
+
 export function readClaudePlugin(root: string, options: ReadOptions = {}): ClaudePluginIr {
   const manifest = readManifest(root)
   const pin = options.pin ?? CLAUDE_CODE_PIN
@@ -857,7 +917,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { hooks, pending: hookPending } = readHooks(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
 
-  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending]
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending, ...readOutputStyles(root)]
   const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
@@ -872,6 +932,19 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
         },
       })
     }
+  }
+  if ('outputStyles' in manifest) {
+    // A manifest directory is a second place a style can live. It needs its own
+    // row: silently ignoring the declaration would hide the plugin's intent.
+    pending.push({
+      surface: 'outputStyles',
+      name: 'manifest:outputStyles',
+      sourcePath: '.claude-plugin/plugin.json',
+      annotation: {
+        fidelity: 'planned',
+        reason: `The manifest declares custom output-style directories; reading them is planned with the output-styles carry. ${OUTPUT_STYLE_SEAM}`,
+      },
+    })
   }
 
   return {

@@ -193,6 +193,12 @@ async function boot({ plugins = [] } = {}) {
   const nativeExecutor = await loadPlugin('dsh-tool-executor-native')
 
   const ctx = new Context()
+  // The Loader's `baseUrl` is a *file URL*, not a filesystem path: on Node's
+  // internal ESM loader a path reaches `getPackageScopeConfig` and fails with
+  // ERR_INVALID_URL. The preset registry also reads this base off the root
+  // context, so pin it once here for both.
+  const harnessBase = pathToFileURL(join(HARNESS, '..', '..') + '/').href
+  ctx.baseUrl = harnessBase
   const fibers = []
   const mount = (plugin, config = {}) => fibers.push(ctx.plugin(plugin, config))
   mount(SessionStore)
@@ -202,7 +208,7 @@ async function boot({ plugins = [] } = {}) {
   mount(AgentRegistry)
   mount(nativeExecutor)
   mount(Commands)
-  mount(Loader, { baseUrl: join(HARNESS, '..', '..') })
+  mount(Loader, { baseUrl: harnessBase })
   mount(Presets, { default: 's11-preset' })
   for (const [plugin, config] of plugins) mount(plugin, config)
   mount(LlmRuntime)
@@ -211,6 +217,11 @@ async function boot({ plugins = [] } = {}) {
   for (const name of ['sessions', 'sessionProjections', 'systemPrompt', 'tools', 'agents', 'commands', 'loader', 'agentPresets', 'llm', 'agentLoop']) {
     await until(() => ctx.get(name), 5000, name)
   }
+  // The loader's own tree settles asynchronously. The preset registry mounts
+  // its rows through that tree, so wait for it before registering a preset:
+  // an un-settled tree reports a row as "never started" on a slow machine.
+  const hostLoader = ctx.get('loader')
+  if (hostLoader !== undefined && typeof hostLoader.await === 'function') await hostLoader.await()
   const adapter = new (fakeAdapterClass(LlmAdapter))()
   ctx.llm.registerAdapter(['fake'], adapter)
   return { ctx, adapter, createUserMessage }
@@ -387,7 +398,21 @@ async function main() {
     sessionId: 's11-preset',
     agentOptions: { provider: 'fake', model: 'fake-preset' },
     setup: async (agentCtx) => {
-      await presets.mount(agentCtx, 's11-preset')
+      // A just-registered preset row can be audited before its fiber exists on
+      // a loaded CI runner. Retry the same unbound mount; a failed mount does
+      // not bind, so this is safe and keeps the probe honest about the path.
+      let lastError
+      for (let attempt = 0; attempt < 40; attempt++) {
+        try {
+          await presets.mount(agentCtx, 's11-preset')
+          return
+        } catch (error) {
+          lastError = error
+          if (!String(error?.message ?? error).includes('never started')) throw error
+          await sleep(25)
+        }
+      }
+      throw lastError
     },
   })
   await drive(ctx, presetAgent.agent, createUserMessage, 'S11-PRESET-1', 1)
