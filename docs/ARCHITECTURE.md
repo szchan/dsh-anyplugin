@@ -423,11 +423,34 @@ already matches.
 
 ## 10. Verification plan
 
-- **S1 — emission substrate.** Prove a group entry created through
-  `ctx.loader.create()` can carry a materializer child subtree that registers a
-  real skill and command, and that `update`/`remove` behave atomically.
-- **S2 — mod surface.** Read real mods to size Claude's mod API, and judge
-  whether the cordis host/client package can host an adapter.
+- **S1 — emission substrate.** ✅ **Answered 2026-11-18** by `spikes/s1-loader`
+  (21/21 checks, cordis 4.1.0 / cordis-plugin-loader 1.1.0 /
+  cordis-plugin-group 1.1.0). See §10.1 for the findings and what they force.
+
+### 10.1 S1 result: the substrate works, but it hands us four obligations
+
+A foreign plugin can be one group entry — `name: '@deepseek-ai/cordis-plugin-group'`,
+`group: true`, `config: EntryOptions[]` — and its children are ordinary entries
+that apply, address and dispose like any other. What the loader does **not**
+give us, and what the emitter therefore owes:
+
+| Property | What actually happens |
+| --- | --- |
+| **Atomicity** | Not provided. `EntryGroup.update()` `.catch()`es each child's `create()`, so one failing child leaves the healthy siblings applied; the failure surfaces only as a non-active fiber plus a log line. The emitter must check every child's fiber state and roll the group back itself. |
+| **Rollback** | Removing the group after a failure does leave no orphans — proven, but it is our call, not the loader's. |
+| **Identity** | `ensureId` reuses an existing id, so materializing the same tree twice takes the `update` path instead of duplicating. Ids are the identity, exactly as the reconcile design assumes. |
+| **Id grammar** | `EntryTree.sep = ':'` and `resolve()` splits on it, so an id containing `:` is stored but **unaddressable**. Foreign ids must be mangled (D7). |
+| **Teardown** | `remove()` returns void and drops the entry from `entries()` immediately, so `loader.await()` can return before disposers ran. Deterministic teardown = `Promise.resolve(fiber.dispose())` plus waiting for `fiber.state === 5`; `dispose()` is void for some fiber kinds, so never rely on its return value. |
+| **Plugin cleanup** | cordis has no `'dispose'` event. Cleanup is `ctx.effect(execute)` where `execute` returns the disposer — a materializer that registers teardown any other way silently never cleans up. |
+
+Consequences, all of which are now constraints on the emitter: rollback is
+explicit; ids are mangled before they reach the loader; every materializer
+registers cleanup through `ctx.effect`; reconcile captures fiber references
+before removing anything.
+
+- **S2 — mod surface.** ✅ **Answered 2026-11-18** (§7): the mod API is a large
+  but fully specified surface with a machine-readable declaration file, so it
+  is a second subsystem (D3), not a materializer.
 - **S3 — conformance rig.** Record golden traces from the real agent runtime,
   replay in DSH under a temporary `$HOME`, normalize, diff per surface A–F.
   This lands *before* the translator, because it is the only honest scoreboard.

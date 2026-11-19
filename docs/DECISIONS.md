@@ -97,3 +97,22 @@ feeds the grant UI, and grants are pinned to the artifact hash.
 **Why:** fidelity to the ecosystem is the whole point, and a numerically lower
 capability ceiling would silently change what plugins can do. The risk is taken
 knowingly, with a guard layer as the mitigation.
+
+---
+
+## D7 — Loader ids are mangled; display names are kept separately
+
+**Status:** ratified 2026-11-18, forced by S1.
+
+`EntryTree.sep` is `:` and `resolve()` splits ids on it, so an id containing
+`:` is stored but unaddressable. Every id that reaches the loader is therefore
+escaped: characters outside `[A-Za-z0-9_.@-]` (including `:` and `~` itself)
+become `~` + the UTF-8 hex of the byte, which is reversible in one pass. The
+original string — the thing a user or a fidelity report must see — lives in the
+plugin's display metadata, never in the loader id.
+
+**Why:** foreign ids come from ecosystems that use `:` as a namespace
+separator (`plugin:skill`, `my-plugin@marketplace`). Mangling is the only
+option that keeps reconcile addressable *and* keeps the display name exact.
+Ids are internal identity, so mangling them costs no observable fidelity;
+mangling a display name would.
