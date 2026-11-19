@@ -756,3 +756,73 @@ old record.
   therefore represented by absence, and a UI shows "installed, disabled" by
   joining the lock with the scope layers. Uninstall means removing the record
   and reconciling, not writing a disabled flag.
+
+---
+
+## D24 — The upstream oracle runs the pinned Claude CLI from npm
+
+**Status:** ratified 2026-11-19, forced by ticket #10 (the upstream half of the
+rig did not run in CI).
+
+The oracle's `claude` is the npm package `@anthropic-ai/claude-code` at the
+golden's pin (`2.1.322`, `CLAUDE_CODE_PIN` in
+`packages/dsh-anyplugin-conformance/src/pin.ts`), not whatever Desktop or
+personal installation happens to be on the machine.
+`scripts/fetch-claude.mjs` installs exactly that version into
+`.claude-code/<version>/`, idempotently and with `--ignore-scripts`, and prints
+the native binary's absolute path. The oracle resolves `CLAUDE_BIN` first, then
+`claude` on `PATH`.
+
+**Why npm, and not the desktop install.** The upstream half only runs
+`claude --plugin-dir <dir> plugin details <name>`, which needs no login, no
+network and no Desktop app — only a writable `HOME`, which the probe already
+provides as a throwaway. CI has no Desktop installation, and "the binary on the
+runner" is not a version. A pinned npm package gives CI the same observable
+loader as the laptop without making the gate depend on the laptop. This is the
+same reasoning as D22 for the DSH harness: the pin is the claim, the install
+method is an implementation detail. D9's "never npm" clause was about the DSH
+harness and is already superseded by D22; it says nothing about this client.
+
+**Why `--ignore-scripts`.** At 2.1.322 the package's `postinstall` copies the
+platform-native binary over the `bin/claude.exe` stub, and the package's
+optional dependencies already ship that binary
+(`@anthropic-ai/claude-code-linux-x64/claude`, `…-darwin-arm64/claude`, and so
+on). Fetching runs no lifecycle scripts and points `CLAUDE_BIN` at the platform
+binary directly. The alternative — letting an install script choose the binary
+— would put unreviewed code in the path that produces the goldens.
+
+**Resolution and failure.** The decision table is D22's, applied to a client:
+
+| `CLAUDE_BIN` | `claude` on PATH | result |
+| --- | --- | --- |
+| set, executable | anything | that binary, source `CLAUDE_BIN` |
+| set, non-empty but unusable | anything | error, never a fall-through |
+| unset, empty, or whitespace-only | found | that binary, source `PATH` |
+| unset, empty, or whitespace-only | missing | local: skip with a reason; `CI=true`/`1`: throw |
+
+An empty or whitespace-only `CLAUDE_BIN` counts as unset: `CLAUDE_BIN= npm test`
+is how a shell clears a variable, not a request for an executable named `""`.
+Only a non-empty value that names something unrunnable is an error.
+
+`CI` is read exactly as D22 reads it. The skip reason names
+`scripts/fetch-claude.mjs` and the pin. A skipped upstream test on CI is a
+failed job.
+
+**The version is asserted, from one place.** `CLAUDE_CODE_PIN` is the only
+literal: the fetch script imports it, the tests compare `claude --version`
+against it, and the workflow's guard repeats the comparison before the suite. A
+mismatch fails with both strings (`claude-code@2.1.999` vs
+`claude-code@2.1.322`). A bump is one constant edit plus
+`npm run capture:fixtures` and a reviewed golden diff (D8), never a workflow
+edit.
+
+**Consequences:**
+
+- CI caches `.claude-code/`, keyed on `pin.ts` and the fetch script; a cache
+  hit still goes through the version guard. The install is a one-time large
+  platform package, so the cache matters.
+- The resolved binary is recorded on `ClaudeProbeResult.bin`; the inventory
+  keeps the `pin` (`tool` plus the observed `version`). The machine-specific
+  path is deliberately not written into a golden, which must stay reproducible.
+- The behavior face (`claude plugin eval`) and the Desktop-specific DSH paths
+  remain local evidence: CI holds the inventory gate, not the money gate.

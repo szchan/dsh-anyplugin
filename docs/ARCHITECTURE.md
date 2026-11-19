@@ -578,7 +578,8 @@ references before removing or updating anything.
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
   the emitted entry into the *pinned* harness and reads the same inventory
   back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  table: 11 declared rows, 9 matched, 1 missing, 1 refused.
+  table: 11 declared rows, 9 matched, 1 missing, 1 refused. Both halves also
+  run in CI, with the pinned Claude CLI fetched from npm (D24).
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
 
@@ -601,6 +602,20 @@ ground truth instead of our reading of its docs. Two consequences:
 - **The pin is part of the comparison.** A diff against a golden captured on a
   different version fails on the pin alone; passing across versions is never
   allowed to look like a pass (§3.8).
+
+The binary is resolved, not assumed (D24):
+
+```
+CLAUDE_BIN    an explicit executable; CI sets it to the fetched pin
+claude        PATH lookup
+```
+
+`scripts/fetch-claude.mjs` installs the pinned npm package into
+`.claude-code/<version>/` and prints the platform-native binary; the tests and
+the workflow guard assert `claude --version` against `CLAUDE_CODE_PIN`. With
+neither source a local run skips with a reason; under CI that is an error. The
+same nine goldens are therefore re-probed by CI, so the inventory gate does not
+depend on the laptop.
 
 What the rig already reports, at the pin it was captured on, is in §10.3.
 

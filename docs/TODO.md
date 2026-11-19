@@ -60,6 +60,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S1 loader substrate — five findings written into ARCHITECTURE §10.1.
 - S3 conformance rig, both halves: upstream oracle (`claude plugin details`)
   and the installed DSH oracle.
+- Upstream oracle in CI: the pinned `claude-code@2.1.322` is fetched from npm
+  (D24), resolved through `CLAUDE_BIN`/`PATH`, and version-guarded, so both
+  halves of the rig run on every `verify` job.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.

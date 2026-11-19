@@ -74,6 +74,7 @@ npm run rig -- diff    --expected <file> --actual <file> --verbose
 npm run rig -- report  fixtures/claude-commands-flat           # what the transplant would do, compile-side
 npm run rig -- report  fixtures/claude-commands-flat --json    # the same report for tooling
 npm run capture:fixtures                                      # re-capture all, review the JSON diff
+node scripts/fetch-claude.mjs                                 # install the pinned Claude CLI, print the binary
 npm test                                                      # every golden is re-probed
 ```
 
@@ -88,6 +89,42 @@ decision; `carried = considered minus skipped`). That makes it runnable where
 neither `claude` nor DSH is installed, and it exits non-zero with
 `validation: FAIL` when `validateIr` refuses the IR (`report --ir <file>` reaches
 that path without a deliberately broken plugin on disk).
+
+## The upstream side of the rig, and CI
+
+The upstream half asks Claude Code. Its binary resolves in D24's order, first
+match wins:
+
+```
+CLAUDE_BIN    an explicit executable (CI sets this to the fetched pin);
+              empty or whitespace-only counts as unset
+claude        PATH lookup
+```
+
+With neither, a local run skips with a reason that names
+`scripts/fetch-claude.mjs`; in CI (`CI=true` or `CI=1`) it throws, because a
+skipped upstream test is a failed job. A `CLAUDE_BIN` that is set to a
+non-empty but unusable value is an error, never a fall-through. An empty or
+whitespace-only `CLAUDE_BIN` is treated as unset, so `CLAUDE_BIN= npm test` is
+the normal way to fall back to `PATH` rather than a typo to punish.
+
+`node scripts/fetch-claude.mjs` (or `npm run fetch:claude`) installs the pinned
+`@anthropic-ai/claude-code@2.1.322` into `.claude-code/2.1.322/` with
+`--ignore-scripts`, and prints the platform-native binary. The version lives
+only in `CLAUDE_CODE_PIN` (`packages/dsh-anyplugin-conformance/src/pin.ts`);
+the fetch, the CI guard and the tests all read it. `--verify <path>` checks an
+already-resolved binary against the pin without installing anything. The
+workflow caches `.claude-code/` keyed on `pin.ts` and
+`scripts/fetch-claude.mjs`, so a pin bump is one edit and one cold cache.
+Probes still run under a throwaway `HOME` and `CLAUDE_CONFIG_DIR`, so the
+fetched client never reads a real installation.
+
+**Can CI hold this gate now?** Yes, for the inventory gate: the `verify` job
+fetches the pin and runs the same nine golden probes the laptop runs, and the
+upstream CLI's version is asserted before the suite. What CI still cannot hold
+is local by nature — the Desktop `DSH_INSTALL_DIR` path, the `asar` read path,
+and the behavior face (`claude plugin eval`, which costs money). Those remain
+PR evidence, not workflow steps.
 
 ## The DSH side of the rig
 
@@ -154,9 +191,11 @@ node --test packages/dsh-anyplugin-conformance/test/coverage.test.mjs     # burn
 node --test                                                               # everything
 ```
 
-Without any resolved harness the DSH-side tests skip with a reason that names
-`fetch-harness.mjs`. On CI that is a failure, not a skip: the workflow resolves
-both pins in a guard step before `npm test`.
+Without a resolved Claude CLI the upstream tests skip with a reason that names
+`fetch-claude.mjs`; without any resolved harness the DSH-side tests skip with a
+reason that names `fetch-harness.mjs`. On CI either is a failure, not a skip:
+the workflow resolves the CLI and both harness pins in guard steps before
+`npm test`.
 
 ## The behavior face
 

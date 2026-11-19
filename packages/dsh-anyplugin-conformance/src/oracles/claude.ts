@@ -9,11 +9,16 @@
  * Every probe runs under a throwaway HOME and CLAUDE_CONFIG_DIR so it cannot
  * read or write the user's own installation, and so two runs on the same
  * plugin are byte-comparable.
+ *
+ * The binary is resolved as D24 records: `CLAUDE_BIN` first, then `claude` on
+ * PATH. A local run may skip when neither exists; under CI that is an error,
+ * because a skipped fidelity test proves nothing.
  */
 import { execFile } from 'node:child_process'
+import { accessSync, constants, statSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import {
   emptyInventory,
@@ -23,6 +28,7 @@ import {
   type Surface,
   type TokenCost,
 } from '../inventory.ts'
+import { CLAUDE_CODE_PACKAGE, CLAUDE_CODE_PIN } from '../pin.ts'
 
 const run = promisify(execFile)
 
@@ -45,6 +51,8 @@ export interface ClaudeProbeResult {
   pin: InventoryPin
   raw: string
   stderr: string
+  /** The binary that produced this report, so a run can name its oracle. */
+  bin: string
 }
 
 export interface ClaudeProbeOptions {
@@ -53,6 +61,91 @@ export interface ClaudeProbeOptions {
   name?: string
   bin?: string
   timeoutMs?: number
+}
+
+/** Where the oracle found its Claude Code binary. */
+export type ClaudeBinarySource = 'CLAUDE_BIN' | 'PATH'
+
+export interface ClaudeBinaryLocation {
+  bin: string
+  source: ClaudeBinarySource
+}
+
+export interface ResolveClaudeBinaryOptions {
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+}
+
+function isCI(env: NodeJS.ProcessEnv): boolean {
+  return env.CI === 'true' || env.CI === '1'
+}
+
+function isExecutable(path: string, platform: NodeJS.Platform): boolean {
+  try {
+    if (!statSync(path).isFile()) return false
+    // Windows has no execute bit; the file's existence is the test.
+    if (platform !== 'win32') accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The CLI's executable names on `platform`. `.cmd`/`.bat` shims are
+ * deliberately absent: `execFile` cannot run them without a shell, and handing
+ * back a path the probe cannot execute would only move the failure downstream.
+ */
+function executableNames(platform: NodeJS.Platform): string[] {
+  return platform === 'win32' ? ['claude.exe', 'claude'] : ['claude']
+}
+
+/**
+ * Resolve the Claude Code binary to probe, in D24 order: `CLAUDE_BIN`, then
+ * `claude` on PATH. A value that is named but unusable is an error rather than
+ * a reason to fall through — silently probing a different installation than
+ * the caller asked for would make the fidelity claim meaningless.
+ *
+ * Missing entirely is only acceptable locally: this returns `undefined` when
+ * neither source exists and `CI` is unset. Under CI it throws, because the
+ * upstream half of the rig must run there.
+ */
+export function resolveClaudeBinary(options: ResolveClaudeBinaryOptions = {}): ClaudeBinaryLocation | undefined {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const explicit = env.CLAUDE_BIN?.trim()
+
+  if (explicit) {
+    const bin = resolve(explicit)
+    if (!isExecutable(bin, platform)) {
+      throw new Error(
+        `claude oracle: CLAUDE_BIN=${explicit} is not an executable file — point it at the binary printed by \`node scripts/fetch-claude.mjs\` (installs ${CLAUDE_CODE_PACKAGE}@${CLAUDE_CODE_PIN.version})`,
+      )
+    }
+    return { bin, source: 'CLAUDE_BIN' }
+  }
+
+  const pathValue = env.PATH ?? env.Path ?? ''
+  for (const entry of pathValue.split(delimiter)) {
+    const dir = entry.trim().replace(/^"(.*)"$/, '$1')
+    if (!dir) continue
+    for (const name of executableNames(platform)) {
+      const candidate = resolve(dir, name)
+      if (isExecutable(candidate, platform)) return { bin: candidate, source: 'PATH' }
+    }
+  }
+
+  if (isCI(env)) {
+    throw new Error(
+      `claude oracle: CI requires the Claude Code CLI and a skipped fidelity test on CI is a bug — set CLAUDE_BIN to the binary printed by \`node scripts/fetch-claude.mjs\` (installs ${CLAUDE_CODE_PACKAGE}@${CLAUDE_CODE_PIN.version}), or install that package and put \`claude\` on PATH`,
+    )
+  }
+  return undefined
+}
+
+/** The local skip reason; it names how to get the pinned CLI. */
+export function claudeSkipReason(): string {
+  return `claude CLI not installed — run \`node scripts/fetch-claude.mjs\` (installs ${CLAUDE_CODE_PACKAGE}@${CLAUDE_CODE_PIN.version}) and point CLAUDE_BIN at its output, or put \`claude\` on PATH`
 }
 
 /** The name Claude will resolve for a `--plugin-dir` plugin. */
@@ -232,7 +325,9 @@ export function parseClaudeDetails(text: string, fallbackName: string): { invent
 }
 
 export async function probeWithClaude(options: ClaudeProbeOptions): Promise<ClaudeProbeResult> {
-  const bin = options.bin ?? 'claude'
+  const location = options.bin === undefined ? resolveClaudeBinary() : undefined
+  const bin = options.bin ?? location?.bin
+  if (bin === undefined) throw new Error(claudeSkipReason())
   const name = options.name ?? (await resolvePluginName(options.pluginDir))
   const version = await claudeVersion(bin, options.timeoutMs)
 
@@ -244,8 +339,8 @@ export async function probeWithClaude(options: ClaudeProbeOptions): Promise<Clau
       env: { ...env, HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude') },
     })
     const { inventory } = parseClaudeDetails(stdout, name)
-    const pin: InventoryPin = { tool: 'claude-code', version }
-    return { inventory: { ...inventory, pin }, pin, raw: stdout, stderr }
+    const pin: InventoryPin = { tool: CLAUDE_CODE_PIN.tool, version }
+    return { inventory: { ...inventory, pin }, pin, raw: stdout, stderr, bin }
   } finally {
     await rm(home, { recursive: true, force: true })
   }

@@ -55,9 +55,10 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
    either say so in the PR body, or open a follow-up issue instead of widening
    the diff.
 4. Run `npm run verify` in the worktree. It must be green **before** the PR
-   opens, including the tests that need a harness. CI fetches both npm pins
-   (0.2.2-rc.5 and 0.2.2-rc.2) and fails on a skip, but it cannot test your
-   Desktop installation — so paste the local run in the PR.
+   opens, including the tests that need a harness or the upstream CLI. CI
+   fetches the pinned Claude CLI and both npm pins (0.2.2-rc.5 and 0.2.2-rc.2)
+   and fails on a skip, but it cannot test your Desktop installation — so paste
+   the local run in the PR.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
 
@@ -98,14 +99,16 @@ the master rewrites it.
 
 ## What CI proves, and what it cannot
 
-`verify` on GitHub runs `npm run check:arch`, fetches the DSH harness pins, and
-runs `npm run verify` against each of them (`0.2.2-rc.5`, `0.2.2-rc.2`). A
-skipped DSH-side test is a failed job: a shell guard checks `DSH_HARNESS_DIR`
-before running the suite.
+`verify` on GitHub runs `npm run check:arch`, installs the pinned Claude Code
+CLI, fetches the DSH harness pins, and runs `npm run verify` against each of
+them (`0.2.2-rc.5`, `0.2.2-rc.2`). A skipped DSH-side test is a failed job: a
+shell guard checks `DSH_HARNESS_DIR` before running the suite. The upstream
+half is guarded the same way: `CLAUDE_BIN` must be set and its `--version` must
+match the pin before the suite runs.
 
 - **Proves**: the tree still has its declared shape; pure packages behave; the
-  fidelity oracle agrees with both pinned npm harnesses; nothing needs a secret;
-  nothing needs this laptop.
+  fidelity oracle agrees with both pinned npm harnesses and with the pinned
+  Claude Code CLI; nothing needs a secret; nothing needs this laptop.
 - **Cannot prove**: the Desktop installation specifically (`DSH_INSTALL_DIR`),
   the asar access path, or the behavior face (`claude plugin eval` costs
   money). Those are local evidence and belong in the PR body. CI green is a

@@ -2,6 +2,8 @@ node_modules/
 .npm-cache/
 # pinned DSH harnesses fetched by scripts/fetch-harness.mjs
 .harness/
+# pinned Claude Code CLI fetched by scripts/fetch-claude.mjs
+.claude-code/
 dist/
 *.log
 .DS_Store
