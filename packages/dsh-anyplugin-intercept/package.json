@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-intercept",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The one interception kernel: event points, matcher grammar, decision protocol, tier ordering, budgets. Consumed by classic hooks and, eventually, the mod host.",
+  "exports": { ".": "./src/index.ts" }
+}

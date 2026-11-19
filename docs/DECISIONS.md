@@ -303,3 +303,31 @@ Rules we impose on ourselves, because the runtime will not:
   servers, so the two can never fight over one namespace.
 - Raising DSH's 32-character cap upstream (D11) is no longer on the critical
   path. It stays a proposal, not a dependency.
+
+## D13 — The kernel is the only owner of the tier table and the continuation rule
+
+**Decided:** `dsh-anyplugin-intercept` owns `TIER_ORDER`
+(`prepend → user → append → builtin`, `builtin` innermost) and a per-handler
+`mode` (`observe` for classic hooks, `wrap` for mods). No consumer may sort
+handlers, compile a matcher, or decide "does the chain continue" on its own.
+
+**Why:** the ordering literally encodes which code runs before the tool call,
+so two implementations would diverge silently and only under combination. And
+the two front-ends need opposite continuation rules — after a settings hook
+several matching hooks still run, while a mod that declines `next()` has taken
+ownership of the rest of the chain. One engine with an explicit mode keeps both
+honest; two engines would make mods structurally impossible (§7.2).
+
+**Known assumption (recorded so it can be corrected once, not everywhere):**
+the tier names and their order are taken from the Claude mod *prose*. They
+become `exact` only when checked against the pinned `claude-code.d.ts` (v0.5).
+The table is one line, and every consumer reads it.
+
+**Consequences:**
+
+- A handler that throws is skipped and recorded; a handler that overruns its
+  budget is aborted and recorded. Neither is ever propagated into a tool call.
+- `describeTrace` output is the report's evidence; a step exists for every
+  handler run, including `skipped-matcher` and `not-called`.
+- The classic-hook front-end (v0.2) is a translation of `hooks.json` into
+  `HandlerRegistration`s, nothing more.

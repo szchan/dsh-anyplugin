@@ -303,6 +303,25 @@ architected out by construction. This is the single most important structural
 decision in this section, and it is why the kernel's skeleton must land early
 (§12) even though full mod support is late.
 
+**Skeleton landed (v0.1):** `packages/dsh-anyplugin-intercept` — `runChain`,
+`resolveOrder`, `compileMatcher`, the `Decision` union, per-handler budgets and
+a deterministic trace. No consumer yet; its test file is the specification.
+
+The one thing the skeleton had to add beyond the plan is a **mode**. The two
+front-ends need opposite continuation rules, and encoding only one would have
+forced the other to bypass the kernel (exactly what §7.2 forbids):
+
+| Mode | Used by | Semantics |
+| --- | --- | --- |
+| `observe` (default) | classic hooks | the kernel always continues after the handler; several settings hooks all run |
+| `wrap` | mods | the handler owns continuation: not calling `next()` and returning nothing **ends** the chain |
+
+Both share: first non-continue decision wins, a throwing handler is skipped and
+recorded, an over-budget handler is aborted and recorded, one trace step per
+run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single table with
+`builtin` innermost; D13 records that its values are still a prose-derived
+assumption until the pinned `claude-code.d.ts` lands in v0.5.
+
 ### 7.3 The mod host must be generic, so it is its own package
 
 `dsh-mod-host` provides a **DSH-native mod ABI** (chain engine with tiers, `$`

@@ -34,16 +34,12 @@ claude-code `2.1.322`.
 
  can appear, but no fixture breaks it yet.
       Done when a fixture with an over-budget name reports `unsupported`.
-- [ ] **Interception kernel skeleton** (AGENTS.md §3.6). Event points, matcher
-      grammar, decision protocol, tier ordering — one module, no consumers yet.
-      Done when a unit test drives a synthetic event through the chain twice and
-      gets identical ordering both times.
 
 ## Next
 
-- [ ] **Hooks, classic arm.** Command handlers on the kernel; events that have
-      a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse` row
-      matches.
+- [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel; events that
+      have a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse`
+      row matches.
 - [ ] **Agents.** Needs a catalog seam (`dsh-subagent` has a provider registry,
       not a discoverable directory). Done when `fixtures/claude-agents` matches
       and the persona is selectable by description.
@@ -88,9 +84,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S3 conformance rig, both halves: upstream oracle (`claude plugin details`)
   and the installed DSH oracle.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
+- Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
+  decisions, budgets, trace, `observe`/`wrap` continuation modes.
 - MCP: stdio servers connect under the materializer and expose
   `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (8 / 6 / 2).
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize
   with 0 diff against the pinned goldens.
 - D7 id escaping, D8 pin-gated surface mapping, D9 installed-oracle-only,
-  D10 two faces for commands, D11 name budget arithmetic, D12 owned MCP path.
+  D10 two faces for commands, D11 name budget arithmetic, D12 owned MCP path,
+  D13 one owner for the chain's tier table and continuation modes.
