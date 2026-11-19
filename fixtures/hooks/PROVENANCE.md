@@ -5,7 +5,7 @@ Two kinds of fixture live here, and they do not have the same authority.
 | Directory | Source | Authority |
 | --- | --- | --- |
 | `payloads/` | The canonical examples on the pinned docs page, extracted by `scripts/extract-hook-payloads.mjs` | Illustrative. The harness sends more fields than the examples show, and shows optional ones as present. |
-| `captured/` | A real `claude` 2.1.322 writing its own stdin (`spikes/s6-hook-payloads`) | Verbatim, minus `session_id` and `transcript_path`. |
+| `captured/` | Six real `claude` 2.1.322 payloads recorded by `spikes/s6-hook-payloads` on a DeepSeek backend | Verbatim, minus `session_id` and `transcript_path`. |
 
 Pin: **claude-code 2.1.322**. Re-run `node scripts/extract-hook-payloads.mjs`
 when the pin moves, then review the diff — a removed event or a renamed field is
@@ -28,22 +28,34 @@ Two fields exist in captures and are absent from the doc examples:
 `prompt_id` on `UserPromptSubmit` and `SessionEnd`. That direction is the one to
 pay attention to — the capture is the authority where both exist.
 
-## Capturing the rest (needs a login)
+## What the captures settled
 
-`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`,
-`PermissionRequest`, and every other turn-interior event require a model turn,
-and this machine is not logged in to `claude`. They stay doc-shaped until
-someone runs the spike with an authenticated `claude`:
+Six events are captured: `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, `Stop`, `SessionEnd`. Five shape facts came out of them, and
+each one is a rule for whoever writes the classic arm:
+
+1. **`tool_response` is tool-specific and not a schema.** Bash sends
+   `{stdout, stderr, interrupted, isImage, noOutputExpected}`; the doc example for
+   `PostToolUse` is a Write response, `{filePath, type}`. Never assume a shape.
+2. **`tool_use_id` differs by backend** — `call_00_…` here, `toolu_01…` in the
+   docs. It is an opaque string; do not parse it, do not pin its format.
+3. **`effort: {level}`** rides on turn-interior events and appears in no doc
+   example. Same lesson as `prompt_id`: the payload grows.
+4. **A documented field can still be absent.** The `PreToolUse` doc example has
+   `scratchpad_dir`; the capture does not. Documentation is a union of
+   variants, in both directions.
+5. **`stop_hook_active`** is `false` in a normal turn. `true` means the turn was
+   itself started by a `Stop` hook — the guard against a Stop hook looping.
+
+## Re-capturing
 
 ```bash
-node spikes/s6-hook-payloads/run.mjs          # uses your real config
-node spikes/s6-hook-payloads/run.mjs --isolated   # temp HOME; captures only
-                                                  # the auth-free events
+DEEPSEEK_API_KEY=sk-... node spikes/s6-hook-payloads/run.mjs --deepseek
 ```
 
-The spike writes one JSON record per event (payload, plugin-root env vars, and
-the hook's cwd) under a temp directory; move the interesting ones into
-`captured/` with the same scrubbing.
+The spike prints each payload and writes a record (payload, plugin-root env
+vars, hook cwd) under a temp directory. Copy the interesting ones into
+`captured/` with the same scrubbing and update the provenance block.
 
 ## Running the client at all: the DeepSeek backend
 

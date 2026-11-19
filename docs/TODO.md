@@ -27,11 +27,6 @@ claude-code `2.1.322`.
       test time or from the installed tree; never vendored), starting with
       `diff` because it ships its own `hooks/` and `tests/`. Done when one
       real mod loads in the host and its own test expectations pass against us.
-- [ ] **Capture the turn-interior payloads** (D14). `PreToolUse`,
-      `PostToolUse`, `Stop` and friends need a model turn, and this machine is
-      not logged in to `claude`. Done when a capture replaces each doc-shaped
-      fixture under `fixtures/hooks/captured/` and the kernel test still passes
-      without edits (that is the point: shape is data, not an assertion).
 - [ ] **Behavior oracle on a DeepSeek backend.** Claude Code speaks the
       Anthropic Messages API and DeepSeek serves that format at `/anthropic`,
       so the real client runs here without an Anthropic account. Done when
@@ -87,9 +82,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.
-- Hook payload fixtures: 32 doc-derived payloads plus 3 live captures from
-  2.1.322, run through `runChain`; the event table and matcher subject are
-  derived from them (D15).
+- Hook payload fixtures: 32 doc-derived payloads plus 6 live captures from
+  2.1.322 (DeepSeek backend), run through `runChain`; the event table and
+  matcher subject are derived from them (D15).
 - MCP: stdio servers connect under the materializer and expose
   `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (8 / 6 / 2).
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize
