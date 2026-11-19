@@ -17,6 +17,7 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
       human cannot see and cannot revoke is not a boundary; `rig grant`
       prints the manifest and the command line, `rig revoke` names the
       broader scope that still allows the plugin.
+
 ## Next
 
 - [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
