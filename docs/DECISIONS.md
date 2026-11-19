@@ -996,3 +996,122 @@ about the manifest boundary, not about making the filesystem immutable.
 - The claim is against claude-code `2.1.322` and the DSH pins in D22; a pin
   bump that changes hook semantics must revisit the hash rules, not just the
   goldens.
+
+## D26 — An agent persona is a scoped tool, and the body is a user message
+
+**Status:** ratified 2026-11-19 (ticket #19, S10).
+
+`agents/*.md` personas are model-selectable in DSH as **one tool per agent**,
+registered by our own materializer, because the host has no catalog: `dsh-subagent`
+is a named-provider registry that registers no tool, and `dsh-tool-subagent`
+registers one tool per provider with fixed wording whose `agent_preset` enum
+carries ids but no per-agent description. Registering our own tool is the only
+way the frontmatter description can reach the model.
+
+**The name is `<plugin>:<agent>`, and the colon is accepted by `dsh-tools`.**
+This reverses an assumption recorded earlier in this project: the
+`[A-Za-z0-9_-]` charset rule belongs to `dsh-mcp-client`'s `serverName` (D11),
+not to the tool registry. `ToolsService.register` accepts `agents-fixture:reviewer`,
+`ctx.tools.schemas()` returns it unchanged, and `ctx.tools.execute` runs it.
+So the model sees the same string Claude's `Task` tool exposes as
+`subagent_type`. The consequence is structural: two plugins can declare the
+same agent name without colliding, because the name carries the plugin. A
+namespacing scheme of our own would have broken the `catalog` face to solve a
+problem we do not have.
+
+**The description is byte-equal; the body is never model-visible metadata.**
+The tool description is the frontmatter `description` verbatim. The body is not
+in the description, the parameter schema, or any other field the model reads —
+a persona whose body leaked into its description would be a prompt-injection
+surface by design. An agent with no description is `unsupported` with a reason;
+a nested `agents/**/*.md` file is `unsupported` because the host reports
+`Agents (0)` for a nested-only tree at this pin.
+
+**Invocation is `equivalent`, not `exact`, and the gap is named.** The tool
+calls `ctx.subagents.startActivation` with the body as the **first text block of
+the child's initial user message**, followed by the caller's task. There is no
+instructions field on `SubagentStartRequest` at the pin, so a true system-prompt
+position is not expressible; a preset plus `dsh-persona` could move it later,
+which is why the face is `equivalent` rather than `unsupported`. `model`
+(`sonnet`/`opus`/`haiku` aliases), `tools`/`disallowedTools`, `effort`,
+`maxTurns`, and `isolation` are `planned` per key: the child inherits the
+parent's toolset and no per-activation filter or turn cap exists. The escape
+layer (§9) is the only path to model identity.
+
+**Seam-adaptive (P4).** Without `ctx.subagents` the catalog still loads,
+`apply` records one warning, and each invocation rejects naming
+`@deepseek-ai/dsh-subagent`; without `ctx.tools` the materializer warns and
+applies nothing. Neither path throws at load.
+
+**The oracle compares the registry against the emitted declaration, and a
+fixture test is the independent anchor.** `agents:<name>` is emitted only when
+`ctx.tools.schemas()` actually contains that name with the declared
+description; the IR alone never adds a row. That proves registration, not
+provenance, so `agents.test.mjs` reads the raw fixture bytes for the description
+and the emitted `agents` child for the body. The commit message and comments
+must not claim more than that pair.
+
+**Consequences:**
+
+- `fixtures/claude-agents` matches `agents:reviewer`. The denominator is **11
+  declared / 10 matched / 0 missing / 1 refused**; the earlier "12" counted
+  `agents/deep/planner.md`, which the host does not load at this pin and which
+  remains an `unsupported` declaration rather than a declared row.
+- The upstream "named, described agent catalog" proposal becomes optional: it
+  would restore Claude's single-`Task` shape with a `subagent_type` enum, not
+  add capability.
+- Tool names are now the first place where our emitted identifiers can contain
+  a character other than `[A-Za-z0-9_-]`. Anything that pattern-matches tool
+  names (hooks, matchers, approval rules) must treat `:` as data. The command
+  registry is unaffected: `dsh-commands` still has its own regex (D10).
+
+## D27 — Consent is explicit, and a refusal is never erased by convenience
+
+**Status:** ratified 2026-11-19 (ticket #17).
+
+The grant/revoke CLI is the human consent surface for `exec` artifacts (D25).
+These rules are the surface's contract, not preferences:
+
+- **Effective trust is decided by the narrowest scope with any record; inside
+  one scope a revoke beats a grant; a narrower record never falls back to a
+  broader one.** A grant is consent, a revoke is refusal, and refusal wins
+  where both exist. The CLI prints which record decided, at which scope.
+- **`grant --yes` is all-or-nothing by default.** If any artifact is unpinnable
+  or any same-scope revoke would be erased, it exits 1 and writes nothing.
+  `--partial` is the explicit opposite: write the pinnable rows, name every
+  skipped artifact, and still exit 1. `revoke` never needs `--partial`; it is
+  one record.
+- **Changing an artifact re-prompts; it does not silently re-grant.** Same
+  scope plus different bytes is `pending` with `old hash → new hash`, and
+  `--yes` replaces that record. A changed artifact never inherits consent.
+- **Consent never erases a refusal.** A same-scope revoke is cleared only by
+  `--replace-revoke`, which clears exactly the targets being granted and prints
+  each one. The failure mode this prevents is real: without it, granting a
+  newly added third hook silently re-enabled a hook the person had refused.
+- **Revocation reads the record, not the artifact.** `revoke --target` succeeds
+  when the plugin directory is gone, when the hook declaration was removed, or
+  when the pinned program no longer exists; the output then says
+  `artifact: unavailable` (JSON `null`) with the hasher's reason, instead of
+  printing a declaration hash as if it were the artifact. If the old bytes
+  reappear, the revoke still refuses them. A revoke for a classified target
+  with no grant is allowed and records a pre-emptive refusal; it is not a
+  no-op and is documented as such.
+- **The surface must not lie, in either direction.** A write run never prints
+  "not granted" after granting; `alreadyRevoked` is false on the write that
+  revoked; TOCTOU guards re-plan under the write lock and name the actual cause
+  (plugin bytes vs grants store) rather than a generic one; `pluginRead:false`
+  with a reason when the directory is missing.
+
+**Consequences:**
+
+- Exit 1 now means "nothing was written" for `grant` without `--partial`; a
+  script that needs partial writes must pass `--partial` and treat exit 1 as
+  "some rows were refused".
+- The default scope is `user`, the broadest one, and every output prints it.
+  The CLI never infers a scope from cwd; it reads no project file.
+- `bin`, `monitor`, and `mod` rows are classified and can be granted, but
+  nothing gates them yet because no materializer emits them. When one lands it
+  must consume `authorize` rather than invent a second gate.
+- A grant is one artifact's manifest at one scope. It does not cover data bytes,
+  `matcher`, `timeout`, environment, the interpreter on `PATH`, or files read at
+  run time (D25).

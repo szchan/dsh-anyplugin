@@ -17,6 +17,13 @@ Nothing claimed.
 
 ## Next
 
+- [ ] **Hook lifecycle events.** Wire the S9-confirmed session/turn seams
+      (`agent/created`, `agent/disposed`, `agent/turn-stopping`) plus
+      `subagent/start`/`subagent/end` into `materialize-hook`, with a fixture
+      plugin whose hooks leave a marker the oracle can observe. Done when a new
+      fixture's `hooks:SessionStart`, `hooks:Stop`, `hooks:SessionEnd`,
+      `hooks:SubagentStart`, `hooks:SubagentStop` rows are `match` because the
+      handlers ran, and the matrix grows rather than staying at 11.
 - [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
       `mods/` from the pinned upstream revision into `fixtures/` (fetch at
       test time or from the installed tree; never vendored), starting with
@@ -64,6 +71,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- CLI consent surface (D27): grant/revoke with all-or-nothing writes,
+  re-consent on changed bytes, explicit `--replace-revoke`, and revocation that
+  reads the record rather than the artifact.
 - S1 loader substrate — five findings written into ARCHITECTURE §10.1.
 - S3 conformance rig, both halves: upstream oracle (`claude plugin details`)
   and the installed DSH oracle.
@@ -86,9 +96,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Skill argument engine: the documented rules ($N zero-based, $name,
   the trailer, escapes) implemented and tested against a recorded trace;
   waiting on the tool-schema seam (D17).
-- S10 agents — one tool per agent, description byte for byte, body as the
-  first block of the child user message; `fixtures/claude-agents` matches and
-  model/tools/limits stay `planned` with reasons (ARCHITECTURE §10 S10).
+- S10 agents (D26) — one tool per `<plugin>:<agent>`, description byte for
+  byte, body as the first block of the child user message; `fixtures/claude-agents`
+  matches on a denominator of 11 (the nested planner is not loaded at the pin),
+  and model/tools/limits stay `planned` with reasons.
 - S8: hooks ride the tool waterfalls (`tools/pre-execute` deny →
   `Error: <reason>`, `tools/post-execute` value + `additionalContexts`); the
   guard list is denial-only and is not used (D19).
