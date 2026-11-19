@@ -1,0 +1,19 @@
+{
+  "name": "dsh-anyplugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Run Claude Code / Codex plugins inside DeepSeek Harness, at declared 100% fidelity.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "spike:s1": "node spikes/s1-loader/run.mjs",
+    "spike:s3": "node spikes/s3-conformance/run.mjs",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0"
+  }
+}
