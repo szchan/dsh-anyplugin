@@ -806,8 +806,19 @@ test('PostToolUse warns and skips an edited artifact; a re-grant and recompile l
   try {
     writeFileSync(script, `#!/bin/sh\nprintf 'run\\n' >> ${JSON.stringify(marker)}\n`, 'utf8')
     const [row] = classify(readClaudePlugin(dir))
-    const configFor = (store) => {
+    const loader = {
+      root: {},
+      entries: () => [],
+      resolve: () => { throw new Error('no entries') },
+      await: async () => undefined,
+      create: async () => undefined,
+      update: async () => undefined,
+      remove: () => {},
+    }
+    const configFor = async (store) => {
       const report = compileReport(installsFor(ir), compileOptions(store))
+      const result = await reconcile(loader, report.entries, { decisions: report.decisions })
+      assert.deepEqual(result.refused, [])
       return report.entries[0].config.find((entry) => entry.name === materializers.hooks).config
     }
     const mount = (config) => {
@@ -821,7 +832,7 @@ test('PostToolUse warns and skips an edited artifact; a re-grant and recompile l
       applyHooks(ctx, config)
       return { handlers, warnings }
     }
-    let mounted = mount(configFor(userGrant(ir, row)))
+    let mounted = mount(await configFor(userGrant(ir, row)))
     const invoke = () => mounted.handlers.get('tools/post-execute')(
       { callId: 1, name: 'Write', arguments: {} },
       {},
@@ -840,7 +851,7 @@ test('PostToolUse warns and skips an edited artifact; a re-grant and recompile l
     assert.match(mounted.warnings.join('\n'), /artifact changed since the grant/)
 
     const [changedRow] = classify(readClaudePlugin(dir))
-    mounted = mount(configFor(userGrant(ir, changedRow)))
+    mounted = mount(await configFor(userGrant(ir, changedRow)))
     assert.deepEqual(await invoke(), { kind: 'accept', additionalContexts: [] })
     assert.equal(runs(), 2)
   } finally {
