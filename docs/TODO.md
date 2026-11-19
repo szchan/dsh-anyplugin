@@ -17,23 +17,8 @@ claude-code `2.1.322`.
       register their tools. Done when a fixture server over HTTP reports
       `match` and the stdio arm still does (the stdio arm landed with 8/6/2).
 - [ ] **MCP name budget, enforced in anger.** The rule is in place and the rig
-      asserts no `_[0-9a-f]{12}# TODO
-
-The burn-down list. Every line names an outcome that can be checked, and every
-item is finished the same way (AGENTS.md §7): code, test, doc, and the coverage
-row moving in one commit.
-
-The design lives in `docs/ARCHITECTURE.md`; the reasons live in
-`docs/DECISIONS.md`. This file only orders the work. If a line here disagrees
-with those two, they win and this file is wrong.
-
-Pins for everything below: DSH `0.2.2-rc.2` (installed harness, D9),
-claude-code `2.1.322`.
-
-## Now
-
- can appear, but no fixture breaks it yet.
-      Done when a fixture with an over-budget name reports `unsupported`.
+      asserts no `_[0-9a-f]{12}` suffix, but no fixture breaks it yet. Done when
+      a fixture with an over-budget name reports `unsupported`.
 
 ## Next
 
@@ -42,10 +27,11 @@ claude-code `2.1.322`.
       test time or from the installed tree; never vendored), starting with
       `diff` because it ships its own `hooks/` and `tests/`. Done when one
       real mod loads in the host and its own test expectations pass against us.
-- [ ] **Hook payload samples as fixtures** (D14). `examples/hooks` gives the
-      canonical payload shapes; turn each into a fixture the kernel test drives
-      through `runChain`, so the classic arm is calibrated against upstream
-      payloads rather than our reading of the docs.
+- [ ] **Capture the turn-interior payloads** (D14). `PreToolUse`,
+      `PostToolUse`, `Stop` and friends need a model turn, and this machine is
+      not logged in to `claude`. Done when a capture replaces each doc-shaped
+      fixture under `fixtures/hooks/captured/` and the kernel test still passes
+      without edits (that is the point: shape is data, not an assertion).
 - [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel; events that
       have a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse`
       row matches.
@@ -95,6 +81,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.
+- Hook payload fixtures: 32 doc-derived payloads plus 3 live captures from
+  2.1.322, run through `runChain`; the event table and matcher subject are
+  derived from them (D15).
 - MCP: stdio servers connect under the materializer and expose
   `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (8 / 6 / 2).
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize

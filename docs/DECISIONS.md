@@ -377,3 +377,29 @@ agents running side by side, not fidelity.
   fixture, and their license stays upstream's.
 - The licensing question is settled once: if a future component can only be
   obtained by copying code, it is `unsupported` with a reason, not a shortcut.
+
+## D15 — Classic hook payloads are fixtures, and they own the event table
+
+**Decided.** `fixtures/hooks/` holds the payload corpus: `payloads/` extracted
+from the pinned docs page by `scripts/extract-hook-payloads.mjs`, and
+`captured/` recorded from a live `claude` 2.1.322 by
+`spikes/s6-hook-payloads`. `CLASSIC_HOOK_EVENTS` and `CLASSIC_SUBJECT_FIELD`
+in `dsh-anyplugin-intercept` are derived from that corpus, and
+`test/payloads.test.mjs` fails when the table and the fixtures disagree.
+
+**Why.** We had hand-guessed 10 events; the pinned docs carry 32. A hand-typed
+vocabulary silently drops two thirds of the surface, and a hand-typed matcher
+subject silently narrows on the wrong field. Running real payloads through
+`runChain` also exposed a semantic error the prose hid: `observe` mode was
+recording a handler that returned nothing as `not-called`, which is the *wrap*
+semantic — an observing hook has no `next` to decline.
+
+**Consequences.**
+
+- Adding an event is a fixture change plus a table change in one commit.
+- The capture is the authority where a doc example and a capture disagree; doc
+  examples are variants, never schemas. A test must not assert an exact key set.
+- Unknown matcher semantics leave the subject empty and are listed as a gap:
+  a matcher that cannot narrow is better than one that narrows wrongly.
+- Payloads derived from docs keep `__provenance` (`source`, `url`, `pin`) in the
+  file; captures keep the command that produced them.

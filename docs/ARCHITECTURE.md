@@ -322,6 +322,23 @@ run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single table 
 `builtin` innermost; D13 records that its values are still a prose-derived
 assumption until the pinned `claude-code.d.ts` lands in v0.5.
 
+**Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds 32
+payloads extracted from the pinned docs plus 3 captures from a live 2.1.322.
+Two corrections came out of running them through the kernel:
+
+- The event vocabulary is **32 events, not the 10 we had guessed**. The table is
+  now derived from the fixture set, and a fixture/test mismatch fails the build.
+- `observe` mode used to record a handler that returned nothing as
+  `not-called`. That is the *wrap* semantic. An observing hook has no `next`;
+  not calling it is not declining, so the trace now says `ran`. `not-called`
+  is reserved for a wrapper that ended the chain.
+
+Matchers read the subject from the event's own field (`CLASSIC_SUBJECT_FIELD`:
+`tool_name` for tool events, `agent_type`, `notification_type`, `trigger`,
+`source`, `reason`, …). Events whose matcher semantics are still unknown leave
+the subject empty — a recorded gap, because a plugin's matcher then cannot
+narrow anything instead of narrowing wrongly.
+
 ### 7.3 The mod host must be generic, so it is its own package
 
 `dsh-mod-host` provides a **DSH-native mod ABI** (chain engine with tiers, `$`
@@ -597,6 +614,17 @@ oracle.
   the 64-character contract either (a 95-character name is accepted), so that
   budget must be self-imposed and the over-budget case annotated, not renamed.
   Consequence: the MCP materializer owns its connection (D12).
+
+- **S6 — hook payload shapes.** ✅ **Answered 2026-11-18** by
+  `spikes/s6-hook-payloads`, partially: `SessionStart`, `UserPromptSubmit` and
+  `SessionEnd` capture without a login (hooks fire before the API call), which
+  produced 3 verbatim payloads. `PreToolUse`/`PostToolUse`/`Stop` need a model
+  turn and this machine is not logged in (`claude auth status` → `loggedIn:
+  false`), so those stay doc-shaped until a capture replaces them. Two findings:
+  the real payload carries `prompt_id`, which the doc examples omit; and a doc
+  example is a *variant*, not a schema (the `SessionStart` example is a resume
+  payload carrying five fields the startup capture does not). Consequence:
+  payload fixtures, not prose, own the event table (D15).
 
 Fixtures: skills-only; hook-heavy (blocking + injection); MCP + commands;
 agents + bin + theme.

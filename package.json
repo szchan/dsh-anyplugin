@@ -11,7 +11,8 @@
     "spike:s1": "node spikes/s1-loader/run.mjs",
     "rig": "node packages/dsh-anyplugin-conformance/src/rig.ts",
     "capture:fixtures": "node scripts/capture-fixtures.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "extract:hooks": "node scripts/extract-hook-payloads.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",

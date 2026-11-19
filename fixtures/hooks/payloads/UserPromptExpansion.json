@@ -1,0 +1,19 @@
+{
+  "__provenance": {
+    "source": "docs",
+    "url": "https://code.claude.com/docs/en/hooks",
+    "pin": "claude-code@2.1.322"
+  },
+  "payload": {
+    "session_id": "abc123",
+    "transcript_path": "/Users/.../00893aaf.jsonl",
+    "cwd": "/Users/...",
+    "permission_mode": "default",
+    "hook_event_name": "UserPromptExpansion",
+    "expansion_type": "slash_command",
+    "command_name": "my-plugin:example-skill",
+    "command_args": "arg1 arg2",
+    "command_source": "plugin",
+    "prompt": "/my-plugin:example-skill arg1 arg2"
+  }
+}

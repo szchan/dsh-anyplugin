@@ -54,7 +54,7 @@ test('a matcher that does not match skips the handler and keeps the chain', asyn
     handler({ tier: 'user', source: 'audit', run: (ctx, current) => { seen.push('audit'); assert.equal(current.data.subject, 'Bash') } }),
   ])
   assert.deepEqual(seen, ['audit'])
-  assert.deepEqual(result.trace.map((step) => step.status), ['skipped-matcher', 'not-called'])
+  assert.deepEqual(result.trace.map((step) => step.status), ['skipped-matcher', 'ran'])
   assert.deepEqual(result.decision, CONTINUE)
 })
 
@@ -138,5 +138,16 @@ test('the trace is deterministic and readable', async () => {
   const first = await runChain(event('Bash'), registrations)
   const second = await runChain(event('Bash'), registrations)
   assert.deepEqual(first.trace, second.trace)
-  assert.deepEqual(describeTrace(first.trace), ['0 prepend/a: not-called', '1 user/b: skipped-matcher'])
+  assert.deepEqual(describeTrace(first.trace), ['0 prepend/a: ran', '1 user/b: skipped-matcher'])
+})
+
+test('a wrapper that declines to continue ends the chain and says so', async () => {
+  const seen = []
+  const result = await runChain(event('Bash'), [
+    handler({ tier: 'user', mode: 'wrap', source: 'guarded', run: () => { seen.push('guarded') } }),
+    handler({ tier: 'append', source: 'after', run: () => { seen.push('after') } }),
+  ])
+  assert.deepEqual(seen, ['guarded'])
+  assert.deepEqual(describeTrace(result.trace), ['0 user/guarded: not-called'])
+  assert.deepEqual(result.decision, CONTINUE)
 })

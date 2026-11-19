@@ -27,29 +27,95 @@ export type Tier = 'prepend' | 'user' | 'append' | 'builtin'
 export const TIER_ORDER = ['prepend', 'user', 'append', 'builtin'] as const
 
 /**
- * The classic-hook vocabulary we have actually seen in fixtures and docs.
- * Deliberately not exhaustive: the authoritative list is pinned per release
- * (`CLAUDE_CODE_PIN`), and registration is per event name, so an unknown event
- * simply never fires rather than being rejected.
+ * The classic-hook event vocabulary at the pinned release. Derived from
+ * `fixtures/hooks/payloads/*.json`, which are extracted from the docs page of
+ * the pin and, where a live capture exists, cross-checked against it. Adding an
+ * event is a fixture change, not a code change: `test/payloads.test.mjs` fails
+ * when this table and the fixtures disagree.
  */
 export const CLASSIC_HOOK_EVENTS = [
-  'PreToolUse',
+  'ConfigChange',
+  'CwdChanged',
+  'DirectoryAdded',
+  'Elicitation',
+  'ElicitationResult',
+  'FileChanged',
+  'InstructionsLoaded',
+  'MessageDisplay',
+  'Notification',
+  'PermissionDenied',
+  'PermissionRequest',
+  'PostCompact',
+  'PostToolBatch',
   'PostToolUse',
-  'UserPromptSubmit',
-  'SessionStart',
+  'PostToolUseFailure',
+  'PreCompact',
+  'PreModelSwitch',
+  'PreToolUse',
   'SessionEnd',
+  'SessionStart',
+  'Setup',
   'Stop',
+  'StopFailure',
   'SubagentStart',
   'SubagentStop',
-  'PreCompact',
-  'Notification',
+  'TaskCompleted',
+  'TaskCreated',
+  'TeammateIdle',
+  'UserPromptExpansion',
+  'UserPromptSubmit',
+  'WorktreeCreate',
+  'WorktreeRemove',
 ] as const
+
+/**
+ * Which payload field a matcher is tested against, per event. Listed only where
+ * the field is inferable from the payload fixture itself; the rest leave the
+ * subject empty, so a matcher cannot narrow anything (a recorded gap, TODO).
+ */
+export const CLASSIC_SUBJECT_FIELD: Readonly<Record<string, string>> = {
+  PreToolUse: 'tool_name',
+  PostToolUse: 'tool_name',
+  PostToolUseFailure: 'tool_name',
+  PermissionRequest: 'tool_name',
+  PermissionDenied: 'tool_name',
+  SubagentStart: 'agent_type',
+  SubagentStop: 'agent_type',
+  Notification: 'notification_type',
+  PreCompact: 'trigger',
+  PostCompact: 'trigger',
+  Setup: 'trigger',
+  SessionStart: 'source',
+  SessionEnd: 'reason',
+  InstructionsLoaded: 'memory_type',
+  UserPromptExpansion: 'command_name',
+  Elicitation: 'mcp_server_name',
+  ElicitationResult: 'mcp_server_name',
+  FileChanged: 'event',
+  TaskCreated: 'teammate_name',
+  TaskCompleted: 'teammate_name',
+  TeammateIdle: 'teammate_name',
+  PreModelSwitch: 'source',
+}
 
 export interface ChainEvent {
   /** Event point, e.g. `PreToolUse`. */
   name: string
+  /**
+   * The string a matcher is tested against. Front-ends may set it explicitly;
+   * when absent it is derived from the payload by `classicSubject` (mod events
+   * carry their own shapes and set it themselves).
+   */
+  subject?: string
   /** Event payload; shape is per event point and owned by the front-end. */
   data: Record<string, unknown>
+}
+
+/** The string a matcher is tested against for a classic hook payload. */
+export function classicSubject(event: ChainEvent): string {
+  const field = CLASSIC_SUBJECT_FIELD[event.name]
+  const value = field === undefined ? undefined : event.data[field]
+  return typeof value === 'string' ? value : ''
 }
 
 export type Decision =
@@ -211,9 +277,10 @@ async function withinLimit<T>(work: Promise<T>, ms: number, signal: AbortSignal)
  *
  * Semantics that the two front-ends share:
  * - a handler that returns a decision ends the chain (first decision wins);
- * - a handler that returns nothing and never called `next()` still ends the
- *   chain — silence is consent to continue, not permission to skip the rest;
- *   the trace records `not-called` so a report can show it;
+ * - in `observe` mode a handler that returns nothing has simply run: the trace
+ *   records `ran` and the chain continues;
+ * - in `wrap` mode a handler that returns nothing never handed control on, so
+ *   it ends the chain and the trace records `not-called`;
  * - a handler that throws is skipped and recorded (`error`), never propagated;
  * - a handler that exceeds its budget is aborted, recorded (`timeout`), and
  *   skipped.
@@ -261,7 +328,7 @@ export async function runChain(
   const step = async (position: number, current: ChainEvent): Promise<Decision> => {
     for (let at = position; at < ordered.length; at += 1) {
       const { registration } = ordered[at]
-      const subject = typeof current.data.subject === 'string' ? current.data.subject : ''
+      const subject = current.subject ?? classicSubject(current)
       if (!compileMatcher(registration.matcher).test(subject)) {
         record(registration, at, 'skipped-matcher')
         continue
@@ -316,10 +383,13 @@ export async function runChain(
       const final = own !== CONTINUE ? own : decided
 
       if (resumed === undefined && own === CONTINUE) {
-        record(registration, at, 'not-called')
-        // An observing hook only observes; a wrapper that declined to continue
-        // has ended the chain.
-        if ((registration.mode ?? 'observe') === 'wrap') return CONTINUE
+        if ((registration.mode ?? 'observe') === 'wrap') {
+          // A wrapper that declined to continue has ended the chain.
+          record(registration, at, 'not-called')
+          return CONTINUE
+        }
+        // An observing hook has no "next": it ran, and the chain continues.
+        record(registration, at, 'ran')
         continue
       }
       record(registration, at, 'ran', final === CONTINUE ? {} : { decision: final.kind })
