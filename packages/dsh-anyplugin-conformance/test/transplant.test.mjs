@@ -17,10 +17,11 @@ import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { summarizeIr, validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories } from '../src/inventory.ts'
 import { probeWithDsh, dshVersion } from '../src/oracles/dsh.ts'
+import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const fixtureDir = join(repoRoot, 'fixtures', 'claude-skills-only')
-const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
+const harness = resolveHarness()
 const materializerUrl = pathToFileURL(
   join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts'),
 ).href
@@ -66,14 +67,15 @@ test('the emitter produces one group entry with a stable, addressable id', () =>
 
 test(
   'DSH reports the same skills as Claude Code (transplant, 0 diff)',
-  { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
+  { skip: harness ? false : harnessSkipReason() },
   async () => {
     const ir = readClaudePlugin(fixtureDir)
     const { entry } = emitPlugin(ir, { materializers: { skill: materializerUrl } })
-    const { inventory } = await probeWithDsh({ installedDir, entry })
+    const { inventory } = await probeWithDsh({ harnessDir: harness.harnessDir, entry })
 
     assert.equal(inventory.pin?.tool, 'dsh')
-    assert.equal(dshVersion(installedDir), '0.2.2-rc.2', 'the comparison is only claimed against this install')
+    assert.equal(dshVersion(harness.harnessDir), harness.version, 'the comparison is claimed against the harness under test')
+    assert.equal(inventory.pin?.version, harness.version, 'the inventory names the version it actually booted')
 
     const report = diffInventories(golden, inventory, { allowPinMismatch: true })
     assert.deepEqual(

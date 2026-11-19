@@ -16,8 +16,8 @@ host reports for a plugin, captured from each host separately and diffed.
 ```
 foreign plugin dir
    ├─ upstream oracle   → claude --plugin-dir <dir> plugin details <name>
-   └─ DSH oracle        → materialize via the compiler, then read the registries
-                          (not built yet; the upstream half is live)
+   └─ DSH oracle        → boot the pinned harness, materialize via the
+                          compiler, then read the registries
                        ↓
                 normalized Inventory  →  diff  →  DiffReport
 ```
@@ -92,41 +92,59 @@ that path without a deliberately broken plugin on disk).
 ## The DSH side of the rig
 
 The upstream oracle asks Claude Code what it loaded. The DSH oracle asks DSH the
-same question, and it does so by booting the **installed** harness rather than a
+same question, and it does so by booting a **pinned harness tree** rather than a
 copy of it:
 
 ```
-dialect → IR → emit (group entry, pure data) → installed Loader → materializer
-        → installed ctx.skills.register → ctx.skills.list() → inventory
+dialect → IR → emit (group entry, pure data) → Loader → materializer
+        → ctx.skills.register → ctx.skills.list() → inventory
 ```
 
-`$(dirname "$DSH_INSTALL_DIR")` is a plain directory (not an asar archive), so
-`import()` of the real `cordis`, `cordis-plugin-loader` and `dsh-skill` builds
-works from ordinary Node. See D9 for why npm is not used, and ARCHITECTURE
-§10.4 for the two traps (one cordis only; registration is `ctx.effect`-scoped).
+The tree is either the Desktop installation or a released npm harness. D9 owns
+the resolution order:
 
-`probeWithDsh({ installedDir, entry })` takes the emitter's group entry,
+```
+DSH_HARNESS_DIR      install root printed by scripts/fetch-harness.mjs <version>
+DSH_INSTALL_DIR      the Desktop installation's @deepseek-ai/dsh package dir
+.harness/<version>   for DSH_HARNESS_VERSION, inside this checkout
+```
+
+`node scripts/fetch-harness.mjs 0.2.2-rc.5` installs the packages the oracle
+and materializers import (plus pinned `cordis`/`cordis-plugin-loader`/
+`cordis-plugin-group` and `@modelcontextprotocol/client`) and prints the
+directory; it is idempotent and never runs during `npm test`. The directory is
+a plain `node_modules/@deepseek-ai` — not an asar archive — so `import()` of the
+real `cordis`, `cordis-plugin-loader` and `dsh-skill` works from ordinary
+Node. See D9 for why rc.2 from npm is the same product as the Desktop copy, and
+ARCHITECTURE §10.4 for the two traps (one cordis only; registration is
+`ctx.effect`-scoped).
+
+`probeWithDsh({ harnessDir, entry })` takes the emitter's group entry,
 materializes it, waits for `ctx.skills.list()` to be stable for three polls, and
-returns an inventory whose pin is `dsh@<installed version>`.
+returns an inventory whose pin is `dsh@<version of the tree that booted>`.
 
 ### Coverage, not pass/fail
 
 `coverage.test.mjs` runs every fixture through both sides and pins the exact row
-set per fixture. Today:
+set per fixture. Today (CI re-runs it against `0.2.2-rc.5` and `0.2.2-rc.2`):
 
-| Fixture | Declared | Matched | Missing |
-| --- | --- | --- | --- |
-| `claude-skills-only` | 2 | 2 | 0 |
-| `claude-root-skill` | 1 | 1 | 0 |
-| `claude-command-nested` | 0 | 0 | 0 |
-| `claude-commands-flat` | 2 | 2 | 0 |
-| `claude-agents` | 1 | 0 | 1 |
-| `claude-hooks-mcp` | 2 | 0 | 2 |
-| **total** | **8** | **5** | **3** |
+| Fixture | Declared | Matched | Missing | Refused |
+| --- | --- | --- | --- | --- |
+| `claude-skills-only` | 2 | 2 | 0 | 0 |
+| `claude-root-skill` | 1 | 1 | 0 | 0 |
+| `claude-command-nested` | 0 | 0 | 0 | 0 |
+| `claude-commands-flat` | 2 | 2 | 0 | 0 |
+| `claude-agents` | 1 | 0 | 1 | 0 |
+| `claude-hooks-mcp` | 2 | 2 | 0 | 0 |
+| `claude-mcp-http` | 1 | 1 | 0 | 0 |
+| `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 |
+| `claude-mcp-budget` | 1 | 0 | 0 | 1 |
+| **total** | **11** | **9** | **1** | **1** |
 
-A test that only went green would tell you nothing about the five missing
+A test that only went green would tell you nothing about the missing
 components. A ratchet tells you the distance to 100 % on every run, and closing
-one gap is a one-line reviewable edit in the matrix.
+one gap is a one-line reviewable edit in the matrix. "Refused" is a third
+outcome: the component was read, judged unrepresentable, and annotated (D11).
 
 ### Running one layer
 
@@ -136,8 +154,9 @@ node --test packages/dsh-anyplugin-conformance/test/coverage.test.mjs     # burn
 node --test                                                               # everything
 ```
 
-Both DSH-side tests skip when `DSH_INSTALL_DIR` is unset; they are meaningless
-without an installation to measure.
+Without any resolved harness the DSH-side tests skip with a reason that names
+`fetch-harness.mjs`. On CI that is a failure, not a skip: the workflow resolves
+both pins in a guard step before `npm test`.
 
 ## The behavior face
 

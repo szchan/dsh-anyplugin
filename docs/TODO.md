@@ -8,8 +8,8 @@ The design lives in `docs/ARCHITECTURE.md`; the reasons live in
 `docs/DECISIONS.md`. This file only orders the work. If a line here disagrees
 with those two, they win and this file is wrong.
 
-Pins for everything below: DSH `0.2.2-rc.2` (installed harness, D9),
-claude-code `2.1.322`.
+Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
+`0.2.2-rc.5` / `0.2.2-rc.2` (npm-fetched harnesses, D9), claude-code `2.1.322`.
 
 ## Now
 

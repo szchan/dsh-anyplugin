@@ -104,7 +104,7 @@ points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`
 A change that closes a line in `docs/TODO.md` deletes the line in the same
 commit that moves the coverage row. A list that only grows is a diary.
 
-## 6. Probing the installed harness
+## 6. Probing the harness under test
 
 The reference installation lives at `$DSH_INSTALL_DIR`. On this machine the
 Desktop bundle is **extracted**, not archived, so ordinary `node` can import the
@@ -117,12 +117,34 @@ ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" -e \
   "$DSH_INSTALL_DIR"
 ```
 
-Two traps that have already cost us time:
+That is only one source. The oracle resolves a pinned harness tree in this order,
+first match wins (D9):
 
+1. `DSH_HARNESS_DIR` — an install root made by `scripts/fetch-harness.mjs`;
+2. `DSH_INSTALL_DIR` — the Desktop installation's `@deepseek-ai/dsh` package
+   directory;
+3. `.harness/<DSH_HARNESS_VERSION>` — a fetched pin inside this checkout.
+
+Fetching is explicit and idempotent; the tests themselves never touch the
+network:
+
+```bash
+node scripts/fetch-harness.mjs 0.2.2-rc.5    # prints the install root
+DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
+  DSH_HARNESS_VERSION=0.2.2-rc.5 npm run verify
+```
+
+**Never install `latest`.** The `@deepseek-ai` scope's `latest` dist-tag points
+at `0.0.1-rc.1`, which is not a harness. Pin every version explicitly.
+
+Three traps that have already cost us time:
+
+- **A stale `latest` tag is not the package list.** `0.0.1-rc.1` hid the fact
+  that rc.1 … rc.5 were published, and led D9 to claim npm was a different
+  product. Check the published versions before concluding anything.
 - **`require.resolve` failing does not mean the package does not exist
   upstream.** The Desktop bundle ships a pruned subset (338 `@deepseek-ai`
-  packages). Confirm against the published package list before concluding
-  anything about DSH's capabilities.
+  packages). Confirm against the published package list.
 - **Do not infer seam availability from a single README.** Probe the actual
   export shape (S1–S4 exist for this reason). Materializers must *detect* a
   seam at runtime and degrade with a recorded reason, never assume it.

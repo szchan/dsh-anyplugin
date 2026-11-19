@@ -13,10 +13,13 @@ permissions:
   contents: read
 
 jobs:
+  # One job, deliberately not a matrix: branch protection requires the check
+  # context to be exactly `verify`, and a matrix job reports as `verify (x)`.
+  # The two pins are verified in one step so both run even when the first fails.
   verify:
     name: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,9 +27,62 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+
+      # Fetching is an explicit step; the tests themselves never touch the
+      # network. The scripts print the install root on stdout, nothing else.
+      - name: Fetch DSH 0.2.2-rc.5
+        id: harness_rc5
+        run: echo "dir=$(node scripts/fetch-harness.mjs 0.2.2-rc.5)" >> "$GITHUB_OUTPUT"
+      - name: Fetch DSH 0.2.2-rc.2
+        id: harness_rc2
+        run: echo "dir=$(node scripts/fetch-harness.mjs 0.2.2-rc.2)" >> "$GITHUB_OUTPUT"
+
+      # A skipped fidelity test on CI is a bug, so missing harnesses fail here
+      # rather than turning into skips inside `npm test`.
+      - name: Require the fidelity harnesses
+        env:
+          HARNESS_RC5: ${{ steps.harness_rc5.outputs.dir }}
+          HARNESS_RC2: ${{ steps.harness_rc2.outputs.dir }}
+        run: |
+          set -euo pipefail
+          for entry in "0.2.2-rc.5:$HARNESS_RC5" "0.2.2-rc.2:$HARNESS_RC2"; do
+            version=${entry%%:*}
+            dir=${entry#*:}
+            if [ -z "$dir" ]; then
+              echo "::error::DSH_HARNESS_DIR is unset for DSH $version (a skipped fidelity test on CI is a bug)"
+              exit 1
+            fi
+            if [ ! -d "$dir/node_modules/@deepseek-ai" ]; then
+              echo "::error::DSH_HARNESS_DIR=$dir is missing for DSH $version"
+              exit 1
+            fi
+          done
+
       # The shape of the tree is a gate, not a review comment.
       - run: npm run check:arch
-      # Tests that need the installed harness (DSH_INSTALL_DIR) self-skip here.
-      # That is deliberate: CI proves structure and pure behaviour; the fidelity
-      # oracle can only run where the pin actually lives, and it runs before push.
-      - run: npm test
+
+      # Both pins are the claim (AGENTS.md §3.8). `fail-fast: false` semantics:
+      # a failure in the first version must not hide the second, but the job
+      # still fails if either did.
+      - name: Verify against both harness pins
+        env:
+          HARNESS_RC5: ${{ steps.harness_rc5.outputs.dir }}
+          HARNESS_RC2: ${{ steps.harness_rc2.outputs.dir }}
+        run: |
+          set -euo pipefail
+          status=0
+          for entry in "0.2.2-rc.5:$HARNESS_RC5" "0.2.2-rc.2:$HARNESS_RC2"; do
+            version=${entry%%:*}
+            dir=${entry#*:}
+            echo "::group::verify with DSH $version"
+            export DSH_HARNESS_DIR="$dir"
+            export DSH_HARNESS_VERSION="$version"
+            if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR" ]; then
+              echo "::error::DSH_HARNESS_DIR is unset or missing for DSH $version"
+              status=1
+            else
+              npm run verify || status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"

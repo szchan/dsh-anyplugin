@@ -13,9 +13,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { probeWithDsh } from '../src/oracles/dsh.ts'
+import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
-const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
+const harness = resolveHarness()
 const materializerUrl = (pkg) => pathToFileURL(join(repoRoot, 'packages', pkg, 'src', 'index.ts')).href
 const materializers = {
   skill: materializerUrl('dsh-anyplugin-materialize-skill'),
@@ -32,7 +33,7 @@ test('a PostToolUse hook is carried as its own child entry', () => {
   assert.match(hook.annotation.reason, /waterfall/)
   assert.match(hook.command, /format\.sh/)
 
-  const { entry, emitted, skipped } = emitPlugin(ir, { materializers, sdkRoot: installedDir ? join(installedDir, '..') : undefined })
+  const { entry, emitted, skipped } = emitPlugin(ir, { materializers, sdkRoot: harness?.modulesDir })
   assert.ok(emitted.includes('hooks'))
   const child = entry.config.find((item) => item.id === 'hook')
   assert.equal(child.name, materializers.hooks)
@@ -45,12 +46,12 @@ test('a PostToolUse hook is carried as its own child entry', () => {
 
 test(
   'the hook runs on a real call and its context reaches the result',
-  { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
+  { skip: harness ? false : harnessSkipReason() },
   async () => {
     const ir = readClaudePlugin(fixture, { source: 'plugin-dir:fixtures/claude-hooks-mcp' })
-    const { entry } = emitPlugin(ir, { materializers, sdkRoot: join(installedDir, '..') })
+    const { entry } = emitPlugin(ir, { materializers, sdkRoot: harness.modulesDir })
     const probe = await probeWithDsh({
-      installedDir,
+      harnessDir: harness.harnessDir,
       entry,
       behavior: { tool: 'Write', arguments: { file_path: '/tmp/x.txt', content: 'hi' } },
       timeoutMs: 10_000,

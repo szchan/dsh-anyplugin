@@ -1,5 +1,7 @@
 node_modules/
 .npm-cache/
+# pinned DSH harnesses fetched by scripts/fetch-harness.mjs
+.harness/
 dist/
 *.log
 .DS_Store
