@@ -94,6 +94,40 @@ jobs:
           fetch_pin 0.2.2-rc.2 dir_rc2
           exit "$status"
 
+      # `verify` now includes a lifecycle probe that runs a real turn: the
+      # coverage row is a handler's log line, so the suite must compose an
+      # agent loop, a subagent runtime and a filesystem, not just the layer's
+      # own deps. These nine direct packages are the graph's minimum; the other
+      # rows of the §10 S9 composition table arrive transitively (or are base
+      # deps). Each fetched pin gets the same packages at its own version; the
+      # tests never fetch.
+      - name: Install turn-graph pins for the conformance oracle
+        env:
+          DIR_RC5: ${{ steps.fetch.outputs.dir_rc5 }}
+          DIR_RC2: ${{ steps.fetch.outputs.dir_rc2 }}
+        run: |
+          set -euo pipefail
+          install_pin() {
+            version="$1"
+            dir="$2"
+            if [ -z "${dir:-}" ] || [ ! -d "$dir/node_modules/@deepseek-ai" ]; then
+              echo "::error::cannot install the turn-graph pins for DSH $version: harness dir is missing"
+              exit 1
+            fi
+            npm install --prefix "$dir" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
+              @deepseek-ai/dsh-agent-loop@$version \
+              @deepseek-ai/dsh-subagent@$version \
+              @deepseek-ai/dsh-subagent-fork-in-process@$version \
+              @deepseek-ai/dsh-fs-local@$version \
+              @deepseek-ai/dsh-working-directory@$version \
+              @deepseek-ai/dsh-llm@$version \
+              @deepseek-ai/dsh-session@$version \
+              @deepseek-ai/dsh-session-projection@$version \
+              @deepseek-ai/dsh-agent@$version
+          }
+          install_pin 0.2.2-rc.5 "$DIR_RC5"
+          install_pin 0.2.2-rc.2 "$DIR_RC2"
+
       # A skipped fidelity test on CI is a bug. The guard is per pin so a
       # missing rc.5 cannot stop rc.2 from being verified.
       - name: Guard and verify each resolved pin

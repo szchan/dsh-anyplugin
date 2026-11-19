@@ -17,13 +17,6 @@ Nothing claimed.
 
 ## Next
 
-- [ ] **Hook lifecycle events.** Wire the S9-confirmed session/turn seams
-      (`agent/created`, `agent/disposed`, `agent/turn-stopping`) plus
-      `subagent/start`/`subagent/end` into `materialize-hook`, with a fixture
-      plugin whose hooks leave a marker the oracle can observe. Done when a new
-      fixture's `hooks:SessionStart`, `hooks:Stop`, `hooks:SessionEnd`,
-      `hooks:SubagentStart`, `hooks:SubagentStop` rows are `match` because the
-      handlers ran, and the matrix grows rather than staying at 11.
 - [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
       `mods/` from the pinned upstream revision into `fixtures/` (fetch at
       test time or from the installed tree; never vendored), starting with
@@ -51,9 +44,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `DirectoryAdded`, `Setup`, `UserPromptExpansion`, `MessageDisplay`,
       `PostToolBatch`, `Notification`, `Elicitation`, `ElicitationResult` are
       refuted; `TaskCreated`, `TaskCompleted`, `TeammateIdle`,
-      `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. The 14
-      confirmed S9 events (9 listener seams and 5 notification-only) are wired
-      next.
+      `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. Five of
+      the nine listener seams are wired (SessionStart, Stop, SessionEnd,
+      SubagentStart, SubagentStop); UserPromptSubmit, PermissionRequest,
+      PostToolUseFailure and FileChanged, plus the five notification-only
+      records, remain.
 - [ ] `dsh-shell-env` — `PATH` contribution for plugin `bin/`.
 - [ ] Monitor notifications: a background process's stdout reaching the model.
 - [ ] Terminal ANSI palette (F2).
@@ -110,6 +105,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Trace oracle (`rig trace`): a recorded turn normalizes into an ordered
   event stream and diffs positionally; upstream-only until DSH can record what
   reaches the model (D18).
+- Hook lifecycle events (S9): `agent/created`, `agent/turn-stopping`,
+  `agent/disposed`, `subagent/start` and `subagent/end` now mount
+  SessionStart, Stop, SessionEnd, SubagentStart and SubagentStop through the
+  same matcher/verdict path as the tool hooks; a real headless turn plus one
+  delegated child made every handler write its line, so all five rows are
+  `match` on a denominator of 16 (oracle recipe in ARCHITECTURE §10 S9).
 - Behavior oracle: `claude plugin eval` runs upstream suites and yields
   per-run traces; the skill envelope and its missing argument substitution were
   found there (D16).

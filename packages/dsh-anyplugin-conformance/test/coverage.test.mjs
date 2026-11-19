@@ -8,7 +8,8 @@
 // components over declared components, never a percentage of "things we tried".
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -24,7 +25,7 @@ import {
   pluginIdentity,
 } from '../../dsh-anyplugin-trust/src/index.ts'
 import { diffInventories, emptyInventory } from '../src/inventory.ts'
-import { probeWithDsh } from '../src/oracles/dsh.ts'
+import { probeLifecycleWithDsh, probeWithDsh } from '../src/oracles/dsh.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -40,6 +41,13 @@ const EXPECTED_ROWS = {
   'claude-agents': ['agents:reviewer:match'],
   'claude-command-nested': [],
   'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
+  'claude-hooks-lifecycle': [
+    'hooks:SessionEnd:match',
+    'hooks:SessionStart:match',
+    'hooks:Stop:match',
+    'hooks:SubagentStart:match',
+    'hooks:SubagentStop:match',
+  ],
   'claude-hooks-mcp': ['hooks:PostToolUse:match', 'mcpServers:probe:match'],
   'claude-mcp-budget': ['mcpServers:a-server-name-that-is-long-enough:refused'],
   'claude-mcp-http': ['mcpServers:http-probe:match'],
@@ -56,6 +64,21 @@ const EXPECTED_ROWS = {
  */
 const HOOK_PROBES = {
   'claude-hooks-mcp': { tool: 'Write', marker: 'anyplugin-hook: PostToolUse fired', component: 'hooks:PostToolUse' },
+}
+
+/**
+ * Lifecycle hooks are not readable from any registry either, and unlike a tool
+ * hook there is no result to carry their text. The fixture's handlers append
+ * one line per event to `$CLAUDE_PLUGIN_DATA/events.log`, so the row is the log
+ * line itself: one real root turn plus one delegated child must produce exactly
+ * these five lines. The host promises no total order across the root turn and
+ * the child, so the test asserts the two chains it does promise: SessionStart
+ * before Stop before SessionEnd, and SubagentStart before SubagentStop (S9).
+ */
+const LIFECYCLE_PROBES = {
+  'claude-hooks-lifecycle': {
+    events: ['SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd'],
+  },
 }
 
 /**
@@ -87,29 +110,101 @@ async function inventoryFor(fixture) {
     grants = grant(grants, { plugin: pluginIdentity(ir), ...row }, { scope: 'user' })
   }
   const gated = gate(ir, grants)
-  const { entry } = emitPlugin(gated.ir, {
-    materializers,
-    sdkRoot: harness?.modulesDir,
-    trusted: gated.decision.allowed,
-  })
-  const refused = new Set((ir.unsupported ?? []).map((item) => `${item.surface}:${item.name}`))
-  if (!entry) {
-    const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })
-    inventory.pin = { tool: 'dsh', version: harness.version }
+  const lifecycle = LIFECYCLE_PROBES[fixture]
+  let dataDir
+  try {
+    if (lifecycle !== undefined) dataDir = mkdtempSync(join(tmpdir(), `anyplugin-${fixture}-`))
+    const { entry } = emitPlugin(gated.ir, {
+      materializers,
+      sdkRoot: harness?.modulesDir,
+      trusted: gated.decision.allowed,
+      ...(dataDir === undefined ? {} : { dataDir }),
+    })
+    const refused = new Set((ir.unsupported ?? []).map((item) => `${item.surface}:${item.name}`))
+    if (!entry) {
+      const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })
+      inventory.pin = { tool: 'dsh', version: harness.version }
+      return { inventory, refused }
+    }
+    if (lifecycle !== undefined) {
+      const observed = await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        entry,
+        expected: lifecycle.events,
+        timeoutMs: 10_000,
+      })
+      // One line each: a duplicate is a mount that fired twice, and a missing
+      // label was already failed by the probe with the lines it did see.
+      assert.deepEqual(
+        [...observed.events].sort(),
+        [...lifecycle.events].sort(),
+        `${fixture}: every handler wrote exactly one line`,
+      )
+      // Only the partial orders the host guarantees are asserted; the child's
+      // end and the root's disposal may interleave.
+      const position = (name) => observed.events.indexOf(name)
+      const before = (first, second) =>
+        assert.ok(
+          position(first) >= 0 && position(second) > position(first),
+          `${first} must be written before ${second}; log: ${observed.events.join(', ')}`,
+        )
+      before('SessionStart', 'Stop')
+      before('Stop', 'SessionEnd')
+      before('SubagentStart', 'SubagentStop')
+
+      // The payload the handler saw, not just the event: this pins the fields
+      // the host really carries and records the gaps the dialect names.
+      const payload = (name) => JSON.parse(readFileSync(join(observed.dataDir, 'payloads', `${name}.json`), 'utf8'))
+      const keys = (name) => Object.keys(payload(name)).sort()
+      const start = payload('SessionStart')
+      assert.deepEqual(keys('SessionStart'), ['cwd', 'hook_event_name', 'model', 'session_id', 'source'])
+      assert.equal(start.hook_event_name, 'SessionStart')
+      assert.equal(start.source, 'startup')
+      assert.equal(start.session_id, 'anyplugin-lifecycle-root')
+      assert.equal(start.model, 'fake-1')
+      // The oracle seeds the root header with its data directory, which is not
+      // the process cwd: a payload built from the fallback would fail here.
+      assert.equal(start.cwd, observed.dataDir)
+      assert.deepEqual(keys('Stop'), ['cwd', 'hook_event_name', 'session_id'])
+      assert.equal(payload('Stop').session_id, 'anyplugin-lifecycle-root')
+      assert.deepEqual(keys('SessionEnd'), ['cwd', 'hook_event_name', 'session_id'])
+      assert.equal(payload('SessionEnd').session_id, 'anyplugin-lifecycle-root')
+      assert.deepEqual(keys('SubagentStart'), ['agent_id', 'cwd', 'hook_event_name', 'session_id'])
+      assert.equal(payload('SubagentStart').session_id, 'anyplugin-lifecycle-root')
+      assert.equal(typeof payload('SubagentStart').agent_id, 'string')
+      assert.deepEqual(keys('SubagentStop'), [
+        'agent_id',
+        'cwd',
+        'hook_event_name',
+        'last_assistant_message',
+        'session_id',
+      ])
+      assert.equal(payload('SubagentStop').agent_id, payload('SubagentStart').agent_id)
+      assert.equal(payload('SubagentStop').session_id, 'anyplugin-lifecycle-root')
+      assert.equal(payload('SubagentStop').last_assistant_message, 'stub answer')
+
+      const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })
+      inventory.pin = { tool: 'dsh', version: harness.version }
+      // Only a line the handler wrote is a matched row: a mount that fired into
+      // a missing seam would leave the log short and the row missing.
+      inventory.components = observed.events.map((name) => ({ surface: 'hooks', name }))
+      return { inventory, refused }
+    }
+    const hookProbe = HOOK_PROBES[fixture]
+    const probe = await probeWithDsh({
+      harnessDir: harness.harnessDir,
+      entry,
+      ...(hookProbe === undefined ? {} : { behavior: { tool: hookProbe.tool }, timeoutMs: 10_000 }),
+    })
+    const inventory = probe.inventory
+    if (hookProbe !== undefined && (probe.behavior?.text ?? '').includes(hookProbe.marker)) {
+      const [, name] = hookProbe.component.split(':')
+      inventory.components.push({ surface: 'hooks', name })
+    }
     return { inventory, refused }
+  } finally {
+    if (dataDir !== undefined) rmSync(dataDir, { recursive: true, force: true })
   }
-  const hookProbe = HOOK_PROBES[fixture]
-  const probe = await probeWithDsh({
-    harnessDir: harness.harnessDir,
-    entry,
-    ...(hookProbe === undefined ? {} : { behavior: { tool: hookProbe.tool }, timeoutMs: 10_000 }),
-  })
-  const inventory = probe.inventory
-  if (hookProbe !== undefined && (probe.behavior?.text ?? '').includes(hookProbe.marker)) {
-    const [, name] = hookProbe.component.split(':')
-    inventory.components.push({ surface: 'hooks', name })
-  }
-  return { inventory, refused }
 }
 
 test(
@@ -146,10 +241,11 @@ test(
         await cleanup?.()
       }
     }
-    // S10 turned the last missing row into a match: the golden still declares
-    // 11 components (the nested `planner.md` is not loaded by Claude at this
-    // pin), so declared/refused do not move — matched absorbs the missing row.
-    assert.deepEqual(totals, { declared: 11, matched: 10, missing: 0, refused: 1 })
+    // S9 turned the lifecycle row set into matches: the golden declares five
+    // hook components and the fixture's handlers wrote all five lines on a real
+    // headless turn, so declared grows by five and every new row matches. The
+    // S10 comment below still applies to the pre-existing eleven.
+    assert.deepEqual(totals, { declared: 16, matched: 15, missing: 0, refused: 1 })
   },
 )
 

@@ -1,17 +1,27 @@
 /**
  * Hook materializer — mounts a plugin's command hooks on this host's tool
- * waterfalls.
+ * waterfalls and on the host events that carry the five lifecycle hooks.
  *
- * Mount points are the ones S8 proved: `tools/pre-execute` can deny (the model
- * reads `Error: <reason>`), `tools/post-execute` can attach additionalContexts.
- * Every listener is registered through `ctx.effect` so unloading the plugin
- * removes it (S1 finding 3).
+ * Mount points are the ones S8/S9 proved: `tools/pre-execute` can deny (the
+ * model reads `Error: <reason>`), `tools/post-execute` can attach
+ * additionalContexts, and `agent/created`, `agent/turn-stopping`,
+ * `agent/disposed`, `subagent/start` and `subagent/end` carry SessionStart,
+ * Stop, SessionEnd, SubagentStart and SubagentStop. Every listener is
+ * registered through `ctx.effect` so unloading the plugin removes it
+ * (S1 finding 3).
  *
  * PreToolUse runs *before* the host dispatches; the first denial wins, matching
  * the upstream "block" semantics. PostToolUse runs after the call settled and
  * only when it was accepted — a failed call takes the upstream's separate
- * PostToolUseFailure path, which has no host event yet.
+ * PostToolUseFailure path, which S9 found on `tools/post-execute` but which is
+ * not mounted yet.
+ *
+ * The five lifecycle mounts are emits or serial events, not waterfalls: the
+ * handler runs, but a `block` decision or additionalContext has nowhere to go.
+ * Those verdicts are reported with a warning instead of being silently dropped,
+ * and the dialect's annotation names the gap (see `LIFECYCLE_HOOKS`).
  */
+import { mkdirSync } from 'node:fs'
 import {
   buildHookPayload,
   judgeHookResult,
@@ -59,6 +69,87 @@ interface PostDecision {
   value?: unknown
   additionalContexts?: unknown[]
 }
+
+interface LifecycleOccurrence {
+  /** Event-specific payload fields; the mount adds hook_event_name and cwd. */
+  fields: Record<string, unknown>
+  /** The value Claude's matcher matches on, when this host event carries one. */
+  subject?: string
+}
+
+/** `agent/created`, `agent/turn-stopping` and `agent/disposed` carry the agent. */
+interface RootAgentEvent {
+  agent?: {
+    session?: {
+      header?: { id?: unknown; cwd?: unknown; parentSession?: unknown }
+    }
+    /** Durable model choice; `current()` is the supported read (no session log). */
+    model?: { current?: () => { model?: unknown } | undefined }
+  }
+  source?: unknown
+}
+
+/** `subagent/start` and `subagent/end` carry the child's identity and outcome. */
+interface SubagentEvent {
+  parentSessionId?: unknown
+  id?: unknown
+  lastAssistantMessage?: unknown
+}
+
+/**
+ * Upstream SessionStart/SessionEnd/Stop are about the session itself, so every
+ * one of them is a root-only mount: a child creation, turn stop or disposal is
+ * the SubagentStart/SubagentStop pair's business. The host signals the
+ * difference with the child's parentSession header (S9).
+ */
+const isRoot = (value: RootAgentEvent): boolean => value.agent?.session?.header?.parentSession === undefined
+
+/**
+ * Fields every root lifecycle payload can carry without reading the session
+ * log: the id and cwd are on the immutable header, and the model choice has a
+ * supported accessor (`agent.model.current()`), so no appraisal of the log is
+ * needed. A child has its own header, but these hooks are root-only.
+ */
+const rootFields = (value: RootAgentEvent): Record<string, unknown> => {
+  const header = value.agent?.session?.header
+  const fields: Record<string, unknown> = {}
+  if (header?.id !== undefined) fields.session_id = header.id
+  if (typeof header?.cwd === 'string') fields.cwd = header.cwd
+  return fields
+}
+
+/** The model id Claude puts in `model`; undefined when no choice is named yet. */
+const modelName = (value: RootAgentEvent): string | undefined => {
+  try {
+    const model = value.agent?.model?.current?.()?.model
+    return typeof model === 'string' && model !== '' ? model : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** subagent/end carries the final content blocks; Claude's field is the text. */
+const messageText = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return undefined
+  const parts: string[] = []
+  for (const block of value) {
+    if (block !== null && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
+      const text = (block as { text?: unknown }).text
+      if (typeof text === 'string') parts.push(text)
+    }
+  }
+  const joined = parts.join('')
+  return joined === '' ? undefined : joined
+}
+
+/**
+ * The five hooks whose host events S9 observed on a real turn. SessionStart and
+ * SessionEnd are root-only; a child creation/disposal is a SubagentStart/Stop
+ * concern upstream. Stop is root-only for the same reason: a child's last turn
+ * takes SubagentStop, and agent/turn-stopping fires for child turns too.
+ */
+const LIFECYCLE_EVENTS = ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'] as const
 
 const textify = (value: unknown): string => {
   if (typeof value === 'string') return value
@@ -136,6 +227,18 @@ export function apply(ctx: any, config: Config = {}): void {
     else if (typeof logger === 'function') logger(message)
   }
 
+  // The install record names the plugin's data directory (D2), but creating it
+  // is the loader's job at the point the plugin starts. A hook that writes
+  // `$CLAUDE_PLUGIN_DATA/...` would otherwise fail with a shell error that
+  // never mentions the missing directory.
+  if (config.pluginData !== undefined) {
+    try {
+      mkdirSync(config.pluginData, { recursive: true })
+    } catch (error) {
+      warn(`anyplugin hook: cannot create plugin data directory ${config.pluginData} (${(error as Error).message}); hooks that write there will fail`)
+    }
+  }
+
   const of = (event: string): MaterialHook[] =>
     hooks.filter((hook) => hook.event === event).sort((a, b) => (a.matcher ?? '').localeCompare(b.matcher ?? ''))
 
@@ -200,8 +303,96 @@ export function apply(ctx: any, config: Config = {}): void {
     )
   }
 
-  const unmounted = hooks.filter((hook) => hook.event !== 'PreToolUse' && hook.event !== 'PostToolUse')
+  /**
+   * One lifecycle mount for all five events: matcher, artifact re-hash, spawn
+   * and verdict translation are the same code the tool mounts use. The host
+   * event is an emit or a serial, never a waterfall, so a decision is reported
+   * and dropped rather than applied.
+   */
+  const lifecycle = <T>(
+    event: (typeof LIFECYCLE_EVENTS)[number],
+    host: string,
+    read: (value: T) => LifecycleOccurrence | undefined,
+  ): void => {
+    const selected = of(event)
+    if (selected.length === 0) return
+    ctx.effect(() =>
+      ctx.on(host, async (value: T) => {
+        const occurrence = read(value)
+        if (occurrence === undefined) return
+        const payload = { hook_event_name: event, cwd: process.cwd(), ...occurrence.fields }
+        for (const hook of selected) {
+          if (hook.matcher !== undefined && hook.matcher !== '') {
+            if (occurrence.subject === undefined) {
+              warn(`anyplugin hook ${event}: matcher ${JSON.stringify(hook.matcher)} has no value in ${host}; skipped`)
+              continue
+            }
+            if (!matcherMatches(hook.matcher, occurrence.subject)) continue
+          }
+          const changed = artifactChange(hook)
+          if (changed !== undefined) {
+            warn(changed)
+            continue
+          }
+          const ran = await runCommandHook(hook, payload, { env })
+          const verdict = judgeHookResult(ran, event)
+          if (verdict.warn !== undefined) warn(`anyplugin hook ${event}: ${verdict.warn}`)
+          if (verdict.additionalContext !== undefined) {
+            warn(`anyplugin hook ${event}: ${host} has no context channel; additionalContext reported, not delivered`)
+          }
+          if (verdict.deny !== undefined) {
+            warn(`anyplugin hook ${event}: ${textify(verdict.deny)} cannot be enforced through ${host}; reported, not obeyed`)
+          }
+        }
+      }),
+    )
+  }
+
+  lifecycle<RootAgentEvent>('SessionStart', 'agent/created', (value) => {
+    if (!isRoot(value)) return undefined
+    const fields = rootFields(value)
+    if (value.source !== undefined) fields.source = value.source
+    const model = modelName(value)
+    if (model !== undefined) fields.model = model
+    return {
+      fields,
+      ...(typeof value.source === 'string' ? { subject: value.source } : {}),
+    }
+  })
+  // Stop and SessionEnd carry the agent only; the session id and cwd still come
+  // from the header. No matcher subject exists for either, so a configured
+  // matcher is reported and skipped rather than silently ignored.
+  lifecycle<RootAgentEvent>('Stop', 'agent/turn-stopping', (value) =>
+    isRoot(value) ? { fields: rootFields(value) } : undefined,
+  )
+  lifecycle<RootAgentEvent>('SessionEnd', 'agent/disposed', (value) =>
+    isRoot(value) ? { fields: rootFields(value) } : undefined,
+  )
+  lifecycle<SubagentEvent>('SubagentStart', 'subagent/start', (value) =>
+    value.parentSessionId === undefined
+      ? undefined
+      : {
+          fields: {
+            session_id: value.parentSessionId,
+            ...(value.id === undefined ? {} : { agent_id: value.id }),
+          },
+        },
+  )
+  lifecycle<SubagentEvent>('SubagentStop', 'subagent/end', (value) => {
+    if (value.parentSessionId === undefined) return undefined
+    const last = messageText(value.lastAssistantMessage)
+    return {
+      fields: {
+        session_id: value.parentSessionId,
+        ...(value.id === undefined ? {} : { agent_id: value.id }),
+        ...(last === undefined ? {} : { last_assistant_message: last }),
+      },
+    }
+  })
+
+  const mounted = new Set<string>(['PreToolUse', 'PostToolUse', ...LIFECYCLE_EVENTS])
+  const unmounted = hooks.filter((hook) => !mounted.has(hook.event))
   for (const hook of unmounted) {
-    warn(`anyplugin hook ${hook.event}: no host event fires here; recorded but not mounted (${textify(hook.matcher ?? '*')})`)
+    warn(`anyplugin hook ${hook.event}: no host event fires here; not mounted (${textify(hook.matcher ?? '*')})`)
   }
 }

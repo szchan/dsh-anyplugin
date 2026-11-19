@@ -12,7 +12,7 @@
  * *harness* cordis. Two copies of cordis in one process give two `Service`
  * base classes, and the registry would never see the context that owns it.
  */
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { EntryOptions } from '../../dsh-anyplugin-emit/src/index.ts'
@@ -290,6 +290,225 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
   } finally {
     try {
       await Promise.resolve(booted?.loaderFiber?.dispose?.())
+      await sleep(20)
+    } catch {
+      // Teardown failures must not mask the assertion that follows.
+    }
+  }
+}
+
+/** A caller that wants to observe the five lifecycle hooks on one real turn. */
+export interface DshLifecycleProbeOptions {
+  /** Directory holding the harness's `@deepseek-ai/*` packages. */
+  harnessDir: string
+  /** The group entry the emitter produced, carrying a hook child with `pluginData`. */
+  entry: EntryOptions
+  /**
+   * The labels the handlers must write, one line each. The probe polls until
+   * every one is present (handlers are unawaited spawns, so presence — not a
+   * file size or a quiet period — is the completion signal), bounded by
+   * `timeoutMs`; a label that never arrives fails with the lines already seen.
+   * The caller owns any ordering assertions: the host does not promise a total
+   * order across the root and the child.
+   */
+  expected: readonly string[]
+  /** How long to wait for boot, the turn, the child and the expected labels, in milliseconds. */
+  timeoutMs?: number
+}
+
+export interface DshLifecycleObservation {
+  /** The `${CLAUDE_PLUGIN_DATA}` directory the entry named. */
+  dataDir: string
+  /** Every non-empty line of `events.log`, in the order the handlers wrote them. */
+  events: string[]
+}
+
+/** The hook child's data directory, which the emitter copied from the install lock. */
+function lifecycleDataDir(entry: EntryOptions): string {
+  const children = (entry.config ?? []) as Array<{ id?: string; config?: { pluginData?: unknown } }>
+  const child = children.find((item) => item.id === 'hook')
+  if (typeof child?.config?.pluginData !== 'string' || child.config.pluginData.trim() === '') {
+    throw new Error('dsh lifecycle probe: the hook child carries no pluginData directory')
+  }
+  return child.config.pluginData
+}
+
+const textChunks = (text: string): unknown[] => [
+  { type: 'block-start', index: 0, blockType: 'text' },
+  { type: 'text-delta', index: 0, text },
+  { type: 'block-end', index: 0, block: { type: 'text', text } },
+  { type: 'finish', reason: 'stop' },
+]
+
+/**
+ * Boot a full headless turn (session store, tools, agent loop, subagent
+ * runtime), materialize `entry`, run one root turn and one delegated child, and
+ * return the lines the fixture's handlers appended to `$CLAUDE_PLUGIN_DATA`
+ * once every `expected` label has been written.
+ *
+ * The turn is real: the model is a local stub `dsh-llm` adapter, but the agent
+ * registry, the agent loop, the turn stopper and the subagent runtime are the
+ * pinned harness's own, so every lifecycle event is produced by the host rather
+ * than emitted by this function. A stub adapter keeps the probe offline and
+ * keyless (S9).
+ */
+export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): Promise<DshLifecycleObservation> {
+  const timeoutMs = options.timeoutMs ?? 10_000
+  const dataDir = lifecycleDataDir(options.entry)
+  mkdirSync(dataDir, { recursive: true })
+  const logFile = join(dataDir, 'events.log')
+  rmSync(logFile, { force: true })
+  // A payload file from an earlier run would otherwise satisfy the payload
+  // assertions even when this run's handler never wrote one.
+  rmSync(join(dataDir, 'payloads'), { recursive: true, force: true })
+
+  const { Context } = await loadFromHarness(options.harnessDir, 'cordis/lib/index.js')
+  const Loader = (await loadFromHarness(options.harnessDir, 'cordis-plugin-loader/lib/index.js')).default
+  const SkillRegistry = (await loadFromHarness(options.harnessDir, 'dsh-skill/lib/index.js')).default
+  const SessionStore = (await loadFromHarness(options.harnessDir, 'dsh-session/lib/index.js')).default
+  const SessionProjections = (await loadFromHarness(options.harnessDir, 'dsh-session-projection/lib/index.js')).default
+  const SystemPrompt = (await loadFromHarness(options.harnessDir, 'dsh-system-prompt/lib/index.js')).default
+  const ToolsService = (await loadFromHarness(options.harnessDir, 'dsh-tools/lib/index.js')).default
+  const AgentRegistry = (await loadFromHarness(options.harnessDir, 'dsh-agent/lib/index.js')).default
+  const { default: LlmRuntime, LlmAdapter, createUserMessage } = await loadFromHarness(
+    options.harnessDir,
+    'dsh-llm/lib/index.js',
+  )
+  const AgentLoop = (await loadFromHarness(options.harnessDir, 'dsh-agent-loop/lib/index.js')).default
+  const nativeExecutor = await loadFromHarness(options.harnessDir, 'dsh-tool-executor-native/lib/index.js')
+  const SubagentRuntime = (await loadFromHarness(options.harnessDir, 'dsh-subagent/lib/index.js')).default
+  const ForkProvider = await loadFromHarness(options.harnessDir, 'dsh-subagent-fork-in-process/lib/index.js')
+  const FileSystem = (await loadFromHarness(options.harnessDir, 'dsh-fs-local/lib/index.js')).default
+  const WorkingDirectory = (await loadFromHarness(options.harnessDir, 'dsh-working-directory/lib/index.js')).default
+
+  class StubAdapter extends LlmAdapter {
+    async resolveModel(provider: string, model: string): Promise<unknown> {
+      return { provider, id: model, name: model, context: { contextWindow: 8192 }, defaultMaxTokens: 1024 }
+    }
+
+    async *stream(): AsyncGenerator<unknown> {
+      for (const chunk of textChunks('stub answer')) yield chunk
+    }
+  }
+
+  const ctx = new Context()
+  const loaderFiber = ctx.plugin(Loader, { baseUrl: loaderBaseUrl(options.harnessDir) })
+  ctx.plugin(SkillRegistry, {})
+  ctx.plugin(SessionStore)
+  ctx.plugin(SessionProjections)
+  ctx.plugin(SystemPrompt)
+  ctx.plugin(ToolsService, {})
+  ctx.plugin(AgentRegistry)
+  ctx.plugin(nativeExecutor, {})
+  ctx.plugin(FileSystem, { cwd: process.cwd() })
+  ctx.plugin(WorkingDirectory, { defaultDirectory: process.cwd() })
+  ctx.plugin(SubagentRuntime, {})
+  ctx.plugin(ForkProvider, { providerName: 'fork' })
+  ctx.plugin(LlmRuntime)
+  ctx.plugin(AgentLoop)
+
+  try {
+    for (const name of ['sessions', 'sessionProjections', 'systemPrompt', 'tools', 'agents', 'subagents']) {
+      await until(() => Boolean(ctx.get(name)), timeoutMs, `${name} service`)
+    }
+    ctx.llm.registerAdapter(['fake'], new StubAdapter())
+    await until(() => Boolean(ctx.get('llm')), timeoutMs, 'llm service')
+    await until(() => Boolean(ctx.get('agentLoop')), timeoutMs, 'agent loop service')
+    await ctx.loader.create(options.entry)
+    await ctx.loader.await()
+
+    // The header carries no cwd unless the creator seeds one, and the payload
+    // builder reads it from the header. Seed it with the probe's own data
+    // directory, which is distinct from the process cwd, so a payload that
+    // silently fell back would fail the assertion instead of matching.
+    const root = await ctx.agentLoop.create(
+      'anyplugin-lifecycle-root',
+      { provider: 'fake', model: 'fake-1' },
+      { cwd: dataDir },
+    )
+    const turnEnded = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('dsh lifecycle probe: root turn did not end')), timeoutMs)
+      const off = ctx.on('session/event', (_session: unknown, event: { type?: string; data?: { turn?: number } }) => {
+        if (event.type === 'turn/end' && event.data?.turn === 1) {
+          clearTimeout(timer)
+          off()
+          resolve()
+        }
+      })
+    })
+    root.followup(createUserMessage({ content: [{ type: 'text', text: 'one turn' }], source: { kind: 'user' } }))
+    await turnEnded
+
+    const childEnded = new Promise<Record<string, unknown> | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        off()
+        resolve(undefined)
+      }, timeoutMs)
+      const off = ctx.on('subagent/end', (payload: Record<string, unknown>) => {
+        if (payload.parentSessionId !== root.id) return
+        clearTimeout(timer)
+        off()
+        resolve(payload)
+      })
+    })
+    const activation = await ctx.subagents.startActivation({
+      provider: 'fork',
+      parent: root,
+      prompt: [{ type: 'text', text: 'child prompt' }],
+      delivery: 'caller',
+      label: 'anyplugin lifecycle child',
+      signal: new AbortController().signal,
+    })
+    const ended = await childEnded
+    if (ended === undefined) throw new Error('dsh lifecycle probe: the delegated child did not end')
+    await activation?.dispose?.()
+
+    const entry = [...(ctx.agents.store?.values?.() ?? [])].find(
+      (item: { id?: unknown }) => item.id === root.id,
+    ) as { id?: unknown } | undefined
+    if (entry === undefined) throw new Error('dsh lifecycle probe: root agent is not in the registry')
+    const disposed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('dsh lifecycle probe: root agent did not dispose')), timeoutMs)
+      const off = ctx.on('agent/disposed', (payload: { agent?: { id?: unknown } }) => {
+        if (payload.agent?.id !== root.id) return
+        clearTimeout(timer)
+        off()
+        resolve()
+      })
+    })
+    ctx.agents.detachEntered(entry)
+    await disposed
+
+    // The host does not await async emit listeners, and each handler spawns
+    // `sh`, so the await above proves the event was announced, not that the
+    // handler finished. The fixture writes its payload file *before* the log
+    // line, making the line the completion marker: wait until every expected
+    // label exists, never for a quiet file, because a slow handler is still a
+    // valid run and a quiet one can still be missing the last line.
+    const readEvents = (): string[] =>
+      existsSync(logFile)
+        ? readFileSync(logFile, 'utf8')
+            .split('\n')
+            .filter((line) => line !== '')
+        : []
+    const deadline = Date.now() + timeoutMs
+    let events = readEvents()
+    let missing = options.expected.filter((label) => !events.includes(label))
+    while (missing.length > 0 && Date.now() < deadline) {
+      await sleep(25)
+      events = readEvents()
+      missing = options.expected.filter((label) => !events.includes(label))
+    }
+    if (missing.length > 0) {
+      const seen = events.length === 0 ? 'nothing' : events.join(', ')
+      throw new Error(
+        `dsh lifecycle probe: no ${missing.join(', ')} line after ${timeoutMs}ms; the log has ${seen}`,
+      )
+    }
+    return { dataDir, events }
+  } finally {
+    try {
+      await Promise.resolve(loaderFiber?.dispose?.())
       await sleep(20)
     } catch {
       // Teardown failures must not mask the assertion that follows.

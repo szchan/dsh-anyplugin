@@ -1,0 +1,42 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "hooks-lifecycle",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-hooks-lifecycle"
+  },
+  "components": [
+    {
+      "surface": "hooks",
+      "name": "SessionEnd"
+    },
+    {
+      "surface": "hooks",
+      "name": "SessionStart"
+    },
+    {
+      "surface": "hooks",
+      "name": "Stop"
+    },
+    {
+      "surface": "hooks",
+      "name": "SubagentStart"
+    },
+    {
+      "surface": "hooks",
+      "name": "SubagentStop",
+      "details": {
+        "note": "harness-only — no model context cost"
+      }
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 0
+    }
+  }
+}
