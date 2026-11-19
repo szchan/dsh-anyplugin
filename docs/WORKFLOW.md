@@ -8,7 +8,7 @@ merge, which wastes the worker's whole branch.
 
 | Role | Owns | May not |
 | --- | --- | --- |
-| **master** | the ticket queue, assignments, reviews, merges, the coverage totals, `docs/DECISIONS.md` | write feature code on `main` |
+| **master** | the ticket queue, assignments, reviews, merges, the coverage totals, `docs/DECISIONS.md`, and its own docs-only PRs | write feature code, push to `main` |
 | **worker** (subagent) | one ticket, in its own worktree, on its own branch | merge, push to `main`, edit files outside its `Touches`, change a decision |
 | **reviewer** (subagent) | one verdict per PR against the rubric below | merge, edit the branch |
 
@@ -22,15 +22,22 @@ Never work in the primary checkout. It is the master's, and parallel workers in
 the same directory overwrite each other's edits without any conflict marker ever
 appearing.
 
+Worktrees live **outside** the checkout. Two reasons, both learned the hard way:
+`node --test` walks its working directory, so a checkout nested inside the repo
+would run other branches' tests; and a sandboxed worker is usually allowed to
+write only inside its assigned directory, so a sibling path may be read-only.
+
 ```bash
 git fetch origin
-git worktree add .worktrees/ticket-<n> -b ticket/<n> origin/main
-cd .worktrees/ticket-<n>
+dir=$(mktemp -d)/ticket-<n>
+git worktree add "$dir" -b ticket/<n> origin/main    # the master creates it
+cd "$dir"
 ```
 
-`.worktrees/` is ignored by git. Remove the worktree when the PR merges
-(`git worktree remove .worktrees/ticket-<n>`); the master does this, not the
-worker, because the worker usually exits first.
+The master creates the worktree and hands the worker its exact path — a worker
+that picks its own path will pick one the sandbox refuses. Remove the worktree
+after the merge (`git worktree remove <dir>`); the worker usually exits first,
+and a leftover worktree holds a branch lock.
 
 ## Ticket lifecycle
 
