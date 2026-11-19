@@ -1,0 +1,13 @@
+{
+  "name": "dsh-anyplugin-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Differential conformance rig: golden inventories captured from upstream CLIs, replayed and diffed.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "anyplugin-rig": "./src/rig.ts"
+  }
+}

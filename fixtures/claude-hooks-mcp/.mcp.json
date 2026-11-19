@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "probe": { "type": "stdio", "command": "node", "args": ["-e", "process.exit(0)"] }
+  }
+}

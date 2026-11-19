@@ -22,7 +22,7 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D7. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D8. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S4) and what a spike must prove. |
 | `docs/ARCHITECTURE.md` §13 | Open questions. If your work answers one, move it to a decision. |
 
@@ -74,6 +74,7 @@ docs/                  design and decisions (all prose docs live here)
   ARCHITECTURE.md      the design
   DECISIONS.md         ratified decision log
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
+  dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
 spikes/                throwaway experiments; each answers one question (S1–S4)
 fixtures/              foreign-plugin fixtures used by the conformance rig
 scripts/               repo tooling that is not a package
@@ -86,9 +87,11 @@ anything that survives moves into `packages/`.
 ## 5. Commands
 
 ```bash
-npm install                     # workspace deps (uses the repo-local .npmrc cache)
-node spikes/s1-loader/run.mjs   # run a spike
-npm test                        # node --test over packages/ and spikes' assertions
+npm install                       # workspace deps (uses the repo-local .npmrc cache)
+node spikes/s1-loader/run.mjs     # run a spike
+npm run rig -- verify --plugin <dir> --golden <file>   # conformance rig
+npm run capture:fixtures          # re-capture goldens after a pin bump; review the diff
+npm test                          # node --test over packages/ and spikes' assertions
 ```
 
 The global npm cache on this machine is root-owned and unusable; `.npmrc`

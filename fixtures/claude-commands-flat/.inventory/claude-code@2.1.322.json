@@ -1,0 +1,37 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "commands-flat",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-commands-flat"
+  },
+  "components": [
+    {
+      "surface": "skills",
+      "name": "migrate"
+    },
+    {
+      "surface": "skills",
+      "name": "review"
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 23
+    },
+    "perComponent": {
+      "migrate": {
+        "value": 20,
+        "atMost": true
+      },
+      "review": {
+        "value": 20,
+        "atMost": true
+      }
+    }
+  }
+}

@@ -182,6 +182,13 @@ Two rules that make the contract enforceable:
         config: { serverName: plugin_my-plugin_srv, transport: stdio, command: npx }
 ```
 
+Commands and skills collapse at the current pin: at Claude Code 2.1.322 a
+`commands/*.md` file is reported under **Skills**, and a nested
+`commands/<dir>/*.md` is not loaded at all (§10.3). The dialect therefore
+resolves this mapping through a **pin profile** (D8) rather than the prose
+docs, and the command materializer is used only when the profile says the host
+still separates the two surfaces.
+
 Why this shape:
 
 - **Idempotent update.** Stable ids mean a version bump is `loader.update`, not
@@ -451,9 +458,55 @@ before removing anything.
 - **S2 — mod surface.** ✅ **Answered 2026-11-18** (§7): the mod API is a large
   but fully specified surface with a machine-readable declaration file, so it
   is a second subsystem (D3), not a materializer.
-- **S3 — conformance rig.** Record golden traces from the real agent runtime,
-  replay in DSH under a temporary `$HOME`, normalize, diff per surface A–F.
+- **S3 — conformance rig.** 🟡 **First layer landed 2026-11-18** as
+  `packages/dsh-anyplugin-conformance` (§10.2). The upstream half is live:
+  `claude --plugin-dir <dir> plugin details <name>` is probed under a throwaway
+  `$HOME`, parsed into a normalized inventory, committed as a golden per pin,
+  and re-probed by `npm test`. The DSH half (materialize → read the registries
+  → same inventory) is the next layer.
   This lands *before* the translator, because it is the only honest scoreboard.
+
+### 10.2 S3 first layer: the upstream oracle is the real loader
+
+The rig never parses plugin directories on the upstream side. It asks the host:
+
+```
+claude --plugin-dir <dir> plugin details <name>
+```
+
+That prints a component inventory (skills, agents, hooks, MCP servers, LSP
+servers) plus a projected token cost, which makes the installed loader the
+ground truth instead of our reading of its docs. Two consequences:
+
+- **Determinism is engineered, not assumed.** Every probe runs with `HOME` and
+  `CLAUDE_CONFIG_DIR` pointed at a fresh temp dir, so it cannot see the user's
+  own installation and two runs are byte-comparable. Inventories are
+  normalized (sorted, deduped, notes for anything unrecognized) before diffing.
+- **The pin is part of the comparison.** A diff against a golden captured on a
+  different version fails on the pin alone; passing across versions is never
+  allowed to look like a pass (§3.8).
+
+What the rig already reports, at the pin it was captured on, is in §10.3.
+
+### 10.3 What the first pin says (claude-code 2.1.322)
+
+Six fixtures, captured and re-verified on every `npm test`. Two observations
+contradict the prose documentation and are now the reason surface mapping is
+pin-gated (D8):
+
+| Observation | Consequence |
+| --- | --- |
+| `commands/*.md` is reported under **Skills** (a command-only plugin shows `Skills (1) migrate`) | at this pin a command and a skill share one surface; the command materializer is only used when a pin profile says the host still separates them |
+| `commands/<dir>/*.md` is **not loaded** (`Skills (0)`) | nested command namespacing described in the docs does not exist at this pin; the dialect must record the drop as an explicit annotation, not silence |
+| `agents/<dir>/*.md` is **not loaded** either (`Agents (1)` for a flat+nested fixture) | same treatment: drop with a reason |
+| hooks and MCP servers carry a parenthetical cost note (`PostToolUse  (harness-only — no model context cost)`) | the note is a component detail, not part of the name |
+| a plugin with no manifest and a root `SKILL.md` loads under the directory name | no-manifest loading is real, and worth a fixture |
+
+Still open on this layer: the inventory says *what* loaded, not *how it
+behaves*. Invocation semantics (is a flat command auto-invocable like a skill?
+does `disable-model-invocation` change it?) need the behavior arm —
+`claude plugin eval` or a transcript diff — which is the layer after the DSH
+oracle.
 - **S4 — dialect extensibility.** Add the `cursor` stub dialect; if it needs a
   materializer change, the IR has leaked and must be fixed.
 

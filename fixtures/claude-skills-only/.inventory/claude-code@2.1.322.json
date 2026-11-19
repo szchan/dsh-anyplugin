@@ -1,0 +1,37 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "skills-only",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-skills-only"
+  },
+  "components": [
+    {
+      "surface": "skills",
+      "name": "greet"
+    },
+    {
+      "surface": "skills",
+      "name": "hello"
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 19
+    },
+    "perComponent": {
+      "greet": {
+        "value": 20,
+        "atMost": true
+      },
+      "hello": {
+        "value": 20,
+        "atMost": true
+      }
+    }
+  }
+}

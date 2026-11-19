@@ -1,0 +1,33 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "hooks-mcp",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-hooks-mcp"
+  },
+  "components": [
+    {
+      "surface": "hooks",
+      "name": "PostToolUse",
+      "details": {
+        "note": "harness-only — no model context cost"
+      }
+    },
+    {
+      "surface": "mcpServers",
+      "name": "probe",
+      "details": {
+        "note": "tool schemas resolved at runtime; not counted"
+      }
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 0
+    }
+  }
+}

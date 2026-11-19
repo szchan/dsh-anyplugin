@@ -1,0 +1,18 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "command-nested",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-command-nested"
+  },
+  "components": [],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 0
+    }
+  }
+}

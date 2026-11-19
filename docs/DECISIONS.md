@@ -116,3 +116,30 @@ separator (`plugin:skill`, `my-plugin@marketplace`). Mangling is the only
 option that keeps reconcile addressable *and* keeps the display name exact.
 Ids are internal identity, so mangling them costs no observable fidelity;
 mangling a display name would.
+
+---
+
+## D8 — Surface mapping is pin-gated, and the host's own report beats the docs
+
+**Status:** ratified 2026-11-18, forced by the S3 rig's first captures.
+
+The dialect does not derive its component mapping from prose documentation. It
+resolves a **pin profile** (today `claude-code@2.1.322`) and, inside a profile,
+maps according to what the host itself reported — captured as fixtures plus
+committed goldens and re-probed by `npm test`.
+
+What that means at the current pin (see ARCHITECTURE §10.3):
+
+- `commands/*.md` maps to the **skill** surface; the host reports it as a skill.
+- `commands/<dir>/*.md` and `agents/<dir>/*.md` are **not loaded** by the host,
+  so the dialect records them as dropped with a reason, never as components.
+- Parenthetical cost annotations on hooks and MCP servers become component
+  details, never part of a component name.
+
+**Why:** the docs describe nested command and agent namespacing that the
+installed loader does not implement, and the command/skill boundary the docs
+draw is not one the host's inventory makes. A doc-faithful dialect would claim
+components the host does not have — 100 % wrong precisely where fidelity is
+measured. When the pin moves, `npm run capture:fixtures` re-captures and the
+golden diff is reviewed like code; a changed golden without a new pin profile
+is a bug, not an upgrade.
