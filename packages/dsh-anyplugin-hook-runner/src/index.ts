@@ -21,6 +21,8 @@ export interface HookRunResult {
   stdout: string
   stderr: string
   timedOut: boolean
+  /** The timeout this run actually enforced, for the warning text. */
+  timeoutMs: number
   /** Why the process could not be started at all, when that happened. */
   spawnError?: string
 }
@@ -88,11 +90,11 @@ export async function runCommandHook(
   return new Promise<HookRunResult>((resolve) => {
     child.on('error', (error) => {
       clearTimeout(timer)
-      resolve({ exitCode: -1, stdout: stdout.join(''), stderr: stderr.join(''), timedOut, spawnError: error.message })
+      resolve({ exitCode: -1, stdout: stdout.join(''), stderr: stderr.join(''), timedOut, timeoutMs, spawnError: error.message })
     })
     child.on('close', (code) => {
       clearTimeout(timer)
-      resolve({ exitCode: code ?? -1, stdout: stdout.join(''), stderr: stderr.join(''), timedOut })
+      resolve({ exitCode: code ?? -1, stdout: stdout.join(''), stderr: stderr.join(''), timedOut, timeoutMs })
     })
     // A hook that exits without reading stdin must not crash on EPIPE.
     child.stdin?.on('error', () => {})
@@ -115,6 +117,8 @@ interface HookJson {
   }
 }
 
+const TIMEOUT_LABEL = (ms: number): string => (ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`)
+
 /**
  * Translate one finished handler into a verdict.
  *
@@ -127,7 +131,7 @@ interface HookJson {
  */
 export function judgeHookResult(result: HookRunResult, event: string): HookVerdict {
   if (result.spawnError !== undefined) return { warn: `hook could not start: ${result.spawnError}` }
-  if (result.timedOut) return { warn: `hook timed out after ${DEFAULT_TIMEOUT_MS / 1000}s` }
+  if (result.timedOut) return { warn: `hook timed out after ${TIMEOUT_LABEL(result.timeoutMs)}` }
 
   if (result.exitCode === 2) {
     const reason = result.stderr.trim()

@@ -497,24 +497,54 @@ architected out by construction. This is the single most important structural
 decision in this section, and it is why the kernel's skeleton must land early
 (§12) even though full mod support is late.
 
-**Skeleton landed (v0.1):** `packages/dsh-anyplugin-intercept` — `runChain`,
-`resolveOrder`, `compileMatcher`, the `Decision` union, per-handler budgets and
-a deterministic trace. No consumer yet; its test file is the specification.
+**Landed and consumed (v0.1–v0.2):** `packages/dsh-anyplugin-intercept` —
+`runChain`, `resolveOrder`, `compileMatcher`, the `Decision` union, per-handler
+budgets and a deterministic trace. The first consumer is
+`dsh-anyplugin-materialize-hook`: every mount translates its hook entries into
+`classicHookRegistration`s (`user` tier, `observe` mode) and calls `runChain`
+with fan-out continuation, so tier order, matcher skips, fan-out and the trace
+belong to the kernel. The materializer keeps only the host wiring, the artifact
+re-hash, the spawn and the D20 verdict translation; an optional `onTrace` sink
+exposes the kernel trace to a caller (a diagnostic hook; nothing in the rig
+depends on it yet). The mod front-end is the second consumer (v0.5+).
 
-The one thing the skeleton had to add beyond the plan is a **mode**. The two
-front-ends need opposite continuation rules, and encoding only one would have
-forced the other to bypass the kernel (exactly what §7.2 forbids):
+The skeleton had to add two orthogonal choices beyond the plan. The first is a
+**mode**: the two front-ends need opposite continuation rules, and encoding only
+one would have forced the other to bypass the kernel (exactly what §7.2
+forbids):
 
 | Mode | Used by | Semantics |
 | --- | --- | --- |
-| `observe` (default) | classic hooks | the kernel always continues after the handler; several settings hooks all run |
+| `observe` (default) | classic hooks | the handler has no `next`; returning nothing means it ran, and the chain continues |
 | `wrap` | mods | the handler owns continuation: not calling `next()` and returning nothing **ends** the chain |
 
-Both share: first non-continue decision wins, a throwing handler is skipped and
+Decision flow is a second, orthogonal choice. `first-decision` is the default
+and the mod contract: the first non-continue decision ends the chain. `fan-out`
+is the classic-hook contract, measured against the pinned 2.1.322: **every
+matching handler runs** (the client dispatches them concurrently; the kernel
+walks them in registration order for a reproducible trace), a decision is
+recorded and collected rather than used to skip a sibling, and the materializer
+aggregates afterwards. In
+practice: `PreToolUse` denies if any hook denies (the first denial by order is
+the reason); `PostToolUse` appends every `additionalContext` and turns a denial
+into feedback text instead of a block; a lifecycle decision is reported and not
+applied. A timeout or throw still skips only the handler that produced it.
+`fixtures/claude-hooks-fanout` drives two matching `PostToolUse` hooks on a real
+turn and asserts both markers and both contexts.
+
+Both flows share: a matcher miss is skipped, a throwing handler is skipped and
 recorded, an over-budget handler is aborted and recorded, one trace step per
-run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single table with
-`builtin` innermost; D13 records that its values are still a prose-derived
-assumption until the pinned `claude-code.d.ts` lands in v0.5.
+handler run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single
+table with `builtin` innermost; D13 records that its values are still a
+prose-derived assumption until the pinned `claude-code.d.ts` lands in v0.5.
+
+A classic hook has no `next`, so `classicHookRegistration` always produces
+`observe` mode and declares `continuation: 'fan-out'`; a caller that passes no
+option still gets fan-out, and an explicit option wins. The materializer never
+sorts handlers, evaluates a matcher or decides continuation itself. Its per-hook budget is the command's own timeout
+plus a 5 s grace window, and the chain deadline is exactly the sum of those
+budgets, so a slow handler is cut off at its own budget instead of truncating a
+healthy one or stretching the turn past the declared timeouts.
 
 **Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds 32
 payloads extracted from the pinned docs plus 3 captures from a live 2.1.322.
@@ -527,11 +557,15 @@ Two corrections came out of running them through the kernel:
   not calling it is not declining, so the trace now says `ran`. `not-called`
   is reserved for a wrapper that ended the chain.
 
-Matchers read the subject from the event's own field (`CLASSIC_SUBJECT_FIELD`:
-`tool_name` for tool events, `agent_type`, `notification_type`, `trigger`,
-`source`, `reason`, …). Events whose matcher semantics are still unknown leave
-the subject empty — a recorded gap, because a plugin's matcher then cannot
-narrow anything instead of narrowing wrongly.
+Matchers read the subject from the event's own field through the single
+`CLASSIC_SUBJECT_FIELD` table: `classicEvent` builds the kernel event from a
+classic payload and records `null` when the field is absent, so a
+matcher-bearing handler is skipped and reported instead of matching the empty
+string. `compileClassicMatcher` is the kernel's classic grammar: the authored
+text is kept as is (whitespace is significant) and a malformed pattern matches
+nothing (D20) rather than throwing mid-turn. Events whose matcher semantics are
+still unknown have no field in the table — a recorded gap, because a plugin's
+matcher then cannot narrow anything instead of narrowing wrongly.
 
 ### 7.3 The mod host must be generic, so it is its own package
 
@@ -620,7 +654,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts use the same existing `ctx.on` path as the tool hooks (matcher → artifact re-hash → spawn → verdict translation); the intercept kernel is **not** wired into this materializer yet — `runChain` still has no consumer — so this is one materializer path, not kernel adoption (follow-up ticket). Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
@@ -1400,3 +1434,31 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   packages; the spike never falls back to another install and never calls a
   missing package a pass. `spikes/s10-agents/out/` is report output only and
   gitignored.
+
+- **S12 — do classic hooks fan out, or does a decision stop the rest?**
+  ✅ **Answered 2026-11-19** by `spikes/s12-hook-fanout/run.mjs` against the
+  pinned Claude Code 2.1.322 (7/7 checks; the model turn runs on the DeepSeek
+  Anthropic-compatible backend, key read from the environment or
+  `~/.config/dsh-anyplugin/deepseek.key`, never printed). This spike is
+  local-only and key-gated; it is **not a CI step** (a step that always skips
+  would be worse than no step). Without a key it records a named skip and exits
+  0; every other failure exits non-zero. Two hooks per event.
+  In the deny run the first `PreToolUse` exits 2 and the second still writes its
+  marker; the tool call is blocked (no `PostToolUse` fires). In the allow run
+  both hooks of `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop` and
+  `SessionEnd` write markers, including when the first `PostToolUse` reports a
+  denial and the first `Stop` exits 2 once. So a decision is **collected**, not
+  a chain stop: every matching handler runs. The pinned client dispatches the
+  matching hooks concurrently, so arrival order is not stable; the kernel still
+  walks registrations in deterministic order for a reproducible trace (D13),
+  and the materializer aggregates the collected decisions afterwards. This is
+  the `fan-out` continuation in §7.2; `fixtures/claude-hooks-fanout` asserts the
+  two-context case on a real DSH turn.
+
+  Run:
+
+  ```bash
+  node spikes/s12-hook-fanout/run.mjs
+  ```
+
+  `spikes/s12-hook-fanout/out/` is report output only and gitignored.
