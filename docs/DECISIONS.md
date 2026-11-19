@@ -216,3 +216,47 @@ seams close it completely, and both are union changes (AGENTS §3.2):
 - On a harness without the seams the materializer registers **nothing** and
   logs one line per command. A half-registered `/plugin:name` that only fails
   when invoked would be worse than an honest absence.
+
+---
+
+## D11 — The MCP name budget is 64 characters, and DSH hashes instead of failing
+
+**Status:** ratified 2026-11-18, probed before writing the MCP materializer.
+
+Two different limits were being conflated; only one of them is ours to fix.
+
+**DSH's own cap.** `dsh-mcp-client/src/index.ts:51-52`:
+
+```ts
+/** Valid `serverName`, kept below the public tool-name budget. */
+export const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
+```
+
+**The real budget is on the assembled name.** `dsh-mcp-client/src/tools.ts:publicToolName`
+builds `mcp__${serverName}__${rawName}` and, when the result is longer than 64
+characters or contains invalid characters, **truncates it and appends
+`_<12-hex sha256>`**. It never fails. The comment states the contract: "the
+DeepSeek function-name contract (64 chars, `[A-Za-z0-9_-]`)".
+
+**Claude Code 2.1.322 has no server-name length limit.** Its validation is
+`pa = /^[A-Za-z0-9_-]+$/` plus a ban on prototype-pollution keys
+(`constructor`, `prototype`, `__proto__`, …), and a 40-character server name
+loads: `claude --plugin-dir … plugin details` lists it. What binds on that side
+is the tool-name rule found in the same bundle, `^[a-zA-Z0-9_-]{1,64}$`, applied
+to the full `mcp__plugin_<plugin>_<server>__<tool>`.
+
+**Consequences:**
+
+- Byte-identical tool names require both
+  `15 + plugin + server + tool ≤ 64` (i.e. `plugin + server + tool ≤ 49`) and
+  DSH's `plugin_<plugin>_<server>` ≤ 32 (i.e. `plugin + server ≤ 24`). The
+  second is the binding one; the first still binds per tool once the second
+  holds (a 32-character server name leaves 57, a 24+24 split leaves 25).
+- An over-long name is **silently renamed**, which is worse for us than a
+  rejection: the tool exists, so a smoke test passes, and only the name differs.
+  The MCP materializer validates at install time; the conformance rig asserts no
+  emitted name matches `_[0-9a-f]{12}$`.
+- Raising DSH's 32 is an additive (T2) change — every currently valid name stays
+  valid — and widens `plugin + server` to `49 − tool`. It is an upstream
+  proposal, not something this repo can land, and it is not required for the
+  small majority of plugins that fit in 24.
