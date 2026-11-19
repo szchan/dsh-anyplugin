@@ -11,6 +11,7 @@
     "spike:s1": "node spikes/s1-loader/run.mjs",
     "rig": "node packages/dsh-anyplugin-conformance/src/rig.ts",
     "capture:fixtures": "node scripts/capture-fixtures.mjs",
+    "fetch:harness": "node scripts/fetch-harness.mjs",
     "test": "node --test",
     "extract:hooks": "node scripts/extract-hook-payloads.mjs",
     "check:arch": "node scripts/check-architecture.mjs",

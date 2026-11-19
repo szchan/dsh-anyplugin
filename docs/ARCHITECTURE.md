@@ -506,9 +506,9 @@ before removing anything.
   (`packages/dsh-anyplugin-conformance`). The upstream half (§10.2) probes
   `claude --plugin-dir <dir> plugin details <name>` under a throwaway `$HOME`
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
-  the emitted entry into the *installed* harness and reads the same inventory
+  the emitted entry into the *pinned* harness and reads the same inventory
   back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  from 3/8 to 8/8.
+  table: 11 declared rows, 9 matched, 1 missing, 1 refused.
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
 
@@ -548,27 +548,49 @@ pin-gated (D8):
 | hooks and MCP servers carry a parenthetical cost note (`PostToolUse  (harness-only — no model context cost)`) | the note is a component detail, not part of the name |
 | a plugin with no manifest and a root `SKILL.md` loads under the directory name | no-manifest loading is real, and worth a fixture |
 
-### 10.4 S3 second layer: the DSH oracle runs the installed harness
+### 10.4 S3 second layer: the DSH oracle boots a pinned harness
 
 The DSH side is not a re-implementation of the registry, because a
-re-implementation would agree with itself. The oracle boots the packages the
-desktop app actually runs.
+re-implementation would agree with itself. The oracle boots the packages a real
+DSH installation runs — the Desktop bundle or a released npm harness fetched
+into `.harness/<version>` — and imports `cordis`, `cordis-plugin-loader` and
+`dsh-skill` straight out of that tree (`4.1.0` / `1.1.0` / the pinned
+version). D22 owns the resolution order:
+
+```
+DSH_HARNESS_DIR      install root printed by scripts/fetch-harness.mjs <version>
+DSH_INSTALL_DIR      the Desktop installation's @deepseek-ai/dsh package dir
+.harness/<version>   for DSH_HARNESS_VERSION, inside this checkout
+```
+
+The first source that is named and usable wins; a named-but-unusable directory
+is an error. Nothing named means nothing resolves locally and the oracle tests
+skip with a reason; CI resolves in a guard step and fails before the suite runs if
+it cannot.
 
 The enabling discovery: `$(dirname "$DSH_INSTALL_DIR")` is a **plain
 directory**, not an `asar` archive — 338 `@deepseek-ai` packages that ordinary
-Node can `import()`. So the oracle loads `cordis`, `cordis-plugin-loader` and
-`dsh-skill` straight out of the installation (`4.1.0` / `1.1.0` / `0.2.2-rc.2`)
-and never touches npm (D9).
+Node can `import()`. A fetched tree has the same shape: its
+`node_modules/@deepseek-ai` holds only the packages the oracle and
+materializers import, which is enough because the oracle imports each package by
+absolute path. (The original text said the oracle "never touches npm"; D22
+explains why that was wrong — rc.2 from npm is byte-identical, and the
+real rule is that the tree must be *pinned*.)
 
 ```
-dialect → IR → emit (group entry, pure data) → installed Loader → materializer
-        → installed ctx.skills.register → ctx.skills.list() → inventory
+dialect → IR → emit (group entry, pure data) → Loader → materializer
+        → ctx.skills.register → ctx.skills.list() → inventory
 ```
+
+The loader anchors entry-name resolution at its `baseUrl`: the `dsh` package in
+a Desktop tree, the install root in a fetched tree (whose `package.json` is
+written by `fetch-harness.mjs` so the loader's scope resolver finds a manifest).
+Both trees are booted by the same `probeWithDsh({ harnessDir, entry })`.
 
 Two traps that cost real time and are now load-bearing:
 
-- **One cordis, or none.** The oracle must import `Context` from the installed
-  tree too. A `Context` from our devDependency with services from the installed
+- **One cordis, or none.** The oracle must import `Context` from the harness
+  tree too. A `Context` from our devDependency with services from the booted
   `dsh-skill` would give two `Service` base classes, and the registry would
   never see the context that owns it.
 - **The fiber is the teardown handle.** `Loader` has no `stop()` — its own
@@ -585,7 +607,8 @@ Two traps that cost real time and are now load-bearing:
   a reload.
 
 Measured coverage across the nine fixtures (declared components from the
-goldens, matched by the DSH oracle):
+goldens, matched by the DSH oracle). CI measures the same rows against both
+`0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there:
 
 | Fixture | Declared | Matched | Missing | Refused | What the gap needs |
 | --- | --- | --- | --- | --- | --- |

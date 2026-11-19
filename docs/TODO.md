@@ -8,8 +8,8 @@ The design lives in `docs/ARCHITECTURE.md`; the reasons live in
 `docs/DECISIONS.md`. This file only orders the work. If a line here disagrees
 with those two, they win and this file is wrong.
 
-Pins for everything below: DSH `0.2.2-rc.2` (installed harness, D9),
-claude-code `2.1.322`.
+Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
+`0.2.2-rc.5` / `0.2.2-rc.2` (npm-fetched harnesses, D22), claude-code `2.1.322`.
 
 ## Now
 
@@ -95,7 +95,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
   the URL from the environment at attach time instead of pinning a port.
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize
   with 0 diff against the pinned goldens.
-- D7 id escaping, D8 pin-gated surface mapping, D9 installed-oracle-only,
+- D7 id escaping, D8 pin-gated surface mapping, D9 installed oracle, D22 version-resolved harnesses,
   D10 two faces for commands, D11 name budget arithmetic, D12 owned MCP path,
   D13 one owner for the chain's tier table and continuation modes, D15
   payloads own the event table, D16 the trace is the standard answer, D17 the

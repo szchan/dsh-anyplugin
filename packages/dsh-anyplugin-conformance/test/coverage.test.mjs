@@ -17,10 +17,11 @@ import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/in
 import { startHttpServer } from '../../../fixtures/claude-mcp-http/http-server.mjs'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { diffInventories, emptyInventory } from '../src/inventory.ts'
-import { probeWithDsh, dshVersion } from '../src/oracles/dsh.ts'
+import { probeWithDsh } from '../src/oracles/dsh.ts'
+import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
-const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
+const harness = resolveHarness()
 const materializerUrl = (pkg) => pathToFileURL(join(repoRoot, 'packages', pkg, 'src', 'index.ts')).href
 const materializers = {
   skill: materializerUrl('dsh-anyplugin-materialize-skill'),
@@ -76,16 +77,16 @@ const PREPARE = {
 async function inventoryFor(fixture) {
   const dir = join(repoRoot, 'fixtures', fixture)
   const ir = readClaudePlugin(dir, { source: `plugin-dir:fixtures/${fixture}` })
-  const { entry } = emitPlugin(ir, { materializers, sdkRoot: installedDir ? join(installedDir, '..') : undefined })
+  const { entry } = emitPlugin(ir, { materializers, sdkRoot: harness?.modulesDir })
   const refused = new Set((ir.unsupported ?? []).map((item) => `${item.surface}:${item.name}`))
   if (!entry) {
-    const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${dshVersion(installedDir)}` })
-    inventory.pin = { tool: 'dsh', version: dshVersion(installedDir) }
+    const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })
+    inventory.pin = { tool: 'dsh', version: harness.version }
     return { inventory, refused }
   }
   const hookProbe = HOOK_PROBES[fixture]
   const probe = await probeWithDsh({
-    installedDir,
+    harnessDir: harness.harnessDir,
     entry,
     ...(hookProbe === undefined ? {} : { behavior: { tool: hookProbe.tool }, timeoutMs: 10_000 }),
   })
@@ -99,7 +100,7 @@ async function inventoryFor(fixture) {
 
 test(
   'fixture coverage matches the recorded matrix',
-  { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
+  { skip: harness ? false : harnessSkipReason() },
   async () => {
     const totals = { declared: 0, matched: 0, missing: 0, refused: 0 }
     for (const fixture of Object.keys(EXPECTED_ROWS).sort()) {

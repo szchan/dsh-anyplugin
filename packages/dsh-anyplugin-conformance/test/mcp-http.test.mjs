@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
@@ -20,10 +20,11 @@ import { validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { expandEnv } from '../../dsh-anyplugin-materialize-mcp/src/index.ts'
 import { diffInventories } from '../src/inventory.ts'
 import { probeWithDsh } from '../src/oracles/dsh.ts'
+import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const fixtureDir = join(repoRoot, 'fixtures', 'claude-mcp-http')
-const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
+const harness = resolveHarness()
 const materializers = {
   skill: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts')).href,
   mcp: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-mcp', 'src', 'index.ts')).href,
@@ -48,18 +49,18 @@ test('the dialect keeps a ${VAR} url for the materializer to resolve', () => {
 
 test(
   'DSH connects over HTTP and registers the exact tool name',
-  { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
+  { skip: harness ? false : harnessSkipReason() },
   async () => {
     const server = await startHttpServer()
     const previous = process.env.ANYPLUGIN_MCP_URL
     process.env.ANYPLUGIN_MCP_URL = server.url
     try {
       const ir = readClaudePlugin(fixtureDir)
-      const { entry } = emitPlugin(ir, { materializers, sdkRoot: dirname(installedDir) })
+      const { entry } = emitPlugin(ir, { materializers, sdkRoot: harness.modulesDir })
       const child = entry.config.find((item) => item.id === 'mcp')
       assert.equal(child.config.servers[0].transport, 'http')
 
-      const { inventory, tools } = await probeWithDsh({ installedDir, entry })
+      const { inventory, tools } = await probeWithDsh({ harnessDir: harness.harnessDir, entry })
       assert.ok(
         tools.includes('mcp__plugin_claude-mcp-http_http-probe__echo'),
         `expected Claude's exact tool name, got ${JSON.stringify(tools)}`,

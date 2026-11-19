@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
@@ -17,10 +17,11 @@ import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories } from '../src/inventory.ts'
 import { probeWithDsh } from '../src/oracles/dsh.ts'
+import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const fixtureDir = join(repoRoot, 'fixtures', 'claude-hooks-mcp')
-const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
+const harness = resolveHarness()
 const materializers = {
   skill: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts')).href,
   mcp: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-mcp', 'src', 'index.ts')).href,
@@ -52,7 +53,7 @@ test('the emitter carries the server as data under the mcp child', () => {
   assert.equal(ir.hooks[0]?.annotation.fidelity, 'equivalent')
   const { entry, emitted, skipped } = emitPlugin(ir, {
     materializers,
-    sdkRoot: installedDir ? dirname(installedDir) : undefined,
+    sdkRoot: harness?.modulesDir,
   })
   assert.ok(entry)
   assert.ok(emitted.includes('mcpServers'))
@@ -67,11 +68,11 @@ test('the emitter carries the server as data under the mcp child', () => {
 
 test(
   'DSH connects the server and registers the exact tool name',
-  { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
+  { skip: harness ? false : harnessSkipReason() },
   async () => {
     const ir = readClaudePlugin(fixtureDir)
-    const { entry } = emitPlugin(ir, { materializers, sdkRoot: dirname(installedDir) })
-    const { inventory, tools } = await probeWithDsh({ installedDir, entry })
+    const { entry } = emitPlugin(ir, { materializers, sdkRoot: harness.modulesDir })
+    const { inventory, tools } = await probeWithDsh({ harnessDir: harness.harnessDir, entry })
 
     assert.ok(
       tools.includes('mcp__plugin_hooks-mcp_probe__create_issue'),

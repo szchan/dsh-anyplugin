@@ -55,8 +55,9 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
    either say so in the PR body, or open a follow-up issue instead of widening
    the diff.
 4. Run `npm run verify` in the worktree. It must be green **before** the PR
-   opens, including the tests that need the installed harness — those skip in
-   CI, so CI green is not evidence for them.
+   opens, including the tests that need a harness. CI fetches both npm pins
+   (0.2.2-rc.5 and 0.2.2-rc.2) and fails on a skip, but it cannot test your
+   Desktop installation — so paste the local run in the PR.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
 
@@ -97,18 +98,22 @@ the master rewrites it.
 
 ## What CI proves, and what it cannot
 
-`verify` on GitHub runs `npm run check:arch` and `npm test` on a clean machine.
+`verify` on GitHub runs `npm run check:arch`, fetches the DSH harness pins, and
+runs `npm run verify` against each of them (`0.2.2-rc.5`, `0.2.2-rc.2`). A
+skipped DSH-side test is a failed job: a shell guard checks `DSH_HARNESS_DIR`
+before running the suite.
 
-- **Proves**: the tree still has its declared shape; pure packages behave;
-  nothing needs a secret; nothing needs this laptop.
-- **Cannot prove**: anything that needs the installed harness
-  (`DSH_INSTALL_DIR`, pin `dsh 0.2.2-rc.2`). Those tests `skip` in CI by design
-  (D9). Everything about fidelity lives there. That is why the PR template makes
-  you paste the local `npm run verify` output — CI green is a floor, not the
-  claim.
+- **Proves**: the tree still has its declared shape; pure packages behave; the
+  fidelity oracle agrees with both pinned npm harnesses; nothing needs a secret;
+  nothing needs this laptop.
+- **Cannot prove**: the Desktop installation specifically (`DSH_INSTALL_DIR`),
+  the asar access path, or the behavior face (`claude plugin eval` costs
+  money). Those are local evidence and belong in the PR body. CI green is a
+  floor, not the whole claim.
 
 Do not "fix" a skipped test by making it not need the harness. Either it is a
-pure test (then it belongs in a pure package) or it belongs to the oracle.
+pure test (then it belongs in a pure package) or it belongs to the oracle. In CI
+a skip is a bug.
 
 ## Money and secrets
 

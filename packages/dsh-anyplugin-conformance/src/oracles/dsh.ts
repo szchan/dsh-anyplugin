@@ -1,26 +1,28 @@
 /**
- * DSH-side oracle — boots the *installed* harness packages and reads what they
+ * DSH-side oracle — boots the *resolved* harness packages and reads what they
  * report about a plugin we materialized.
  *
- * The installed tree is a real directory, not an asar archive, so plain Node
- * can import it. That matters for fidelity of the rig itself: the oracle runs
- * the exact `dsh-skill` / `cordis` builds the desktop app runs
- * (`0.2.2-rc.2` / `4.1.0`), not npm copies that may lag or not exist.
+ * The harness may be the Desktop installation or a released npm harness fetched
+ * into `.harness/<version>` by `scripts/fetch-harness.mjs`; `harness.ts` owns the
+ * resolution order and reports which source named the tree. Either way the tree
+ * is a real directory of `@deepseek-ai/*` packages, so plain Node can import it,
+ * and the oracle runs whatever pin was resolved instead of assuming a version.
  *
  * One rule that is easy to get wrong: the `Context` must come from the
- * *installed* cordis. Two copies of cordis in one process give two `Service`
+ * *harness* cordis. Two copies of cordis in one process give two `Service`
  * base classes, and the registry would never see the context that owns it.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { EntryOptions } from '../../dsh-anyplugin-emit/src/index.ts'
 import type { Inventory } from '../inventory.ts'
 import { emptyInventory, INVENTORY_SCHEMA } from '../inventory.ts'
+import { readHarnessVersion } from '../harness.ts'
 
 export interface DshProbeOptions {
-  /** Directory holding the installed `@deepseek-ai/*` packages. */
-  installedDir: string
+  /** Directory holding the harness's `@deepseek-ai/*` packages (`HarnessLocation.harnessDir`). */
+  harnessDir: string
   /** The group entry the emitter produced. */
   entry: EntryOptions
   /** How long to wait for plugins to apply, in milliseconds. */
@@ -72,8 +74,8 @@ interface BootedHarness {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-function loadInstalled(installedDir: string, specifier: string): Promise<any> {
-  return import(pathToFileURL(join(installedDir, specifier)).href)
+function loadFromHarness(harnessDir: string, specifier: string): Promise<any> {
+  return import(pathToFileURL(join(harnessDir, specifier)).href)
 }
 
 async function until(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
@@ -85,20 +87,32 @@ async function until(predicate: () => boolean, timeoutMs: number, label: string)
   throw new Error(`dsh oracle: timed out waiting for ${label}`)
 }
 
-async function boot(installedDir: string, timeoutMs: number, needTools: boolean, needExecutor = false): Promise<BootedHarness> {
-  const { Context } = await loadInstalled(installedDir, 'cordis/lib/index.js')
-  const Loader = (await loadInstalled(installedDir, 'cordis-plugin-loader/lib/index.js')).default
-  const SkillRegistry = (await loadInstalled(installedDir, 'dsh-skill/lib/index.js')).default
+/**
+ * The loader resolves entry names (notably `@deepseek-ai/cordis-plugin-group`)
+ * against its config scope. A Desktop tree has the `dsh` package to anchor that
+ * scope; an npm harness does not, so the install root (which carries the
+ * `package.json` written by `fetch-harness.mjs`) is the anchor there.
+ */
+function loaderBaseUrl(harnessDir: string): string {
+  const product = join(harnessDir, 'dsh')
+  const anchor = existsSync(join(product, 'package.json')) ? product : join(harnessDir, '..', '..')
+  return pathToFileURL(anchor + '/').href
+}
+
+async function boot(harnessDir: string, timeoutMs: number, needTools: boolean, needExecutor = false): Promise<BootedHarness> {
+  const { Context } = await loadFromHarness(harnessDir, 'cordis/lib/index.js')
+  const Loader = (await loadFromHarness(harnessDir, 'cordis-plugin-loader/lib/index.js')).default
+  const SkillRegistry = (await loadFromHarness(harnessDir, 'dsh-skill/lib/index.js')).default
 
   const ctx = new Context()
   // Keep the fiber: `Loader` exposes no stop(), so the fiber *is* the teardown
   // handle (ARCHITECTURE §10.4). Disposing it runs every effect disposer.
-  const loaderFiber = ctx.plugin(Loader, { baseUrl: pathToFileURL(join(installedDir, 'dsh') + '/').href })
+  const loaderFiber = ctx.plugin(Loader, { baseUrl: loaderBaseUrl(harnessDir) })
   ctx.plugin(SkillRegistry, {})
   if (needTools) {
     // The tool registry reads the system prompt service; S5 booted the same pair.
-    const SystemPrompt = (await loadInstalled(installedDir, 'dsh-system-prompt/lib/index.js')).default
-    const ToolsService = (await loadInstalled(installedDir, 'dsh-tools/lib/index.js')).ToolsService
+    const SystemPrompt = (await loadFromHarness(harnessDir, 'dsh-system-prompt/lib/index.js')).default
+    const ToolsService = (await loadFromHarness(harnessDir, 'dsh-tools/lib/index.js')).ToolsService
     ctx.plugin(SystemPrompt)
     await until(() => Boolean(ctx.systemPrompt), timeoutMs, 'system prompt service')
     ctx.plugin(ToolsService, {})
@@ -106,7 +120,7 @@ async function boot(installedDir: string, timeoutMs: number, needTools: boolean,
     if (needExecutor) {
       // Dispatch lives in a separate functional plugin (S8); without it a call
       // never reaches the tool waterfalls the hooks are mounted on.
-      const nativeExecutor = await loadInstalled(installedDir, 'dsh-tool-executor-native/lib/index.js')
+      const nativeExecutor = await loadFromHarness(harnessDir, 'dsh-tool-executor-native/lib/index.js')
       ctx.plugin(nativeExecutor, {})
     }
   }
@@ -122,9 +136,9 @@ function mcpChild(entry: EntryOptions): { plugin: string; servers: Array<{ name:
   return { plugin: child.config.plugin, servers: child.config.servers ?? [] }
 }
 
-export function dshVersion(installedDir: string): string {
-  const manifest = JSON.parse(readFileSync(join(installedDir, 'dsh', 'package.json'), 'utf8')) as { version?: string }
-  return manifest.version ?? 'unknown'
+/** Version of the harness packages under `harnessDir` (see `readHarnessVersion`). */
+export function dshVersion(harnessDir: string): string {
+  return readHarnessVersion(harnessDir)
 }
 
 /**
@@ -137,7 +151,7 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
   const timeoutMs = options.timeoutMs ?? 5000
   const mcp = mcpChild(options.entry)
   const behavior = options.behavior
-  const booted = await boot(options.installedDir, timeoutMs, mcp !== undefined || behavior !== undefined, behavior !== undefined)
+  const booted = await boot(options.harnessDir, timeoutMs, mcp !== undefined || behavior !== undefined, behavior !== undefined)
   const { ctx, loader, skills } = booted
 
   try {
@@ -205,9 +219,9 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
     const inventory = emptyInventory({
       name: options.entry.id,
       version: undefined,
-      source: `dsh:${dshVersion(options.installedDir)}`,
+      source: `dsh:${dshVersion(options.harnessDir)}`,
     })
-    inventory.pin = { tool: 'dsh', version: dshVersion(options.installedDir) }
+    inventory.pin = { tool: 'dsh', version: dshVersion(options.harnessDir) }
     inventory.components = [
       ...listed.map((skill) => ({ surface: 'skills' as const, name: skill.name })),
       ...servers.map((server) => ({ surface: 'mcpServers' as const, name: server.name })),
@@ -219,7 +233,7 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
     ]
     return {
       inventory,
-      dshVersion: dshVersion(options.installedDir),
+      dshVersion: dshVersion(options.harnessDir),
       skills: listed,
       tools: exposed,
       ...(observation === undefined ? {} : { behavior: observation }),

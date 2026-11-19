@@ -13,10 +13,14 @@ permissions:
   contents: read
 
 jobs:
+  # One job, deliberately not a matrix: branch protection requires the check
+  # context to be exactly `verify`, and a matrix job reports as `verify (x)`.
+  # Both pins are fetched and verified in this job; a failure on one pin must
+  # not prevent the other from running.
   verify:
     name: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,9 +28,80 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+
       # The shape of the tree is a gate, not a review comment.
       - run: npm run check:arch
-      # Tests that need the installed harness (DSH_INSTALL_DIR) self-skip here.
-      # That is deliberate: CI proves structure and pure behaviour; the fidelity
-      # oracle can only run where the pin actually lives, and it runs before push.
-      - run: npm test
+
+      # Fetching is an explicit step; the tests themselves never touch the
+      # network. A fetch failure must not hide behind `set -e` inside a
+      # command substitution: each pin is attempted, its status recorded, and
+      # the step fails only after both were tried. continue-on-error keeps the
+      # job alive so the pin that did fetch can still be verified.
+      - name: Fetch DSH harness pins
+        id: fetch
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          status=0
+          fetch_pin() {
+            version="$1"
+            output="$2"
+            echo "::group::fetch DSH $version"
+            if dir=$(node scripts/fetch-harness.mjs "$version"); then
+              printf '%s=%s\n' "$output" "$dir" >> "$GITHUB_OUTPUT"
+              echo "fetched DSH $version at $dir"
+            else
+              code=$?
+              echo "::error::failed to fetch DSH $version (exit $code)"
+              status=1
+            fi
+            echo "::endgroup::"
+          }
+          fetch_pin 0.2.2-rc.5 dir_rc5
+          fetch_pin 0.2.2-rc.2 dir_rc2
+          exit "$status"
+
+      # A skipped fidelity test on CI is a bug. The guard is per pin so a
+      # missing rc.5 cannot stop rc.2 from being verified.
+      - name: Guard and verify each resolved pin
+        env:
+          DIR_RC5: ${{ steps.fetch.outputs.dir_rc5 }}
+          DIR_RC2: ${{ steps.fetch.outputs.dir_rc2 }}
+        run: |
+          set -uo pipefail
+          status=0
+          verify_pin() {
+            version="$1"
+            dir="$2"
+            echo "::group::verify with DSH $version"
+            if [ -z "${dir:-}" ]; then
+              echo "::error::DSH_HARNESS_DIR is unset for DSH $version (fetch failed); a skipped fidelity test on CI is a bug"
+              status=1
+            elif [ ! -d "$dir/node_modules/@deepseek-ai" ]; then
+              echo "::error::DSH_HARNESS_DIR=$dir is missing for DSH $version"
+              status=1
+            else
+              export DSH_HARNESS_DIR="$dir"
+              export DSH_HARNESS_VERSION="$version"
+              if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR" ]; then
+                echo "::error::DSH_HARNESS_DIR is unset or missing for DSH $version"
+                status=1
+              else
+                npm run verify || status=1
+              fi
+            fi
+            echo "::endgroup::"
+          }
+          verify_pin 0.2.2-rc.5 "$DIR_RC5"
+          verify_pin 0.2.2-rc.2 "$DIR_RC2"
+          exit "$status"
+
+      # continue-on-error deliberately kept the job alive; make the fetch
+      # failure fail the job after the successfully fetched pin has run.
+      - name: Fail if a harness fetch failed
+        if: always()
+        run: |
+          if [ "${{ steps.fetch.outcome }}" != "success" ]; then
+            echo "::error::at least one DSH harness fetch failed; see the fetch step"
+            exit 1
+          fi
