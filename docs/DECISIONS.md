@@ -331,3 +331,49 @@ The table is one line, and every consumer reads it.
   handler run, including `skipped-matcher` and `not-called`.
 - The classic-hook front-end (v0.2) is a translation of `hooks.json` into
   `HandlerRegistration`s, nothing more.
+
+## D14 — Reuse the spec and the artifacts, never the implementation
+
+**Status:** ratified 2026-11-18.
+
+`anthropics/claude-code` is a GitHub repository, not an open-source codebase.
+Its `LICENSE.md` is one sentence — "© Anthropic PBC. All rights reserved. Use
+is subject to Anthropic's Commercial Terms of Service" — and the installed CLI
+is a single `341,918,224`-byte executable bundle with no module boundary and no
+exports. There is nothing to link against, and redistribution is not granted.
+So the compatibility layer reuses **specifications and real artifacts**, never
+Claude Code's own code.
+
+**What we reuse, and why it is the cheap half:**
+
+| Artifact | Use | Saves |
+| --- | --- | --- |
+| `mods/types/claude-code.d.ts` (873,553 bytes, byte-identical to the engine's declarations) | the mod API *specification* (D3) | all of "guess the API semantics"; it is the only enumerable, pinnable denominator |
+| `mods/` — sec-default, diff, easel, telemetry, privacy, agents-md, hipaa-default (7 real mods; `diff` ships `hooks/` and `tests/`) | fixtures and acceptance targets, **not code we compile** | writing our own test mods, and the only convincing proof that the host runs somebody else's real code |
+| `plugins/`, `.claude-plugin/marketplace.json`, `examples/hooks` | format samples and hook payload shapes | reverse-engineering payload shapes |
+| `claude plugin details` / `claude plugin eval` (already wired in the rig, D8) | oracles | a hand-written recording protocol |
+
+**Why the implementation would not have helped anyway:** the three most
+expensive items on our ledger — the hook event points, the named-agent catalog,
+and the mod host's element runtime — do not exist in that repository. They are
+seams *our* host must grow. The upstream code answers "what does it mean"; our
+gap is "where does it attach". Reading their source could only ever replace the
+cheap half, while the `.d.ts` plus a running binary as an oracle answers the
+semantics question more reliably than source ever would.
+
+**Where delegation is legitimate, and where it is a lie:** handing a component
+to a real `claude` subprocess is valid when the component is semantics we cannot
+reimplement and does not claim our session — model identity is the example, and
+it is already the escape layer. It is **not** valid for mods: a mod intercepts
+events inside *its own* session, so a delegated mod would observe a different
+agent, and its UI would be drawn in a terminal DSH cannot show. That is two
+agents running side by side, not fidelity.
+
+**Consequences:**
+
+- Never vendor upstream code or declarations into this repository. Read them
+  from the installed tree (D9) or fetch them at test time.
+- Fixtures derived from upstream keep their provenance and their pin in the
+  fixture, and their license stays upstream's.
+- The licensing question is settled once: if a future component can only be
+  obtained by copying code, it is `unsupported` with a reason, not a shortcut.

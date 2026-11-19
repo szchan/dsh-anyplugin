@@ -37,6 +37,15 @@ claude-code `2.1.322`.
 
 ## Next
 
+- [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
+      `mods/` from the pinned upstream revision into `fixtures/` (fetch at
+      test time or from the installed tree; never vendored), starting with
+      `diff` because it ships its own `hooks/` and `tests/`. Done when one
+      real mod loads in the host and its own test expectations pass against us.
+- [ ] **Hook payload samples as fixtures** (D14). `examples/hooks` gives the
+      canonical payload shapes; turn each into a fixture the kernel test drives
+      through `runChain`, so the classic arm is calibrated against upstream
+      payloads rather than our reading of the docs.
 - [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel; events that
       have a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse`
       row matches.
