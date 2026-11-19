@@ -32,6 +32,12 @@ claude-code `2.1.322`.
       not logged in to `claude`. Done when a capture replaces each doc-shaped
       fixture under `fixtures/hooks/captured/` and the kernel test still passes
       without edits (that is the point: shape is data, not an assertion).
+- [ ] **Behavior oracle on a DeepSeek backend.** Claude Code speaks the
+      Anthropic Messages API and DeepSeek serves that format at `/anthropic`,
+      so the real client runs here without an Anthropic account. Done when
+      `spikes/s6-hook-payloads/run.mjs --deepseek` captures the turn-interior
+      payloads and `claude plugin eval` runs a fixture end to end under the
+      rig. Needs one `DEEPSEEK_API_KEY`; the key stays in the environment.
 - [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel; events that
       have a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse`
       row matches.

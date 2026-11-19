@@ -45,6 +45,24 @@ The spike writes one JSON record per event (payload, plugin-root env vars, and
 the hook's cwd) under a temp directory; move the interesting ones into
 `captured/` with the same scrubbing.
 
+## Running the client at all: the DeepSeek backend
+
+`claude` speaks the Anthropic Messages API, and DeepSeek serves that format at
+`https://api.deepseek.com/anthropic` (its docs map `claude-opus*` to
+`deepseek-v4-pro` and `claude-sonnet*`/`claude-haiku*` to `deepseek-flash`).
+The spike wires that up with `--deepseek`, using `DEEPSEEK_API_KEY` from the
+environment; the key is never printed or written to a fixture.
+
+```bash
+DEEPSEEK_API_KEY=sk-... node spikes/s6-hook-payloads/run.mjs --deepseek
+```
+
+`--deepseek` implies an isolated `HOME`, so the run cannot touch a real
+`~/.claude`. Captures made this way are the same shape as Anthropic-backed ones
+for everything a plugin observes (which events fire, payload fields, expansion
+text) — but not for model choices, so they are still only evidence about the
+*harness*, never about which tool a model picks.
+
 ## What this buys the kernel
 
 `packages/dsh-anyplugin-intercept/test/payloads.test.mjs` runs every payload

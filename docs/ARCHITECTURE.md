@@ -626,6 +626,15 @@ oracle.
   payload carrying five fields the startup capture does not). Consequence:
   payload fixtures, not prose, own the event table (D15).
 
+  **A DeepSeek backend removes the model confound.** `claude` speaks the
+  Anthropic Messages API and DeepSeek serves it at `/anthropic`, so the real
+  client can run here with the *same model* our side uses. Two hosts, one model:
+  a behavioral difference is then attributable to the harness — which is the
+  only thing we claim to preserve. This turns the behavior face from "open"
+  into measurable, and it is the precondition for the escape layer: delegating
+  a component to a real client is only honest if both sides run the same
+  weights.
+
 Fixtures: skills-only; hook-heavy (blocking + injection); MCP + commands;
 agents + bin + theme.
 

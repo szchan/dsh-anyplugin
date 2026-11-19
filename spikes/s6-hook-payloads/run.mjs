@@ -10,7 +10,36 @@ const NODE = process.execPath
 const root = mkdtempSync(join(tmpdir(), 'anyplugin-s6-'))
 const plugin = join(root, 'probe-plugin')
 const capture = join(root, 'capture')
-const isolated = process.argv.includes('--isolated')
+const isolated = process.argv.includes('--isolated') || process.argv.includes('--deepseek')
+const deepseek = process.argv.includes('--deepseek')
+
+// Claude Code speaks the Anthropic Messages API, and DeepSeek serves that
+// format at /anthropic (its docs map claude-opus* to deepseek-v4-pro and
+// claude-sonnet*/claude-haiku* to deepseek-flash). Pointing the client at
+// DeepSeek makes the harness runnable here without an Anthropic account, which
+// is what lets us capture the turn-interior payloads at all.
+//
+// The key is read from the environment and never printed or written.
+const backend = deepseek ? deepseekBackend() : {}
+
+function deepseekBackend() {
+  const key = process.env.DEEPSEEK_API_KEY
+  if (key === undefined || key === '') {
+    console.error('--deepseek needs DEEPSEEK_API_KEY in the environment.')
+    console.error('Get one at https://platform.deepseek.com, then:')
+    console.error('  DEEPSEEK_API_KEY=sk-... node spikes/s6-hook-payloads/run.mjs --deepseek')
+    process.exit(2)
+  }
+  return {
+    ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+    ANTHROPIC_AUTH_TOKEN: key,
+    ANTHROPIC_MODEL: 'deepseek-flash',
+    ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-flash',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-flash',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-flash',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
+  }
+}
 if (isolated) { mkdirSync(join(root, 'home', '.claude'), { recursive: true }) }
 mkdirSync(join(plugin, '.claude-plugin'), { recursive: true })
 mkdirSync(join(plugin, 'hooks'), { recursive: true })
@@ -44,10 +73,16 @@ const args = ['--plugin-dir', plugin, '-p', prompt, '--allowedTools', 'Bash', '-
 
 console.log('temp root:', root)
 console.log('running: claude', args.join(' '))
+if (deepseek) console.log('backend: deepseek (api.deepseek.com/anthropic), key from DEEPSEEK_API_KEY')
 
 const child = spawn('claude', args, {
   stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, ANYPLUGIN_CAPTURE_DIR: capture, ...(isolated ? { HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'home', '.claude') } : {}) },
+  env: {
+    ...process.env,
+    ANYPLUGIN_CAPTURE_DIR: capture,
+    ...backend,
+    ...(isolated ? { HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'home', '.claude') } : {}),
+  },
 })
 let out = ''
 let err = ''
