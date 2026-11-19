@@ -1,8 +1,9 @@
-// The materializer must not own tier order, matcher evaluation or
-// first-decision-wins; those belong to the intercept kernel (D13). These tests
-// drive the public mount with two handlers and read the kernel trace through
-// `onTrace`, so they fail if the mount bypasses `runChain` even when the
-// hand-rolled path happens to preserve the visible verdict.
+// The materializer must not own tier order, matcher evaluation or decision
+// flow; those belong to the intercept kernel (D13). These tests drive the
+// public mount with two handlers and read the kernel trace through `onTrace`,
+// so they fail if the mount bypasses `runChain` even when the hand-rolled path
+// happens to preserve the visible verdict. Classic hooks fan out: a deny is
+// collected, not used to skip the next handler.
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -54,14 +55,15 @@ function harness() {
     traces,
     config: (hooks) => ({
       hooks,
-      onTrace: (event, result) => traces.push({ event, decision: result.decision, trace: result.trace }),
+      onTrace: (event, result) =>
+        traces.push({ event, decision: result.decision, decisions: result.decisions, trace: result.trace }),
     }),
   }
 }
 
 const pre = () => ({ callId: 1, name: 'Write', arguments: { file_path: '/work/a.txt' } })
 
-test('PreToolUse handlers run through the kernel: the first denial stops the second', async () => {
+test('PreToolUse handlers run through the kernel: every match runs and the first denial is the reason', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'anyplugin-kernel-'))
   try {
     const marker = join(dir, 'second-ran')
@@ -79,12 +81,13 @@ test('PreToolUse handlers run through the kernel: the first denial stops the sec
 
     assert.deepEqual(result, { kind: 'deny', reason: 'refused' })
     assert.equal(nextCalls, 0, 'a denial is returned to the host, not continued')
-    assert.equal(existsSync(marker), false, 'the second matching handler never ran')
+    assert.equal(existsSync(marker), true, 'the second matching handler still ran (fan-out)')
     assert.deepEqual(warnings, [])
     assert.equal(traces.length, 1, 'the kernel trace observer saw exactly one chain run')
     assert.equal(traces[0].event, 'PreToolUse')
     assert.deepEqual(traces[0].trace, [
       { source: 'PreToolUse#0', tier: 'user', index: 0, status: 'ran', decision: 'deny' },
+      { source: 'PreToolUse#1', tier: 'user', index: 1, status: 'ran' },
     ])
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -108,9 +111,9 @@ test('an invalid matcher is skipped by the kernel instead of failing the turn', 
     assert.equal(existsSync(bad), false, 'an invalid pattern matches nothing (D20)')
     assert.equal(existsSync(good), true, 'the following valid handler still runs')
     assert.deepEqual(warnings, [], 'an invalid matcher was silent before the kernel too')
-    // `of()` sorts by matcher text before registration, so the valid `Write`
-    // group runs first and the malformed `Write(` group is skipped second.
-    assert.deepEqual(traces[0].trace.map((step) => step.status), ['ran', 'skipped-matcher'])
+    // Registration order is the chain order; the kernel owns it now, so the
+    // malformed first hook is skipped and the valid second hook runs.
+    assert.deepEqual(traces[0].trace.map((step) => step.status), ['skipped-matcher', 'ran'])
     assert.equal(traces[0].trace.find((step) => step.status === 'skipped-matcher').source, 'PreToolUse#0')
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -152,14 +155,14 @@ test('the trace observer cannot break the turn', async () => {
   )
 })
 
-test('a hook that times out is skipped by the kernel and the chain continues', async () => {
+test('a hook cut off by the runner is a warning and the chain continues', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'anyplugin-kernel-'))
   try {
     const marker = join(dir, 'after-timeout')
     const { ctx, listeners, warnings, traces, config } = harness()
     apply(ctx, config([
-      // One-second command timeout: the runner kills the child, the kernel
-      // budget has 5s of headroom, so the verdict is the runner's warning.
+      // One-second command timeout: the runner kills the child before the
+      // kernel's own budget (command timeout + 5s grace) could fire.
       { ...pinned('PreToolUse', 'sleep 5', { matcher: 'Write', index: 0 }), timeout: 1 },
       pinned('PreToolUse', `printf after > ${marker}`, { matcher: 'Write', index: 1 }),
     ]))
@@ -168,11 +171,64 @@ test('a hook that times out is skipped by the kernel and the chain continues', a
 
     assert.deepEqual(result, { kind: 'accept' })
     assert.equal(existsSync(marker), true, 'the next handler still runs after a timed-out hook')
-    assert.ok(warnings.some((line) => line.includes('hook timed out after 60s')), JSON.stringify(warnings))
+    assert.ok(warnings.some((line) => line.includes('hook timed out after 1s')), JSON.stringify(warnings))
     assert.deepEqual(traces[0].trace.map((step) => step.status), ['ran', 'ran'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('PostToolUse fans out: a denial is feedback and the next handler still runs', async () => {
+  const { ctx, listeners, warnings, traces, config } = harness()
+  apply(ctx, config([
+    pinned('PostToolUse', `printf '%s\\n' '{"decision":"block","reason":"first denial"}'`, {
+      matcher: 'Write',
+      index: 0,
+    }),
+    pinned('PostToolUse', `printf '%s\\n' '{"hookSpecificOutput":{"additionalContext":"second context"}}'`, {
+      matcher: 'Write',
+      index: 1,
+    }),
+  ]))
+
+  const result = await listeners.get('tools/post-execute')[0](
+    pre(),
+    { ok: true },
+    async () => ({ kind: 'accept' }),
+  )
+
+  assert.equal(result.kind, 'accept')
+  const texts = (result.additionalContexts ?? []).map((context) => context.content[0].text)
+  assert.deepEqual(texts, ['first denial', 'second context'])
+  assert.deepEqual(warnings, [])
+  assert.equal(traces.length, 1, 'the kernel trace observer saw the PostToolUse chain')
+  assert.deepEqual(traces[0].trace, [
+    { source: 'PostToolUse#0', tier: 'user', index: 0, status: 'ran', decision: 'deny' },
+    { source: 'PostToolUse#1', tier: 'user', index: 1, status: 'ran', decision: 'text' },
+  ])
+  assert.deepEqual(traces[0].decisions.map((decision) => decision.kind), ['deny', 'text'])
+})
+
+test('a lifecycle mount runs through the kernel and records its step', async () => {
+  const { ctx, listeners, warnings, traces, config } = harness()
+  apply(ctx, config([pinned('SessionStart', 'true', { index: 0 })]))
+
+  const created = listeners.get('agent/created')[0]
+  const event = {
+    agent: {
+      session: { header: { id: 'session-1', cwd: '/work' } },
+      model: { current: () => ({ model: 'fake-1' }) },
+    },
+    source: 'startup',
+  }
+  await created(event)
+
+  assert.deepEqual(warnings, [])
+  assert.equal(traces.length, 1)
+  assert.equal(traces[0].event, 'SessionStart')
+  assert.deepEqual(traces[0].trace, [
+    { source: 'SessionStart#0', tier: 'user', index: 0, status: 'ran' },
+  ])
 })
 
 test('the payload keys are the runner payload, unchanged by the kernel', async () => {

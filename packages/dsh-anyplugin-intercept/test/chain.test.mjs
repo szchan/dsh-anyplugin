@@ -60,15 +60,59 @@ test('a matcher that does not match skips the handler and keeps the chain', asyn
   assert.deepEqual(result.decision, CONTINUE)
 })
 
-test('the first decision ends the chain', async () => {
+test('the first decision ends the chain in first-decision mode', async () => {
   const seen = []
   const result = await runChain(event('Bash'), [
     handler({ tier: 'prepend', source: 'guard', run: () => ({ kind: 'deny', reason: 'not allowed' }) }),
     handler({ tier: 'builtin', source: 'runner', run: () => { seen.push('runner') } }),
   ])
   assert.deepEqual(result.decision, { kind: 'deny', reason: 'not allowed' })
+  assert.deepEqual(result.decisions, [{ kind: 'deny', reason: 'not allowed' }])
   assert.deepEqual(seen, [])
   assert.deepEqual(result.trace.map((step) => step.source), ['guard'])
+})
+
+test('fan-out runs every matching handler and collects every decision', async () => {
+  const seen = []
+  const result = await runChain(
+    event('Bash'),
+    [
+      handler({ tier: 'prepend', source: 'guard', run: () => { seen.push('guard'); return { kind: 'deny', reason: 'first' } } }),
+      handler({ tier: 'user', source: 'second', run: () => { seen.push('second'); return { kind: 'text', text: 'also' } } }),
+      handler({ tier: 'builtin', source: 'third', run: () => { seen.push('third') } }),
+    ],
+    { continuation: 'fan-out' },
+  )
+
+  assert.deepEqual(seen, ['guard', 'second', 'third'], 'a deny does not skip its siblings')
+  assert.deepEqual(result.decision, { kind: 'deny', reason: 'first' })
+  assert.deepEqual(result.decisions, [
+    { kind: 'deny', reason: 'first' },
+    { kind: 'text', text: 'also' },
+  ])
+  assert.deepEqual(result.trace, [
+    { source: 'guard', tier: 'prepend', index: 0, status: 'ran', decision: 'deny' },
+    { source: 'second', tier: 'user', index: 1, status: 'ran', decision: 'text' },
+    { source: 'third', tier: 'builtin', index: 2, status: 'ran' },
+  ])
+})
+
+test('fan-out records a throwing or over-budget handler and keeps going', async () => {
+  const seen = []
+  const result = await runChain(
+    event('Bash'),
+    [
+      handler({ tier: 'prepend', source: 'slow', timeoutMs: 25, run: () => new Promise(() => {}) }),
+      handler({ tier: 'user', source: 'broken', run: () => { throw new Error('boom') } }),
+      handler({ tier: 'builtin', source: 'runner', run: () => { seen.push('runner'); return { kind: 'text', text: 'ok' } } }),
+    ],
+    { continuation: 'fan-out' },
+  )
+
+  assert.deepEqual(seen, ['runner'])
+  assert.deepEqual(result.decision, { kind: 'text', text: 'ok' })
+  assert.deepEqual(result.decisions, [{ kind: 'text', text: 'ok' }])
+  assert.deepEqual(result.trace.map((step) => step.status), ['timeout', 'error', 'ran'])
 })
 
 test('a rewrite is visible downstream and in the result', async () => {
@@ -168,6 +212,7 @@ test('a classic hook translates to one user-tier observe registration', async ()
   const registration = classicHookRegistration({ event: 'PreToolUse', matcher: 'Write', source: 'formatter', run: () => {} })
   assert.equal(registration.tier, 'user')
   assert.equal(registration.mode, 'observe')
+  assert.equal(registration.continuation, 'fan-out')
   assert.equal(registration.matcher, 'Write')
   assert.equal(registration.source, 'formatter')
   assert.equal(registration.compiledMatcher.specified, true)
@@ -179,6 +224,42 @@ test('a classic hook translates to one user-tier observe registration', async ()
   ])
   assert.deepEqual(seen, ['good'], 'a malformed pattern matches nothing instead of throwing mid-turn')
   assert.deepEqual(result.trace.map((step) => step.status), ['skipped-matcher', 'ran'])
+})
+
+test('a classic registration declares fan-out, so a bare runChain call cannot silently stop', async () => {
+  const seen = []
+  const result = await runChain(classicEvent('PreToolUse', { tool_name: 'Write' }), [
+    classicHookRegistration({
+      event: 'PreToolUse',
+      source: 'first',
+      run: () => {
+        seen.push('first')
+        return { kind: 'deny', reason: 'no' }
+      },
+    }),
+    classicHookRegistration({
+      event: 'PreToolUse',
+      source: 'second',
+      run: () => {
+        seen.push('second')
+      },
+    }),
+  ])
+
+  assert.deepEqual(seen, ['first', 'second'])
+  assert.deepEqual(result.decision, { kind: 'deny', reason: 'no' })
+  assert.deepEqual(result.decisions, [{ kind: 'deny', reason: 'no' }])
+  assert.deepEqual(result.trace.map((step) => step.source), ['first', 'second'])
+})
+
+test('registrations that disagree about continuation require an explicit choice', async () => {
+  await assert.rejects(
+    runChain(classicEvent('PreToolUse', { tool_name: 'Write' }), [
+      classicHookRegistration({ event: 'PreToolUse', source: 'classic', run: () => {} }),
+      handler({ tier: 'builtin', source: 'mod', continuation: 'first-decision', run: () => {} }),
+    ]),
+    /registrations disagree about continuation/,
+  )
 })
 
 test('a matcher-bearing classic handler is skipped on a subjectless event', async () => {

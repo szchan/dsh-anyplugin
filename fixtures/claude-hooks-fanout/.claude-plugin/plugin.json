@@ -1,0 +1,5 @@
+{
+  "name": "hooks-fanout",
+  "description": "Conformance fixture: two PostToolUse hooks that must both run",
+  "version": "0.0.1"
+}

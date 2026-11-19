@@ -10,17 +10,21 @@
  * registered through `ctx.effect` so unloading the plugin removes it
  * (S1 finding 3).
  *
- * Matcher evaluation, tier order, first-decision-wins and per-handler budgets
- * belong to `dsh-anyplugin-intercept` (D13): every mount translates its hooks
- * into `classicHookRegistration`s and calls `runChain` in `observe` mode. This
- * file keeps only the host wiring, the trust re-hash, the spawn and the
- * verdict translation.
+ * Matcher evaluation, tier order, decision flow and per-handler budgets belong
+ * to `dsh-anyplugin-intercept` (D13): every mount translates its hooks into
+ * `classicHookRegistration`s and calls `runChain` with `fan-out` continuation.
+ * A hook decision never skips a sibling — upstream runs every matching hook —
+ * so each mount aggregates the collected decisions itself. This file keeps only
+ * the host wiring, the trust re-hash, the spawn and the verdict translation.
  *
- * PreToolUse runs *before* the host dispatches; the first denial wins, matching
- * the upstream "block" semantics. PostToolUse runs after the call settled and
- * only when it was accepted — a failed call takes the upstream's separate
- * PostToolUseFailure path, which S9 found on `tools/post-execute` but which is
- * not mounted yet.
+ * PreToolUse runs *before* the host dispatches; every matching hook runs and a
+ * denial from any of them becomes the block reason (the first denial by order
+ * wins), matching the upstream "block" semantics. PostToolUse runs after the
+ * call settled and only when it was accepted — a failed call takes the
+ * upstream's separate PostToolUseFailure path, which S9 found on
+ * `tools/post-execute` but which is not mounted yet. PostToolUse denial is
+ * feedback: it joins the additionalContexts instead of blocking a call that
+ * already ran.
  *
  * The five lifecycle mounts are emits or serial events, not waterfalls: the
  * handler runs, but a `block` decision or additionalContext has nowhere to go.
@@ -35,6 +39,7 @@ import {
   runChain,
   type ChainEvent,
   type ChainResult,
+  type Decision,
   type HandlerRegistration,
 } from '../../dsh-anyplugin-intercept/src/index.ts'
 import {
@@ -189,6 +194,21 @@ const textify = (value: unknown): string => {
 
 const textContext = (text: string): unknown => ({ role: 'user', content: [{ type: 'text', text }] })
 
+/**
+ * The text a PostToolUse handler contributed, in the order the handler
+ * produced it. A handler that has both an `additionalContext` and a denial
+ * returns one `result` decision carrying both, so the two contexts stay
+ * adjacent exactly as they did when the handler pushed them itself.
+ */
+const decisionTexts = (decision: Decision): string[] => {
+  if (decision.kind === 'text') return [decision.text]
+  if (decision.kind === 'deny') return [decision.reason]
+  if (decision.kind === 'result' && Array.isArray(decision.result)) {
+    return decision.result.filter((value): value is string => typeof value === 'string')
+  }
+  return []
+}
+
 export function apply(ctx: any, config: Config = {}): void {
   const hooks = config.hooks ?? []
   if (hooks.length === 0) return
@@ -268,22 +288,23 @@ export function apply(ctx: any, config: Config = {}): void {
     }
   }
 
-  const of = (event: string): MaterialHook[] =>
-    hooks.filter((hook) => hook.event === event).sort((a, b) => (a.matcher ?? '').localeCompare(b.matcher ?? ''))
+  const of = (event: string): MaterialHook[] => hooks.filter((hook) => hook.event === event)
 
   /**
    * One classic hook's kernel budget: the command's own timeout plus headroom.
    * The chain deadline is the sum of the budgets, because handlers run in
    * sequence; a slow handler is then cut off by the kernel at its own budget
-   * instead of stretching the turn past it.
+   * instead of stretching the turn past it. The kernel deadline equals the sum
+   * exactly; the grace is already inside each per-handler budget.
    */
   const hookBudgetMs = (hook: MaterialHook): number =>
     (hook.timeout === undefined ? DEFAULT_HOOK_TIMEOUT_MS : hook.timeout * 1000) + KERNEL_GRACE_MS
 
   const runKernel = async (event: ChainEvent, registrations: readonly HandlerRegistration[]): Promise<ChainResult> => {
     const result = await runChain(event, registrations, {
+      continuation: 'fan-out',
       timeoutMs: DEFAULT_HOOK_TIMEOUT_MS + KERNEL_GRACE_MS,
-      deadlineMs: registrations.reduce((total, registration) => total + (registration.timeoutMs ?? 0), 0) + KERNEL_GRACE_MS,
+      deadlineMs: registrations.reduce((total, registration) => total + (registration.timeoutMs ?? 0), 0),
     })
     try {
       config.onTrace?.(event.name, result)
@@ -325,7 +346,8 @@ export function apply(ctx: any, config: Config = {}): void {
           toolUseId: String(exec.callId),
         })
         const result = await runKernel(classicEvent('PreToolUse', payload), registrations)
-        if (result.decision.kind === 'deny') return { kind: 'deny', reason: result.decision.reason }
+        const denied = result.decisions.find((decision): decision is { kind: 'deny'; reason: string } => decision.kind === 'deny')
+        if (denied !== undefined) return { kind: 'deny', reason: denied.reason }
         return next()
       }),
     )
@@ -346,7 +368,9 @@ export function apply(ctx: any, config: Config = {}): void {
           toolResponse: result,
         })
         // PostToolUse is feedback, never a block: every matching handler runs
-        // and contributes contexts, so each one returns CONTINUE.
+        // and its collected decision is folded into additionalContexts. A
+        // denial is feedback too — the call already ran — so it is text here,
+        // never a chain stop.
         const registrations = post.map((hook, index) =>
           classicHookRegistration({
             event: hook.event,
@@ -357,18 +381,22 @@ export function apply(ctx: any, config: Config = {}): void {
               const changed = artifactChange(hook)
               if (changed !== undefined) {
                 warn(changed)
-                contexts.push(textContext(changed))
-                return CONTINUE
+                return { kind: 'text', text: changed }
               }
               const verdict = await execute(hook, event)
-              if (verdict.additionalContext !== undefined) contexts.push(textContext(verdict.additionalContext))
-              // A PostToolUse denial is feedback, not a block: the call already ran.
-              if (verdict.deny !== undefined) contexts.push(textContext(verdict.deny))
+              if (verdict.additionalContext !== undefined && verdict.deny !== undefined) {
+                return { kind: 'result', result: [verdict.additionalContext, verdict.deny] }
+              }
+              if (verdict.deny !== undefined) return { kind: 'deny', reason: verdict.deny }
+              if (verdict.additionalContext !== undefined) return { kind: 'text', text: verdict.additionalContext }
               return CONTINUE
             },
           }),
         )
-        await runKernel(classicEvent('PostToolUse', payload), registrations)
+        const run = await runKernel(classicEvent('PostToolUse', payload), registrations)
+        for (const outcome of run.decisions) {
+          for (const text of decisionTexts(outcome)) contexts.push(textContext(text))
+        }
         if (contexts.length === before.length) return decision
         return { ...decision, additionalContexts: contexts }
       }),

@@ -115,3 +115,40 @@ test(
     assert.match(probe.behavior.text, /anyplugin-hook: PostToolUse fired/)
   },
 )
+
+test(
+  'two matching PostToolUse hooks both run and both contexts reach the result',
+  { skip: harness ? false : harnessSkipReason() },
+  async () => {
+    const fanoutFixture = join(repoRoot, 'fixtures', 'claude-hooks-fanout')
+    const ir = readClaudePlugin(fanoutFixture, { source: 'plugin-dir:fixtures/claude-hooks-fanout' })
+    const gated = gateAll(ir)
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-hooks-fanout-'))
+    try {
+      const { entry } = emitPlugin(gated.ir, {
+        materializers,
+        sdkRoot: harness.modulesDir,
+        trusted: gated.decision.allowed,
+        dataDir,
+      })
+      const child = entry.config.find((item) => item.id === 'hook')
+      assert.equal(child.config.hooks.length, 2, 'both PostToolUse groups are mounted')
+
+      const probe = await probeWithDsh({
+        harnessDir: harness.harnessDir,
+        entry,
+        behavior: { tool: 'Write', arguments: { file_path: '/tmp/fanout.txt', content: 'hi' } },
+        timeoutMs: 10_000,
+      })
+
+      assert.ok(probe.behavior, 'the probe produced an observation')
+      assert.equal(probe.behavior.isError, false, probe.behavior.text)
+      assert.match(probe.behavior.text, /fanout: first/)
+      assert.match(probe.behavior.text, /fanout: second/)
+      assert.equal(readFileSync(join(dataDir, 'first.marker'), 'utf8'), 'first')
+      assert.equal(readFileSync(join(dataDir, 'second.marker'), 'utf8'), 'second')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  },
+)

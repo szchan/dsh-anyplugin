@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Write", "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/first.sh\"" } ] },
+      { "matcher": "Write", "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/second.sh\"" } ] }
+    ]
+  }
+}
