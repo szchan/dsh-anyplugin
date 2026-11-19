@@ -119,6 +119,7 @@ Claude Code to Codex to Cursor without rewrite; §9 makes it an acceptance test.
 | `dsh-anyplugin-dialect-portable` | `agent-plugins.org` 1.0 → IR (shared by Codex and future sources) |
 | `dsh-anyplugin-materialize-{skill,command,hook,mcp,agent,bin,theme,output-style,monitor,workflow}` | IR → one seam each |
 | `dsh-anyplugin-emit` | IR → `EntryTree` patch |
+| `dsh-anyplugin-install` | lock + scope replay → loader entries; idempotent reconcile |
 | `dsh-anyplugin-ui` | client plugin: install list, fidelity report, trust grants |
 | `dsh-anyplugin-conformance` | fixtures + record/replay diff (first-class, not an afterthought) |
 
@@ -213,6 +214,27 @@ Two axes, deliberately separated.
 source-agent cache layout reproduced (versioned `root`, stable `dataDir`) so
 `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}` keep their semantics.
 
+The lock is `installs.yml` under the profile's anyplugin dir, one record per
+installed plugin (D22):
+
+```yaml
+schema: "dsh-anyplugin/installs@1"
+plugins:
+  - dialect: "claude-code"
+    name: "skills-only"
+    version: "0.0.1"
+    root: "/…/artifacts/claude-code/skills-only/0.0.1"
+    dataDir: "/…/data/claude-code/skills-only"
+    pin: "claude-code@2.1.322"
+```
+
+`root` is versioned, `dataDir` is not. `pin` is the host version the artifact
+was read against (AGENTS.md §3.8), so a build that reads a different version
+rejects the record instead of silently reinterpreting it. The canonical writer
+sorts, quotes and writes atomically; the reader accepts only this subset and
+rejects anything else with a line number rather than repairing it — "cannot
+parse" must never become "uninstalled".
+
 **Axis 2 — enablement (user or project, user's choice).**
 
 ```
@@ -233,6 +255,12 @@ plugins:
 No mention = installed but inert. Disabling at project scope beats enabling at
 user scope — the narrower scope has the final word, which is the only rule that
 behaves sanely in a shared repo.
+
+`compileEntries(installs, { projectDir, enablements })` replays those files into
+one group entry per enabled plugin, with children from `emitPlugin`. A plugin
+that is installed but not enabled contributes **no entry**: cordis' group
+entries ignore `disabled` (S1), and "inert" is the absence of a fiber, not a
+disabled one.
 
 Consequences we surface in the UI: "installed, enabled in 2 of 5 projects",
 and a per-workspace badge. The reconciler is workspace-aware: it materializes
@@ -456,21 +484,39 @@ DSH on its own.
 
 ## 9. Reconcile
 
+Implemented in `packages/dsh-anyplugin-install` (v0.1). The pipeline is:
+
 ```
-read desired (installs.yml + scope layers)
-  → resolve per workspace
-  → parse sources (cached by content hash)
-  → plan (probe seams, annotate fidelity)
-  → diff against loader inventory
-  → loader.create / loader.update / loader.remove (stable ids)
-  → publish inventory + FidelityReport
+installs.yml + scope layers
+  → compileEntries(installs, { projectDir, enablements })
+  → one group entry per enabled plugin, children from emitPlugin
+  → reconcile(loader, entries)
+       create (absent) · update (options changed) · keep (equal)
+       remove (present but no longer desired) — capture fibers, remove, await settle
+  → { created, updated, removed, kept, failed }
 ```
 
-Ids: group `anyplugin:<dialect>:<plugin>`, child
-`anyplugin:<dialect>:<plugin>:<kind>`. Version lives in config, not the id, so
-updates restart in place. Reconcile is safe to run on every boot, after every
-install, and on file watch events; it converges and does nothing when state
-already matches.
+Ids are dialect-qualified and mangled (D7): group
+`anyplugin.<mangleId("<dialect>:<plugin>")>`, child
+`<mangleId("<dialect>:<plugin>")>.<surface>` (`skill`, `mcp`, `hook`). The
+colon-separated form is stored but unaddressable (S1 id grammar), and group
+children share the root store, so the bare surface id must be qualified or two
+plugins collide. Version lives in the record/config, not the id.
+
+`reconcile` touches only top-level ids under `anyplugin.`; every other entry is
+left alone. It compares normalized options with deep structural equality, so a
+second call with the same desired set writes nothing: `created`, `updated` and
+`removed` are empty and the ids are reported as `kept`. It is safe to run on
+every boot, after every install, and on file watch events.
+
+Two substrate obligations are part of the result, not hidden (S1). After each
+apply, the group and every child fiber must be active; otherwise the id is
+reported in `failed` (with the child id) and removed from
+`created`/`updated`/`kept` — group entries are not atomic, so "applied" has to
+be checked rather than assumed. Removal captures the group and subtree fibers
+before `loader.remove`, then waits for them to settle at state 4; state 5 is
+unloading, not done. `removed` therefore means the subtree was actually torn
+down, not merely dropped from `entries()`.
 
 ## 10. Verification plan
 
@@ -478,7 +524,7 @@ already matches.
   (21/21 checks, cordis 4.1.0 / cordis-plugin-loader 1.1.0 /
   cordis-plugin-group 1.1.0). See §10.1 for the findings and what they force.
 
-### 10.1 S1 result: the substrate works, but it hands us four obligations
+### 10.1 S1 result: the substrate works, but it hands us obligations
 
 A foreign plugin can be one group entry — `name: '@deepseek-ai/cordis-plugin-group'`,
 `group: true`, `config: EntryOptions[]` — and its children are ordinary entries
@@ -487,11 +533,11 @@ give us, and what the emitter therefore owes:
 
 | Property | What actually happens |
 | --- | --- |
-| **Atomicity** | Not provided. `EntryGroup.update()` `.catch()`es each child's `create()`, so one failing child leaves the healthy siblings applied; the failure surfaces only as a non-active fiber plus a log line. The emitter must check every child's fiber state and roll the group back itself. |
+| **Atomicity** | Not provided. `EntryGroup.update()` `.catch()`es each child's `create()`, so one failing child leaves the healthy siblings applied; the failure surfaces only as a non-active fiber plus a log line. Reconcile therefore checks every child's fiber state and reports the group in `failed` instead of calling it created; it does not pretend the group can be rolled back to a state that never existed. |
 | **Rollback** | Removing the group after a failure does leave no orphans — proven, but it is our call, not the loader's. |
 | **Identity** | `ensureId` reuses an existing id, so materializing the same tree twice takes the `update` path instead of duplicating. Ids are the identity, exactly as the reconcile design assumes. |
 | **Id grammar** | `EntryTree.sep = ':'` and `resolve()` splits on it, so an id containing `:` is stored but **unaddressable**. Foreign ids must be mangled (D7). |
-| **Teardown** | `remove()` returns void and drops the entry from `entries()` immediately, so `loader.await()` can return before disposers ran. Deterministic teardown = `Promise.resolve(fiber.dispose())` plus waiting for `fiber.state === 5`; `dispose()` is void for some fiber kinds, so never rely on its return value. |
+| **Teardown** | `remove()` returns void and drops the entry from `entries()` immediately, so `loader.await()` can return before disposers ran. Deterministic teardown = capture the fiber references, `remove()`, observe state 5 (unloading), then wait for state 4 (disposed, `uid === null`). `dispose()` is void for some fiber kinds and is not reliably awaitable, so never rely on its return value. |
 | **Plugin cleanup** | cordis has no `'dispose'` event. Cleanup is `ctx.effect(execute)` where `execute` returns the disposer — a materializer that registers teardown any other way silently never cleans up. |
 
 Consequences, all of which are now constraints on the emitter: rollback is

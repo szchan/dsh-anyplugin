@@ -700,3 +700,57 @@ idempotent step; the tests themselves are offline.
 - The Desktop install remains a first-class source and the pre-push evidence.
   D9's `asar` consequence stands: a truly archived bundle must be read with
   `ELECTRON_RUN_AS_NODE=1`.
+
+---
+
+## D23 — `installs.yml` is a canonical YAML subset, and the reader never repairs it
+
+**Status:** ratified 2026-11-19, with `dsh-anyplugin-install` (v0.1).
+
+The profile-global lock is a file the install layer owns, not profile config
+(AGENTS.md §3.4):
+
+```yaml
+schema: "dsh-anyplugin/installs@1"
+plugins:
+  - dialect: "claude-code"
+    name: "skills-only"
+    version: "0.0.1"
+    root: "/…/artifacts/claude-code/skills-only/0.0.1"
+    dataDir: "/…/data/claude-code/skills-only"
+    pin: "claude-code@2.1.322"
+```
+
+One record per installed plugin. Identity is `dialect:name`; `version` is
+metadata. `root` is the versioned artifact the dialect reads on every compile,
+`dataDir` is stable across updates (D2). `pin` is the host version the artifact
+was read against (AGENTS.md §3.8). `source` is optional provenance. Everything
+is a double-quoted JSON string, one field per line, records sorted by identity.
+
+**Why:** we need persistence, but DSH's profile config belongs to DSH — writing
+`cordis.patch.yml` at runtime would create a second writer and lose the
+loader's actual state. A lock we own can be replayed through the loader and
+compared against inventory. The file is machine-written and human-audited, so a
+deliberately small, canonical subset is enough; it needs no YAML dependency. JSON
+quoting removes YAML's implicit-typing traps (`1.2.3` stays a string, `no` is
+not a boolean). The strict reader is the safety property: the only alternative
+to parsing a malformed lock is guessing, and guessing "zero plugins" silently
+uninstalls everything while guessing a path could point `root` at the wrong
+artifact. `pin` makes a newer dialect fail loudly instead of reinterpreting an
+old record.
+
+**Consequences:**
+
+- A missing file is an empty lock. An existing file that does not parse is an
+  error — never an empty set.
+- Unknown keys, missing required fields, duplicate identities, relative paths,
+  unquoted values and non-canonical list forms are rejected with
+  `InstallsFileError.reason` and a line. `writeInstalls` validates before
+  writing and replaces the file via a same-directory temp file + rename.
+- The writer sorts records and fields, so the audit diff is stable even though
+  the file is generated.
+- `grants` live in the scope layers (D2), not here. Enabling a plugin that the
+  lock lists but the layers do not mention is inert.
+- Disabled plugins stay in the lock and produce no loader entry: group entries
+  ignore `disabled` (S1), so "inert" is represented by absence. Uninstall means
+  removing the record and reconciling, not writing a disabled flag.

@@ -25,9 +25,6 @@ _(empty — the next item is chosen from Next.)_
 - [ ] **Agents.** Needs a catalog seam (`dsh-subagent` has a provider registry,
       not a discoverable directory). Done when `fixtures/claude-agents` matches
       and the persona is selectable by description.
-- [ ] **Install / enable / uninstall.** `installs.yml` + three-layer scope
-      replay, materialized through the loader; no runtime writes to profile
-      config (AGENTS.md §3.4).
 
 ## Upstream proposals (union-only seams, T2)
 
