@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// arch-check: cli — this file is the command-line surface; stdout is its output.
 /**
  * The conformance rig CLI.
  *

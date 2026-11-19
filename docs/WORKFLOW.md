@@ -1,0 +1,120 @@
+# WORKFLOW.md — how more than one agent works on this repository
+
+This file is the protocol. `AGENTS.md` says what the code must be; this says how
+work moves. A worker that skips a step here produces a PR the master cannot
+merge, which wastes the worker's whole branch.
+
+## Roles
+
+| Role | Owns | May not |
+| --- | --- | --- |
+| **master** | the ticket queue, assignments, reviews, merges, the coverage totals, `docs/DECISIONS.md` | write feature code on `main` |
+| **worker** (subagent) | one ticket, in its own worktree, on its own branch | merge, push to `main`, edit files outside its `Touches`, change a decision |
+| **reviewer** (subagent) | one verdict per PR against the rubric below | merge, edit the branch |
+
+Only the master merges. Only a worker pushes a branch. `main` is protected: PRs
+only, the `verify` check must be green, history is linear (squash), no force
+pushes.
+
+## Isolation: one worktree per ticket
+
+Never work in the primary checkout. It is the master's, and parallel workers in
+the same directory overwrite each other's edits without any conflict marker ever
+appearing.
+
+```bash
+git fetch origin
+git worktree add .worktrees/ticket-<n> -b ticket/<n> origin/main
+cd .worktrees/ticket-<n>
+```
+
+`.worktrees/` is ignored by git. Remove the worktree when the PR merges
+(`git worktree remove .worktrees/ticket-<n>`); the master does this, not the
+worker, because the worker usually exits first.
+
+## Ticket lifecycle
+
+```
+ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/review ──merge──▶ closed
+                                   │
+                                   └──blocked──▶ ticket/blocked (comment why)
+```
+
+1. Pick a `ticket/ready` issue. Comment `claiming` **before** the first edit —
+   the comment is the lock. Then the master moves the label.
+2. Read `docs/DECISIONS.md` for every decision the ticket names, and
+   `docs/ARCHITECTURE.md` for the shape of the area.
+3. Work only inside `Touches`. A file you need but did not declare is a signal:
+   either say so in the PR body, or open a follow-up issue instead of widening
+   the diff.
+4. Run `npm run verify` in the worktree. It must be green **before** the PR
+   opens, including the tests that need the installed harness — those skip in
+   CI, so CI green is not evidence for them.
+5. Push the branch and open the PR with the template filled in. Then stop: do
+   not merge, do not push more commits unless a review asks for them.
+
+## Definition of done (a worker may not ship without all of these)
+
+- the acceptance checkboxes in the ticket are observably true;
+- `npm run verify` green locally (paste the summary line in the PR);
+- every new behaviour has an assertion (a unit test, or a fixture row that moved
+  because the behaviour really changed);
+- coverage rows moved **only** when they became true — the totals are the
+  master's to change and are reviewed as a claim, not as a number;
+- `docs/ARCHITECTURE.md` still describes the code, and a new decision is written
+  down rather than implied;
+- `npm run check:arch` passes (the layer graph, no eval, ESM, manifests).
+
+## Review rubric
+
+The reviewer answers each line, then states **approve** or **request changes**:
+
+1. **Ticket fit** — does the diff do this ticket, and only this ticket?
+2. **Contract** — does it bend one of AGENTS.md §3's nine non-negotiables? Name
+   the number if so. That is a request-changes, even if tests pass.
+3. **Fidelity honesty** — is every annotation's `reason` specific? Is a row
+   `match` only because something really ran? A row that turns green because a
+   test stopped asserting is a regression, not progress.
+4. **Shape** — are the changes inside the package that owns the concept? Does
+   anything import across a layer it should not? `check:arch` catches the
+   mechanical part; the reviewer judges the rest.
+5. **Tests that could fail** — would these assertions fail if the behaviour were
+   removed? Name one that would.
+6. **Docs** — decision entry, architecture update, TODO burn-down.
+7. **Noise** — unrelated formatting, debug leftovers, a second way to do
+   something the repo already does one way.
+
+The master reads the verdict and the diff stat, not the whole diff, and merges
+or bounces. Two bounces on the same ticket means the ticket was underspecified:
+the master rewrites it.
+
+## What CI proves, and what it cannot
+
+`verify` on GitHub runs `npm run check:arch` and `npm test` on a clean machine.
+
+- **Proves**: the tree still has its declared shape; pure packages behave;
+  nothing needs a secret; nothing needs this laptop.
+- **Cannot prove**: anything that needs the installed harness
+  (`DSH_INSTALL_DIR`, pin `dsh 0.2.2-rc.2`). Those tests `skip` in CI by design
+  (D9). Everything about fidelity lives there. That is why the PR template makes
+  you paste the local `npm run verify` output — CI green is a floor, not the
+  claim.
+
+Do not "fix" a skipped test by making it not need the harness. Either it is a
+pure test (then it belongs in a pure package) or it belongs to the oracle.
+
+## Money and secrets
+
+- No key in the repository, in an issue, in a PR, or in CI. The DeepSeek key
+  lives at `~/.config/dsh-anyplugin/deepseek.key` and is read by a local script.
+- `claude plugin eval` costs money per run. It is never part of CI. Run it only
+  when a ticket asks for behavioural evidence, with `--runs 1 --max-cost-usd`.
+- CI has no secrets and should never need one. A PR that adds a secret to CI is
+  a request-changes.
+
+## Escalation
+
+Worker cannot proceed without a decision → comment `BLOCKED: <question>` on the
+ticket, open nothing else, and stop. The master either answers in the issue (and
+records a decision if it outlives the ticket) or rewrites the ticket. A worker
+never resolves a blocked decision by choosing the easier path.

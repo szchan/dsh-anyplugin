@@ -1,0 +1,32 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # The shape of the tree is a gate, not a review comment.
+      - run: npm run check:arch
+      # Tests that need the installed harness (DSH_INSTALL_DIR) self-skip here.
+      # That is deliberate: CI proves structure and pure behaviour; the fidelity
+      # oracle can only run where the pin actually lives, and it runs before push.
+      - run: npm test
