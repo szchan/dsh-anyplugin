@@ -1,0 +1,11 @@
+{
+  "name": "dsh-anyplugin-trust",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Hash-pinned grants for exec-class artifacts: classify, authorize, gate, and the canonical grants.yml store.",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "dsh-anyplugin-ir": "*"
+  }
+}

@@ -17,6 +17,7 @@ import { isAbsolute } from 'node:path'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin, type EntryOptions, type Materializers } from '../../dsh-anyplugin-emit/src/index.ts'
+import { emptyGrants, gate, type Grants } from '../../dsh-anyplugin-trust/src/index.ts'
 
 import type { InstallRecord, Installs } from './installs.ts'
 import { validateInstalls } from './installs.ts'
@@ -37,6 +38,12 @@ export interface CompileOptions {
   home?: string
   /** Already-read layers. When present, no file is touched. */
   enablements?: Enablements
+  /**
+   * Hash-pinned exec grants (D25). Absent means an empty store, so exec
+   * artifacts stay off. The installer reads `grants.yml` next to
+   * `installs.yml` and passes it here.
+   */
+  grants?: Grants
 }
 
 const SUPPORTED_DIALECT = 'claude-code'
@@ -100,7 +107,14 @@ function compileRecord(record: InstallRecord, options: CompileOptions): EntryOpt
     fail(`plugin "${id}" was read at ${ir.pin.tool}@${ir.pin.version}, expected ${EXPECTED_PIN}`)
   }
 
-  const emitted = emitPlugin(ir, { materializers: options.materializers, sdkRoot: options.sdkRoot })
+  // Gate before emit: refused exec artifacts become `planned` pending nodes and
+  // the emitter is given only the targets whose current hash is granted.
+  const gated = gate(ir, options.grants ?? emptyGrants())
+  const emitted = emitPlugin(gated.ir, {
+    materializers: options.materializers,
+    ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
+    trusted: gated.decision.allowed,
+  })
   if (!emitted.entry) return undefined
   const scope = pluginScope(record.dialect, record.name)
   const children = emitted.entry.config

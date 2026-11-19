@@ -826,3 +826,100 @@ edit.
   path is deliberately not written into a golden, which must stay reproducible.
 - The behavior face (`claude plugin eval`) and the Desktop-specific DSH paths
   remain local evidence: CI holds the inventory gate, not the money gate.
+
+---
+
+## D25 — Exec grants are pinned to artifact bytes in `grants.yml`
+
+**Status:** ratified 2026-11-19, making AGENTS.md §3.5 true for the compile
+path (ticket #11).
+
+An `exec` artifact (`hook`, `monitor`, `bin`, `mod`) runs only when a grant
+for its current bytes exists. The grant store is `grants.yml` next to
+`installs.yml`, not a capability list inside an enablement line. A grant is
+`{plugin, capability, target, artifactHash, grantedAt, scope}`; a revoke is
+`{plugin, capability, target, scope}`. `plugin` is the install identity
+(`<dialect>:<plugin>`), because `hook:PostToolUse#0` is only unique inside a
+plugin and identical bytes in another plugin are a different artifact.
+
+**The store is a canonical subset, like D23.** The file starts with
+`schema: "dsh-anyplugin/grants@1"`, then `grants:` and `revokes:` lists, one
+field per line, every value a double-quoted JSON string. The writer sorts records, quotes
+values, writes fixed field order, and replaces the file through a
+same-directory temp file plus rename. The reader refuses unknown or missing
+fields, unquoted values, duplicate records, an unknown schema, or a malformed
+hash with a `file:line` reason and leaves the file alone. A missing file is an
+empty store; a malformed file is an error. "Cannot parse" must never become
+"everything is granted" or "everything is revoked".
+
+```yaml
+schema: "dsh-anyplugin/grants@1"
+grants:
+  - plugin: "claude-code:my-plugin"
+    capability: "exec"
+    target: "hook:PostToolUse#0"
+    artifactHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    grantedAt: "2026-11-19T00:00:00.000Z"
+    scope: "user"
+revokes: []
+```
+
+**Scope is a record field, not a file location.** The install identity is
+profile-global, so one file is the lock; each grant and revoke names `local`,
+`project`, or `user`. Resolution takes the narrowest scope that mentions a
+`(plugin, capability, target)` — `local` > `project` > `user` — and at that
+scope a revoke beats a grant. A narrower refusal never falls back to a broader
+grant: after a local revoke, an old user grant must not revive the artifact.
+This supersedes the sentence in D23 that grants live in the enablement scope
+layers (D2). An existing enablement line carrying `grants: […]` still parses
+and the field is ignored; it cannot pin bytes, so it cannot authorize.
+
+**Hash, not path or mtime.** `artifactHash` is `sha256:<64 lowercase hex>`
+over the bytes that run. mtime is forgeable and changes on checkout without a
+content change; a path can be edited in place, so neither is identity. The
+rules for a hook command:
+
+- a bare file invocation inside the plugin root (the exec form when `command`
+  itself resolves to such a file, or a shell command whose first word does and
+  which has no composition) pins that file. The argv that points at it is not hashed —
+  changing `--flag` changes the invocation, not the artifact, and must not
+  require a new grant. A byte-identical copy at another path still matches;
+- inline shell text pins the command text exactly as handed to `sh -c`; a
+  compound command that names files pins the text and every file operand's
+  bytes, so a script edit cannot ride an unchanged pipeline;
+- files under `bin/`, `monitors/`, and `mods/` pin their bytes.
+
+A hook target is `hook:<event>#<index>`; a directory artifact is
+`bin:<path>`, `monitor:<path>`, or `mod:<path>`. Renaming a directory
+artifact changes its target (and therefore needs a grant for the new target);
+renaming a hook's script does not change the target, and the hash decides.
+
+**Default-off, and refused is not skipped.** `authorize(plugin, grants)`
+returns allowed targets and refusals. A missing grant is `no-grant`, a matching
+revoke is `revoked`, and a matching grant with different bytes is
+`hash-mismatch`; the last carries both hashes so a UI can prompt, and it
+never silently re-grants. Every refusal also carries the exact `command` (and
+`args`, when the exec form has them). `gate` moves refused hooks out of the emittable
+`hooks` list into `pending` as `planned` with a reason. `emitPlugin` takes a
+`trusted` list (default empty) and reports a refused hook in `refused`, not
+`skipped`; the report prints `carry=refused:exec`, and the totals line counts
+it separately. A plugin whose only surface was refused contributes no group
+entry, so the hook does not reach the loader as a disabled child or "not run";
+it does not reach the loader.
+
+**Consequences:**
+
+- The conformance totals are unchanged: the hook fixture is granted explicitly
+  in the DSH oracle tests, so `11 declared / 9 matched / 1 missing / 1 refused`
+  still holds. A refused hook is a new row only when a fixture exercises refusal
+  — none does yet.
+- `bin`/`monitor`/`mod` rows are classified today but not gated, because no
+  materializer emits them and nothing runs. When the mod host lands (§7) it
+  must consume `authorize`, not invent a second gate.
+- An exec grant is not install authority, enablement, a network decision, or a
+  blanket `--yes`. It does not cover MCP or content-class artifacts, argv,
+  matcher, timeout, or files a script reads at run time. It is one artifact's
+  bytes at one scope.
+- The claim is against claude-code `2.1.322` and the DSH pins in D22; a pin
+  bump that changes hook semantics must revisit the hash rules, not just the
+  goldens.

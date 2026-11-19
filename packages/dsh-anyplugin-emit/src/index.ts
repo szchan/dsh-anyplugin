@@ -71,6 +71,12 @@ export interface EmitOptions {
   sdkRoot?: string
   /** Id prefix; `anyplugin.` keeps our subtree addressable in the same store. */
   prefix?: string
+  /**
+   * Exec targets (`hook:<event>#<index>`) that a hash-pinned grant authorized
+   * (D25). Default is empty: exec is default-off, so a caller that does not
+   * pass a decision cannot emit a hook by accident.
+   */
+  trusted?: readonly string[]
 }
 
 export interface EmitResult {
@@ -90,6 +96,12 @@ export interface EmitResult {
    * what the report calls carried.
    */
   skipped: string[]
+  /**
+   * Carried exec entries that were withheld because no grant authorized their
+   * current artifact hash, as `surface/name`. Distinct from `skipped`: the
+   * capability exists, but trust said no (D25).
+   */
+  refused: string[]
 }
 
 function skillConfig(skills: IrSkill[]): unknown {
@@ -117,6 +129,8 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   const children: EntryOptions[] = []
   const emitted: string[] = []
   const skipped: string[] = []
+  const refused: string[] = []
+  const trusted = new Set(options.trusted ?? [])
   // The three surfaces emit can place. An IR entry on any other surface
   // (agents, output-styles, pending themes, …) was never a decision emit made.
   const considered: string[] = []
@@ -168,7 +182,12 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   // Hooks are mounted on the tool waterfalls (D19). Only command handlers that
   // land on PreToolUse/PostToolUse are `equivalent` today; everything else is
   // `planned` and stays out of the entry — the report keeps it visible.
-  const hooks = ir.hooks.filter((hook) => carried(hook.annotation) && hook.command !== undefined)
+  const hooks = ir.hooks.filter(
+    (hook) =>
+      carried(hook.annotation) &&
+      hook.command !== undefined &&
+      trusted.has(`hook:${hook.event}#${hook.index}`),
+  )
   const hooksMaterializer = options.materializers.hooks
   if (hooks.length > 0 && hooksMaterializer !== undefined) {
     children.push({
@@ -188,11 +207,16 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     emitted.push('hooks')
   }
   for (const hook of ir.hooks) {
+    const name = `hooks/${hook.event}#${hook.index}`
     // Without a hook materializer no hook can be placed, carried or not.
-    if (!hooks.includes(hook) || hooksMaterializer === undefined) skipped.push(`hooks/${hook.event}#${hook.index}`)
+    if (!carried(hook.annotation) || hook.command === undefined || hooksMaterializer === undefined) {
+      skipped.push(name)
+    } else if (!hooks.includes(hook)) {
+      refused.push(name)
+    }
   }
 
-  if (children.length === 0) return { entry: null, emitted, considered, skipped }
+  if (children.length === 0) return { entry: null, emitted, considered, skipped, refused }
 
   const prefix = options.prefix ?? 'anyplugin.'
   return {
@@ -205,5 +229,6 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     emitted,
     considered,
     skipped,
+    refused,
   }
 }

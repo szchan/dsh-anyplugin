@@ -8,6 +8,7 @@ import test from 'node:test'
 
 import { emitPlugin } from '../src/index.ts'
 import { buildTransplantReport, formatTransplantReport } from '../../dsh-anyplugin-conformance/src/report.ts'
+import { classify, emptyGrants, grant, pluginIdentity } from '../../dsh-anyplugin-trust/src/index.ts'
 
 const annotation = (fidelity, reason) => ({ fidelity, reason })
 
@@ -88,6 +89,7 @@ function buildIr() {
 test('considered names the refused entries too', () => {
   const result = emitPlugin(buildIr(), {
     materializers: { skill: 'skill-materializer', mcp: 'mcp-materializer', hooks: 'hook-materializer' },
+    trusted: ['hook:PostToolUse#0'],
   })
 
   assert.deepEqual(result.considered, [
@@ -100,6 +102,19 @@ test('considered names the refused entries too', () => {
   ])
   assert.deepEqual(result.skipped, ['skills/refused', 'mcpServers/off', 'hooks/Stop#1'])
   assert.deepEqual(result.emitted, ['skills', 'mcpServers', 'hooks'])
+  assert.deepEqual(result.refused, [])
+})
+
+test('exec is default-off: an authorized seam still refuses an untrusted hook', () => {
+  const result = emitPlugin(buildIr(), {
+    materializers: { skill: 'skill-materializer', mcp: 'mcp-materializer', hooks: 'hook-materializer' },
+  })
+
+  assert.deepEqual(result.emitted, ['skills', 'mcpServers'])
+  assert.deepEqual(result.refused, ['hooks/PostToolUse#0'])
+  assert.deepEqual(result.skipped, ['skills/refused', 'mcpServers/off', 'hooks/Stop#1'])
+  assert.ok(result.entry)
+  assert.ok(!result.entry.config.some((child) => child.id === 'hook'))
 })
 
 test('considered does not name surfaces emit never places', () => {
@@ -162,7 +177,12 @@ test('a missing materializer refuses every considered entry on its surface', () 
   assert.deepEqual(result.entry.config.map((child) => child.id), ['skill'])
 
   // The report must not call a hook carried when no hook child was generated.
-  const report = buildTransplantReport(ir, { materializers })
+  // Grant the hook first: here the question is materializer absence, not trust.
+  let grants = emptyGrants()
+  for (const row of classify(ir)) {
+    grants = grant(grants, { plugin: pluginIdentity(ir), ...row }, { scope: 'user' })
+  }
+  const report = buildTransplantReport(ir, { materializers, grants })
   assert.deepEqual(
     report.components.map((component) => [component.surface, component.name, component.carried]),
     [
@@ -171,7 +191,7 @@ test('a missing materializer refuses every considered entry on its surface', () 
       ['hooks', 'Stop#1', false],
     ],
   )
-  assert.deepEqual(report.totals, { declared: 3, emitted: 1, skipped: 2 })
+  assert.deepEqual(report.totals, { declared: 3, emitted: 1, refused: 0, skipped: 2 })
   const text = formatTransplantReport(report)
   assert.match(text, /^hooks\/PostToolUse#0 {2}class=equivalent {2}carry=skipped$/m)
   assert.match(text, /^hooks\/Stop#1 {2}class=planned {2}carry=skipped$/m)

@@ -16,6 +16,13 @@ import test from 'node:test'
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { startHttpServer } from '../../../fixtures/claude-mcp-http/http-server.mjs'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
+import {
+  classify,
+  emptyGrants,
+  gate,
+  grant,
+  pluginIdentity,
+} from '../../dsh-anyplugin-trust/src/index.ts'
 import { diffInventories, emptyInventory } from '../src/inventory.ts'
 import { probeWithDsh } from '../src/oracles/dsh.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
@@ -77,7 +84,19 @@ const PREPARE = {
 async function inventoryFor(fixture) {
   const dir = join(repoRoot, 'fixtures', fixture)
   const ir = readClaudePlugin(dir, { source: `plugin-dir:fixtures/${fixture}` })
-  const { entry } = emitPlugin(ir, { materializers, sdkRoot: harness?.modulesDir })
+  // The inventory measures behaviour, so the hooks in it must be granted the
+  // way an install would: mint a store from the current classification, gate,
+  // and emit only the authorized targets.
+  let grants = emptyGrants()
+  for (const row of classify(ir)) {
+    grants = grant(grants, { plugin: pluginIdentity(ir), ...row }, { scope: 'user' })
+  }
+  const gated = gate(ir, grants)
+  const { entry } = emitPlugin(gated.ir, {
+    materializers,
+    sdkRoot: harness?.modulesDir,
+    trusted: gated.decision.allowed,
+  })
   const refused = new Set((ir.unsupported ?? []).map((item) => `${item.surface}:${item.name}`))
   if (!entry) {
     const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })

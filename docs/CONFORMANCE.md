@@ -73,6 +73,7 @@ npm run rig -- verify  --plugin fixtures/claude-skills-only \
 npm run rig -- diff    --expected <file> --actual <file> --verbose
 npm run rig -- report  fixtures/claude-commands-flat           # what the transplant would do, compile-side
 npm run rig -- report  fixtures/claude-commands-flat --json    # the same report for tooling
+npm run rig -- report  fixtures/claude-hooks-mcp --grants <file>  # authorize exec hooks (D25)
 npm run capture:fixtures                                      # re-capture all, review the JSON diff
 node scripts/fetch-claude.mjs                                 # install the pinned Claude CLI, print the binary
 npm test                                                      # every golden is re-probed
@@ -82,13 +83,23 @@ Probes run with a throwaway `HOME` and `CLAUDE_CONFIG_DIR`, so they cannot read
 or write the user's own Claude installation.
 
 `report` is the exception: it asks no host. It reads the plugin with the dialect,
-emits in memory, and prints the annotations the IR already carries — class,
-reason and each face — next to emit's carry decision and a totals line aggregated
-from those rows (`declared` from the IR, `emitted` / `skipped` from the carry
-decision; `carried = considered minus skipped`). That makes it runnable where
-neither `claude` nor DSH is installed, and it exits non-zero with
-`validation: FAIL` when `validateIr` refuses the IR (`report --ir <file>` reaches
-that path without a deliberately broken plugin on disk).
+gates exec artifacts with the grant store, emits in memory, and prints the
+annotations the IR already carries — class, reason and each face — next to
+emit's carry decision and a totals line aggregated from those rows.
+`declared` comes from the gated IR; `emitted` means a child carries it;
+`refused` is an exec artifact the IR would carry but trust withheld, with the
+capability after the colon (`refused:exec`); `skipped` is everything else the
+emitter could not place (`planned`, no seam, no materializer). The four counts
+partition the components, so they do not overlap.
+
+A refusal is not a validation failure: without `--grants` the default store is
+empty, so every command hook reports `refused:exec` and no hook child is
+emitted. `--grants <file>` reads a `grants.yml` (D25) and passes it to the same
+authorizer the installer uses; a malformed store exits 2 with the
+`file:line` reason. That makes `report` runnable where neither `claude` nor DSH
+is installed. It exits non-zero with `validation: FAIL` when `validateIr`
+refuses the IR (`report --ir <file>` reaches that path without a deliberately
+broken plugin on disk).
 
 ## The upstream side of the rig, and CI
 
