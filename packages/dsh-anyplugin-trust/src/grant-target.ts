@@ -38,14 +38,26 @@ function rowFor(plugin: ClaudePluginIr, target: string) {
   return { id, row }
 }
 
-/** Grant one concrete artifact of `plugin` at `scope`; rejects unknown targets. */
+/**
+ * Grant one concrete artifact of `plugin` at `scope`; rejects unknown targets.
+ *
+ * `expectedHash` is the TOCTOU guard for a caller that already showed the
+ * human a command line: if the bytes changed since that preview, the write is
+ * aborted rather than pinning bytes nobody consented to.
+ */
 export function grantFor(
   plugin: ClaudePluginIr,
   store: Grants,
   target: string,
-  options: { scope: Scope; grantedAt?: string },
+  options: { scope: Scope; grantedAt?: string; expectedHash?: string },
 ): Grants {
   const { id, row } = rowFor(plugin, target)
+  if (options.expectedHash !== undefined && row.artifactHash !== options.expectedHash) {
+    throw new GrantTargetError(
+      target,
+      `the plugin bytes changed while planning: ${target} was ${options.expectedHash} and is now ${row.artifactHash}; re-run the command`,
+    )
+  }
   return grant(
     store,
     { plugin: id, capability: row.capability, target: row.target, artifactHash: row.artifactHash },

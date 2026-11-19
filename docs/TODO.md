@@ -13,10 +13,7 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-- [ ] `#17` **Grant and revoke from the CLI** (in progress). A boundary a
-      human cannot see and cannot revoke is not a boundary; `rig grant`
-      prints the manifest and the command line, `rig revoke` names the
-      broader scope that still allows the plugin.
+Nothing claimed.
 
 ## Next
 
@@ -75,6 +72,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
   (local revoke beats user grant), un-granted hooks moved to `planned` and
   absent from the entries handed to the loader, and `rig report` carrying
   `refused:exec` (D25).
+- CLI grant/revoke (ticket #17): `rig grant` prints every ungranted exec
+  artifact's target, mode, hash and exact command, writes only with `--yes`,
+  is all-or-nothing unless `--partial` is explicit, and requires
+  `--replace-revoke` to clear a same-scope revoke; `rig revoke` names the
+  record that decides and exits non-zero while a narrower grant still allows
+  the artifact.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.

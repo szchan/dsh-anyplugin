@@ -74,6 +74,10 @@ npm run rig -- diff    --expected <file> --actual <file> --verbose
 npm run rig -- report  fixtures/claude-commands-flat           # what the transplant would do, compile-side
 npm run rig -- report  fixtures/claude-commands-flat --json    # the same report for tooling
 npm run rig -- report  fixtures/claude-hooks-mcp --grants <file>  # authorize exec hooks (D25)
+npm run rig -- grant   --plugin fixtures/claude-hooks-mcp --grants <file>  # preview: prints, writes nothing
+npm run rig -- grant   --plugin fixtures/claude-hooks-mcp --grants <file> --yes  # write at user scope
+npm run rig -- revoke  --plugin fixtures/claude-hooks-mcp --grants <file> \
+                        --target hook:PostToolUse#0 --scope project
 npm run capture:fixtures                                      # re-capture all, review the JSON diff
 node scripts/fetch-claude.mjs                                 # install the pinned Claude CLI, print the binary
 npm test                                                      # every golden is re-probed
@@ -90,7 +94,9 @@ emit's carry decision and a totals line aggregated from those rows.
 `refused` is an exec artifact the IR would carry but trust withheld, with the
 capability after the colon (`refused:exec`); `skipped` is everything else the
 emitter could not place (`planned`, no seam, no materializer). The four counts
-partition the components, so they do not overlap.
+partition the components, so they do not overlap. An allowed exec component
+also reports the hash the gate matched as `grantedHash`, printed as `grant:`;
+after a re-consent that is the new artifact hash without re-reading the store.
 
 A refusal is not a validation failure: without `--grants` the default store is
 empty, so every command hook reports `refused:exec` and no hook child is
@@ -100,6 +106,90 @@ authorizer the installer uses; a malformed store exits 2 with the
 is installed. It exits non-zero with `validation: FAIL` when `validateIr`
 refuses the IR (`report --ir <file>` reaches that path without a deliberately
 broken plugin on disk).
+
+`grant` and `revoke` are the authoring surface for that store. `grant` reads the
+plugin definition once, classifies every exec artifact, and re-hashes the files
+under the write lock. It prints each artifact **not already granted**: target,
+mode, artifact hash, source, and the exact command line as it will run (`shell`
+form shows `${CLAUDE_PLUGIN_ROOT}` expanded; exec form is a JSON argv array
+because the host spawns it without a shell). A changed artifact at the same
+scope is a re-consent, not an escalation: the preview prints `old sha256:… →
+new sha256:…`, and `--yes` replaces the record. Without `--yes` it never
+writes: it exits 1 if anything is pending or refused, and 0 when everything is
+already granted.
+
+Writing is all-or-nothing by default. If any row is unpinnable (missing,
+relative or outside-root program) or a narrower record decides, the command
+lists the refusal and writes nothing even with `--yes`. `--partial` is the
+explicit opposite: write the pinnable rows, name each skipped artifact, and
+still exit 1. A same-scope revoke is never erased implicitly: plain `--yes`
+lists the targets and exits 1 with the store byte-identical.
+`--replace-revoke` clears exactly those revokes, prints `cleared revoke:
+<target>` for each, and only then writes. A second run says `already granted`
+and rewrites nothing.
+
+`revoke` writes the revoke at `--scope` and then prints the resolution, not
+the intent: the deciding scope and record, every other-scope record (with
+`— decides` on the one that wins), and a verdict. Revoking at `project` while a
+`user` grant exists therefore prints `effective: REVOKED` and names the broader
+grant that is still on file; revoking at `user` while a `project` grant exists
+prints `effective: ALLOWED`, says the revoke did not take effect, warns, and
+exits 1, because the artifact still runs. A revoke that loses to a
+hash-mismatched narrower grant also says it did not take effect. When a grant
+and a revoke share the deciding scope the text says "at `<scope>` a revoke beats
+a grant", never "narrower"; when no grant records the target it says so.
+`--yes` is rejected for `revoke`: there is no preview/write split.
+
+`revoke` reads the record, not the plugin. It succeeds when the plugin
+directory is gone, the hook no longer exists, or the artifact is unpinnable:
+the store only needs `{capability, target, scope}`. When the plugin can be
+read, the resolution report is printed as usual; otherwise the output says the
+plugin could not be read, prints the stored target and grant hash, and writes
+the revoke anyway. A revoke for a classified target with no grant is still
+written: it is a deny record at that scope, not a no-op. An unknown target (no
+record at any scope and no such artifact in a readable plugin) still exits 2.
+
+Both commands accept `--json`; the shape is stable enough to paste into a
+review:
+
+```json
+{
+  "command": "grant",
+  "ok": true,
+  "plugin": "claude-code:hooks-mcp",
+  "root": "/abs/plugin",
+  "grants": "grants.yml",
+  "scope": "user",
+  "dryRun": false,
+  "wrote": true,
+  "replaceRevoke": false,
+  "partial": false,
+  "pending": [{"target": "hook:PostToolUse#0", "mode": "file", "artifactHash": "sha256:…", "command": "…"}],
+  "alreadyGranted": [],
+  "refused": [],
+  "skipped": [],
+  "clearsRevokes": [],
+  "remainingRevokes": [],
+  "granted": [{"target": "hook:PostToolUse#0", "scope": "user", "artifactHash": "sha256:…", "grantedAt": "…"}]
+}
+```
+
+`pending` is the preview that was written, so a successful write returns the
+granted rows there as well as in `granted`. `skipped` is non-empty only after
+`--partial` wrote around a refusal; `remainingRevokes` names broader revokes
+left on file, which the new narrower grant outranks.
+
+`revoke --json` carries `target`, `wrote`, `alreadyRevoked`, `pluginRead`,
+`artifact`, and `resolution` (`status` is `allowed` / `revoked` /
+`hash-mismatch` / `unresolved` / `no-record`, with `decidingScope`,
+`decidingKind`, `records`, `shadowedGrants`, `verdict`, and a `warning` when
+still allowed). `artifact` is `null` when the plugin no longer describes the
+target or the row is unsupported (the printed reason is the hasher's), so the
+report never shows a declaration as the artifact that was granted;
+`pluginRead:false` plus `pluginError` says the directory itself could not be
+read; `note` says which fallback was used. `ok`
+mirrors the exit status. A usage error, a malformed store, or an unknown target
+still exits 2 and prints to stderr.
 
 ## The upstream side of the rig, and CI
 
