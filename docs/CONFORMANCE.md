@@ -157,3 +157,28 @@ That is a byte-level statement about the context face, and it is the first one
 we have. DSH delivers the same body inside `<skill_content>` and does not
 substitute `arguments:`, so the skill annotation is `equivalent`, with reasons
 (D16).
+
+## The trace half
+
+Inventory says what loaded. A trace says what the host did with it. The rig
+reads a JSONL turn trace, normalizes it, and diffs two normalized streams
+positionally.
+
+```bash
+node packages/dsh-anyplugin-conformance/src/rig.ts trace \
+  --left  fixtures/traces/claude-code-2.1.322/skills-only-greet.jsonl \
+  --right fixtures/traces/claude-code-2.1.322/skills-only-greet.jsonl \
+  --root /tmp/evalprobe
+```
+
+`--root` is the plugin directory used in the trace; it is replaced with
+`<plugin>` so a rerun on another machine still matches. Exit code is 0 only
+when every row matches.
+
+Kept, in order: the `system:init` tool list, each `tool_use` (name and input),
+each `tool_result` text, text the host injects as a user message, and the
+assistant's own prose. Dropped: thinking, thinking-token telemetry, the result
+record, and — through the scrubber — paths, ids, and timestamps (D18).
+
+Alignment is by index, deliberately: one insertion shifts the rest into
+`differ`, which is the honest signal when order is part of the behavior.

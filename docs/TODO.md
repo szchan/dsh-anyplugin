@@ -27,12 +27,6 @@ claude-code `2.1.322`.
       test time or from the installed tree; never vendored), starting with
       `diff` because it ships its own `hooks/` and `tests/`. Done when one
       real mod loads in the host and its own test expectations pass against us.
-- [ ] **Behavior oracle on a DeepSeek backend.** Claude Code speaks the
-      Anthropic Messages API and DeepSeek serves that format at `/anthropic`,
-      so the real client runs here without an Anthropic account. Done when
-      `spikes/s6-hook-payloads/run.mjs --deepseek` captures the turn-interior
-      payloads and `claude plugin eval` runs a fixture end to end under the
-      rig. Needs one `DEEPSEEK_API_KEY`; the key stays in the environment.
 - [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel; events that
       have a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse`
       row matches.
@@ -85,6 +79,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Skill argument engine: the documented rules ($N zero-based, $name,
   the trailer, escapes) implemented and tested against a recorded trace;
   waiting on the tool-schema seam (D17).
+- Trace oracle (`rig trace`): a recorded turn normalizes into an ordered
+  event stream and diffs positionally; upstream-only until DSH can record what
+  reaches the model (D18).
 - Behavior oracle: `claude plugin eval` runs upstream suites and yields
   per-run traces; the skill envelope and its missing argument substitution were
   found there (D16).
@@ -97,4 +94,6 @@ with the exact anchor so the proposal is reviewable without a checkout.
   with 0 diff against the pinned goldens.
 - D7 id escaping, D8 pin-gated surface mapping, D9 installed-oracle-only,
   D10 two faces for commands, D11 name budget arithmetic, D12 owned MCP path,
-  D13 one owner for the chain's tier table and continuation modes.
+  D13 one owner for the chain's tier table and continuation modes, D15
+  payloads own the event table, D16 the trace is the standard answer, D17 the
+  skill argument rules and the missing channel, D18 the behavioral unit.

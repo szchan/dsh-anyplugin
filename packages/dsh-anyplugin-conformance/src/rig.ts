@@ -5,6 +5,7 @@
  *   rig capture --plugin <dir> [--out <file>] [--name <plugin-name>]
  *   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
  *   rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
+ *   rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
  *
  * `capture` records what the upstream host reports about a plugin. `verify`
  * replays the probe and diffs it against that golden, which is how a pin bump
@@ -16,6 +17,7 @@ import { diffInventories, normalizeInventory, type Inventory } from './inventory
 import { probeWithClaude, resolvePluginName } from './oracles/claude.ts'
 import { readInventoryFile } from './oracles/file.ts'
 import { formatDiff } from './report.ts'
+import { diffTraces, formatTraceDiff, normalizeTrace, readTraceFile } from './trace.ts'
 
 interface Args {
   command: string
@@ -51,7 +53,8 @@ function requiredOptions(args: Args, ...names: string[]): string[] {
 const USAGE = `usage:
   rig capture --plugin <dir> [--out <file>] [--name <plugin-name>]
   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
-  rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]`
+  rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
+  rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]`
 
 async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
@@ -98,6 +101,17 @@ async function main(argv: string[]): Promise<number> {
     })
     console.log(formatDiff(report, { verbose }))
     return report.ok ? 0 : 1
+  }
+
+  if (args.command === 'trace') {
+    const [leftPath, rightPath] = requiredOptions(args, 'left', 'right')
+    const root = args.options.get('root')
+    const options = typeof root === 'string' ? { root } : {}
+    const left = normalizeTrace(readTraceFile(leftPath), options)
+    const right = normalizeTrace(readTraceFile(rightPath), options)
+    const diff = diffTraces(left, right)
+    console.log(formatTraceDiff(diff, { verbose }))
+    return diff.summary.differing === 0 && diff.summary.onlyLeft === 0 && diff.summary.onlyRight === 0 ? 0 : 1
   }
 
   throw new Error(`unknown command "${args.command}"\n${USAGE}`)

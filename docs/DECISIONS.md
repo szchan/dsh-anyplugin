@@ -474,3 +474,48 @@ implemented and tested now:
   second parse when the seam lands.
 - `${CLAUDE_*}` substitution happens after arguments upstream and is out of
   scope here; treat it as a separate gap if a fixture needs it.
+
+## D18 — A trace is the behavioral unit, and normalization is part of the contract
+
+**Decision.** The rig compares hosts on a normalized event stream derived from
+each host's turn trace, not on raw transcripts and not on prose judgments.
+
+`normalizeTrace()` (`packages/dsh-anyplugin-conformance/src/trace.ts`) keeps
+only what a host controls, in order:
+
+| Kept | Source record |
+| --- | --- |
+| `init` with the offered tool names | `system:init` |
+| `tool-call` name and input | assistant `tool_use` blocks |
+| `tool-result` text | user `tool_result` blocks |
+| `user-text` injected into the model's context | user `text` blocks |
+| `assistant-text` the model's own prose | assistant `text` blocks |
+
+Erased before comparison: the plugin root (becomes `<plugin>`), eval sandbox
+paths (`<sandbox>`), UUIDs and session ids (`<uuid>`), tool ids and tool_use
+ids (`<tool-id>`), ISO timestamps (`<ts>`), thinking blocks, and the result
+record. Those differ per run and per machine; leaving them in makes every diff
+red for reasons that are not behavior.
+
+**Why.** D16 established that load-time inventory cannot see the difference
+that matters most: a skill can load perfectly and still be *delivered*
+differently. Only the message stream shows `Launching skill: …`, the
+`Base directory …` prefix, and the substituted body. The comparison has to be
+positional too — order is part of the behavior, so `diffTraces` aligns by index
+and reports `match` / `differ` / `only-left` / `only-right`. A single insertion
+cascades into `differ` rows, which is a signal, not noise.
+
+**Consequences.**
+
+- The recorded trace is stored raw under `fixtures/traces/<pin>/` with its
+  provenance; the normalizer is applied at read time so a stricter scrub is a
+  code change, not a re-capture.
+- `system:init`'s tool list is the *offered* set, and it is filtered by the
+  case's `allowed_tools` (the recorded case offers `Glob`, `Grep`, `Read`,
+  `Skill`, `Task`, `TaskStop`, `ToolSearch` — no `Bash` despite the prompt).
+  It is therefore a property of the case, not a universal claim about the host.
+- The rig can run this comparison today only on the upstream side: DSH has no
+  equivalent recorder yet, so `rig trace` diffs two recorded traces (a pin bump
+  or a second host) but cannot yet diff DSH against Claude Code. Closing that
+  loop needs a DSH-side source for model-visible messages; until then the trace
+  half is a regression oracle plus a written spec for that recorder.

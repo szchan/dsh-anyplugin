@@ -689,3 +689,16 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 - Which execution realm do we give a mod (`node:vm` like the dynamic-package
   runner, a worker, or the host thread)? It is a fidelity question *and* the
   security question, since mods can approve tool calls and read credentials.
+
+- **S7 — behavior face.** ✅ **Answered 2026-11-19** by `claude plugin eval` on
+  the DeepSeek backend: the fixture suite scores 1.0 and each run writes
+  `out/trace.jsonl`, the stream of tool calls, tool results and model-visible
+  messages. Two things came out of the first trace. The skill envelope is not
+  a bare body (D16), which moved every skill with arguments from `exact` to
+  `equivalent`. And the trace's `system:init` tool list is filtered by the
+  case's `allowed_tools` — the recorded case offers seven tools and no `Bash`
+  — so the list is a property of the case, not of the host (D18).
+  `normalizeTrace`/`diffTraces` and `rig trace` turn a trace into an ordered,
+  positionally diffed event stream. **Still open:** DSH has no recorder for
+  what reaches the model, so `rig trace` currently diffs two upstream traces;
+  the cross-host behavioral diff waits on that recorder.
