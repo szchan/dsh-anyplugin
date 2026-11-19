@@ -535,3 +535,28 @@ cascades into `differ` rows, which is a signal, not noise.
   or a second host) but cannot yet diff DSH against Claude Code. Closing that
   loop needs a DSH-side source for model-visible messages; until then the trace
   half is a regression oracle plus a written spec for that recorder.
+
+## D19 — Classic hooks ride the tool waterfalls, not the guard list
+
+**Status:** ratified 2026-11-19, from S8.
+
+`PreToolUse` maps to the `tools/pre-execute` waterfall and `PostToolUse` to
+`tools/post-execute`. `ctx.tools.guard` is not used for hooks.
+
+**Why:** the guard seam is monotonic denial only — it returns a reason, produces
+no result to inspect, and cannot inject context. The waterfalls carry exactly
+the two decisions a classic hook expresses: deny before dispatch (`{kind:'deny',
+reason}` becomes `Error: <reason>` for the model) and enrich or replace after it
+(`{kind:'accept', value, additionalContexts}`). A hook implementation on guards
+would have had to invent a second path for PostToolUse, which is how the
+"one interception kernel" rule (AGENTS §3.6) dies.
+
+**Consequences:**
+
+- The kernel's `observe` mode is the waterfall contract: `next()` continues,
+  and a handler that returns a decision does not stop its siblings.
+- Two facts are payload shape, not policy: a failed result's value cannot be
+  replaced, and a standalone call has no `agent`, so agent-derived payload
+  fields stay absent rather than guessed.
+- Events that are not tool-scoped still have no host; the missing-event list
+  shrinks to those, and each stays `planned` with a reason until it has one.

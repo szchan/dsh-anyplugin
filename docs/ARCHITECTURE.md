@@ -419,7 +419,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | event registered | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | waterfall listens (or probe review) | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | catalog API present | agent → prompt template, `derived` |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
@@ -712,3 +712,26 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   positionally diffed event stream. **Still open:** DSH has no recorder for
   what reaches the model, so `rig trace` currently diffs two upstream traces;
   the cross-host behavioral diff waits on that recorder.
+
+- **S8 — do hooks have a host?** ✅ **Answered 2026-11-19** by
+  `spikes/s8-hook-waterfalls` (installed harness, 10/10), and the answer
+  corrects §8's "hook interception absent": the tool pipeline already exposes
+  the two waterfalls classic hooks need.
+  - `tools/pre-execute` (waterfall) sees `{callId, name, arguments, agent}` for
+    a pending call and may return `{kind:'deny', reason}`; the model then reads
+    a failed result whose text is `Error: <reason>`. That is PreToolUse's
+    `permissionDecision: deny` / exit 2.
+  - `tools/post-execute` (waterfall) sees the normalized result and may return
+    `{kind:'accept', value}` (replace the projection) plus
+    `additionalContexts: UserMessage[]` (inject text the model reads next
+    turn). That is PostToolUse's `additionalContext` and output rewriting.
+  - Two contracts the spike pinned: a **failed** result cannot have its value
+    replaced (`tools/post-execute cannot replace the value of a failed
+    result`), and a standalone `ctx.tools.execute` call carries no `agent`, so
+    the payload's agent-derived fields are absent rather than invented.
+  - Consequences: the hook arm maps to these waterfalls instead of
+    `ctx.tools.guard` (guard is monotonic denial only, no result, no
+    injection), the interception kernel's `observe` mode matches the waterfall
+    contract exactly (`next()` = continue), and the missing-event list shrinks
+    to the events that are not tool-scoped (`SessionStart`, `UserPromptSubmit`,
+    `Stop`, `Notification`, …). See D19.

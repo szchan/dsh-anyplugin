@@ -22,9 +22,10 @@ _(empty — the next item is chosen from Next.)_
       test time or from the installed tree; never vendored), starting with
       `diff` because it ships its own `hooks/` and `tests/`. Done when one
       real mod loads in the host and its own test expectations pass against us.
-- [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel; events that
-      have a host today. Done when `fixtures/claude-hooks-mcp`'s `PostToolUse`
-      row matches.
+- [ ] **Hooks, classic arm.** `observe`-mode handlers on the kernel, driven
+      through `tools/pre-execute` and `tools/post-execute` (S8, D19). Done when
+      `fixtures/claude-hooks-mcp`'s `PostToolUse` row matches *because a real
+      call went through the pipeline*, not because a listener was registered.
 - [ ] **Agents.** Needs a catalog seam (`dsh-subagent` has a provider registry,
       not a discoverable directory). Done when `fixtures/claude-agents` matches
       and the persona is selectable by description.
@@ -74,6 +75,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Skill argument engine: the documented rules ($N zero-based, $name,
   the trailer, escapes) implemented and tested against a recorded trace;
   waiting on the tool-schema seam (D17).
+- S8: hooks ride the tool waterfalls (`tools/pre-execute` deny →
+  `Error: <reason>`, `tools/post-execute` value + `additionalContexts`); the
+  guard list is denial-only and is not used (D19).
 - Trace oracle (`rig trace`): a recorded turn normalizes into an ordered
   event stream and diffs positionally; upstream-only until DSH can record what
   reaches the model (D18).
