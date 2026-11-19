@@ -564,6 +564,13 @@ does `disable-model-invocation` change it?) need the behavior arm —
 oracle.
 - **S4 — dialect extensibility.** Add the `cursor` stub dialect; if it needs a
   materializer change, the IR has leaked and must be fixed.
+- **S5 — tool-name budget.** ✅ **Answered 2026-11-18** by `spikes/s5-tool-names`
+  (6/6): the 32-character cap is `dsh-mcp-client`'s config schema, not the
+  runtime — a 42-character namespace registers through `ctx.tools.register` and
+  the projected schema carries the name byte for byte. Nothing locally enforces
+  the 64-character contract either (a 95-character name is accepted), so that
+  budget must be self-imposed and the over-budget case annotated, not renamed.
+  Consequence: the MCP materializer owns its connection (D12).
 
 Fixtures: skills-only; hook-heavy (blocking + injection); MCP + commands;
 agents + bin + theme.

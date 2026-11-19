@@ -260,3 +260,46 @@ to the full `mcp__plugin_<plugin>_<server>__<tool>`.
   valid — and widens `plugin + server` to `49 − tool`. It is an upstream
   proposal, not something this repo can land, and it is not required for the
   small majority of plugins that fit in 24.
+
+---
+
+## D12 — The MCP materializer owns its connection
+
+**Status:** ratified 2026-11-18, on S5.
+
+**Question:** how do we produce byte-exact `mcp__plugin_<plugin>_<server>__<tool>`
+names when DSH's client caps the namespace at 32 characters?
+
+**S5 answer:** the cap is not in the runtime. `ToolsService.register()` validates
+the output shape, duplicate names and the reserved `run_code` name — nothing
+else. A 42-character namespace (60-character tool name) registers, and the
+projected schema carries the name byte for byte. Even a 95-character name is
+accepted, so the 64-character contract is not enforced locally either.
+`SERVER_NAME_PATTERN` rejects that same namespace, which locates the cap in
+`dsh-mcp-client`'s config schema.
+
+**Decision:** `dsh-anyplugin-materialize-mcp` connects to the plugin's MCP
+servers itself — over `@modelcontextprotocol/sdk`, which the harness already
+ships — and registers tools on `ctx.tools` under Claude's exact name. It does
+not configure `dsh-mcp-client`, and it never patches the installation.
+
+Rules we impose on ourselves, because the runtime will not:
+
+- Names must match `[A-Za-z0-9_-]+` and stay ≤ 64 characters — the same
+  contract Claude's tool layer uses. Over budget is `unsupported` with a
+  reason, never a runtime rename.
+- No truncation, no hash suffix: a silently renamed tool is a passing smoke
+  test and a broken claim (D11).
+- Scope: stdio and streamable-http first. OAuth/credential wiring, resources and
+  prompts are `planned` until implemented, each with its own annotation.
+
+**Consequences:**
+
+- Lifecycle, reconnect, cancellation and server-instruction injection are ours
+  now. That is real cost, and it is covered by our tests instead of inherited
+  from `dsh-mcp-client`'s.
+- `dsh-mcp-client` stays in use for MCP servers the user configures directly
+  (profile or agent config). Our materializer serves only plugin-declared
+  servers, so the two can never fight over one namespace.
+- Raising DSH's 32-character cap upstream (D11) is no longer on the critical
+  path. It stays a proposal, not a dependency.
