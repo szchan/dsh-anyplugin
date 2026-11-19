@@ -75,7 +75,7 @@ export interface IrHook {
   kind: 'hook'
   event: string
   matcher?: string
-  /** Position within the event's handler list, for stable identity. */
+  /** Flat position within the event, across matcher groups, for stable identity. */
   index: number
   /** `command` | `http` | `mcp_tool` | `prompt` | `agent` | `unknown`. */
   handler: string

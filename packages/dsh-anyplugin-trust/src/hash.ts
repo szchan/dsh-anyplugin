@@ -3,16 +3,17 @@
  *
  * A grant pins **bytes that will run**, never a path or an mtime:
  *
- * - hook whose `command` names a file inside the plugin root (an exec-form
- *   `command` + `args`, or a shell command with an absolute file operand after
- *   `${CLAUDE_PLUGIN_ROOT}` expansion): sha256 of that file's bytes. The argv
- *   that points at the file is not part of the hash — changing `--flag` does
- *   not require a new grant, changing the script does.
- * - hook with an inline shell command (`echo …`, `cat … | …`) or a file
- *   operand we cannot resolve unambiguously: sha256 of the command text exactly
- *   as it is handed to `sh -c` / `spawn`. There is no file to pin, so the text
- *   is the artifact. If a compound command also names files, the hash covers
- *   the text **and** every file operand's bytes, so neither a text edit nor a
+ * - a hook whose command names a file (exec-form `command`/`args`, or a shell
+ *   command with a file operand inside the plugin root after
+ *   `${CLAUDE_PLUGIN_ROOT}` expansion): sha256 over that file's bytes. Every
+ *   file operand is pinned, including `node /abs/script.js` and
+ *   `cd "${CLAUDE_PLUGIN_ROOT}" && ./script.sh`. Flags are not artifacts:
+ *   changing `--flag` does not require a new grant, changing a script or data
+ *   file the command names does.
+ * - a hook with no file operand (`echo …`, `cat … | …` with nothing on disk):
+ *   sha256 of the command text exactly as it is handed to `sh -c` / `spawn`.
+ *   A compound command that names files pins both its structure (the pipeline,
+ *   not its flags) and every file operand's bytes, so neither a text edit nor a
  *   script edit can ride the old grant.
  * - `bin/`, `monitors/`, `mods/`: sha256 of the file bytes.
  *
@@ -40,19 +41,20 @@ function hashCommandText(command: string, args?: readonly string[]): string {
   return hashBytes(args === undefined ? command : [command, ...args].join('\u0000'))
 }
 
-/** Composite for compound shell commands: the text plus the bytes it names. */
-function hashComposite(command: string, files: readonly string[], root: string): string {
-  const parts = [command]
-  for (const file of files) parts.push(`${relativePath(root, file)}\u0000${hashFile(file)}`)
+/**
+ * Composite for commands that name files: the command's *structure* plus the
+ * bytes of every file operand, never the flags. A pure flag change is not an
+ * artifact change (D25), but adding/removing a pipeline stage is.
+ */
+function hashComposite(structure: string, files: readonly string[]): string {
+  const parts = [structure]
+  for (const hash of files.map(hashFile).sort()) parts.push(hash)
   return hashBytes(parts.join('\u0000'))
 }
 
-/** A shell composition operator or variable makes the first word not the whole program. */
-const COMPOSITION = /[|&;<>()`]|\$/
-
 /**
  * A deliberately small shell word splitter: quotes and backslash escapes are
- * honoured, expansions are not performed. Enough to find a file operand in a
+ * honoured, expansions are not performed. Enough to find file operands in a
  * `command:` string without pretending to be a shell.
  */
 export function shellWords(command: string): string[] {
@@ -116,21 +118,69 @@ function relativePath(root: string, file: string): string {
   return relative(root, file).split('\\').join('/')
 }
 
+/**
+ * Resolve one word to a file operand under the plugin root, if it is one.
+ *
+ * Absolute paths (after `${CLAUDE_PLUGIN_ROOT}` expansion) are accepted. A
+ * relative word is accepted when it looks like a path (`.`, `..`, or a slash)
+ * or when `bare` is set (an exec-form argument may be `scripts/hook.js`). A
+ * flag is never a file operand, and neither is a bare command name such as
+ * `node` — otherwise a file named like the interpreter would be pinned by
+ * accident.
+ */
+function fileOperand(word: string, root: string, bare: boolean): string | undefined {
+  if (word === '' || word.startsWith('-')) return undefined
+  const candidate = expandRoot(word, root)
+  if (isAbsolute(candidate)) {
+    return insideRoot(root, candidate) && isFile(candidate) ? candidate : undefined
+  }
+  if (!bare && !word.startsWith('.') && !word.includes('/')) return undefined
+  const resolved = resolve(root, candidate)
+  return insideRoot(root, resolved) && isFile(resolved) ? resolved : undefined
+}
+
+/** The shell words that are structure rather than flags or file operands. */
+function shellStructure(words: readonly string[], files: readonly Map<number, string>): string {
+  const structure: string[] = []
+  let skipFlagValue = false
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index] as string
+    if (files.has(index)) {
+      skipFlagValue = false
+      continue
+    }
+    if (skipFlagValue) {
+      skipFlagValue = false
+      continue
+    }
+    if (word.startsWith('-') && word.length > 1) {
+      skipFlagValue = !word.includes('=')
+      continue
+    }
+    structure.push(word)
+  }
+  return structure.join(' ')
+}
+
 export interface HookArtifact {
   artifactHash: string
   /** `hooks/hooks.json` for inline text, or the plugin-relative file that was hashed. */
   sourcePath: string
-  /** `file` when bytes on disk were hashed, `inline` when the command text was. */
+  /** `file` when bytes on disk were hashed, `inline` when the command text/structure was. */
   mode: 'file' | 'inline'
 }
 
 /**
  * Hash what one command hook will actually run.
  *
- * Exec form (`args` present) names the program directly. Shell form is parsed
- * for the first absolute file operand inside the plugin root — an absolute path
- * is the only unambiguous file reference here, because the hook runner does not
- * set `cwd` to the plugin root. Everything else is pinned as command text.
+ * Exec form (`args` present) names its program and file arguments directly;
+ * shell form is parsed into words and every file operand is resolved under the
+ * plugin root, including a relative `./script.sh` after `cd
+ * "${CLAUDE_PLUGIN_ROOT}"`. Flags and other argv are not artifacts: changing
+ * `--flag` does not need a new grant, changing a file the command names does.
+ *
+ * When no file operand can be resolved the command text itself is the
+ * artifact, because there is nothing else to pin.
  */
 export function hashHook(root: string, hook: IrHook): HookArtifact {
   const command = hook.command
@@ -140,30 +190,44 @@ export function hashHook(root: string, hook: IrHook): HookArtifact {
   const base = resolve(root)
 
   if (hook.args !== undefined) {
-    const candidate = expandRoot(command, base)
-    if (isAbsolute(candidate) && insideRoot(base, candidate) && isFile(candidate)) {
-      return { artifactHash: hashFile(candidate), sourcePath: relativePath(base, candidate), mode: 'file' }
+    const files = new Set<string>()
+    const commandFile = fileOperand(command, base, false)
+    if (commandFile !== undefined) files.add(commandFile)
+    for (const arg of hook.args) {
+      const file = fileOperand(arg, base, true)
+      if (file !== undefined) files.add(file)
+    }
+    if (files.size > 0) {
+      const list = [...files]
+      if (list.length === 1) {
+        return { artifactHash: hashFile(list[0]), sourcePath: relativePath(base, list[0]), mode: 'file' }
+      }
+      return {
+        artifactHash: hashComposite('', list),
+        sourcePath: list.length === 1 ? relativePath(base, list[0] as string) : hook.sourcePath,
+        mode: list.length === 1 ? 'file' : 'inline',
+      }
     }
     return { artifactHash: hashCommandText(command, hook.args), sourcePath: hook.sourcePath, mode: 'inline' }
   }
 
   const words = shellWords(command)
-  const operands: string[] = []
-  for (const word of words) {
-    if (word.startsWith('-')) continue
-    const candidate = expandRoot(word, base)
-    if (!isAbsolute(candidate)) continue
-    if (!insideRoot(base, candidate)) continue
-    if (!isFile(candidate)) continue
-    operands.push(candidate)
+  const filesByWord = new Map<number, string>()
+  for (let index = 0; index < words.length; index++) {
+    const file = fileOperand(words[index] as string, base, false)
+    if (file !== undefined) filesByWord.set(index, file)
   }
-  const first = words.length > 0 ? expandRoot(words[0], base) : ''
-  const composed = COMPOSITION.test(expandRoot(command, base))
-  if (!composed && first !== '' && isAbsolute(first) && isFile(first) && insideRoot(base, first)) {
-    return { artifactHash: hashFile(first), sourcePath: relativePath(base, first), mode: 'file' }
-  }
-  if (operands.length > 0) {
-    return { artifactHash: hashComposite(command, operands, base), sourcePath: hook.sourcePath, mode: 'inline' }
+  const files = [...new Set(filesByWord.values())]
+  if (files.length > 0) {
+    const structure = shellStructure(words, filesByWord)
+    if (files.length === 1 && structure === '') {
+      return { artifactHash: hashFile(files[0]), sourcePath: relativePath(base, files[0]), mode: 'file' }
+    }
+    return {
+      artifactHash: hashComposite(structure, files),
+      sourcePath: hook.sourcePath,
+      mode: 'inline',
+    }
   }
   return { artifactHash: hashCommandText(command), sourcePath: hook.sourcePath, mode: 'inline' }
 }

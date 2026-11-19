@@ -18,16 +18,24 @@ import {
   matcherMatches,
   runCommandHook,
 } from '../../dsh-anyplugin-hook-runner/src/index.ts'
+import { hashHook } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const name = 'anyplugin-materialize-hook'
 export const inject = ['tools']
 
 export interface MaterialHook {
   event: string
+  /** Flat per-event position; names the artifact in refusal messages. */
+  index?: number
   matcher?: string
   command: string
   args?: string[]
   timeout?: number
+  /** D25 pin carried by the emitter; absent on a hand-written config. */
+  artifactHash?: string
+  /** How the pin was taken: bytes on disk, or the command text/structure. */
+  artifactMode?: 'file' | 'inline'
+  artifactRoot?: string
 }
 
 export interface Config {
@@ -68,6 +76,45 @@ export function apply(ctx: any, config: Config = {}): void {
   if (config.pluginData !== undefined) env.CLAUDE_PLUGIN_DATA = config.pluginData
   env.CLAUDE_PROJECT_DIR = process.cwd()
 
+  /**
+   * Re-check the bytes immediately before every spawn (D25). A grant is
+   * checked at reconcile time, but the file can change between reconcile and
+   * the next tool call; pinning the hash in the child config and re-reading
+   * here is what makes "any change invalidates" true at the only moment it
+   * matters. One file read per matched hook call is acceptable: a hook that
+   * runs is already spawning a process.
+   */
+  const artifactChange = (hook: MaterialHook): string | undefined => {
+    if (hook.artifactHash === undefined) return undefined
+    const root = hook.artifactRoot ?? config.pluginRoot
+    if (root === undefined) {
+      return `refused ${hook.event}#${hook.index ?? 0}: no plugin root to re-hash the artifact; pinned ${hook.artifactHash}`
+    }
+    const invocation = hook.args === undefined
+      ? hook.command
+      : [hook.command, ...hook.args].map((part) => JSON.stringify(part)).join(' ')
+    let current
+    try {
+      current = hashHook(root, {
+        kind: 'hook',
+        event: hook.event,
+        index: hook.index ?? 0,
+        handler: 'command',
+        command: hook.command,
+        ...(hook.args === undefined ? {} : { args: hook.args }),
+        sourcePath: 'hooks/hooks.json',
+        annotation: { fidelity: 'exact', reason: 'materializer re-hash adapter' },
+      })
+    } catch (error) {
+      return `refused ${hook.event}#${hook.index ?? 0}: artifact cannot be re-hashed (${(error as Error).message}); pinned ${hook.artifactHash}; command: ${invocation}`
+    }
+    if (hook.artifactMode !== undefined && current.mode !== hook.artifactMode) {
+      return `refused ${hook.event}#${hook.index ?? 0}: artifact is no longer a ${hook.artifactMode} (pinned ${hook.artifactHash}, now ${current.mode} ${current.artifactHash}); command: ${invocation}`
+    }
+    if (current.artifactHash === hook.artifactHash) return undefined
+    return `refused ${hook.event}#${hook.index ?? 0}: artifact changed since the grant (pinned ${hook.artifactHash}, now ${current.artifactHash}); command: ${invocation}`
+  }
+
   const warn = (message: string): void => {
     const logger = ctx.logger
     if (typeof logger?.warn === 'function') logger.warn(message)
@@ -83,6 +130,8 @@ export function apply(ctx: any, config: Config = {}): void {
       ctx.on('tools/pre-execute', async (exec: ExecView, next: () => Promise<unknown>) => {
         for (const hook of pre) {
           if (!matcherMatches(hook.matcher, exec.name)) continue
+          const changed = artifactChange(hook)
+          if (changed !== undefined) return { kind: 'deny', reason: changed }
           const payload = buildHookPayload('PreToolUse', {
             toolName: exec.name,
             toolInput: exec.arguments,
@@ -107,6 +156,12 @@ export function apply(ctx: any, config: Config = {}): void {
         const contexts: unknown[] = [...(decision.additionalContexts ?? [])]
         for (const hook of post) {
           if (!matcherMatches(hook.matcher, exec.name)) continue
+          const changed = artifactChange(hook)
+          if (changed !== undefined) {
+            warn(changed)
+            contexts.push({ role: 'user', content: [{ type: 'text', text: changed }] })
+            continue
+          }
           const payload = buildHookPayload('PostToolUse', {
             toolName: exec.name,
             toolInput: exec.arguments,

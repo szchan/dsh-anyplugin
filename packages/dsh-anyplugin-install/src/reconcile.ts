@@ -31,6 +31,7 @@
 import { isDeepStrictEqual } from 'node:util'
 
 import type { EntryOptions } from '../../dsh-anyplugin-emit/src/index.ts'
+import type { Refusal, TrustDecision } from '../../dsh-anyplugin-trust/src/index.ts'
 
 import { ENTRY_PREFIX } from './identity.ts'
 
@@ -76,9 +77,21 @@ export interface ReconcileResult {
   failed: ReconcileFailure[]
 }
 
+/** A refused exec artifact, tagged with the plugin whose compile decision produced it. */
+export interface RefusedExec extends Refusal {
+  plugin: string
+}
+
 export interface ReconcileOptions {
   /** How long to wait for a removed subtree to settle disposed. Default 2000 ms. */
   disposeTimeoutMs?: number
+  /**
+   * Trust decisions from `compileReport`. Reconcile cannot put a refused
+   * artifact in the loader (there is no entry to carry it), so the caller gets
+   * them through `onRefused` and can print/prompt without inventing a group.
+   */
+  decisions?: readonly TrustDecision[]
+  onRefused?: (refused: readonly RefusedExec[]) => void
 }
 
 export interface DisposalObservation {
@@ -252,6 +265,14 @@ export async function reconcile(
   desired: readonly EntryOptions[],
   options: ReconcileOptions = {},
 ): Promise<ReconcileResult> {
+  if (options.onRefused !== undefined) {
+    options.onRefused(
+      (options.decisions ?? []).flatMap((decision) =>
+        decision.refused.map((refusal) => ({ plugin: decision.plugin, ...refusal })),
+      ),
+    )
+  }
+
   const desiredById = new Map<string, EntryOptions>()
   for (const entry of desired) {
     if (!entry || typeof entry.id !== 'string' || entry.id.length === 0) {

@@ -1,11 +1,12 @@
-// Trust gate (D24): grants pin the bytes that run, scope decides, and a
+// Trust gate (D25): grants pin the bytes that run, scope decides, and a
 // refused hook must never appear in the entries the loader receives.
 //
 // These are filesystem tests on purpose. The rule is "hash, not path/mtime":
 // the only convincing assertion flips a byte and watches the grant stop
-// matching. Nothing here executes a hook script.
+// matching. The materializer cases execute harmless fixture scripts, because
+// "both groups run" and "the edited bytes do not run" are behavioral claims.
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import {
   chmodSync,
   mkdirSync,
@@ -22,7 +23,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
-import { compileEntries } from '../../dsh-anyplugin-install/src/index.ts'
+import { compileEntries, compileReport, reconcile } from '../../dsh-anyplugin-install/src/index.ts'
+import { apply as applyHooks } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
 import {
   authorize,
   classify,
@@ -31,10 +33,13 @@ import {
   grant,
   hashBytes,
   hashFile,
+  hashHook,
   pluginIdentity,
+  parseGrants,
   readGrants,
   revoke,
   serializeGrants,
+  updateGrants,
   writeGrants,
   GrantsFileError,
 } from '../../dsh-anyplugin-trust/src/index.ts'
@@ -170,7 +175,7 @@ test('one-byte mutation of the hook script refuses the grant and reports both ha
   }
 })
 
-test('a refused hook never reaches the loader: compileEntries has no group for it', () => {
+test('a refused hook produces no loader entry: compileEntries has no group for it', () => {
   const { dir, ir } = makePlugin()
   try {
     const installs = installsFor(ir)
@@ -439,6 +444,287 @@ test('rig report reads --grants and refuses without it', () => {
     })
     assert.equal(malformed.status, 2)
     assert.match(malformed.stderr, /grants\.yml:\d+: expected a `revokes:` section/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('exec-form args: the script the argv names is pinned, a flag change is not', () => {
+  const { dir, script, ir: initial } = makePlugin()
+  try {
+    rewriteCommand(dir, { command: 'node', args: [script, '--verbose'] })
+    const execIr = readClaudePlugin(dir)
+    const [row] = classify(execIr)
+    assert.equal(row.mode, 'file')
+    assert.equal(row.artifactHash, hashFile(script), 'the argv text alone must not be the artifact')
+    assert.equal(row.sourcePath, 'scripts/hook.sh')
+
+    // A pure flag change is not a new artifact.
+    rewriteCommand(dir, { command: 'node', args: [script, '--quiet'] })
+    const flagOnly = readClaudePlugin(dir)
+    assert.deepEqual(authorize(flagOnly, userGrant(execIr, row)).allowed, [row.target])
+
+    // A byte in the script is.
+    writeFileSync(script, '#!/bin/sh\necho changed\n', 'utf8')
+    assert.equal(authorize(readClaudePlugin(dir), userGrant(execIr, row)).refused[0].code, 'hash-mismatch')
+  } finally {
+    assert.equal(initial.hooks.length, 1)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('cd-relative shell script is a file operand; changing the script invalidates, changing a flag does not', () => {
+  const { dir, script } = makePlugin({ command: 'cd "${CLAUDE_PLUGIN_ROOT}" && ./scripts/hook.sh --verbose' })
+  try {
+    const ir = readClaudePlugin(dir)
+    const [row] = classify(ir)
+    assert.equal(row.mode, 'inline', 'the cd skeleton is pinned with the one file operand')
+    assert.notEqual(row.artifactHash, hashFile(script))
+
+    rewriteCommand(dir, { command: 'cd "${CLAUDE_PLUGIN_ROOT}" && ./scripts/hook.sh --quiet' })
+    assert.deepEqual(authorize(readClaudePlugin(dir), userGrant(ir, row)).allowed, [row.target])
+
+    writeFileSync(script, '#!/bin/sh\necho changed\n', 'utf8')
+    assert.equal(authorize(readClaudePlugin(dir), userGrant(ir, row)).refused[0].code, 'hash-mismatch')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a grant and a revoke at the same scope refuse: revoke wins', () => {
+  const { dir, ir } = makePlugin()
+  try {
+    const [row] = classify(ir)
+    const spec = {
+      plugin: pluginIdentity(ir),
+      capability: row.capability,
+      target: row.target,
+      artifactHash: row.artifactHash,
+    }
+    const store = revoke(grant(emptyGrants(), spec, { scope: 'local' }), {
+      plugin: spec.plugin,
+      capability: spec.capability,
+      target: spec.target,
+    }, { scope: 'local' })
+    const decision = authorize(ir, store)
+    assert.deepEqual(decision.allowed, [])
+    assert.equal(decision.refused[0].code, 'revoked')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('classify refuses two artifacts with the same target instead of silently gating one', () => {
+  const { dir, ir } = makePlugin()
+  try {
+    const duplicate = { ...ir, hooks: [ir.hooks[0], { ...ir.hooks[0] }] }
+    assert.throws(() => classify(duplicate), /duplicate exec target "hook:PostToolUse#0"/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('two matcher groups under one event keep distinct per-event indexes and both run', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-trust-groups-'))
+  try {
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true })
+    mkdirSync(join(dir, 'hooks'), { recursive: true })
+    mkdirSync(join(dir, 'scripts'), { recursive: true })
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), `${JSON.stringify({ name: 'groups', version: '0.0.1' })}\n`)
+    writeFileSync(
+      join(dir, 'hooks', 'hooks.json'),
+      `${JSON.stringify({
+        hooks: {
+          PostToolUse: [
+            { matcher: 'Write', hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/scripts/one.sh"' }] },
+            { matcher: 'Write', hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/scripts/two.sh"' }] },
+          ],
+        },
+      }, null, 2)}\n`,
+    )
+    for (const name of ['one', 'two']) {
+      const script = join(dir, 'scripts', `${name}.sh`)
+      writeFileSync(script, `#!/bin/sh\necho '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"${name}"}}'\n`)
+      chmodSync(script, 0o755)
+    }
+    const ir = readClaudePlugin(dir)
+    assert.deepEqual(ir.hooks.map((hook) => hook.index), [0, 1])
+    const rows = classify(ir)
+    assert.deepEqual(rows.map((row) => row.target), ['hook:PostToolUse#0', 'hook:PostToolUse#1'])
+
+    const emitted = emitPlugin(ir, { materializers, trusted: rows.map((row) => row.target) })
+    const hookChild = emitted.entry?.config.find((child) => child.name === materializers.hooks)
+    assert.equal(hookChild?.config.hooks.length, 2)
+
+    const handlers = new Map()
+    const warnings = []
+    const ctx = {
+      logger: { warn: (message) => warnings.push(message) },
+      effect: (register) => register(),
+      on: (event, handler) => handlers.set(event, handler),
+    }
+    applyHooks(ctx, hookChild.config)
+    const post = handlers.get('tools/post-execute')
+    const decision = await post({ callId: 1, name: 'Write', arguments: {} }, { ok: true }, async () => ({ kind: 'accept' }))
+    const texts = (decision.additionalContexts ?? []).map((context) => context.content[0].text)
+    assert.deepEqual(texts.sort(), ['one', 'two'])
+    assert.deepEqual(warnings, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('editing the artifact after load refuses the next call; a re-pin lets the new bytes run', async () => {
+  const { dir, script, ir } = makePlugin({ event: 'PreToolUse' })
+  try {
+    const hook = ir.hooks[0]
+    const config = {
+      pluginRoot: dir,
+      hooks: [{
+        event: 'PreToolUse',
+        index: hook.index,
+        matcher: hook.matcher,
+        command: hook.command,
+        artifactHash: hashHook(dir, hook).artifactHash,
+        artifactRoot: dir,
+      }],
+    }
+    const handlers = new Map()
+    const ctx = { logger: { warn() {} }, effect: (register) => register(), on: (event, handler) => handlers.set(event, handler) }
+    applyHooks(ctx, config)
+    let calls = 0
+    const invoke = () => handlers.get('tools/pre-execute')(
+      { callId: 1, name: 'Write', arguments: {} },
+      async () => { calls += 1; return { kind: 'accept' } },
+    )
+
+    assert.deepEqual(await invoke(), { kind: 'accept' })
+    assert.equal(calls, 1)
+
+    writeFileSync(script, '#!/bin/sh\necho changed\n', 'utf8')
+    const refused = await invoke()
+    assert.equal(refused.kind, 'deny')
+    assert.match(refused.reason, /artifact changed since the grant \(pinned sha256:[0-9a-f]+, now sha256:[0-9a-f]+\)/)
+    assert.match(refused.reason, /command: .*scripts\/hook\.sh/)
+    assert.equal(calls, 1, 'the changed bytes must not run')
+
+    // What a re-grant followed by reconcile does: the child config carries the
+    // new pin, so the same edited bytes now run.
+    config.hooks[0].artifactHash = hashFile(script)
+    assert.deepEqual(await invoke(), { kind: 'accept' })
+    assert.equal(calls, 2)
+
+    // A missing artifact is refused too, not an exception in the waterfall.
+    rmSync(script)
+    const missing = await invoke()
+    assert.equal(missing.kind, 'deny')
+    assert.match(missing.reason, /artifact is no longer a file|artifact changed since the grant|artifact cannot be re-hashed/)
+    assert.equal(calls, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileReport keeps trusted and refused decisions; reconcile surfaces refusals without an entry', async () => {
+  const trusted = makePlugin({ name: 'trusted' })
+  const refused = makePlugin({ name: 'refused' })
+  try {
+    const installs = {
+      schema: 'dsh-anyplugin/installs@1',
+      plugins: [...installsFor(trusted.ir).plugins, ...installsFor(refused.ir).plugins],
+    }
+    const enablements = {
+      user: { plugins: {
+        'claude-code:trusted': { enabled: true, grants: [] },
+        'claude-code:refused': { enabled: true, grants: [] },
+      } },
+    }
+    const [row] = classify(trusted.ir)
+    const report = compileReport(installs, {
+      materializers,
+      enablements,
+      grants: userGrant(trusted.ir, row),
+    })
+    assert.equal(report.entries.length, 1)
+    assert.equal(report.entries[0].id, 'anyplugin.claude-code~3atrusted')
+    assert.equal(report.decisions.length, 2)
+    const refusedDecision = report.decisions.find((decision) => decision.plugin === 'claude-code:refused')
+    assert.equal(refusedDecision.refused.length, 1)
+    assert.equal(refusedDecision.refused[0].code, 'no-grant')
+
+    const seen = []
+    await reconcile(
+      {
+        root: {},
+        entries: () => [],
+        resolve: () => { throw new Error('no entries') },
+        await: async () => undefined,
+        create: async () => undefined,
+        update: async () => undefined,
+        remove: () => {},
+      },
+      [],
+      { decisions: report.decisions, onRefused: (rows) => seen.push(...rows) },
+    )
+    assert.equal(seen.length, 1)
+    assert.equal(seen[0].plugin, 'claude-code:refused')
+    assert.equal(seen[0].target, 'hook:PostToolUse#0')
+
+    // An unknown dialect is still an error, not a silent skip.
+    const unknown = {
+      ...installs,
+      plugins: [...installs.plugins, { ...installs.plugins[0], name: 'unknown', dialect: 'codex' }],
+    }
+    const withUnknown = {
+      user: { plugins: { ...enablements.user.plugins, 'codex:unknown': { enabled: true, grants: [] } } },
+    }
+    assert.throws(() => compileReport(unknown, { materializers, enablements: withUnknown }), /unsupported dialect "codex"/)
+  } finally {
+    rmSync(trusted.dir, { recursive: true, force: true })
+    rmSync(refused.dir, { recursive: true, force: true })
+  }
+})
+
+test('a malformed store rejects an unknown capability at its own line', () => {
+  const { dir, ir } = makePlugin()
+  try {
+    const [row] = classify(ir)
+    const text = serializeGrants(userGrant(ir, row)).replace('capability: "exec"', 'capability: "exev"')
+    const line = text.split('\n').findIndex((candidate) => candidate.includes('capability: "exev"')) + 1
+    assert.throws(
+      () => parseGrants(text, 'grants.yml'),
+      (error) => error instanceof GrantsFileError && error.line === line && /capability.*exec/.test(error.reason),
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('concurrent writers through updateGrants keep every grant', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-trust-lock-'))
+  const file = join(dir, 'grants.yml')
+  try {
+    writeGrants(file, emptyGrants())
+    const moduleUrl = pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-trust', 'src', 'grants.ts')).href
+    const worker = (tag) => [
+      `import { updateGrants, grant } from ${JSON.stringify(moduleUrl)};`,
+      `const file = ${JSON.stringify(file)};`,
+      'for (let i = 0; i < 4; i += 1) {',
+      '  updateGrants(file, (store) => grant(store, {',
+      "    plugin: 'claude-code:concurrent', capability: 'exec',",
+      `    target: ${JSON.stringify(`hook:PostToolUse#${tag}`)} + i,`,
+      `    artifactHash: 'sha256:${'0'.repeat(64)}',`,
+      "  }, { scope: 'user' }));",
+      '}',
+    ].join('\n')
+    const run = (code) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', code], { cwd: repoRoot, stdio: 'inherit' })
+      child.on('error', reject)
+      child.on('exit', (status) => status === 0 ? resolve() : reject(new Error(`writer exited ${status}`)))
+    })
+    await Promise.all([run(worker('a')), run(worker('b'))])
+    assert.equal(readGrants(file).grants.length, 8, 'a lock, not last-rename-wins')
+    assert.equal(readdirSync(dir).some((entry) => entry.endsWith('.lock')), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

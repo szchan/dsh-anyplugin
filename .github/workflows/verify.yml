@@ -120,7 +120,35 @@ jobs:
                 echo "::error::DSH_HARNESS_DIR is unset or missing for DSH $version"
                 status=1
               else
-                npm run verify || status=1
+                verify_log="$(mktemp)"
+                npm run verify >"$verify_log" 2>&1 || status=1
+                cat "$verify_log"
+                if ! grep -Eq '^ℹ skipped 0$' "$verify_log"; then
+                  echo "::error::verify skipped at least one test for DSH $version; a skipped fidelity test on CI is a bug"
+                  status=1
+                fi
+                rm -f "$verify_log"
+              fi
+            echo "::endgroup::"
+          }
+          verify_pin 0.2.2-rc.5 "$DIR_RC5"
+          verify_pin 0.2.2-rc.2 "$DIR_RC2"
+          exit "$status"
+
+      # continue-on-error deliberately kept the job alive; make the fetch
+      # failure fail the job after the successfully fetched pin has run.
+      - name: Fail if a harness fetch failed
+        if: always()
+        run: |
+          if [ "${{ steps.fetch.outcome }}" != "success" ]; then
+            echo "::error::at least one DSH harness fetch failed; see the fetch step"
+            exit 1
+          fi
+ "$verify_log"; then
+                  echo "::error::verify skipped at least one test for DSH $version; a skipped fidelity test on CI is a bug"
+                  status=1
+                fi
+                rm -f "$verify_log"
               fi
             fi
             echo "::endgroup::"

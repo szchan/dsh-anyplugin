@@ -23,6 +23,7 @@ export {
   sortGrants,
   sortRevokes,
   validateGrants,
+  updateGrants,
   writeGrants,
   type GrantRecord,
   type Grants,

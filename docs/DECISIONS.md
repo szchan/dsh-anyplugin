@@ -847,10 +847,13 @@ plugin and identical bytes in another plugin are a different artifact.
 field per line, every value a double-quoted JSON string. The writer sorts records, quotes
 values, writes fixed field order, and replaces the file through a
 same-directory temp file plus rename. The reader refuses unknown or missing
-fields, unquoted values, duplicate records, an unknown schema, or a malformed
-hash with a `file:line` reason and leaves the file alone. A missing file is an
-empty store; a malformed file is an error. "Cannot parse" must never become
-"everything is granted" or "everything is revoked".
+fields, unquoted values, duplicate records, an unknown schema, a malformed
+hash, or a capability outside `exec` with a `file:line` reason and leaves the
+file alone. A missing file is an empty store; a malformed file is an error.
+"Cannot parse" must never become "everything is granted" or "everything is
+revoked". The writer takes an `O_EXCL` `grants.yml.lock` with a bounded retry,
+and `updateGrants` holds it across read-modify-write; concurrent granting
+actions must not lose one record to last-rename-wins.
 
 ```yaml
 schema: "dsh-anyplugin/grants@1"
@@ -879,18 +882,22 @@ over the bytes that run. mtime is forgeable and changes on checkout without a
 content change; a path can be edited in place, so neither is identity. The
 rules for a hook command:
 
-- a bare file invocation inside the plugin root (the exec form when `command`
-  itself resolves to such a file, or a shell command whose first word does and
-  which has no composition) pins that file. The argv that points at it is not hashed —
-  changing `--flag` changes the invocation, not the artifact, and must not
-  require a new grant. A byte-identical copy at another path still matches;
-- inline shell text pins the command text exactly as handed to `sh -c`; a
-  compound command that names files pins the text and every file operand's
-  bytes, so a script edit cannot ride an unchanged pipeline;
+- every file operand inside the plugin root is pinned: an absolute
+  `${CLAUDE_PLUGIN_ROOT}/…` path, a relative `./scripts/hook.sh` after
+  `cd "${CLAUDE_PLUGIN_ROOT}"`, or the file named by an exec-form `args` entry
+  (`command: "node", args: ["…/scripts/hook.js"]`). The argv that points at a
+  file is not hashed — changing `--flag` changes the invocation, not the
+  artifact, and must not require a new grant. A byte-identical copy at another
+  path still matches;
+- a command with no resolvable file operand pins its text exactly as handed to
+  `sh -c` / `spawn`; a compound command that names files pins its structure
+  (the pipeline, without flags) and every file operand's bytes, so neither a
+  pipeline edit nor a script edit can ride an unchanged grant;
 - files under `bin/`, `monitors/`, and `mods/` pin their bytes.
 
-A hook target is `hook:<event>#<index>`; a directory artifact is
-`bin:<path>`, `monitor:<path>`, or `mod:<path>`. Renaming a directory
+A hook target is `hook:<event>#<index>`, where `index` is flat per event
+across matcher groups (two `PostToolUse` groups are `#0` and `#1`); a
+directory artifact is `bin:<path>`, `monitor:<path>`, or `mod:<path>`. Renaming a directory
 artifact changes its target (and therefore needs a grant for the new target);
 renaming a hook's script does not change the target, and the hash decides.
 
@@ -905,7 +912,19 @@ never silently re-grants. Every refusal also carries the exact `command` (and
 `skipped`; the report prints `carry=refused:exec`, and the totals line counts
 it separately. A plugin whose only surface was refused contributes no group
 entry, so the hook does not reach the loader as a disabled child or "not run";
-it does not reach the loader.
+it does not reach the loader. `compileReport` returns the same per-plugin
+decisions for the install path (a refused hook has no entry, so `reconcile`
+takes `onRefused` and reports it without inventing one), and the report totals
+count `refused` separately from `skipped`.
+
+**The pin is checked again at spawn.** The emitted hook child carries
+`artifactHash`, its hash `mode`, `artifactRoot`, and its flat `index`. The materializer
+re-hashes immediately before every spawn; a mismatch does not run. `PreToolUse`
+denies with both hashes and the command line, `PostToolUse` warns and skips the
+spawn. A re-grant plus reconcile re-emits the new pin, after which the new
+bytes run. Without this, a grant checked only at reconcile time would claim
+more than it delivers: the loader keeps the child config while the script can
+change underneath it.
 
 **Consequences:**
 

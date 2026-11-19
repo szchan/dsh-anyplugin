@@ -9,9 +9,11 @@
  *   hook:<event>#<index>   monitor:<path inside monitors/>
  *   bin:<path inside bin/>  mod:<path inside mods/>
  *
- * A path in a target is descriptive only — the grant pins the hash. Renaming a
- * byte-identical script therefore invalidates the grant, which is intentional:
- * the grant says "this artifact", not "whatever sits at this path".
+ * A target names the artifact, not the bytes. For a hook it is the event and
+ * its flat index, so renaming a byte-identical script keeps the grant; for
+ * bin/monitor/mod the relative path is part of the target, so a move is a new
+ * target and needs a new grant. The hash, never the path or mtime, is what the
+ * grant actually pins.
  */
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
@@ -98,5 +100,14 @@ export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
     }
   }
 
-  return rows.sort((left, right) => (left.target < right.target ? -1 : left.target > right.target ? 1 : 0))
+  rows.sort((left, right) => (left.target < right.target ? -1 : left.target > right.target ? 1 : 0))
+  // Identity must be unique. The dialect promises a flat per-event index; a
+  // regression there would silently let one grant authorize two hooks, or one
+  // grant overwrite another, so fail loudly at the boundary instead.
+  const seen = new Set<string>()
+  for (const row of rows) {
+    if (seen.has(row.target)) throw new Error(`classify: duplicate exec target "${row.target}"`)
+    seen.add(row.target)
+  }
+  return rows
 }

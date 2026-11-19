@@ -8,6 +8,7 @@
  * re-materialization an update instead of a remove+create.
  */
 import type { ClaudePluginIr, IrSkill } from '../../dsh-anyplugin-ir/src/index.ts'
+import { hashHook } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const GROUP_PLUGIN = '@deepseek-ai/cordis-plugin-group'
 
@@ -195,13 +196,21 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       name: hooksMaterializer,
       config: {
         pluginRoot: ir.plugin.root,
-        hooks: hooks.map((hook) => ({
-          event: hook.event,
-          ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
-          command: hook.command,
-          ...(hook.args === undefined ? {} : { args: hook.args }),
-          ...(hook.timeout === undefined ? {} : { timeout: hook.timeout }),
-        })),
+        hooks: hooks.map((hook) => {
+          const artifact = hashHook(ir.plugin.root, hook)
+          return {
+            event: hook.event,
+            index: hook.index,
+            ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+            command: hook.command,
+            ...(hook.args === undefined ? {} : { args: hook.args }),
+            ...(hook.timeout === undefined ? {} : { timeout: hook.timeout }),
+            // D25: the materializer re-checks these bytes before every spawn.
+            artifactHash: artifact.artifactHash,
+            artifactMode: artifact.mode,
+            artifactRoot: ir.plugin.root,
+          }
+        }),
       },
     })
     emitted.push('hooks')

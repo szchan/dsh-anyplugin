@@ -14,7 +14,7 @@
  * issued. Resolution prefers `local` over `project` over `user`; within one
  * scope a revoke beats a grant.
  */
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export const GRANTS_SCHEMA = 'dsh-anyplugin/grants@1'
@@ -26,6 +26,9 @@ export const SCOPES: readonly Scope[] = ['local', 'project', 'user']
 
 /** The only capability this package can classify today. */
 export const EXEC_CAPABILITY = 'exec'
+
+/** Capabilities a store may name. A typo must not become an inert grant. */
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set([EXEC_CAPABILITY])
 
 export interface GrantRecord {
   /** Install identity, `<dialect>:<plugin>` (D23). */
@@ -117,8 +120,16 @@ function checkShared(field: string, value: string, file: string, line: number): 
   if (field === 'plugin' && !PLUGIN.test(value)) {
     throw new GrantsFileError('"plugin" must be a "<dialect>:<plugin>" identity', { file, line })
   }
-  if (field === 'capability' && !CAPABILITY.test(value)) {
-    throw new GrantsFileError(`"capability" must match ${CAPABILITY}`, { file, line })
+  if (field === 'capability') {
+    if (!CAPABILITY.test(value)) {
+      throw new GrantsFileError(`"capability" must match ${CAPABILITY}`, { file, line })
+    }
+    if (!KNOWN_CAPABILITIES.has(value)) {
+      throw new GrantsFileError(`"capability" must be one of ${[...KNOWN_CAPABILITIES].join(', ')}, not "${value}"`, {
+        file,
+        line,
+      })
+    }
   }
   if (field === 'target' && !TARGET.test(value)) {
     throw new GrantsFileError('"target" must look like "<kind>:<name>" and contain no whitespace', { file, line })
@@ -438,10 +449,46 @@ export function serializeGrants(grants: Grants): string {
 /**
  * Write the store atomically: a temp file in the same directory, then rename.
  * A crash mid-write must never leave a half-valid grants.yml.
+ *
+ * The write also takes the store's `O_EXCL` lock, so a direct writer cannot
+ * land between another writer's read and rename. Callers doing
+ * read-modify-write use `updateGrants`, which holds that lock across both.
  */
 export function writeGrants(file: string, grants: Grants): void {
   const text = serializeGrants(grants)
+  withLock(file, () => writeAtomic(file, text))
+}
+
+const LOCK_RETRY_MS = 10
+const LOCK_TIMEOUT_MS = 5000
+
+/** Take `<file>.lock` with O_EXCL; a bounded retry, never a silent last-writer-wins. */
+function withLock<T>(file: string, action: () => T): T {
   mkdirSync(dirname(file), { recursive: true })
+  const lock = `${file}.lock`
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+  let fd: number | undefined
+  for (;;) {
+    try {
+      fd = openSync(lock, 'wx')
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (Date.now() >= deadline) {
+        throw new GrantsFileError(`store is locked by another writer; remove ${lock} if it is stale`, { file: lock })
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MS)
+    }
+  }
+  try {
+    return action()
+  } finally {
+    closeSync(fd as number)
+    rmSync(lock, { force: true })
+  }
+}
+
+function writeAtomic(file: string, text: string): void {
   const temporary = `${file}.${process.pid}.tmp`
   try {
     writeFileSync(temporary, text, 'utf8')
@@ -450,6 +497,21 @@ export function writeGrants(file: string, grants: Grants): void {
     rmSync(temporary, { force: true })
     throw error
   }
+}
+
+/**
+ * Read-modify-write one store under the lock. Use this — not
+ * `readGrants` + `writeGrants` — when a UI action edits the store: eight
+ * concurrent grants must leave eight records, not whichever rename happened
+ * last.
+ */
+export function updateGrants(file: string, mutate: (current: Grants) => Grants): Grants {
+  return withLock(file, () => {
+    const current = readGrants(file)
+    const next = mutate(current)
+    writeAtomic(file, serializeGrants(next))
+    return next
+  })
 }
 
 export interface GrantSpec {

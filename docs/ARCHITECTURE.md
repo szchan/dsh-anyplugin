@@ -312,9 +312,13 @@ revokes: []
 
 The canonical writer sorts records, quotes every value, writes fixed field
 order, and replaces the file through a same-directory temp file plus rename.
-The reader accepts only that subset: unknown fields, missing fields, unquoted
-values, duplicate records, an unknown schema, or a malformed hash are rejected
-with a `file:line` reason and the file is left untouched. A missing file is an
+It also holds an `O_EXCL` `grants.yml.lock` (bounded retry) across the write;
+`updateGrants` keeps that lock across read-modify-write, so two concurrent
+granting actions cannot silently lose one record to last-rename-wins. The
+reader accepts only that subset: unknown fields, missing fields, unquoted
+values, duplicate records, an unknown schema, a malformed hash, or a
+capability outside `exec` are rejected with a `file:line` reason and the file
+is left untouched. A missing file is an
 empty store — which is also the safe state, because exec is default-off. A
 malformed file is an error, never an empty store: "cannot parse" must not
 become "everything is revoked" or "everything is granted".
@@ -332,7 +336,9 @@ not a hash pin.
 
 ### 6.2 What is pinned
 
-A row is one exec artifact, named within its plugin:
+A row is one exec artifact, named within its plugin. `index` is flat per event
+across matcher groups, so two groups under `PostToolUse` are `#0` and `#1`,
+not two `#0`s:
 
 | Target | Artifact |
 | --- | --- |
@@ -348,17 +354,17 @@ refusal; it never re-grants, because that is the caller's prompt to show.
 `artifactHash` is `sha256:<64 lowercase hex>` over **the bytes that run**, not
 over a path or an mtime:
 
-- A hook command that is a bare file invocation inside the plugin root (the
-  exec form when `command` itself resolves to such a file, or a shell command
-  whose first word does and which contains no composition) pins the file's
-  bytes. The argv that points at it is not hashed: changing `--flag` does not
-  require a new grant, changing the script does. For these hooks a
-  byte-identical copy at another path keeps the grant, because the target is
-  the event and index, not the path.
-- A hook with inline shell text (`echo …`, `cat … | …`) pins the command text
-  exactly as it is handed to `sh -c`. A compound command that also names files
-  pins the text **and** every file operand's bytes, so neither an edit to the
-  pipeline nor an edit to a script it names can ride an old grant.
+- Every file operand inside the plugin root is pinned: a shell command's
+  absolute `${CLAUDE_PLUGIN_ROOT}/…` path, a relative `./scripts/hook.sh`
+  after `cd "${CLAUDE_PLUGIN_ROOT}"`, or the file named by an exec-form
+  `args` entry (`command: "node", args: ["…/scripts/hook.js"]`). Flags are not
+  artifacts: changing `--flag` does not require a new grant, changing the
+  script does. The argv that points at a file is not hashed, only the file.
+- A command with no resolvable file operand (`echo …`) pins the command text
+  exactly as it is handed to `sh -c` / `spawn`. A compound command that names
+  files pins its structure (the pipeline, without flags) **and** every file
+  operand's bytes, so neither an edit to the pipeline nor an edit to a script
+  it names can ride an old grant.
 - A file under `bin/`, `monitors/`, or `mods/` pins its bytes.
 
 Path and mtime are never the identity. mtime is forgeable and changes on
@@ -370,7 +376,21 @@ not reported as refused, and `bin`/`monitor`/`mod` rows have no materializer
 yet, so nothing runs; they are classified for the UI and for the mod host, not
 silently executed.
 
-### 6.3 What a grant does not cover
+### 6.3 The check at spawn
+
+A hash checked only at reconcile time is a TOCTOU hole: the loader keeps the
+child config, and the script can change before the next tool call. The emitted
+hook child therefore carries `artifactHash`, the hash `mode` (`file` or
+`inline`), `artifactRoot`, and the flat `index`. The materializer re-hashes the artifact immediately before every
+spawn. On a mismatch, `PreToolUse` returns `deny` without spawning, and
+`PostToolUse` warns and adds the reason (both hashes and the command line) to
+`additionalContexts` without spawning. One file read per matched hook call is
+acceptable; the call is about to spawn a process anyway. A re-grant followed by
+reconcile re-emits the child config with the new hash, and the next call runs
+the new bytes. This is what makes "any change invalidates" true at the moment
+the bytes would run, not merely at install time.
+
+### 6.4 What a grant does not cover
 
 An exec grant is not install authority, not enablement, and not a network
 decision. It does not cover an MCP server or any content-class artifact. For a
@@ -586,10 +606,11 @@ Implemented in `packages/dsh-anyplugin-install` (v0.1). The pipeline is:
 
 ```
 installs.yml + scope layers
-  → compileEntries(installs, { projectDir, enablements, grants })
+  → compileReport(installs, { projectDir, enablements, grants })
        per plugin: read → gate(ir, grants) → authorize → emitPlugin(ir, { trusted })
+       → { entries, decisions }   (compileEntries returns just `entries`)
   → one group per enabled plugin with an emittable surface, children from emitPlugin
-  → reconcile(loader, entries)
+  → reconcile(loader, entries, { decisions, onRefused })
        create (absent) · update (options changed) · keep (equal)
        remove (present but no longer desired) — capture fibers, remove, await settle
   → { created, updated, removed, kept, failed }
@@ -603,6 +624,15 @@ leaves no children, the plugin contributes no group. Reconcile therefore cannot
 simply does not contain it, and the entry is removed or updated like any other
 desired-state change. A hash mismatch never mutates the store; the refusal
 carries the new hash for the UI to prompt with.
+
+The install path needs the same refusals that the report shows. `compileReport`
+returns every per-plugin `TrustDecision` alongside the entry list, and
+`compileEntries` is the same function reduced to its entries. A refused hook
+has no loader entry to attach to, so `reconcile` does not invent one: the
+caller passes the decisions and an `onRefused` callback, which receives each
+refusal tagged with its plugin identity. The reconcile result shape is
+unchanged (`created`/`updated`/`removed`/`kept`/`failed`); a refusal is a
+compile decision, not a loader failure, and must not be reported as `failed`.
 
 Ids are dialect-qualified and mangled (D7): group
 `anyplugin.<mangleId("<dialect>:<plugin>")>`, child
