@@ -1,0 +1,14 @@
+{
+  "name": "dsh-anyplugin-install",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Install lock and layered enablement: compile to loader entries and reconcile them.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "dsh-anyplugin-dialect-claude-code": "*",
+    "dsh-anyplugin-emit": "*"
+  }
+}
