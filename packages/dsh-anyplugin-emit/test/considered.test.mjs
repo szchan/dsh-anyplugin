@@ -8,7 +8,7 @@ import test from 'node:test'
 
 import { emitPlugin } from '../src/index.ts'
 import { buildTransplantReport, formatTransplantReport } from '../../dsh-anyplugin-conformance/src/report.ts'
-import { classify, emptyGrants, grant, pluginIdentity } from '../../dsh-anyplugin-trust/src/index.ts'
+import { classify, emptyGrants, gate, grant, pluginIdentity } from '../../dsh-anyplugin-trust/src/index.ts'
 
 const annotation = (fidelity, reason) => ({ fidelity, reason })
 
@@ -86,10 +86,19 @@ function buildIr() {
   }
 }
 
+function gateAll(ir) {
+  let grants = emptyGrants()
+  for (const row of classify(ir)) {
+    grants = grant(grants, { plugin: pluginIdentity(ir), ...row }, { scope: 'user' })
+  }
+  return gate(ir, grants)
+}
+
 test('considered names the refused entries too', () => {
-  const result = emitPlugin(buildIr(), {
+  const gated = gateAll(buildIr())
+  const result = emitPlugin(gated.ir, {
     materializers: { skill: 'skill-materializer', mcp: 'mcp-materializer', hooks: 'hook-materializer' },
-    trusted: ['hook:PostToolUse#0'],
+    trusted: gated.decision.allowed,
   })
 
   assert.deepEqual(result.considered, [
@@ -106,7 +115,8 @@ test('considered names the refused entries too', () => {
 })
 
 test('exec is default-off: an authorized seam still refuses an untrusted hook', () => {
-  const result = emitPlugin(buildIr(), {
+  const gated = gateAll(buildIr())
+  const result = emitPlugin(gated.ir, {
     materializers: { skill: 'skill-materializer', mcp: 'mcp-materializer', hooks: 'hook-materializer' },
   })
 

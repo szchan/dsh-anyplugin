@@ -7,8 +7,10 @@
  * whose reason names the missing grant. The emitter then has nothing to skip
  * silently, and the report can say `refused` rather than `skipped`.
  *
- * The input IR is not mutated; the caller gets a shallow copy with new
- * `hooks`/`pending` arrays. Nothing is executed here.
+ * Allowed hooks carry the resolved artifact (manifest + hash) this gate saw.
+ * Emit copies those fields verbatim and never resolves the command a second
+ * time; a trusted hook without them fails closed. The input IR is not
+ * mutated. Nothing is executed here.
  */
 import type { ClaudePluginIr, IrHook } from '../../dsh-anyplugin-ir/src/index.ts'
 import { authorize, type Refusal, type TrustDecision } from './authorize.ts'
@@ -30,22 +32,25 @@ export function hookEntryName(hook: IrHook): string {
 
 export function gate(plugin: ClaudePluginIr, grants: Grants): Gated {
   const decision = authorize(plugin, grants)
-  if (decision.refused.length === 0) return { ir: plugin, decision }
-
   const byTarget = new Map(decision.refused.map((refusal) => [refusal.target, refusal]))
+  const allowed = new Set(decision.allowed)
+  const rows = new Map(decision.rows.map((row) => [row.target, row] as const))
   const hooks: IrHook[] = []
   const refused: Refusal[] = []
+
   for (const hook of plugin.hooks) {
-    if (!carried(hook) || hook.command === undefined) {
+    const key = `hook:${hookEntryName(hook)}`
+    const refusal = byTarget.get(key)
+    if (refusal !== undefined) {
+      refused.push(refusal)
+      continue
+    }
+    const row = rows.get(key)
+    if (!carried(hook) || hook.command === undefined || row === undefined || !allowed.has(key)) {
       hooks.push(hook)
       continue
     }
-    const refusal = byTarget.get(`hook:${hookEntryName(hook)}`)
-    if (refusal === undefined) {
-      hooks.push(hook)
-      continue
-    }
-    refused.push(refusal)
+    hooks.push({ ...hook, artifact: row.manifest, artifactHash: row.artifactHash })
   }
 
   const pending = [

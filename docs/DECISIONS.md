@@ -877,49 +877,53 @@ This supersedes the sentence in D23 that grants live in the enablement scope
 layers (D2). An existing enablement line carrying `grants: […]` still parses
 and the field is ignored; it cannot pin bytes, so it cannot authorize.
 
-**A grant pins a manifest, not a promise to re-discover operands later.** The
-manifest is resolved once, at classify/grant time:
+**A grant pins a manifest, not a promise to re-discover operands later.**
+The manifest is resolved once, at classify/grant time:
 
 ```
 artifact = { mode: "file" | "text" | "composite",
-             invocation,                        // exact text or argv; shown, not hashed
-             command,                           // code-bearing structure; hashed
-             files: [{ path, sha256, bytes }] } // ordered, duplicates kept; hashed
-hash     = sha256(mode, command, then each file's path + sha256, in order)
+             invocation,                        // exact text or argv; hashed
+             command,                           // eval payload, else ""; hashed
+             files: [{ path, sha256, bytes }] } // the program only; hashed
+hash     = sha256(mode, invocation, command, then each file's path + sha256, in order)
 ```
 
-`artifactHash` is `sha256:<64 lowercase hex>`. There is no sorting and no
-`Set`: `cp a b` and `cp b a` are different artifacts, and `cat a a` hashes `a`
-twice. At spawn the materializer re-reads exactly `files[].path`; it never
-re-parses the command, so an output file (`--out …/out.txt`) cannot turn into a
-false artifact on the second run.
+The boundary is **code versus data**. The program is code and its bytes are
+pinned; every other operand is data and only the exact invocation text is
+hashed. A program is `command[0]` when it resolves to a file inside the root,
+or, for a known interpreter (`node`, `sh`, `bash`, `zsh`, `python*`,
+`deno`, `bun`, `ruby`, `perl`, `pwsh`), the first non-flag operand that
+resolves to a file inside the root. `node fmt.js data.txt` pins `fmt.js`;
+`data.txt` is data.
 
-- File operands inside the plugin root are pinned: an absolute
-  `${CLAUDE_PLUGIN_ROOT}/…` path, the file named by an exec-form `args` entry
-  (`command: "node", args: ["…/scripts/hook.js"]`), and a file named by shell
-  words. A relative operand is **refused** (`relative operand … is ambiguous
-  because hooks run with the project directory as cwd; use
-  ${CLAUDE_PLUGIN_ROOT}/…`), because hashing it against the plugin root while
-  executing it in the project would pin one file and run another. The fidelity
-  cost is deliberate: a plugin using `cd "${CLAUDE_PLUGIN_ROOT}" && ./hook.sh`
-  must change the command to `${CLAUDE_PLUGIN_ROOT}/hook.sh`.
-- An absolute operand outside the root is **refused**, not hashed as path text:
-  `file "…" is outside the plugin root; copy it in or use an absolute path
-  inside ${CLAUDE_PLUGIN_ROOT}`. Refused artifacts are `unsupported`: they
-  cannot be granted at all.
-- Flags and their values are not artifacts: changing `--verbose` does not
-  require a new grant. Output flags (`--out`, `--log`, …) are not operands.
-  A flag's value that is itself a file is pinned; a flag value that is not
-  path-like is not.
-- A command with no file operand (`echo …`) is `mode: "text"`. Interpreter eval
-  payloads (`sh -c '…'`, `node -e '…'`, `node --eval`, `python -c`, `perl -e`,
-  `php -r`, combined shell `-ec`) are code: the exact command/argv is the
-  artifact, never a flag to ignore. A form that cannot be modeled is refused.
-- A command naming files and carrying structure is `mode: "composite"`: the
-  structure (word boundaries, order, operators) plus every file. Neither a
-  pipeline edit nor a script edit can ride an old grant.
-- Files under `bin/`, `monitors/`, and `mods/` are `mode: "file"` and pin their
-  bytes.
+`artifactHash` is `sha256:<64 lowercase hex>`. There is no sorting and no
+`Set`: the invocation keeps order and duplicate words, so `cp a b` and
+`cp b a` differ. At spawn the materializer re-reads exactly `files[].path`
+and never re-parses the command. Editing `data.txt` does not invalidate a
+formatter hook; editing `fmt.js` does. An output file cannot turn into a false
+artifact on the second run.
+
+- A program named by an absolute `${CLAUDE_PLUGIN_ROOT}/…` path, by an
+  exec-form `args` entry, or by shell words is pinned. A **relative or
+  outside-root program** is refused, because hashing it against the plugin
+  root while executing it in the project would pin one file and run another.
+  The reason names the fix (`use ${CLAUDE_PLUGIN_ROOT}/…`). Refused
+  artifacts are `unsupported`: they cannot be granted at all.
+- A **relative or outside-root data operand** is allowed. The hook's own cwd
+  decides what it means; it is invocation text, not a pinned file.
+- Flags, `--out` values, redirect targets, and positional inputs are data.
+  Their **text** is in the invocation hash, so renaming a data operand or
+  changing a flag is a new artifact; their **bytes** are not pinned, so
+  editing the data does not re-prompt. `--out …/out.txt` can therefore be
+  written twice without refusing itself.
+- A command with no program inside the root (`echo …`, `sh -c '…'`,
+  `node -e '…'`, `cat data.txt`) is `mode: "text"`: the exact invocation is
+  the artifact. Interpreter eval payloads are code and are never mistaken for a
+  flag; editing the payload invalidates the grant.
+- A program plus other words is `mode: "composite"`: the exact invocation
+  plus the program's bytes. A pure program is `mode: "file"`.
+- Files under `bin/`, `monitors/`, and `mods/` are `mode: "file"` and pin
+  their bytes.
 
 Path is not identity by itself, but it is part of the manifest hash: a
 byte-identical copy at another path does **not** match when the command names
@@ -934,6 +938,11 @@ Renaming a directory artifact changes its target (and therefore needs a grant
 for the new target). Renaming a hook's script keeps the target but changes the
 manifest path, so the grant refuses with the new hash; it is a re-prompt, not a
 silent re-grant.
+
+`grantFor`/`revokeFor` are the UI path: they validate the target against the
+plugin's classification and reject an unknown or unpinnable target. `grant`/
+`revoke` remain the low-level store operations for tests and for callers that
+have already resolved a row.
 
 **Default-off, and refused is not skipped.** `authorize(plugin, grants)`
 returns allowed targets and refusals. A missing grant is `no-grant`, a matching
@@ -955,7 +964,8 @@ an entry.
 **The pin is checked again at spawn.** The emitted hook child carries the full
 `artifact` manifest plus `artifactHash`, `artifactMode`, `artifactRoot`, and its
 flat `index`. The materializer re-reads exactly the manifest's files and
-re-hashes the same mode/command/files order immediately before every spawn; a
+re-hashes the same mode/invocation/command/files order immediately before every
+spawn; a
 mismatch or a missing file does not run. `PreToolUse` denies with both hashes
 and the command line, `PostToolUse` warns and skips the spawn. A re-grant plus
 reconcile re-emits the new manifest, after which the new bytes run. Without
@@ -975,11 +985,14 @@ about the manifest boundary, not about making the filesystem immutable.
   must consume `authorize`, not invent a second gate.
 - An exec grant is not install authority, enablement, a network decision, or a
   blanket `--yes`. It does not cover MCP or content-class artifacts, `matcher`,
-  `timeout`, environment, flags or their values, exec-form non-file argv, the
-  interpreter binary found on `PATH`, or files a script reads at run time. It is
-  one artifact's manifest at one scope. Relative and outside-root operands are
-  refused rather than pinned, so a plugin that relies on them loses fidelity
-  until it uses `${CLAUDE_PLUGIN_ROOT}`.
+  `timeout`, environment, the interpreter binary found on `PATH`, or files a
+  script reads at run time. It pins the exact invocation text (including flags,
+  order, and data names) and the program bytes; it does not pin the bytes of
+  positional inputs, output paths, or redirect targets. It is one artifact's
+  manifest at one scope. A relative or outside-root **program** is refused
+  rather than pinned, so a plugin that relies on one loses fidelity until it
+  uses `${CLAUDE_PLUGIN_ROOT}`; relative and outside-root **data** operands
+  are allowed and are only invocation text.
 - The claim is against claude-code `2.1.322` and the DSH pins in D22; a pin
   bump that changes hook semantics must revisit the hash rules, not just the
   goldens.

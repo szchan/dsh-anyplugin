@@ -75,7 +75,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   halves of the rig run on every `verify` job.
 - Exec trust gate: `grants.yml` with hash-pinned grants, scope precedence
   (local revoke beats user grant), un-granted hooks moved to `planned` and
-  absent from the loader, and `rig report` carrying `refused:exec` (D25).
+  absent from the entries handed to the loader, and `rig report` carrying
+  `refused:exec` (D25).
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.

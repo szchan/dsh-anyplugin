@@ -99,11 +99,13 @@ export function apply(ctx: any, config: Config = {}): void {
   }
 
   const artifactChange = (hook: MaterialHook): string | undefined => {
-    if (hook.artifactHash === undefined) return undefined
     const label = `${hook.event}#${hook.index ?? 0}`
     const invocation = hook.args === undefined
       ? hook.command
       : [hook.command, ...hook.args].map((part) => JSON.stringify(part)).join(' ')
+    if (hook.artifactHash === undefined) {
+      return `refused ${label}: no hash-pinned grant was carried; command: ${invocation}`
+    }
     const manifest = hook.artifact
     if (manifest === undefined) {
       return `refused ${label}: no artifact manifest was carried with the grant; pinned ${hook.artifactHash}; command: ${invocation}`

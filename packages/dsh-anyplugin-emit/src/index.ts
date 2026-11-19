@@ -8,7 +8,6 @@
  * re-materialization an update instead of a remove+create.
  */
 import type { ClaudePluginIr, IrSkill } from '../../dsh-anyplugin-ir/src/index.ts'
-import { classify } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const GROUP_PLUGIN = '@deepseek-ai/cordis-plugin-group'
 
@@ -183,15 +182,13 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   // Hooks are mounted on the tool waterfalls (D19). Only command handlers that
   // land on PreToolUse/PostToolUse are `equivalent` today; everything else is
   // `planned` and stays out of the entry — the report keeps it visible.
-  const rows = new Map(classify(ir).map((row) => [row.target, row] as const))
   const hooks = ir.hooks.filter((hook) => {
-    const row = rows.get(`hook:${hook.event}#${hook.index}`)
     return (
       carried(hook.annotation) &&
       hook.command !== undefined &&
-      row !== undefined &&
-      row.unsupported === undefined &&
-      trusted.has(`hook:${hook.event}#${hook.index}`)
+      trusted.has(`hook:${hook.event}#${hook.index}`) &&
+      hook.artifact !== undefined &&
+      hook.artifactHash !== undefined
     )
   })
   const hooksMaterializer = options.materializers.hooks
@@ -201,35 +198,35 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       name: hooksMaterializer,
       config: {
         pluginRoot: ir.plugin.root,
-        hooks: hooks.map((hook) => {
-          const row = rows.get(`hook:${hook.event}#${hook.index}`)
-          if (row === undefined) throw new Error(`emit: no artifact row for hook ${hook.event}#${hook.index}`)
-          return {
-            event: hook.event,
-            index: hook.index,
-            ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
-            command: hook.command,
-            ...(hook.args === undefined ? {} : { args: hook.args }),
-            ...(hook.timeout === undefined ? {} : { timeout: hook.timeout }),
-            // D25: the manifest is resolved once here; the materializer re-reads
-            // exactly these paths before every spawn and refuses on a mismatch.
-            artifactHash: row.artifactHash,
-            artifactMode: row.mode,
-            artifactRoot: ir.plugin.root,
-            artifact: row.manifest,
-          }
-        }),
+        hooks: hooks.map((hook) => ({
+          event: hook.event,
+          index: hook.index,
+          ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+          command: hook.command,
+          ...(hook.args === undefined ? {} : { args: hook.args }),
+          ...(hook.timeout === undefined ? {} : { timeout: hook.timeout }),
+          // D25: the gate resolved this manifest once. Emit copies it verbatim;
+          // the materializer re-reads exactly these paths before every spawn.
+          artifactHash: hook.artifactHash,
+          artifactMode: hook.artifact?.mode,
+          artifactRoot: ir.plugin.root,
+          artifact: hook.artifact,
+        })),
       },
     })
     emitted.push('hooks')
   }
   for (const hook of ir.hooks) {
     const name = `hooks/${hook.event}#${hook.index}`
-    const row = rows.get(`hook:${hook.event}#${hook.index}`)
     // Without a hook materializer no hook can be placed, carried or not.
     if (!carried(hook.annotation) || hook.command === undefined || hooksMaterializer === undefined) {
       skipped.push(name)
-    } else if (!hooks.includes(hook) || row === undefined || row.unsupported !== undefined) {
+    } else if (
+      !trusted.has(`hook:${hook.event}#${hook.index}`) ||
+      hook.artifact === undefined ||
+      hook.artifactHash === undefined
+    ) {
+      // Trusted but unresolved fails closed: never emit a child emit cannot pin.
       refused.push(name)
     }
   }

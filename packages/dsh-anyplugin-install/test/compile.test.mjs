@@ -164,6 +164,14 @@ test('an unknown dialect is rejected, not guessed', () => {
   assert.match(report.problems[0].reason, /unsupported dialect "codex"/)
 })
 
+test('compileEntries fails closed instead of dropping a per-record problem', () => {
+  const installs = lock(record('x', 'claude-skills-only', { dialect: 'codex' }))
+  assert.throws(
+    () => compileEntries(installs, { materializers, enablements: enabled('codex:x') }),
+    /compileEntries: .*unsupported dialect "codex"/,
+  )
+})
+
 test('projectDir reads the three scope files when enablements is omitted', () => {
   const projectDir = mkdtempSync(join(tmpdir(), 'anyplugin-scopes-'))
   const home = mkdtempSync(join(tmpdir(), 'anyplugin-home-'))

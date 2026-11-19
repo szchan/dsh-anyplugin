@@ -128,9 +128,17 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
  * Return one `EntryOptions` group per enabled installed plugin, in stable id
  * order. Disabled/inert plugins and plugins with no emittable surface are
  * absent rather than empty groups: there is nothing for the loader to start.
+ *
+ * A per-record problem fails closed here instead of being dropped: callers that
+ * want to keep compiling the rest of the lock and report each problem must use
+ * `compileReport`. Refused artifacts are decisions, not problems.
  */
 export function compileEntries(installs: Installs, options: CompileOptions): EntryOptions[] {
-  return compileReport(installs, options).entries
+  const report = compileReport(installs, options)
+  if (report.problems.length > 0) {
+    throw new Error(`compileEntries: ${report.problems.map((problem) => problem.reason).join('; ')}`)
+  }
+  return report.entries
 }
 
 function compileRecord(

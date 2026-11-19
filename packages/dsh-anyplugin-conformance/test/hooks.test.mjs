@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
-import { classify } from '../../dsh-anyplugin-trust/src/index.ts'
+import { classify, emptyGrants, gate, grantFor } from '../../dsh-anyplugin-trust/src/index.ts'
 import { probeWithDsh } from '../src/oracles/dsh.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
@@ -25,7 +25,11 @@ const materializers = {
   hooks: materializerUrl('dsh-anyplugin-materialize-hook'),
 }
 const fixture = join(repoRoot, 'fixtures', 'claude-hooks-mcp')
-const trusted = (ir) => classify(ir).map((row) => row.target)
+function gateAll(ir) {
+  let store = emptyGrants()
+  for (const row of classify(ir)) store = grantFor(ir, store, row.target, { scope: 'user' })
+  return gate(ir, store)
+}
 
 test('a PostToolUse hook is carried as its own child entry', () => {
   const ir = readClaudePlugin(fixture)
@@ -35,10 +39,11 @@ test('a PostToolUse hook is carried as its own child entry', () => {
   assert.match(hook.annotation.reason, /waterfall/)
   assert.match(hook.command, /format\.sh/)
 
-  const { entry, emitted, skipped, refused } = emitPlugin(ir, {
+  const gated = gateAll(ir)
+  const { entry, emitted, skipped, refused } = emitPlugin(gated.ir, {
     materializers,
     sdkRoot: harness?.modulesDir,
-    trusted: trusted(ir),
+    trusted: gated.decision.allowed,
   })
   assert.ok(emitted.includes('hooks'))
   const child = entry.config.find((item) => item.id === 'hook')
@@ -56,10 +61,11 @@ test(
   { skip: harness ? false : harnessSkipReason() },
   async () => {
     const ir = readClaudePlugin(fixture, { source: 'plugin-dir:fixtures/claude-hooks-mcp' })
-    const { entry } = emitPlugin(ir, {
+    const gated = gateAll(ir)
+    const { entry } = emitPlugin(gated.ir, {
       materializers,
       sdkRoot: harness.modulesDir,
-      trusted: trusted(ir),
+      trusted: gated.decision.allowed,
     })
     const probe = await probeWithDsh({
       harnessDir: harness.harnessDir,

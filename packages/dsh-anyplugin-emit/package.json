@@ -5,5 +5,5 @@
   "type": "module",
   "description": "Turns the IR into an EntryTree patch: one group entry per foreign plugin.",
   "exports": { ".": "./src/index.ts" },
-  "dependencies": { "dsh-anyplugin-ir": "*", "dsh-anyplugin-trust": "*" }
+  "dependencies": { "dsh-anyplugin-ir": "*" }
 }

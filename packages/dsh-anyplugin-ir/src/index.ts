@@ -71,6 +71,23 @@ export interface IrAgent {
   annotation: Annotation
 }
 
+/**
+ * The resolved artifact a grant pins (D25). Trust attaches it at gate time;
+ * emit copies it verbatim so it never re-resolves the command.
+ */
+export interface IrArtifactFile {
+  path: string
+  sha256: string
+  bytes: number
+}
+
+export interface IrArtifact {
+  mode: 'file' | 'text' | 'composite'
+  invocation: string | readonly string[]
+  command: string | readonly string[]
+  files: readonly IrArtifactFile[]
+}
+
 export interface IrHook {
   kind: 'hook'
   event: string
@@ -87,6 +104,9 @@ export interface IrHook {
   timeout?: number
   sourcePath: string
   annotation: Annotation
+  /** Resolved by the trust gate; emit copies it and never re-hashes. */
+  artifact?: IrArtifact
+  artifactHash?: string
 }
 
 export interface IrMcpServer {
