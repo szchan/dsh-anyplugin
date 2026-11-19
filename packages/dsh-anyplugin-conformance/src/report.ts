@@ -66,18 +66,18 @@ export interface ReportComponent {
 /**
  * What the transplant would do to one plugin, compiled fresh.
  *
- * `totals` is `summarizeIr`'s aggregation, not a recount: the report exists to
- * make that number visible, so a second arithmetic path would be a second
- * claim. `skipped` is derived as the difference because emit is the only thing
- * that can decide emittability (AGENTS §3.1).
+ * `totals` is an aggregation of the component rows above it: `declared` from
+ * the IR's entry list, `emitted` and `skipped` from each component's carry
+ * decision. There is deliberately no second derivation — the line exists to
+ * summarize what emit did, so it can never disagree with the rows (AGENTS §3.1).
  */
 export interface TransplantReport {
   ok: boolean
   plugin: string
   pin: { tool: string; version: string }
   components: ReportComponent[]
-  totals: { declared: number; emittable: number; skipped: number }
-  /** Validation problems; a non-empty list is what makes the command exit non-zero. */
+  totals: { declared: number; emitted: number; skipped: number }
+  /** `validateIr` problems; a non-empty list is what makes the command exit non-zero. */
   problems: string[]
 }
 
@@ -102,20 +102,6 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
 }
 
 /**
- * The components the emitter can place at all. `EmitResult.skipped` only names
- * entries whose *surface* has a materializer, so a component absent from every
- * carried surface (agents, pending themes, …) must be skipped by its absence,
- * not by its name appearing in that list.
- */
-function placeableKeys(ir: ClaudePluginIr): Set<string> {
-  const keys = new Set<string>()
-  for (const skill of ir.skills) keys.add(identityKey('skills', skill.name))
-  for (const server of ir.mcpServers) keys.add(identityKey('mcpServers', server.name))
-  for (const hook of ir.hooks) keys.add(identityKey('hooks', `${hook.event}#${hook.index}`))
-  return keys
-}
-
-/**
  * Compile a plugin in memory and report what the transplant decided.
  *
  * Pure with respect to the filesystem: the dialect has already read the plugin,
@@ -128,7 +114,6 @@ export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions):
   const carriedSurfaces = new Set(emit.emitted)
   const skippedEntries = new Set(emit.skipped)
   const faces = facesByName(ir)
-  const placeable = placeableKeys(ir)
 
   const components: ReportComponent[] = summary.entries.map((entry) => {
     const key = identityKey(entry.surface, entry.name)
@@ -138,13 +123,14 @@ export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions):
       class: entry.fidelity,
       reason: entry.reason,
       faces: faces.get(key) ?? [],
+      // Emit names every entry it refuses on a surface it carries, and none on
+      // a surface it does not emit at all; together those two facts decide it.
       carried:
-        placeable.has(key) &&
-        carriedSurfaces.has(entry.surface) &&
-        !skippedEntries.has(`${entry.surface}/${entry.name}`),
+        carriedSurfaces.has(entry.surface) && !skippedEntries.has(`${entry.surface}/${entry.name}`),
     }
   })
 
+  const emitted = components.filter((component) => component.carried).length
   const problems = validateIr(ir)
   return {
     ok: problems.length === 0,
@@ -153,8 +139,8 @@ export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions):
     components,
     totals: {
       declared: summary.totals.declared,
-      emittable: summary.totals.emittable,
-      skipped: summary.totals.declared - summary.totals.emittable,
+      emitted,
+      skipped: components.length - emitted,
     },
     problems,
   }
@@ -182,12 +168,12 @@ export function formatTransplantReport(report: TransplantReport): string {
   }
   lines.push('')
   lines.push(
-    `totals: ${report.totals.declared} declared, ${report.totals.emittable} emittable, ${report.totals.skipped} skipped`,
+    `totals: ${report.totals.declared} declared, ${report.totals.emitted} emitted, ${report.totals.skipped} skipped`,
   )
   if (report.problems.length > 0) {
     lines.push(`problems: ${report.problems.length}`)
     for (const problem of report.problems) lines.push(`  ${problem}`)
   }
-  lines.push(report.ok ? 'result: PASS' : 'result: FAIL')
+  lines.push(report.ok ? 'validation: PASS' : 'validation: FAIL')
   return lines.join('\n')
 }

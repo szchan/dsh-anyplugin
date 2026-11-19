@@ -82,10 +82,12 @@ or write the user's own Claude installation.
 
 `report` is the exception: it asks no host. It reads the plugin with the dialect,
 emits in memory, and prints the annotations the IR already carries — class,
-reason and each face — next to emit's carry decision and the `summarizeIr`
-totals. That makes it runnable where neither `claude` nor DSH is installed, and
-it exits non-zero when `validateIr` refuses the IR (`report --ir <file>` reaches
-that path without a deliberately broken plugin on disk).
+reason and each face — next to emit's carry decision and a totals line aggregated
+from those rows (`declared` from the IR, `emitted` / `skipped` from the carry
+decision). That makes it runnable where neither `claude` nor DSH is installed,
+and it exits non-zero with `validation: FAIL` when `validateIr` refuses the IR
+(`report --ir <file>` reaches that path without a deliberately broken plugin on
+disk).
 
 ## The DSH side of the rig
 

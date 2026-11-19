@@ -31,6 +31,9 @@ interface Args {
   positionals: string[]
 }
 
+/** Flags that never take a value, so a following token is a positional. */
+const BOOLEAN_OPTIONS = new Set(['json', 'help', 'verbose', 'allow-pin-mismatch'])
+
 function parseArgs(argv: string[]): Args {
   const [command, ...rest] = argv
   const options = new Map<string, string | boolean>()
@@ -42,6 +45,10 @@ function parseArgs(argv: string[]): Args {
       continue
     }
     const key = token.slice(2)
+    if (BOOLEAN_OPTIONS.has(key)) {
+      options.set(key, true)
+      continue
+    }
     const next = rest[index + 1]
     if (next && !next.startsWith('--')) {
       options.set(key, next)
@@ -80,6 +87,44 @@ const MATERIALIZERS = {
   hooks: new URL('../../dsh-anyplugin-materialize-hook/src/index.ts', import.meta.url).href,
 }
 
+function hasString(record: object, key: string): boolean {
+  return typeof (record as Record<string, unknown>)[key] === 'string'
+}
+
+/** The shape emit and `summarizeIr` read unconditionally; a missing array is a usage error, not a crash. */
+function isClaudePluginIr(value: unknown): value is ClaudePluginIr {
+  if (typeof value !== 'object' || value === null) return false
+  const ir = value as Record<string, unknown>
+  for (const key of ['skills', 'agents', 'hooks', 'mcpServers', 'pending', 'unsupported']) {
+    if (!Array.isArray(ir[key])) return false
+  }
+  return (
+    typeof ir.plugin === 'object' &&
+    ir.plugin !== null &&
+    hasString(ir.plugin, 'name') &&
+    typeof ir.pin === 'object' &&
+    ir.pin !== null &&
+    hasString(ir.pin, 'tool') &&
+    hasString(ir.pin, 'version')
+  )
+}
+
+function parseIrJson(text: string, path: string): ClaudePluginIr {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`--ir: ${path} is not JSON (${detail})\n${USAGE}`)
+  }
+  if (!isClaudePluginIr(parsed)) {
+    throw new Error(
+      `--ir: expected a ClaudePluginIr (skills/agents/hooks/mcpServers/pending/unsupported arrays, plugin.name, pin.tool, pin.version)\n${USAGE}`,
+    )
+  }
+  return parsed
+}
+
 async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
@@ -99,7 +144,7 @@ async function main(argv: string[]): Promise<number> {
       if (args.positionals.length > 0) {
         throw new Error(`--ir and <plugin-dir> are alternatives; got ${args.positionals[0]}`)
       }
-      ir = JSON.parse(await readFile(irPath, 'utf8')) as ClaudePluginIr
+      ir = parseIrJson(await readFile(irPath, 'utf8'), irPath)
     } else {
       const pluginDir = args.positionals[0]
       if (!pluginDir) throw new Error(`missing <plugin-dir>\n${USAGE}`)

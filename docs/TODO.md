@@ -25,8 +25,6 @@ _(empty — the next item is chosen from Next.)_
 - [ ] **Agents.** Needs a catalog seam (`dsh-subagent` has a provider registry,
       not a discoverable directory). Done when `fixtures/claude-agents` matches
       and the persona is selectable by description.
-- [ ] **FidelityReport wiring.** `rig report` prints per-face verdicts from an
-      emit run, not from a stale JSON blob.
 - [ ] **Install / enable / uninstall.** `installs.yml` + three-layer scope
       replay, materialized through the loader; no runtime writes to profile
       config (AGENTS.md §3.4).
