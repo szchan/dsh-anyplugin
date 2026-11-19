@@ -1,62 +1,21 @@
 // The real-loader half of the reconcile proof: group entries and their children
-// are created, kept and disposed against the *installed* cordis 4.1.0 /
-// cordis-plugin-loader 1.1.0, not the fake. Skipped when no harness is present
-// (CI without DSH); the fake-loader test covers the same contract there.
+// are created, kept and disposed against a pinned cordis 4.1.0 /
+// cordis-plugin-loader 1.1.0 tree, not the fake. The shared resolver decides
+// which tree (D22); locally a missing harness skips with a reason, while CI
+// fails rather than skipping a fidelity test.
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
+import { harnessSkipReason, resolveHarness } from '../../dsh-anyplugin-conformance/src/harness.ts'
 import { compileEntries, reconcile } from '../src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
-
-// TEMPORARY harness gate until PR #8 (issue #7) lands the shared resolver.
-// Order: DSH_HARNESS_DIR → DSH_INSTALL_DIR → any .harness/<version>, and in CI
-// an unresolved harness is a failure rather than a skip. When #8 merges this
-// block is replaced by `resolveHarness()`/`harnessSkipReason()`; do not grow it.
-const HARNESS_PACKAGES = ['cordis', 'cordis-plugin-loader', 'dsh-skill']
-function isHarnessDir(dir) {
-  return HARNESS_PACKAGES.every((name) => existsSync(join(dir, name, 'package.json')))
-}
-function locateHarness(root) {
-  for (const candidate of [
-    join(root, 'node_modules', '@deepseek-ai'),
-    join(root, '@deepseek-ai'),
-    root,
-    dirname(root),
-  ]) {
-    if (isHarnessDir(candidate)) return candidate
-  }
-}
-function resolveHarnessTemporarily() {
-  const explicit = process.env.DSH_HARNESS_DIR?.trim()
-  if (explicit) {
-    const found = locateHarness(explicit)
-    if (!found) throw new Error(`DSH_HARNESS_DIR=${explicit} does not contain a DSH harness`)
-    return found
-  }
-  const install = process.env.DSH_INSTALL_DIR?.trim()
-  if (install) {
-    const found = locateHarness(install)
-    if (!found) throw new Error(`DSH_INSTALL_DIR=${install} does not contain a DSH harness`)
-    return found
-  }
-  const fetched = join(repoRoot, '.harness')
-  if (existsSync(fetched)) {
-    for (const version of readdirSync(fetched).sort()) {
-      const found = locateHarness(join(fetched, version))
-      if (found) return found
-    }
-  }
-  if (process.env.CI === 'true' || process.env.CI === '1') {
-    throw new Error('CI requires a resolved harness; set DSH_HARNESS_DIR or DSH_INSTALL_DIR')
-  }
-  return undefined
-}
-const installedDir = resolveHarnessTemporarily()
+const harness = resolveHarness()
+const installedDir = harness?.harnessDir
 const workspace = mkdtempSync(join(tmpdir(), 'anyplugin-dsh-'))
 const materializerUrl = pathToFileURL(
   join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts'),
@@ -115,7 +74,7 @@ async function withLoader(run) {
   }
 }
 
-const gate = installedDir ? false : 'no DSH harness resolved (set DSH_HARNESS_DIR or DSH_INSTALL_DIR)'
+const gate = installedDir ? false : harnessSkipReason()
 const when = { skip: gate }
 
 test(

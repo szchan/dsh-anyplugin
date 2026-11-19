@@ -25,7 +25,7 @@
  *   `store[id] ??=`; applying a child id that belongs to someone else would
  *   reparent (and later dispose) their entry. Child ids are namespaced under
  *   `anyplugin.`, and a desired child id that is already resolvable outside the
- *   group is refused before apply.
+ *   group — or a group id held by a non-group entry — is refused before apply.
  */
 import { isDeepStrictEqual } from 'node:util'
 

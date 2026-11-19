@@ -523,9 +523,9 @@ apply, the group and every child fiber must be active; otherwise the id is
 reported in `failed` (with the child id) and removed from
 `created`/`updated`/`kept` — group entries are not atomic, so "applied" has to
 be checked rather than assumed. A desired child id that is already resolvable
-outside the group is refused before apply, because `EntryGroup.create` reuses
-the store slot (`??=`) and would reparent and later dispose someone else's
-fiber. Removal captures the group and subtree fibers before `loader.remove`,
+outside the group — or a group id held by a non-group entry — is refused before
+apply, because `EntryGroup.create` reuses the store slot (`??=`) and would
+reparent and later dispose someone else's fiber. Removal captures the group and subtree fibers before `loader.remove`,
 then waits for them to settle at state 4; state 5 is unloading, not done. The
 same wait applies to children an `update` drops: `EntryGroup.update` removes
 them without awaiting their disposers, and `loader.await()` no longer sees
