@@ -77,6 +77,12 @@ export interface EmitResult {
   entry: EntryOptions | null
   /** Surfaces that produced a child entry, for the report. */
   emitted: string[]
+  /**
+   * Every IR entry emit looked at, as `surface/name`, carried or refused.
+   * Surfaces emit does not place (agents, output-styles, …) are absent, which
+   * is how the report tells "refused" apart from "never considered".
+   */
+  considered: string[]
   /** Skills the IR carries but the emitter cannot place yet — must be empty. */
   skipped: string[]
 }
@@ -106,6 +112,12 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   const children: EntryOptions[] = []
   const emitted: string[] = []
   const skipped: string[] = []
+  // The three surfaces emit can place. An IR entry on any other surface
+  // (agents, output-styles, pending themes, …) was never a decision emit made.
+  const considered: string[] = []
+  for (const skill of ir.skills) considered.push(`skills/${skill.name}`)
+  for (const server of ir.mcpServers) considered.push(`mcpServers/${server.name}`)
+  for (const hook of ir.hooks) considered.push(`hooks/${hook.event}#${hook.index}`)
 
   const modelFace = (skill: IrSkill) => skill.faces?.model ?? skill.annotation
   const skills = ir.skills.filter((skill) => {
@@ -171,7 +183,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     if (!hooks.includes(hook)) skipped.push(`hooks/${hook.event}#${hook.index}`)
   }
 
-  if (children.length === 0) return { entry: null, emitted, skipped }
+  if (children.length === 0) return { entry: null, emitted, considered, skipped }
 
   const prefix = options.prefix ?? 'anyplugin.'
   return {
@@ -182,6 +194,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       config: children,
     },
     emitted,
+    considered,
     skipped,
   }
 }

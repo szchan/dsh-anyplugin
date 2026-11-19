@@ -633,11 +633,12 @@ the IR models more than one, and whether emit carried or skipped it. The trailin
 totals aggregate those rows — `declared` from the IR's entry list, `emitted` /
 `skipped` from each component's carry decision — so they cannot disagree with the
 components above them. The report is a reader, not a second fidelity claim: the
-classes and reasons come from the IR annotations and `carried` from `EmitResult`,
-which is why it runs in CI without the installed harness. `validateIr` problems
-make it exit non-zero and are labelled `validation:`, not passed off as a
-transplant verdict; `report --ir <file>` exists so that path is reachable from a
-compiled IR, without planting a broken plugin.
+classes and reasons come from the IR annotations and `carried` is emit's
+`considered` set minus its `skipped` set, which is why it runs in CI without the
+installed harness. `validateIr` problems make it exit non-zero and are labelled
+`validation:`, not passed off as a transplant verdict; `report --ir <file>`
+exists so that path is reachable from a compiled IR, without planting a broken
+plugin.
 
 Still open on this layer: the inventory says *what* loaded, not *how it
 behaves*. Invocation semantics (is a flat command auto-invocable like a skill?

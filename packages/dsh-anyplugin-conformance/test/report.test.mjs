@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -158,6 +158,38 @@ test('rig report treats a non-IR file as a usage error', () => {
     assert.equal(result.status, 2, result.stderr)
     assert.match(result.stderr, /--ir: expected a ClaudePluginIr/)
     assert.doesNotMatch(result.stderr, /not iterable/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a bare skills/<name>.md is skipped, not claimed carried', () => {
+  // The dialect records this as `unsupported` (surface `skills`) but never puts
+  // it in `ir.skills`, so emit never considers it. The report used to mark the
+  // row carried because the surface was carried; `considered` closes that gap.
+  const dir = mkdtempSync(join(tmpdir(), 'rig-report-'))
+  try {
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true })
+    writeFileSync(
+      join(dir, '.claude-plugin', 'plugin.json'),
+      `${JSON.stringify({ name: 'legacy-skill', version: '0.0.1' }, null, 2)}\n`,
+      'utf8',
+    )
+    mkdirSync(join(dir, 'skills', 'good'), { recursive: true })
+    writeFileSync(
+      join(dir, 'skills', 'good', 'SKILL.md'),
+      '---\nname: good\ndescription: A skill the host loads.\n---\nSay hello.\n',
+      'utf8',
+    )
+    writeFileSync(join(dir, 'skills', 'legacy.md'), '---\ndescription: A bare DSH-style skill.\n---\nBare.\n', 'utf8')
+
+    const result = runRig(['report', dir])
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /^skills\/good {2}class=equivalent {2}carry=emitted$/m)
+    assert.match(result.stdout, /^skills\/legacy {2}class=unsupported {2}carry=skipped$/m)
+    assert.match(result.stdout, /^totals: 2 declared, 1 emitted, 1 skipped$/m)
+    assert.match(result.stdout, /^validation: PASS$/m)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

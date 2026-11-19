@@ -111,7 +111,7 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
 export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions): TransplantReport {
   const summary = summarizeIr(ir)
   const emit = emitPlugin(ir, options)
-  const carriedSurfaces = new Set(emit.emitted)
+  const considered = new Set(emit.considered)
   const skippedEntries = new Set(emit.skipped)
   const faces = facesByName(ir)
 
@@ -123,10 +123,12 @@ export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions):
       class: entry.fidelity,
       reason: entry.reason,
       faces: faces.get(key) ?? [],
-      // Emit names every entry it refuses on a surface it carries, and none on
-      // a surface it does not emit at all; together those two facts decide it.
+      // `carried = considered minus skipped`: surfaces emit never looks at
+      // (agents, output-styles, …) are neither, so the row cannot claim a
+      // placement emit did not decide, as it did for `skills/legacy`.
       carried:
-        carriedSurfaces.has(entry.surface) && !skippedEntries.has(`${entry.surface}/${entry.name}`),
+        considered.has(`${entry.surface}/${entry.name}`) &&
+        !skippedEntries.has(`${entry.surface}/${entry.name}`),
     }
   })
 
