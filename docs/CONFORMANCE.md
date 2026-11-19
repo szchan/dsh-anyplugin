@@ -127,3 +127,33 @@ node --test                                                               # ever
 
 Both DSH-side tests skip when `DSH_INSTALL_DIR` is unset; they are meaningless
 without an installation to measure.
+
+## The behavior face
+
+`claude plugin eval` grades a plugin's own suite (`evals/**/case.yaml`, or
+`prompt.md` + `graders/*.md`) and, with `--ablation with-without`, reports the
+delta against a no-plugin baseline arm. Run it on the DeepSeek backend so both
+hosts share one model:
+
+```bash
+cd <plugin> && ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic \
+  ANTHROPIC_AUTH_TOKEN=… ANTHROPIC_MODEL=deepseek-flash \
+  claude plugin eval . --trust-plugin --ablation with-without \
+  --runs 1 --keep-temp --json result.json --max-cost-usd 0.20
+```
+
+Each run writes `out/trace.jsonl` (kept only with `--keep-temp`; the kept
+directories are sealed `mode 000`). The trace is the useful half: it records
+the tool calls, the tool results and every model-visible message. What a skill
+invocation looks like there:
+
+```text
+assistant    tool_use  Skill {skill: "skills-only:greet"}
+tool_result            "Launching skill: skills-only:greet"
+user          text     "Base directory for this skill: <dir>\n\nGreet Ada."
+```
+
+That is a byte-level statement about the context face, and it is the first one
+we have. DSH delivers the same body inside `<skill_content>` and does not
+substitute `arguments:`, so the skill annotation is `equivalent`, with reasons
+(D16).

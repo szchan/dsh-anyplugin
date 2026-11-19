@@ -38,7 +38,7 @@ test('the dialect reads the fixture the way the host reports it', () => {
     ['greet', 'hello'],
   )
   for (const skill of ir.skills) {
-    assert.equal(skill.annotation.fidelity, 'exact', `${skill.name} should be exact`)
+    assert.equal(skill.annotation.fidelity, 'equivalent', `${skill.name} keeps its body but not its envelope`)
     assert.equal(skill.origin, 'skills-dir')
   }
   const report = summarizeIr(ir)

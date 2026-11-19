@@ -152,10 +152,22 @@ function readManifest(root: string): Record<string, unknown> {
   }
 }
 
-const SKILL_EXACT: Annotation = {
-  fidelity: 'exact',
+/**
+ * The body survives byte for byte; the envelope it arrives in does not. Claude
+ * Code hands a loaded skill to the model as a user message that opens with
+ * "Base directory for this skill: <dir>", DSH wraps the same body in
+ * <skill_content name="..."><skill_resources>...</skill_resources>
+ * <skill_instructions>...</skill_instructions></skill_content>. Equal
+ * information, different bytes, so this is equivalent and not exact.
+ *
+ * A second difference surfaced with the trace: Claude substitutes the
+ * frontmatter's `arguments:` placeholders ($name, $ARGUMENTS) before delivery.
+ * DSH's registry has no such concept, so placeholders currently arrive literal.
+ */
+const SKILL_EQUIVALENT: Annotation = {
+  fidelity: 'equivalent',
   reason:
-    'SKILL.md frontmatter and body are carried verbatim into the DSH skill registry; name, description and body are preserved byte for byte.',
+    'Body is preserved byte for byte inside a different envelope (DSH wraps it in <skill_content>/<skill_instructions>; Claude sends it as a user message prefixed with the base-directory line), and frontmatter `arguments:` placeholders are not substituted — both are recorded gaps, not silent ones.',
 }
 
 /**
@@ -252,7 +264,7 @@ function readSkillsAndCommands(root: string): {
       { rel: 'SKILL.md', abs: join(root, 'SKILL.md'), depth: 0 },
       root,
       'root-skill',
-      SKILL_EXACT,
+      SKILL_EQUIVALENT,
       basename(root),
     )
     if (skill) skills.push(skill)
@@ -280,7 +292,7 @@ function readSkillsAndCommands(root: string): {
           { rel: `skills/${entry.name}/SKILL.md`, abs: file, depth: 2 },
           root,
           'skills-dir',
-          SKILL_EXACT,
+          SKILL_EQUIVALENT,
         )
         if (skill) skills.push(skill)
       } else if (entry.name.endsWith('.md')) {

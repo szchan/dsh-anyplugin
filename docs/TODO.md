@@ -82,6 +82,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.
+- Behavior oracle: `claude plugin eval` runs upstream suites and yields
+  per-run traces; the skill envelope and its missing argument substitution were
+  found there (D16).
 - Hook payload fixtures: 32 doc-derived payloads plus 6 live captures from
   2.1.322 (DeepSeek backend), run through `runChain`; the event table and
   matcher subject are derived from them (D15).

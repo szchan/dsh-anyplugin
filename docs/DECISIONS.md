@@ -382,8 +382,8 @@ agents running side by side, not fidelity.
 
 **Decided.** `fixtures/hooks/` holds the payload corpus: `payloads/` extracted
 from the pinned docs page by `scripts/extract-hook-payloads.mjs`, and
-`captured/` recorded from a live `claude` 2.1.322 by
-`spikes/s6-hook-payloads`. `CLASSIC_HOOK_EVENTS` and `CLASSIC_SUBJECT_FIELD`
+`observed/` recorded from a live `claude` 2.1.322 by
+`spikes/s6-hook-payloads` (the raw `captured/` drop zone stays git-ignored). `CLASSIC_HOOK_EVENTS` and `CLASSIC_SUBJECT_FIELD`
 in `dsh-anyplugin-intercept` are derived from that corpus, and
 `test/payloads.test.mjs` fails when the table and the fixtures disagree.
 
@@ -402,4 +402,39 @@ semantic — an observing hook has no `next` to decline.
 - Unknown matcher semantics leave the subject empty and are listed as a gap:
   a matcher that cannot narrow is better than one that narrows wrongly.
 - Payloads derived from docs keep `__provenance` (`source`, `url`, `pin`) in the
-  file; captures keep the command that produced them.
+  file; recordings keep the command that produced them.
+
+## D16 — The behavior face is graded upstream, and its trace is ground truth
+
+**Decided.** Behavioral checks run through `claude plugin eval` against the
+plugin's own suite, on the DeepSeek backend, pinned to 2.1.322. The run's
+`trace.jsonl` — not the score — is the artifact we keep: it is the only
+byte-level record of what the model saw.
+
+**Why.** Scores tell us whether a plugin "worked"; they do not tell us what the
+harness delivered. The first trace settled a question we would otherwise have
+guessed at, and guessed wrong. A skill invocation produces two model-visible
+messages:
+
+```text
+tool_result  "Launching skill: <plugin>:<skill>"
+user         "Base directory for this skill: <dir>\n\n<body, arguments substituted>"
+```
+
+Our skills materializer registers the body and lets DSH wrap it in
+`<skill_content name="…"><skill_resources>…</skill_resources>
+<skill_instructions>…</skill_instructions></skill_content>`, and does not
+substitute `arguments:` placeholders. That is not "exact", it is "the same
+body in a different envelope, with a substitution missing" — which is why the
+skill annotation is now `equivalent` with both gaps written down.
+
+**Consequences.**
+
+- Probe with `--runs 1 --max-cost-usd` (a case defaults to three runs and three
+  judge votes; ≈ $0.05 + $0.005 per run at deepseek-flash). Keep the trace with
+  `--keep-temp`; its directories are sealed `mode 000` by design.
+- Behavior runs are opt-in (they need network and money) and are excluded from
+  the default `npm test`. When they run, the report names the pin and backend.
+- A passing suite is not a security claim; upstream says so and so do we.
+- The trace oracle (normalize `trace.jsonl`, diff against a DSH run) is the
+  next gap, not this decision.
