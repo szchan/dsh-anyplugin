@@ -224,6 +224,36 @@ jobs:
             @deepseek-ai/dsh-fs-local@0.2.2-rc.5
           npm run spike:s10
 
+      # S11 is a spike too: 16/16 checks are required, including the command
+      # handler's byte-for-byte `complete: true` prompt and the sibling/compaction
+      # proofs. It boots the command service, the loader (to resolve the persona
+      # row), the preset registry and the compaction engine. Like S9/S10, this
+      # step owns a complete install list because `--no-save` prunes the previous
+      # step's extras.
+      - name: S11 prompt-scope spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S11 spike would skip"
+            exit 1
+          fi
+          npm install --prefix "$DSH_HARNESS_DIR" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
+            @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
+            @deepseek-ai/dsh-agent@0.2.2-rc.5 \
+            @deepseek-ai/dsh-llm@0.2.2-rc.5 \
+            @deepseek-ai/dsh-session@0.2.2-rc.5 \
+            @deepseek-ai/dsh-session-projection@0.2.2-rc.5 \
+            @deepseek-ai/dsh-commands@0.2.2-rc.5 \
+            @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
+            @deepseek-ai/dsh-token-meter@0.2.2-rc.5 \
+            @deepseek-ai/dsh-persona@0.2.2-rc.5 \
+            @deepseek-ai/dsh-agent-preset@0.2.2-rc.5 \
+            @deepseek-ai/dsh-agent-preset-registry@0.2.2-rc.5
+          npm run spike:s11
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed

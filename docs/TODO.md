@@ -17,6 +17,16 @@ Nothing claimed.
 
 ## Next
 
+- [ ] **Output styles** (S11). Carry `output-styles/*.md` as
+      `outputStyles:<name>` rows. The seam is reachable
+      (`invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces
+      one agent's prompt byte for byte; `setup(agentCtx)`, `agent/created`,
+      `dsh-persona` and a preset reach the same scope), so the rows are
+      `planned`, not `unsupported`. Carry is unblocked; activation waits on the
+      D10 command-alias decision for `/<plugin>:<name>`, plus a call on at-start
+      provenance, the `keep-coding-instructions` composition rule, and the
+      fixture shape (the CLI inventory does not list styles, so a fixture must
+      compare a dumped composed prompt).
 - [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
       `mods/` from the pinned upstream revision into `fixtures/` (fetch at
       test time or from the installed tree; never vendored), starting with

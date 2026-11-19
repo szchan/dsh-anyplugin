@@ -19,6 +19,7 @@
     "verify": "npm run check:arch && npm test",
     "spike:s9": "node spikes/s9-host-events/run.mjs",
     "spike:s10": "node spikes/s10-agents/run.mjs",
+    "spike:s11": "node spikes/s11-prompt-scope/run.mjs",
     "spike:s12": "node spikes/s12-hook-fanout/run.mjs"
   },
   "devDependencies": {

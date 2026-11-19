@@ -657,6 +657,7 @@ run degraded *by design*.
 | hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
+| per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles `planned` per style with the seam and gaps named; activation waits on D10's command alias; no global injection |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
@@ -1031,7 +1032,7 @@ agents + bin + theme.
 | --- | --- |
 | v0.1 | S1 + S3 rig; **`dsh-anyplugin-intercept` skeleton**; skills + commands materializers; Claude Code dialect read-only; fidelity report |
 | v0.2 | MCP; classic hooks on the shared kernel (command handler, event subset); exec trust grants; project/user scope |
-| v0.3 | Codex dialect via portable IR; LSP; output-styles; bin |
+| v0.3 | Codex dialect via portable IR; LSP; output-styles (carry unblocked; activation waits on the D10 command alias); bin |
 | v0.4 | agents (per-agent tools or prompt template); themes (F2 ANSI seam); monitors; workflows |
 | v0.5 | `dsh-mod-host` alpha: static scanner + chain engine + fs/store/http/session bridges + `AbovePrompt` render site |
 | v0.6 | mod host beta: element runtime (~17 elements), panes, redraw scheduler, guard layer (sec-default equivalent) |
@@ -1434,6 +1435,97 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   packages; the spike never falls back to another install and never calls a
   missing package a pass. `spikes/s10-agents/out/` is report output only and
   gitignored.
+
+- **S11 — can a plugin contribute system-prompt text that is active only for
+  the agents it creates?** ✅ **Answered 2026-11-19** by
+  `spikes/s11-prompt-scope/run.mjs` against the pinned `0.2.2-rc.5` harness
+  (16/16 checks). Yes. The seam is the agent-scoped system-prompt layer, and a
+  plugin reaches it through the agent context it is handed. The earlier "no
+  seam" answer was wrong: it tested only a Loader entry's own `apply(ctx)`
+  registration, which is global, and concluded the agent scope was host-only.
+
+  **1. The four reachable paths.** The spike dumps `options.messages[0]` — the
+  composed system prompt the model actually receives — from a fake adapter:
+
+  | path | what the spike does | observed |
+  | --- | --- | --- |
+  | `createAgent(..., { setup })` | registers `anyplugin:output-style:terse` on `agentCtx` in setup | present in that agent's dump, absent from a sibling, absent after `dispose()` |
+  | command handler | `ctx.commands.register({ name: 's11-style', handler })`, then `/s11-style` on one agent; the handler calls `invocation.agent.ctx.systemPrompt.section({ ..., complete: true })` | the agent's next dump is byte-for-byte `S11-COMPLETE: terse.`; a sibling is untouched; the second turn is still exactly that text |
+  | `agent/created` | listener filters `payload.agent.id === 's11-created'` and registers on `payload.agent.ctx` | present in that agent's dump, absent from its sibling |
+  | declarative | `dsh-persona` mounted on `agentCtx`; an agent preset registered with `dsh-agent-preset-registry` and mounted in setup | both persona sections present in the respective dump |
+
+  The command path is the exact activation shape of `/<plugin>:<name>`: the
+  handler runs without a model turn and acts on the invoking agent. The
+  section is registered on the agent's own scope, so a sibling sees nothing
+  and the agent's later turns keep it.
+
+  **2. Scoping is the agent, not the entry.** `SystemPrompt.section()` registers
+  through `this.layers.effect(this.ctx, ...)`, and Cordis hands the service a
+  per-caller view, so the layer is the calling context's scope. `agentCtx`,
+  `invocation.agent.ctx`, `payload.agent.ctx` and a mounted preset are all agent
+  scopes. A Loader entry's `apply(ctx)` is not: that registration lands in the
+  root layer and changes every agent's prompt. The difference is which context
+  the entry acts through, not whether a plugin may act at all.
+
+  **3. Compaction.** The prompt is re-assembled from the scope's sections on
+  every request. The spike forces compaction (`compaction/start`,
+  `compaction/summary`, `compaction/end`) and the scoped style is still in the
+  request after `compaction/end`: compaction rewrites history, not the section
+  layer.
+
+  **4. What this does not settle.** Four gaps remain before a carry:
+  (i) **provenance** — `agent/created` carries the agent but no plugin id, so an
+  at-start contribution needs an id filter or a plugin-created agent;
+  (ii) **activation name** — `/<plugin>:<name>` needs D10's additive
+  command-alias seam, because a command name cannot contain `:` at this pin (an
+  alias would be new additive work, not an existing equivalent);
+  (iii) **oracle anchor** — `claude plugin details` does not inventory output
+  styles at 2.1.322, so the inventory oracle cannot see the row and a fixture
+  would have to compare a dumped composed prompt;
+  (iv) **composition** — `keep-coding-instructions: true` keeps Claude's
+  built-in coding instructions, which a `complete` section cannot express
+  because it replaces the whole prompt. An output style also replaces (rather
+  than augments) the Claude prompt, and `force-for-plugin` applies it
+  session-wide while the plugin is enabled; a DSH carry must choose an explicit
+  activation path rather than inject at load.
+
+  **What this buys, and what it does not.** Each `output-styles/*.md` is one
+  `planned` row (`outputStyles:<name>`) whose reason names the reachable seam
+  and the four gaps; a `manifest:outputStyles` row records a custom directory.
+  It does not carry the style: no materializer, no coverage row, no fixture.
+  The upstream CLI's inventory has no output-style line, so a golden would be
+  empty and could not anchor the row. The totals stay **16 declared / 15
+  matched / 0 missing / 1 refused**; this ticket moves no fixture row.
+
+  Reproduce:
+
+  ```bash
+  node scripts/fetch-harness.mjs 0.2.2-rc.5
+  npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
+    --cache "$PWD/.npm-cache" \
+    @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
+    @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
+    @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
+    @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
+    @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
+    @deepseek-ai/dsh-llm@0.2.2-rc.5 \
+    @deepseek-ai/dsh-session@0.2.2-rc.5 \
+    @deepseek-ai/dsh-session-projection@0.2.2-rc.5 \
+    @deepseek-ai/dsh-agent@0.2.2-rc.5 \
+    @deepseek-ai/dsh-commands@0.2.2-rc.5 \
+    @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
+    @deepseek-ai/dsh-token-meter@0.2.2-rc.5 \
+    @deepseek-ai/dsh-persona@0.2.2-rc.5 \
+    @deepseek-ai/dsh-agent-preset@0.2.2-rc.5 \
+    @deepseek-ai/dsh-agent-preset-registry@0.2.2-rc.5
+  DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+    npm run spike:s11
+  ```
+
+  An explicitly configured but incomplete harness exits 2 naming the missing
+  packages; the spike never falls back to another install. The report is
+  `spikes/s11-prompt-scope/out/report.json`, with the prompt dumps beside it;
+  `out/` is report output only and gitignored.
 
 - **S12 — do classic hooks fan out, or does a decision stop the rest?**
   ✅ **Answered 2026-11-19** by `spikes/s12-hook-fanout/run.mjs` against the
