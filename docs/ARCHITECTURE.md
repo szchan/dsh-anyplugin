@@ -626,6 +626,16 @@ The number the project reports is `matched / declared`, never a percentage of
 "things we tried". `coverage.test.mjs` pins every row: closing a gap is a
 reviewable edit to that matrix, and a regression fails on the same line.
 
+One compile-side row needs no oracle. `rig report <plugin-dir>` reads the plugin
+with the dialect, emits in memory and prints what the transplant would do: per
+component its surface, name, class and reason, its `model` / `human` faces where
+the IR models more than one, and whether emit carried or skipped it, followed by
+the `summarizeIr` totals. The report is a reader, not a second fidelity claim —
+the reasons come from the IR, `carried` from `EmitResult`, and `totals` from
+`summarizeIr` — which is why it runs in CI without the installed harness.
+`validateIr` problems make it exit non-zero; `report --ir <file>` exists so that
+path is reachable from a compiled IR, without planting a broken plugin.
+
 Still open on this layer: the inventory says *what* loaded, not *how it
 behaves*. Invocation semantics (is a flat command auto-invocable like a skill?
 does `disable-model-invocation` change it?) need the behavior arm —
