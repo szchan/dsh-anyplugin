@@ -560,3 +560,36 @@ would have had to invent a second path for PostToolUse, which is how the
   fields stay absent rather than guessed.
 - Events that are not tool-scoped still have no host; the missing-event list
   shrinks to those, and each stays `planned` with a reason until it has one.
+
+## D20 — A hook counts when it runs, and its payload is honest about what we lack
+
+**Status:** ratified 2026-11-19, with the classic arm.
+
+`dsh-anyplugin-hook-runner` runs a command handler with a payload carrying only
+fields this host owns; `dsh-anyplugin-materialize-hook` mounts `PreToolUse` and
+`PostToolUse` on the tool waterfalls (D19); the coverage row for a hook flips
+only after one real call shows its effect.
+
+**Why:** a hook is the one surface no registry can testify for. A handler that
+was parsed, emitted, mounted and then never executed leaves exactly the same
+inventory as one that works — a listener existing is not evidence that anything
+listened. The honest test is a call that goes through the pipeline and comes
+back carrying the hook's text.
+
+**Consequences:**
+
+- The payload omits `session_id`, `transcript_path`, `permission_mode` and
+  `effort`. A hook that branches on them takes the absent branch, and the IR
+  annotation says so; inventing plausible values would make a plugin pass its
+  own checks for the wrong reason.
+- Verdict translation is fixed: exit 2 denies with stderr as the reason; exit 0
+  JSON may deny (`decision: "block"` or `permissionDecision: "deny"`) or add
+  `additionalContext`; any other non-zero exit is a warning, never a block;
+  `continue: false` and `permissionDecision: "ask"` have no equivalent and are
+  reported, not obeyed.
+- A `PostToolUse` denial is feedback, not a block: the call already ran, so the
+  text joins `additionalContexts` instead of denying anything.
+- A matcher that is not a valid regular expression matches nothing. Failing open
+  would run a hook its author never addressed to that tool.
+- Handler types other than `command` (`http`, `mcp_tool`, `prompt`, `agent`)
+  stay `planned`; each needs its own decision about where it executes.

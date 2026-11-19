@@ -25,6 +25,7 @@ const materializerUrl = (pkg) => pathToFileURL(join(repoRoot, 'packages', pkg, '
 const materializers = {
   skill: materializerUrl('dsh-anyplugin-materialize-skill'),
   mcp: materializerUrl('dsh-anyplugin-materialize-mcp'),
+  hooks: materializerUrl('dsh-anyplugin-materialize-hook'),
 }
 
 /**
@@ -36,12 +37,22 @@ const EXPECTED_ROWS = {
   'claude-agents': ['agents:reviewer:missing'],
   'claude-command-nested': [],
   'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
-  'claude-hooks-mcp': ['hooks:PostToolUse:missing', 'mcpServers:probe:match'],
+  'claude-hooks-mcp': ['hooks:PostToolUse:match', 'mcpServers:probe:match'],
   'claude-mcp-budget': ['mcpServers:a-server-name-that-is-long-enough:refused'],
   'claude-mcp-http': ['mcpServers:http-probe:match'],
   'claude-mcp-tool-budget': ['mcpServers:probe:match'],
   'claude-root-skill': ['skills:rooty:match'],
   'claude-skills-only': ['skills:greet:match', 'skills:hello:match'],
+}
+
+/**
+ * Hooks are the one surface whose presence is not readable from a registry:
+ * a hook that is mounted and one that is not both leave no trace. So the
+ * fixture with a hook gets one real call through the pipeline, and its row is
+ * reported as matched only when the hook's own text came back on the result.
+ */
+const HOOK_PROBES = {
+  'claude-hooks-mcp': { tool: 'Write', marker: 'anyplugin-hook: PostToolUse fired', component: 'hooks:PostToolUse' },
 }
 
 /**
@@ -72,7 +83,18 @@ async function inventoryFor(fixture) {
     inventory.pin = { tool: 'dsh', version: dshVersion(installedDir) }
     return { inventory, refused }
   }
-  return { inventory: (await probeWithDsh({ installedDir, entry })).inventory, refused }
+  const hookProbe = HOOK_PROBES[fixture]
+  const probe = await probeWithDsh({
+    installedDir,
+    entry,
+    ...(hookProbe === undefined ? {} : { behavior: { tool: hookProbe.tool }, timeoutMs: 10_000 }),
+  })
+  const inventory = probe.inventory
+  if (hookProbe !== undefined && (probe.behavior?.text ?? '').includes(hookProbe.marker)) {
+    const [, name] = hookProbe.component.split(':')
+    inventory.components.push({ surface: 'hooks', name })
+  }
+  return { inventory, refused }
 }
 
 test(
@@ -109,7 +131,7 @@ test(
         await cleanup?.()
       }
     }
-    assert.deepEqual(totals, { declared: 11, matched: 8, missing: 2, refused: 1 })
+    assert.deepEqual(totals, { declared: 11, matched: 9, missing: 1, refused: 1 })
   },
 )
 

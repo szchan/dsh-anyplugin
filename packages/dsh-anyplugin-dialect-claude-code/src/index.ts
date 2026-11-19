@@ -362,6 +362,34 @@ function readAgents(root: string): { agents: IrAgent[]; unsupported: IrUnmateria
   return { agents, unsupported }
 }
 
+/**
+ * Only the two tool-scoped events have a host (S8, D19): they ride
+ * `tools/pre-execute` and `tools/post-execute`. Even there the payload is not
+ * byte-identical — the host has no session id, transcript path or permission
+ * mode to put in it — so the honest class is `equivalent`, not `exact`.
+ */
+function hookAnnotation(event: string, type: string, command: string | undefined): Annotation {
+  if (type !== 'command' || command === undefined) {
+    return {
+      fidelity: 'planned',
+      reason: `Handler type ${JSON.stringify(type)} is not carried: only shell commands are executed in this release.`,
+    }
+  }
+  if (event === 'PreToolUse' || event === 'PostToolUse') {
+    return {
+      fidelity: 'equivalent',
+      reason:
+        `Rides the ${event === 'PreToolUse' ? 'tools/pre-execute' : 'tools/post-execute'} waterfall (S8, D19). The payload carries tool_name, tool_input, tool_use_id and cwd; it omits session_id, transcript_path, permission_mode and effort, which this host has no source for. ` +
+        '`continue:false` has no equivalent and is ignored with a warning.',
+    }
+  }
+  return {
+    fidelity: 'planned',
+    reason:
+      `${event} has no host event yet: no DSH event fires at that point in the turn, so the handler is recorded but not run.`,
+  }
+}
+
 function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[] } {
   const hooks: IrHook[] = []
   const pending: IrUnmaterialized[] = []
@@ -395,18 +423,23 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
       const handlers = Array.isArray(group.hooks) ? (group.hooks as Record<string, unknown>[]) : []
       const matcher = typeof group.matcher === 'string' ? group.matcher : undefined
       handlers.forEach((handler, index) => {
+        const type = typeof handler.type === 'string' ? handler.type : 'unknown'
+        const command = typeof handler.command === 'string' ? handler.command : undefined
+        const args = Array.isArray(handler.args) && handler.args.every((item) => typeof item === 'string')
+          ? (handler.args as string[])
+          : undefined
+        const timeout = typeof handler.timeout === 'number' ? handler.timeout : undefined
         hooks.push({
           kind: 'hook',
           event,
           ...(matcher === undefined ? {} : { matcher }),
           index,
-          handler: typeof handler.type === 'string' ? handler.type : 'unknown',
+          handler: type,
+          ...(command === undefined ? {} : { command }),
+          ...(args === undefined ? {} : { args }),
+          ...(timeout === undefined ? {} : { timeout }),
           sourcePath: 'hooks/hooks.json',
-          annotation: {
-            fidelity: 'planned',
-            reason:
-              'Hook handlers are not executed yet: they need the shared interception kernel (v0.1 skeleton) and the event-vocabulary mapping (v0.2). Recorded now so the report counts them.',
-          },
+          annotation: hookAnnotation(event, type, command),
         })
       })
     }

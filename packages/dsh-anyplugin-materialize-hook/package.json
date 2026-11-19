@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-materialize-hook",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin that mounts a plugin's command hooks on the tool waterfalls (D19).",
+  "exports": { ".": "./src/index.ts" }
+}

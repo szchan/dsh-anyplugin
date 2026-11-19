@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-hook-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs a Claude-style command hook: payload in, verdict out. No host knowledge.",
+  "exports": { ".": "./src/index.ts" }
+}

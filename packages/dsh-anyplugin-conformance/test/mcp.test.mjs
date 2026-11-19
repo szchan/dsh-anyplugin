@@ -24,6 +24,7 @@ const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_
 const materializers = {
   skill: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts')).href,
   mcp: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-mcp', 'src', 'index.ts')).href,
+  hooks: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-hook', 'src', 'index.ts')).href,
 }
 const golden = JSON.parse(
   readFileSync(join(fixtureDir, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
@@ -46,9 +47,9 @@ test('the dialect resolves ${CLAUDE_PLUGIN_ROOT} into a runnable stdio server', 
 
 test('the emitter carries the server as data under the mcp child', () => {
   const ir = readClaudePlugin(fixtureDir)
-  // The hook is carried as a *declaration* (planned), not emitted: there is no
-  // PostToolUse intercept point in the harness yet (ARCHITECTURE §9).
-  assert.equal(ir.hooks[0]?.annotation.fidelity, 'planned')
+  // The hook is carried too: PreToolUse/PostToolUse ride the tool waterfalls
+  // (S8, D19), so this fixture now emits a hook child as well as an MCP one.
+  assert.equal(ir.hooks[0]?.annotation.fidelity, 'equivalent')
   const { entry, emitted, skipped } = emitPlugin(ir, {
     materializers,
     sdkRoot: installedDir ? dirname(installedDir) : undefined,

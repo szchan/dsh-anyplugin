@@ -79,6 +79,12 @@ export interface IrHook {
   index: number
   /** `command` | `http` | `mcp_tool` | `prompt` | `agent` | `unknown`. */
   handler: string
+  /** Shell command, verbatim as authored. Only for `handler: 'command'`. */
+  command?: string
+  /** Exec-form arguments; when present the command runs without a shell. */
+  args?: readonly string[]
+  /** Per-handler timeout in seconds, as authored. */
+  timeout?: number
   sourcePath: string
   annotation: Annotation
 }

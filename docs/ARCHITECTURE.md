@@ -586,11 +586,11 @@ goldens, matched by the DSH oracle):
 | `claude-command-nested` | 0 | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
 | `claude-commands-flat` | 2 | 2 | 0 | 0 | model face done; human face needs the two seams in D10 |
 | `claude-agents` | 1 | 0 | 1 | 0 | named-agent catalog seam |
-| `claude-hooks-mcp` | 2 | 1 | 1 | 0 | MCP done (D12); hook needs the interception kernel |
+| `claude-hooks-mcp` | 2 | 2 | 0 | 0 | hook mounted on `tools/post-execute` and observed on a real call (D20) |
 | `claude-mcp-http` | 1 | 1 | 0 | 0 | streamable-http arm; the server is started by the test (D12) |
 | `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
-| **total** | **11** | **8** | **2** | **1** | |
+| **total** | **11** | **9** | **1** | **1** | |
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
@@ -605,6 +605,14 @@ over-budget MCP fixture is the first case: every tool name from it would start
 with 65 characters before the tool's own name, so nothing it exposes can fit the
 64-character limit both hosts share (D11). Counting it as `missing` would show a
 failure we chose; counting it as `match` would be a lie.
+
+A **hook** is the one component a registry cannot testify for. A hook that was
+parsed, emitted and mounted but never ran leaves the same inventory as one that
+works. So the oracle fires one real call at the tool its matcher targets and the
+row flips only if the hook's own text came back on that result — the same rule
+as MCP (a server counts when it contributes a tool, not when a config names it).
+`dsh-anyplugin-hook-runner` is tested separately, without a harness: payload in,
+verdict out.
 
 The number the project reports is `matched / declared`, never a percentage of
 "things we tried". `coverage.test.mjs` pins every row: closing a gap is a

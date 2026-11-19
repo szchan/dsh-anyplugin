@@ -146,6 +146,31 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     if (!servers.includes(server)) skipped.push(`mcpServers/${server.name}`)
   }
 
+  // Hooks are mounted on the tool waterfalls (D19). Only command handlers that
+  // land on PreToolUse/PostToolUse are `equivalent` today; everything else is
+  // `planned` and stays out of the entry — the report keeps it visible.
+  const hooks = ir.hooks.filter((hook) => carried(hook.annotation) && hook.command !== undefined)
+  if (hooks.length > 0 && options.materializers.hooks !== undefined) {
+    children.push({
+      id: 'hook',
+      name: options.materializers.hooks,
+      config: {
+        pluginRoot: ir.plugin.root,
+        hooks: hooks.map((hook) => ({
+          event: hook.event,
+          ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+          command: hook.command,
+          ...(hook.args === undefined ? {} : { args: hook.args }),
+          ...(hook.timeout === undefined ? {} : { timeout: hook.timeout }),
+        })),
+      },
+    })
+    emitted.push('hooks')
+  }
+  for (const hook of ir.hooks) {
+    if (!hooks.includes(hook)) skipped.push(`hooks/${hook.event}#${hook.index}`)
+  }
+
   if (children.length === 0) return { entry: null, emitted, skipped }
 
   const prefix = options.prefix ?? 'anyplugin.'

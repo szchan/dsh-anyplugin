@@ -25,6 +25,24 @@ export interface DshProbeOptions {
   entry: EntryOptions
   /** How long to wait for plugins to apply, in milliseconds. */
   timeoutMs?: number
+  /**
+   * Fire one real tool call after the plugin settled. This is how a hook is
+   * observed: a hook that never runs and a hook that runs but changes nothing
+   * both leave the inventory untouched, so the caller has to read the result.
+   */
+  behavior?: BehaviorProbe
+}
+
+export interface BehaviorProbe {
+  /** Tool name the fixture's matcher targets, e.g. `Write`. */
+  tool: string
+  arguments?: unknown
+}
+
+export interface BehaviorObservation {
+  /** The tool result as the model would receive it, JSON-encoded. */
+  text: string
+  isError: boolean
 }
 
 export interface DshSkillReport {
@@ -39,6 +57,8 @@ export interface DshProbeResult {
   skills: DshSkillReport[]
   /** Public tool names the harness actually exposes, for MCP assertions. */
   tools: string[]
+  /** Present when the caller asked for a behavioural probe. */
+  behavior?: BehaviorObservation
 }
 
 interface BootedHarness {
@@ -65,7 +85,7 @@ async function until(predicate: () => boolean, timeoutMs: number, label: string)
   throw new Error(`dsh oracle: timed out waiting for ${label}`)
 }
 
-async function boot(installedDir: string, timeoutMs: number, needTools: boolean): Promise<BootedHarness> {
+async function boot(installedDir: string, timeoutMs: number, needTools: boolean, needExecutor = false): Promise<BootedHarness> {
   const { Context } = await loadInstalled(installedDir, 'cordis/lib/index.js')
   const Loader = (await loadInstalled(installedDir, 'cordis-plugin-loader/lib/index.js')).default
   const SkillRegistry = (await loadInstalled(installedDir, 'dsh-skill/lib/index.js')).default
@@ -83,6 +103,12 @@ async function boot(installedDir: string, timeoutMs: number, needTools: boolean)
     await until(() => Boolean(ctx.systemPrompt), timeoutMs, 'system prompt service')
     ctx.plugin(ToolsService, {})
     await until(() => Boolean(ctx.tools), timeoutMs, 'tools service')
+    if (needExecutor) {
+      // Dispatch lives in a separate functional plugin (S8); without it a call
+      // never reaches the tool waterfalls the hooks are mounted on.
+      const nativeExecutor = await loadInstalled(installedDir, 'dsh-tool-executor-native/lib/index.js')
+      ctx.plugin(nativeExecutor, {})
+    }
   }
   await until(() => Boolean(ctx.loader) && Boolean(ctx.skills), timeoutMs, 'loader and skills services')
   return { ctx, loader: ctx.loader, loaderFiber, skills: ctx.skills, tools: ctx.tools }
@@ -110,7 +136,8 @@ export function dshVersion(installedDir: string): string {
 export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeResult> {
   const timeoutMs = options.timeoutMs ?? 5000
   const mcp = mcpChild(options.entry)
-  const booted = await boot(options.installedDir, timeoutMs, mcp !== undefined)
+  const behavior = options.behavior
+  const booted = await boot(options.installedDir, timeoutMs, mcp !== undefined || behavior !== undefined, behavior !== undefined)
   const { ctx, loader, skills } = booted
 
   try {
@@ -140,6 +167,37 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
 
     const listed = (await skills.list({})) as DshSkillReport[]
     const exposed: string[] = mcp === undefined ? [] : (booted.tools?.schemas?.() ?? []).map((schema: { name: string }) => schema.name)
+
+    // One real call through the pipeline. The tool is registered here, after the
+    // plugin applied, so a hook mounted on the waterfall cannot be applied too
+    // late to see it either.
+    let observation: BehaviorObservation | undefined
+    if (behavior !== undefined) {
+      const disposeProbe = booted.tools.register({
+        name: behavior.tool,
+        description: 'anyplugin behavioural probe; returns the arguments it was given',
+        parameters: { type: 'object', properties: {}, additionalProperties: true },
+        output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: () => [] },
+        execute: async (args: unknown) => ({ probe: true, received: args }),
+      })
+      try {
+        const raw = await booted.tools.execute({
+          calls: [
+            {
+              type: 'tool-call',
+              id: 'call_anyplugin_probe',
+              name: behavior.tool,
+              arguments: JSON.stringify(behavior.arguments ?? {}),
+            },
+          ],
+          signal: new AbortController().signal,
+        })
+        const text = JSON.stringify(raw) ?? ''
+        observation = { text, isError: /"isError":true/.test(text) }
+      } finally {
+        disposeProbe()
+      }
+    }
     // A server is observable exactly when it contributes a tool: the inventory
     // reports what the model can call, not what a config file declared.
     const servers = (mcp?.servers ?? []).filter((server) =>
@@ -159,7 +217,13 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
       ...listed.map((skill) => `skills/${skill.name} via ${skill.provider}`),
       ...servers.map((server) => `mcpServers/${server.name}: ${exposed.filter((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)).length} tool(s) registered`),
     ]
-    return { inventory, dshVersion: dshVersion(options.installedDir), skills: listed, tools: exposed }
+    return {
+      inventory,
+      dshVersion: dshVersion(options.installedDir),
+      skills: listed,
+      tools: exposed,
+      ...(observation === undefined ? {} : { behavior: observation }),
+    }
   } finally {
     try {
       await Promise.resolve(booted?.loaderFiber?.dispose?.())
