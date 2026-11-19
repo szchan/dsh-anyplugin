@@ -162,12 +162,12 @@ function readManifest(root: string): Record<string, unknown> {
  *
  * A second difference surfaced with the trace: Claude substitutes the
  * frontmatter's `arguments:` placeholders ($name, $ARGUMENTS) before delivery.
- * DSH's registry has no such concept, so placeholders currently arrive literal.
+ * DSH's skill tool cannot: it takes `{name}` and has no args channel (D17).
  */
 const SKILL_EQUIVALENT: Annotation = {
   fidelity: 'equivalent',
   reason:
-    'Body is preserved byte for byte inside a different envelope (DSH wraps it in <skill_content>/<skill_instructions>; Claude sends it as a user message prefixed with the base-directory line), and frontmatter `arguments:` placeholders are not substituted — both are recorded gaps, not silent ones.',
+    'Body is preserved byte for byte inside a different envelope (DSH wraps it in <skill_content>/<skill_instructions>; Claude sends it as a user message prefixed with the base-directory line). Argument placeholders ($ARGUMENTS, $N, $name) are not substituted: DSH\'s skill tool takes {name} and Claude\'s takes {skill, args} (DECISIONS D17).',
 }
 
 /**
@@ -232,6 +232,7 @@ function skillFromFile(
     modelInvocable: !boolField(parsed.data, 'disable-model-invocation'),
     userInvocable: boolField(parsed.data, 'user-invocable') !== false,
   }
+  const argumentNames = argumentNamesFrom(parsed.data['arguments'])
   return {
     kind: 'skill',
     name,
@@ -244,6 +245,7 @@ function skillFromFile(
     origin,
     sourcePath: file.rel,
     resourceDir: dirname(file.abs),
+    ...(argumentNames ? { argumentNames } : {}),
     ...(faces ? { faces } : {}),
     annotation,
   }
@@ -432,6 +434,16 @@ const PLUGIN_ROOT_VARIABLE = /\$\{CLAUDE_PLUGIN_ROOT\}/g
 
 function substitutePluginRoot(value: string, root: string): string {
   return value.replace(PLUGIN_ROOT_VARIABLE, root)
+}
+
+/** Frontmatter `arguments` is a YAML list or a space-separated string (skills docs). */
+function argumentNamesFrom(value: unknown): string[] | undefined {
+  if (typeof value === 'string') {
+    const names = value.trim().split(/\s+/).filter(Boolean)
+    return names.length > 0 ? names : undefined
+  }
+  const list = stringList(value)
+  return list !== undefined && list.length > 0 ? list : undefined
 }
 
 function stringList(value: unknown): string[] | undefined {

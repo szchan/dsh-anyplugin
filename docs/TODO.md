@@ -82,6 +82,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
 - Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
   decisions, budgets, trace, `observe`/`wrap` continuation modes.
+- Skill argument engine: the documented rules ($N zero-based, $name,
+  the trailer, escapes) implemented and tested against a recorded trace;
+  waiting on the tool-schema seam (D17).
 - Behavior oracle: `claude plugin eval` runs upstream suites and yields
   per-run traces; the skill envelope and its missing argument substitution were
   found there (D16).

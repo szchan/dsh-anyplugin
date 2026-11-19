@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-skill-template",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "devDependencies": { "@deepseek-ai/dsh-skill": "*" }
+}

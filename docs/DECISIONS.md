@@ -438,3 +438,39 @@ skill annotation is now `equivalent` with both gaps written down.
 - A passing suite is not a security claim; upstream says so and so do we.
 - The trace oracle (normalize `trace.jsonl`, diff against a DSH run) is the
   next gap, not this decision.
+
+## D17 — Skill arguments need a tool-schema seam; the engine is already theirs
+
+**Decided.** The substitution engine lives in `dsh-anyplugin-skill-template` and
+follows the pinned skills documentation, proven against a recorded trace. Wiring
+it needs one additive change to `dsh-tool-skill` — an optional `args` on the
+`skill` tool, substituted where `renderSkillContent` runs. Until that seam
+exists, a skill that declares `arguments` stays `equivalent` with this reason.
+
+**Why.** The 2.1.322 trace shows the model's tool call as
+`{"skill":"skills-only:greet","args":"Ada"}`. DSH's `skill` tool declares
+`parameters: { name }` and nothing else (`dsh-tool-skill/src/index.ts`), and
+`renderSkillContent` takes a finished string. So the gap is the **channel**, not
+the rules — and the rules are unusually precise, which is exactly why they are
+implemented and tested now:
+
+| Rule | Behaviour |
+| --- | --- |
+| `$N` | zero-based: `$0` is the first argument (commands are one-based — two engines, two specs) |
+| `$ARGUMENTS[N]` | same position as `$N` |
+| `$name` | declared in `arguments:` (YAML list or space-separated string), mapped in order |
+| missing indexed | stays literal, does not count as received |
+| missing named | expands to `''`, **does** count as received |
+| nothing received | the body gains a blank line and `ARGUMENTS: <raw>` |
+| one backslash before the token | the backslash is dropped and the token stays literal |
+| two backslashes before the token | both stay and the token still expands |
+| inserted value containing a placeholder | inserted literally, never re-expanded |
+
+**Consequences.**
+
+- `substituteSkillArguments` is tested against the trace line (`Greet $name.`
+  plus `Ada` gives `Greet Ada.`) and against every row above; it is not wired.
+- `IrSkill.argumentNames` carries the declaration so the materializer needs no
+  second parse when the seam lands.
+- `${CLAUDE_*}` substitution happens after arguments upstream and is out of
+  scope here; treat it as a separate gap if a fixture needs it.
