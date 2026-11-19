@@ -89,18 +89,21 @@ function skillConfig(skills: IrSkill[]): unknown {
 }
 
 /**
- * Only nodes whose fidelity is `exact` or `equivalent` are emitted: `planned`
- * and `unsupported` nodes describe work we have not done, and emitting them
- * would turn a report into a lie.
+ * Emittability is decided per *face*, not per component. A command whose human
+ * face is still `planned` is emitted as a skill on purpose — its overall
+ * annotation keeps saying `planned`, so the report cannot read as a success
+ * (AGENTS.md §3.1). Dropping it instead would hide a face we can serve today.
  */
 export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult {
   const children: EntryOptions[] = []
   const emitted: string[] = []
   const skipped: string[] = []
 
-  const skills = ir.skills.filter(
-    (skill) => skill.annotation.fidelity === 'exact' || skill.annotation.fidelity === 'equivalent',
-  )
+  const modelFace = (skill: IrSkill) => skill.faces?.model ?? skill.annotation
+  const skills = ir.skills.filter((skill) => {
+    const fidelity = modelFace(skill).fidelity
+    return fidelity === 'exact' || fidelity === 'equivalent'
+  })
   if (skills.length > 0) {
     children.push({ id: 'skill', name: options.materializers.skill, config: skillConfig(skills) })
     emitted.push('skills')

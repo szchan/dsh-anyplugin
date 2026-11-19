@@ -541,10 +541,17 @@ goldens, matched by the DSH oracle):
 | `claude-skills-only` | 2 | 2 | 0 | — |
 | `claude-root-skill` | 1 | 1 | 0 | — |
 | `claude-command-nested` | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
-| `claude-commands-flat` | 2 | 0 | 2 | command materializer + alias-table dispatch |
+| `claude-commands-flat` | 2 | 2 | 0 | model face done; human face needs the two seams in D10 |
 | `claude-agents` | 1 | 0 | 1 | named-agent catalog seam |
 | `claude-hooks-mcp` | 2 | 0 | 2 | interception kernel; MCP `serverName` policy |
-| **total** | **8** | **3** | **5** | |
+| **total** | **8** | **5** | **3** | |
+
+`claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
+is one artifact with two observable faces — the catalog entry the model sees,
+and the `/plugin:name args` typing surface — so its IR node carries
+`faces.model` / `faces.human`; the count moves on the model face, while the
+component's overall fidelity stays `planned` (D10). Reporting 5/8 without that
+distinction would claim a two-component win that a user still cannot type.
 
 The number the project reports is `matched / declared`, never a percentage of
 "things we tried". `coverage.test.mjs` pins every row: closing a gap is a

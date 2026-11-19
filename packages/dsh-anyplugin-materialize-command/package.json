@@ -1,0 +1,11 @@
+{
+  "name": "dsh-anyplugin-materialize-command",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin that registers Claude commands with their exact colon names once the harness accepts them; reports each rejection instead of pretending.",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "dsh-anyplugin-command-template": "*"
+  }
+}

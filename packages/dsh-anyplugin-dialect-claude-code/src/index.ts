@@ -158,10 +158,28 @@ const SKILL_EXACT: Annotation = {
     'SKILL.md frontmatter and body are carried verbatim into the DSH skill registry; name, description and body are preserved byte for byte.',
 }
 
+/**
+ * The human face of a command: typing `/plugin:name args` and having the body
+ * expanded and submitted as a user message. Needs two additive DSH seams
+ * (DECISIONS D10) that the installed harness does not have yet.
+ */
+const COMMAND_HUMAN_PLANNED: Annotation = {
+  fidelity: 'planned',
+  reason:
+    'DSH refuses a colon in a command name (dsh-commands COMMAND_NAME) and a command handler cannot submit a prompt ("without sending the command to the model"). Both seams are additive and proposed (DECISIONS D10); the expansion engine is implemented and tested, waiting for them.',
+}
+
+/** The model face of a command: the host lists it in the skills inventory. */
+const COMMAND_MODEL_EQUIVALENT: Annotation = {
+  fidelity: 'equivalent',
+  reason:
+    'At this pin the host reports a command in the same Skills inventory as a SKILL.md, with the same name, description and body, so the catalog face matches. The invocation face does not, which is why the component overall is planned.',
+}
+
 const COMMAND_PLANNED: Annotation = {
   fidelity: 'planned',
   reason:
-    'The host reports commands in the skills inventory at this pin, but a command is also a user-typed /plugin:name affordance with $ARGUMENTS substitution. Reproducing that needs the alias-table dispatch seam (ARCHITECTURE §9); until then the body is not emitted, so no half-working command can shadow a skill.',
+    'Weakest-face rule: the model catalog face is materialized as a skill, but the human face (/plugin:name with $ARGUMENTS) still needs the two additive seams described in DECISIONS D10.',
 }
 
 const NESTED_UNSUPPORTED: Annotation = {
@@ -176,6 +194,7 @@ function skillFromFile(
   origin: IrSkill['origin'],
   annotation: Annotation,
   fallbackName?: string,
+  faces?: IrSkill['faces'],
 ): IrSkill | undefined {
   const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
   if (!parsed.closed) {
@@ -213,6 +232,7 @@ function skillFromFile(
     origin,
     sourcePath: file.rel,
     resourceDir: dirname(file.abs),
+    ...(faces ? { faces } : {}),
     annotation,
   }
 }
@@ -285,7 +305,10 @@ function readSkillsAndCommands(root: string): {
         unsupported.push({ surface: 'commands', name, sourcePath: file.rel, annotation: NESTED_UNSUPPORTED })
         continue
       }
-      const skill = skillFromFile(file, root, 'commands-dir', COMMAND_PLANNED, name)
+      const skill = skillFromFile(file, root, 'commands-dir', COMMAND_PLANNED, name, {
+        model: COMMAND_MODEL_EQUIVALENT,
+        human: COMMAND_HUMAN_PLANNED,
+      })
       if (skill) skills.push(skill)
     }
   }

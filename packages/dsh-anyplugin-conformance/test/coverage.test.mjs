@@ -32,7 +32,7 @@ const materializerUrl = pathToFileURL(
 const EXPECTED_ROWS = {
   'claude-agents': ['agents:reviewer:missing'],
   'claude-command-nested': [],
-  'claude-commands-flat': ['skills:migrate:missing', 'skills:review:missing'],
+  'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
   'claude-hooks-mcp': ['hooks:PostToolUse:missing', 'mcpServers:probe:missing'],
   'claude-root-skill': ['skills:rooty:match'],
   'claude-skills-only': ['skills:greet:match', 'skills:hello:match'],
@@ -72,6 +72,24 @@ test(
       totals.matched += report.summary.match
       totals.missing += report.summary.missing
     }
-    assert.deepEqual(totals, { declared: 8, matched: 3, missing: 5 })
+    assert.deepEqual(totals, { declared: 8, matched: 5, missing: 3 })
   },
 )
+
+// The inventory counts *components*, and a command matches there because its
+// model face is emitted. Recording that as a bare 5/8 would read as progress on
+// the human face too, which is exactly the lie D10 exists to prevent — so the
+// missing face is asserted right next to the count it improves.
+test('command components match on the model face only; the human face stays planned', () => {
+  const ir = readClaudePlugin(join(repoRoot, 'fixtures', 'claude-commands-flat'), {
+    source: 'plugin-dir:fixtures/claude-commands-flat',
+  })
+  const commands = ir.skills.filter((skill) => skill.origin === 'commands-dir')
+  assert.equal(commands.length, 2)
+  for (const command of commands) {
+    assert.equal(command.annotation.fidelity, 'planned', `${command.name}: overall fidelity is the weakest face`)
+    assert.equal(command.faces?.model.fidelity, 'equivalent')
+    assert.equal(command.faces?.human.fidelity, 'planned')
+    assert.match(command.faces.human.reason, /D10/)
+  }
+})

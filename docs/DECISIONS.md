@@ -172,3 +172,47 @@ claim is about what the user runs.
 - If the Desktop bundle ever ships as a real `asar` archive again, the oracle
   must switch to the `ELECTRON_RUN_AS_NODE=1` access path; that is the only
   place the access mode is allowed to matter.
+
+---
+
+## D10 — A command has two faces, and its human face needs two additive seams
+
+**Status:** ratified 2026-11-18, forced by the command materializer.
+
+A Claude command is one artifact with two observable surfaces:
+
+1. **model face** — at pin 2.1.322 the host lists `commands/*.md` in the same
+   `Skills` inventory as `SKILL.md`, with the same name, description and body;
+2. **human face** — typing `/plugin:name args`, which expands `$ARGUMENTS` /
+   `$1…$9` and submits the result as the next user message.
+
+The IR models this as `IrSkill.faces: { model, human }`, the emitter decides
+emittability on the **model face**, and `annotation` is the weakest face (the
+ir validator enforces the ordering). The command dialect sets
+`model: equivalent`, `human: planned`, overall `planned`.
+
+**Why the human face is `planned` and not `unsupported`:** two *additive* DSH
+seams close it completely, and both are union changes (AGENTS §3.2):
+
+- **colon in command names** — `dsh-commands/src/index.ts:32` validates with
+  `/^[a-z][a-z0-9_-]*$/u` and `:126` parses with the same class, so
+  `/skills-only:migrate` is never even a candidate;
+- **a `submit` result kind** — `dsh-commands/src/index.ts:76` says a handler
+  executes "without sending the command to the model", and
+  `dsh-client-ui-commands` states "a command line is never silently downgraded
+  to a plain prompt". A Claude command handler must be able to do exactly that
+  downgrade, deliberately.
+
+**Consequences:**
+
+- The expansion engine (`dsh-anyplugin-command-template`) and the materializer
+  (`dsh-anyplugin-materialize-command`) already exist and are tested against
+  both registry shapes — today's strict one and a seamed one. Nothing is
+  rewritten when the seams land; `probeColonSeam` simply starts returning
+  `{supported: true}` and the rig flips the human face to `equivalent`.
+- Coverage counts components (8/5/3 as of this commit); the human-face gap for
+  `claude-commands-flat` is pinned separately in `coverage.test.mjs`, so the
+  improved count cannot be reported as if users could type the command.
+- On a harness without the seams the materializer registers **nothing** and
+  logs one line per command. A half-registered `/plugin:name` that only fails
+  when invoked would be worse than an honest absence.

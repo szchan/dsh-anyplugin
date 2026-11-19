@@ -46,6 +46,16 @@ export interface IrSkill {
   sourcePath: string
   /** Directory the body's relative references resolve against. */
   resourceDir?: string
+  /**
+   * One artifact can have more than one observable face. A Claude command is
+   * exactly that: a model-catalog face (the host lists it with the same name,
+   * description and body as a skill) and a human face (`/plugin:name args`
+   * expanded into a user message). Materializing one face while the other is
+   * missing is a partial result, not a silent success, so each face carries its
+   * own annotation. `annotation` above is then the *weakest* face — the
+   * component is only as faithful as its worst surface.
+   */
+  faces?: { model: Annotation; human?: Annotation }
   annotation: Annotation
 }
 
@@ -133,6 +143,9 @@ export interface FidelityReport {
 
 const FIDELITIES: readonly Fidelity[] = ['exact', 'equivalent', 'derived', 'planned', 'unsupported']
 
+/** Strongest first. A component's overall annotation may never be stronger than its weakest face. */
+const RANK: Record<Fidelity, number> = { exact: 0, equivalent: 1, derived: 2, planned: 3, unsupported: 4 }
+
 function annotationProblems(where: string, annotation: Annotation | undefined): string[] {
   if (!annotation) return [`${where}: missing annotation`]
   const problems: string[] = []
@@ -157,10 +170,22 @@ export function validateIr(ir: ClaudePluginIr): string[] {
     const where = `skill ${JSON.stringify(skill.name)}`
     if (!skill.name?.trim()) problems.push(`${where}: empty name`)
     if (typeof skill.content !== 'string') problems.push(`${where}: content must be a string`)
-    if (skill.annotation?.fidelity === 'planned' || skill.annotation?.fidelity === 'unsupported') {
-      problems.push(`${where}: ${skill.annotation.fidelity} nodes must not sit in the emittable lists`)
+    // Emittability is decided by the model face: a command whose human face is
+    // still `planned` is emitted as a skill on purpose, and the reason on its
+    // overall annotation says exactly what is missing.
+    const modelFace = skill.faces?.model ?? skill.annotation
+    if (modelFace?.fidelity === 'planned' || modelFace?.fidelity === 'unsupported') {
+      problems.push(`${where}: ${modelFace.fidelity} nodes must not sit in the emittable lists`)
     }
     problems.push(...annotationProblems(where, skill.annotation))
+    if (skill.faces) {
+      problems.push(...annotationProblems(`${where} model face`, skill.faces.model))
+      if (skill.faces.human) problems.push(...annotationProblems(`${where} human face`, skill.faces.human))
+      const weakest = Math.max(...[skill.faces.model, skill.faces.human].filter(Boolean).map((face) => RANK[face.fidelity]))
+      if (skill.annotation && RANK[skill.annotation.fidelity] < weakest) {
+        problems.push(`${where}: overall ${skill.annotation.fidelity} claims more than its weakest face`)
+      }
+    }
   }
   for (const agent of ir.agents ?? []) {
     problems.push(...annotationProblems(`agent ${JSON.stringify(agent.name)}`, agent.annotation))

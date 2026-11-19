@@ -108,10 +108,10 @@ set per fixture. Today:
 | `claude-skills-only` | 2 | 2 | 0 |
 | `claude-root-skill` | 1 | 1 | 0 |
 | `claude-command-nested` | 0 | 0 | 0 |
-| `claude-commands-flat` | 2 | 0 | 2 |
+| `claude-commands-flat` | 2 | 2 | 0 |
 | `claude-agents` | 1 | 0 | 1 |
 | `claude-hooks-mcp` | 2 | 0 | 2 |
-| **total** | **8** | **3** | **5** |
+| **total** | **8** | **5** | **3** |
 
 A test that only went green would tell you nothing about the five missing
 components. A ratchet tells you the distance to 100 % on every run, and closing

@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-command-template",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude command expansion ($ARGUMENTS, $1..$9, argument appending) as a pure function, so the human face is testable before its seams exist.",
+  "exports": { ".": "./src/index.ts" }
+}
