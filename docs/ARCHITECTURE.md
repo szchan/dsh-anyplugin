@@ -620,7 +620,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 already wires `tools/pre-execute` and `tools/post-execute`. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts use the same existing `ctx.on` path as the tool hooks (matcher → artifact re-hash → spawn → verdict translation); the intercept kernel is **not** wired into this materializer yet — `runChain` still has no consumer — so this is one materializer path, not kernel adoption (follow-up ticket). Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
@@ -765,7 +765,7 @@ references before removing or updating anything.
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
   the emitted entry into the *pinned* harness and reads the same inventory
   back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  table: 11 declared rows, 10 matched, 0 missing, 1 refused. Both halves also
+  table: 16 declared rows, 15 matched, 0 missing, 1 refused. Both halves also
   run in CI, with the pinned Claude CLI fetched from npm (D24).
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
@@ -878,9 +878,14 @@ Two traps that cost real time and are now load-bearing:
   the skill after the entry is removed — invisible in a green test, visible in
   a reload.
 
-Measured coverage across the nine fixtures (declared components from the
+Measured coverage across the ten fixtures (declared components from the
 goldens, matched by the DSH oracle). CI measures the same rows against both
-`0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there:
+`0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there. The other nine
+fixtures boot the loader with `probeWithDsh`; the lifecycle fixture
+boots a real turn graph with `probeLifecycleWithDsh` (§10 S9), because its rows
+exist only as lines the handlers wrote. The turn graph needs the extra pins
+from the S9 recipe above; CI installs them at each fetched version before
+`verify`:
 
 | Fixture | Declared | Matched | Missing | Refused | What the gap needs |
 | --- | --- | --- | --- | --- | --- |
@@ -890,10 +895,11 @@ goldens, matched by the DSH oracle). CI measures the same rows against both
 | `claude-commands-flat` | 2 | 2 | 0 | 0 | model face done; human face needs the two seams in D10 |
 | `claude-agents` | 1 | 1 | 0 | 0 | one tool per agent; description byte for byte, body as the first user block (S10; invocation `equivalent`) |
 | `claude-hooks-mcp` | 2 | 2 | 0 | 0 | hook mounted on `tools/post-execute` and observed on a real call (D20) |
+| `claude-hooks-lifecycle` | 5 | 5 | 0 | 0 | five handlers ran on one real headless turn (root start/stop/end + one child); SessionStart/Stop/SessionEnd root-only, SubagentStart/Stop child-only (§10 S9) |
 | `claude-mcp-http` | 1 | 1 | 0 | 0 | streamable-http arm; the server is started by the test (D12) |
 | `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
-| **total** | **11** | **10** | **0** | **1** | |
+| **total** | **16** | **15** | **0** | **1** | |
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
@@ -1087,10 +1093,13 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   spike exercises are asserted; prompt identity, `apply_patch` and the
   permission correlation are explicitly marked as wiring work.
 
-  **No coverage row and no `planned` annotation moves in this ticket** — a hook
-  counts only when it runs (D20), and wiring the confirmed events is a separate
-  change. Nothing here adds a second event path: every row is a listener on the
-  existing host bus.
+  **The spike itself moved no coverage row** — a hook counts only when it runs
+  (D20), so wiring the confirmed events was a separate ticket. That wiring now
+  exists for the lifecycle five: their `planned` annotations became
+  `equivalent` and their five coverage rows are log lines from a real turn
+  (§10.3), while the four remaining listener seams stay `planned`. Nothing
+  here adds a second event path: every row is a listener on the existing host
+  bus.
 
   | classic event | host seam (site) | dispatch | observed at runtime | payload keys | influence [observed]/[source]; filter the wiring ticket must apply |
   | --- | --- | --- | --- | --- | --- |
@@ -1202,6 +1211,86 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   `out/settings-profile/`) is report output only and gitignored. CI runs the
   spike after installing the same pins (`.github/workflows/verify.yml`).
 
+  **Observed by the oracle — the headless turn.** The lifecycle wiring does not
+  emit host events: it runs one real turn with a stub model and reads what the
+  plugin's handlers wrote. `probeLifecycleWithDsh`
+  (`packages/dsh-anyplugin-conformance/src/oracles/dsh.ts`) boots one cordis
+  context with this composition, in this order:
+
+  | # | Service / plugin | Package |
+  | --- | --- | --- |
+  | 1 | `Loader` (kept as a fiber; the entry is created through it) | `cordis-plugin-loader` |
+  | 2 | `SkillRegistry` | `dsh-skill` |
+  | 3 | `SessionStore` | `dsh-session` |
+  | 4 | `SessionProjections` | `dsh-session-projection` |
+  | 5 | `SystemPrompt` | `dsh-system-prompt` |
+  | 6 | `ToolsService` | `dsh-tools` |
+  | 7 | `AgentRegistry` | `dsh-agent` |
+  | 8 | native tool executor | `dsh-tool-executor-native` |
+  | 9 | `FileSystem` + `WorkingDirectory` | `dsh-fs-local`, `dsh-working-directory` |
+  | 10 | `SubagentRuntime` + `ForkProvider` | `dsh-subagent`, `dsh-subagent-fork-in-process` |
+  | 11 | `LlmRuntime` | `dsh-llm` |
+  | 12 | `AgentLoop` | `dsh-agent-loop` |
+
+  The stub provider is a subclass of `LlmAdapter` registered as `['fake']`:
+  `resolveModel` returns a context window and token cap, `stream` yields one
+  text block and finishes `stop`. No network, no key, no model. The call
+  sequence is the recipe — every step is a host call, not an emit:
+
+  1. `await ctx.loader.create(entry)`, then **`await ctx.loader.await()`** — a
+     trap that cost a debugging session: `create` resolves before the entry's
+     import/apply lifecycle tasks settle, and a root agent created immediately
+     after misses a listener the entry just registered. `EntryTree.await()`
+     waits for the tree's pending tasks and is load-bearing in the oracle (a
+     live host has the same gap after an install).
+  2. `root = await ctx.agentLoop.create('anyplugin-lifecycle-root', {provider:
+     'fake', model: 'fake-1'})` → `agent/created` with `source: startup`
+     (SessionStart).
+  3. `root.followup(createUserMessage({content: [...], source: {kind:
+     'user'}}))`, wait for `session/event` `turn/end` with `turn === 1` →
+     `agent/turn-stopping` (Stop).
+  4. `activation = await ctx.subagents.startActivation({provider: 'fork',
+     parent: root, prompt: [...], delivery: 'caller', label: ...})` →
+     `subagent/start` (SubagentStart); wait for `subagent/end` with
+     `parentSessionId === root.id` → SubagentStop; `await activation.dispose()`.
+  5. Find the root's registry entry and call `ctx.agents.detachEntered(entry)`
+     → `agent/disposed` (SessionEnd).
+
+  The fixture's five handlers wrote exactly one line each. Their *set* is fixed;
+  their total order is not. `subagent/end` and `agent/disposed` are independent
+  emits, so under CPU contention the child's completion and the root's disposal
+  can interleave: the oracle once saw `SessionStart, Stop, SubagentStart,
+  SessionEnd, SubagentStop` on two cores. The only chains the host guarantees,
+  and the only ones asserted, are `SessionStart < Stop < SessionEnd` and
+  `SubagentStart < SubagentStop`; the test compares the label set and those
+  two orders, never a three-way interleaving. The child's own `agent/created`
+  and `agent/turn-stopping` also fire; the root-only
+  `parentSession === undefined` filter keeps them from duplicating
+  SessionStart/Stop, while SubagentStart/Stop require `parentSessionId !==
+  undefined` so the root's delegation is the only source.
+
+  The oracle reads the child's `pluginData` directory out of the emitted entry
+  and removes the log and payload files before the run, so a stale line cannot
+  pass for a fired handler. It then polls until every expected label exists, up
+  to the caller's 10 s deadline; a label that never arrives fails with the lines
+  that did. It never waits for the file to stop growing: the host dispatches
+  emits without awaiting async listeners, and handlers are `sh` spawns, so a
+  slow handler is still a valid run while a quiet file can still be missing its
+  last line. The fixture writes `payloads/<Event>.json` **before** the log line,
+  making the line the completion marker; the test then pins the exact payload
+  keys: SessionStart carries `hook_event_name`, `cwd`, `session_id`,
+  `source` and `model`; Stop and SessionEnd carry
+  `hook_event_name`, `cwd` and `session_id`; SubagentStart adds `agent_id`
+  with the parent as `session_id`; SubagentStop adds `last_assistant_message`.
+  The root is created with `cwd` metadata — the third `create` argument,
+  `{cwd: dataDir}` — so its immutable header really carries one, and the probe
+  deliberately seeds the data directory rather than the process cwd: a payload
+  that fell back to the process directory would fail the assertion
+  `start.cwd === dataDir` instead of matching by accident. (The rc.2 pin
+  accepts the same third argument; both verify lines exercise it.)
+
+  Every field the dialect's reasons call absent is absent.
+
 - **S10 — can a plugin make its `agents/*.md` personas model-selectable?**
   ✅ **Answered 2026-11-19** by `spikes/s10-agents/run.mjs` against the pinned
   `0.2.2-rc.5` harness (16/16 checks). Yes, without a new seam — but not through
@@ -1284,11 +1373,12 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   description (we forbid it), cannot set the child's fresh system prompt,
   cannot filter the child's tools or cap its turns per activation, and cannot
   resolve a Claude model alias. `fixtures/claude-agents` therefore moves to
-  `agents:reviewer:match`; the truthful totals become **11 declared / 10
-  matched / 0 missing / 1 refused** (the goldens declare 11 rows in total, and the
-  nested `agents/deep/planner.md` is not loaded at the pin, so it is not a
-  declared row — the issue text's "12/10/1/1" counts a row the host does not
-  have).
+  `agents:reviewer:match`; the truthful totals became **11 declared / 10
+  matched / 0 missing / 1 refused** at this ticket — the goldens declare 11
+  rows in total, and the nested `agents/deep/planner.md` is not loaded at the
+  pin, so it is not a declared row, and the issue text's "12/10/1/1" counts a
+  row the host does not have. (The S9 lifecycle wiring that follows moves the
+  totals to 16/15/0/1; §10.3.)
 
   Reproduce:
 

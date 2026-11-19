@@ -528,10 +528,49 @@ function readAgents(root: string, plugin: string): { agents: IrAgent[]; unsuppor
 }
 
 /**
- * Only the two tool-scoped events have a host (S8, D19): they ride
- * `tools/pre-execute` and `tools/post-execute`. Even there the payload is not
- * byte-identical — the host has no session id, transcript path or permission
- * mode to put in it — so the honest class is `equivalent`, not `exact`.
+ * The five lifecycle events ride host events that S9 observed on a real headless
+ * turn. None can be byte-identical: the host event carries less than Claude's
+ * payload (and some of it in a different shape), and only Stop/SubagentStop have
+ * a decision channel upstream, which this host does not expose. Each reason
+ * names the seam, the fields that survive, and every field or channel that does
+ * not.
+ */
+const LIFECYCLE_HOOKS: Record<string, string> = {
+  SessionStart:
+    'Rides the agent/created serial event (S9). Fires for the root agent only; a child creation is filtered out and takes SubagentStart. ' +
+    'The payload carries hook_event_name, cwd and session_id (from the session header), source, and model when a model choice is named; a source matcher is evaluated. ' +
+    'It omits transcript_path: this host keeps an event log, not a transcript file path. ' +
+    'additionalContext has no channel into the first model step, so it is reported with a warning instead of delivered.',
+  Stop:
+    'Rides the agent/turn-stopping serial event (S9). Fires for the root agent only; a child\'s last turn takes SubagentStop. ' +
+    'The payload carries hook_event_name, cwd and session_id (from the session header). ' +
+    'It omits both upstream-specific fields: the event carries only the agent, the turn number and an abort signal, so last_assistant_message is in the session log but this materializer does not read it (synchronous log reads are deprecated on this host), and stop_hook_active has no source. ' +
+    'The event cannot continue a turn, so a block decision is reported with a warning instead of obeyed.',
+  SessionEnd:
+    'Rides the agent/disposed emit (S9). Fires when the root agent detaches; a child disposal is filtered out and takes SubagentStop. ' +
+    'The payload carries hook_event_name, cwd and session_id (from the session header) but no reason: the emit carries only the agent, so a reason matcher cannot be evaluated, and it is skipped with a warning rather than guessed. ' +
+    'Upstream has no decision channel here either.',
+  SubagentStart:
+    'Rides the subagent/start emit (S9). Fires for a child activation only. ' +
+    'The payload carries hook_event_name, session_id (the parent session), agent_id and cwd (the harness process directory, because the emit carries no session header); ' +
+    'it omits agent_type, so a matcher on the agent type cannot be evaluated and is skipped with a warning. ' +
+    'additionalContext has no channel into the child\'s context, so it is reported with a warning instead of delivered.',
+  SubagentStop:
+    'Rides the subagent/end emit (S9). Fires for a child completion only. ' +
+    'The payload carries hook_event_name, session_id (the parent session), agent_id, cwd (the harness process directory) and last_assistant_message (flattened from the child\'s final content blocks); ' +
+    'it omits agent_type (a matcher on it is skipped with a warning), stop_hook_active and agent_transcript_path. ' +
+    'The emit cannot continue a child, so a block decision is reported with a warning instead of obeyed.',
+}
+
+/**
+ * Seven events have a host: the two tool-scoped ones ride `tools/pre-execute`
+ * and `tools/post-execute` (S8, D19), and the lifecycle five ride the host
+ * events named in `LIFECYCLE_HOOKS` below (S9). Even there the payload is not
+ * byte-identical — the host has no transcript path or permission mode, and the
+ * root lifecycle ids and cwd come from the session header rather than from
+ * Claude's payload (a subagent's id comes from the emit, and its cwd is the
+ * harness process directory) — so the honest class is `equivalent`, not
+ * `exact`.
  */
 function hookAnnotation(event: string, type: string, command: string | undefined): Annotation {
   if (type !== 'command' || command === undefined) {
@@ -547,6 +586,10 @@ function hookAnnotation(event: string, type: string, command: string | undefined
         `Rides the ${event === 'PreToolUse' ? 'tools/pre-execute' : 'tools/post-execute'} waterfall (S8, D19). The payload carries tool_name, tool_input, tool_use_id and cwd; it omits session_id, transcript_path, permission_mode and effort, which this host has no source for. ` +
         '`continue:false` has no equivalent and is ignored with a warning.',
     }
+  }
+  const lifecycle = LIFECYCLE_HOOKS[event]
+  if (lifecycle !== undefined) {
+    return { fidelity: 'equivalent', reason: lifecycle }
   }
   return {
     fidelity: 'planned',

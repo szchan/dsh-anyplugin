@@ -169,6 +169,9 @@ function compileRecord(
     materializers: options.materializers,
     ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
     trusted: gated.decision.allowed,
+    // The lock is the only place that knows where `${CLAUDE_PLUGIN_DATA}`
+    // points: versioned artifacts get a root, data survives an update.
+    dataDir: record.dataDir,
   })
   if (!emitted.entry) return { decision: gated.decision }
   const scope = pluginScope(record.dialect, record.name)

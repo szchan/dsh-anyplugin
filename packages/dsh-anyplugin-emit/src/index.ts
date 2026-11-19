@@ -80,6 +80,13 @@ export interface EmitOptions {
    * pass a decision cannot emit a hook by accident.
    */
   trusted?: readonly string[]
+  /**
+   * The plugin's `${CLAUDE_PLUGIN_DATA}`-equivalent directory (D2). Hooks are
+   * the only surface that reads it, so it is emitted next to the hook config
+   * rather than on every child. Absent means the materializer leaves the
+   * variable unset, as a hand-written config would.
+   */
+  dataDir?: string
 }
 
 export interface EmitResult {
@@ -230,6 +237,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       name: hooksMaterializer,
       config: {
         pluginRoot: ir.plugin.root,
+        ...(options.dataDir === undefined ? {} : { pluginData: options.dataDir }),
         hooks: hooks.map((hook) => ({
           event: hook.event,
           index: hook.index,

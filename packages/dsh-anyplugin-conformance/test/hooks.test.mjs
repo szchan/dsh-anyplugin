@@ -5,7 +5,8 @@
 // emitted and then never mounted would still produce a clean inventory — the
 // only proof is a call whose result carries the hook's text (D19).
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -25,6 +26,7 @@ const materializers = {
   hooks: materializerUrl('dsh-anyplugin-materialize-hook'),
 }
 const fixture = join(repoRoot, 'fixtures', 'claude-hooks-mcp')
+const lifecycleFixture = join(repoRoot, 'fixtures', 'claude-hooks-lifecycle')
 function gateAll(ir) {
   let store = emptyGrants()
   for (const row of classify(ir)) store = grantFor(ir, store, row.target, { scope: 'user' })
@@ -54,6 +56,40 @@ test('a PostToolUse hook is carried as its own child entry', () => {
   assert.equal(child.config.pluginRoot, fixture)
   assert.deepEqual(skipped, [])
   assert.deepEqual(refused, [])
+})
+
+test('the five lifecycle hooks are carried on the five host events', () => {
+  const ir = readClaudePlugin(lifecycleFixture)
+  assert.deepEqual(
+    ir.hooks.map((hook) => hook.event),
+    ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+  )
+  for (const hook of ir.hooks) {
+    assert.equal(hook.annotation.fidelity, 'equivalent', `${hook.event} is annotated at the source`)
+    assert.match(hook.annotation.reason, /S9/, `${hook.event} names the seam that carries it`)
+  }
+
+  const gated = gateAll(ir)
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-hooks-'))
+  try {
+    const { entry, emitted, skipped, refused } = emitPlugin(gated.ir, {
+      materializers,
+      sdkRoot: harness?.modulesDir,
+      trusted: gated.decision.allowed,
+      dataDir,
+    })
+    assert.ok(emitted.includes('hooks'))
+    const child = entry.config.find((item) => item.id === 'hook')
+    assert.equal(child.config.pluginData, dataDir, 'the hook child carries the data directory')
+    assert.deepEqual(
+      child.config.hooks.map((hook) => hook.event),
+      ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+    )
+    assert.deepEqual(skipped, [])
+    assert.deepEqual(refused, [])
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })
 
 test(
