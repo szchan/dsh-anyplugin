@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-ir",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Intermediate representation and fidelity annotations shared by every dialect and materializer.",
+  "exports": { ".": "./src/index.ts" }
+}

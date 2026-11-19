@@ -458,13 +458,15 @@ before removing anything.
 - **S2 — mod surface.** ✅ **Answered 2026-11-18** (§7): the mod API is a large
   but fully specified surface with a machine-readable declaration file, so it
   is a second subsystem (D3), not a materializer.
-- **S3 — conformance rig.** 🟡 **First layer landed 2026-11-18** as
-  `packages/dsh-anyplugin-conformance` (§10.2). The upstream half is live:
-  `claude --plugin-dir <dir> plugin details <name>` is probed under a throwaway
-  `$HOME`, parsed into a normalized inventory, committed as a golden per pin,
-  and re-probed by `npm test`. The DSH half (materialize → read the registries
-  → same inventory) is the next layer.
-  This lands *before* the translator, because it is the only honest scoreboard.
+- **S3 — conformance rig.** 🟡 **Both halves live 2026-11-18**
+  (`packages/dsh-anyplugin-conformance`). The upstream half (§10.2) probes
+  `claude --plugin-dir <dir> plugin details <name>` under a throwaway `$HOME`
+  and commits the result as a golden per pin. The DSH half (§10.4) materializes
+  the emitted entry into the *installed* harness and reads the same inventory
+  back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
+  from 3/8 to 8/8.
+  This landed *before* the translator could lie, because it is the only honest
+  scoreboard.
 
 ### 10.2 S3 first layer: the upstream oracle is the real loader
 
@@ -501,6 +503,52 @@ pin-gated (D8):
 | `agents/<dir>/*.md` is **not loaded** either (`Agents (1)` for a flat+nested fixture) | same treatment: drop with a reason |
 | hooks and MCP servers carry a parenthetical cost note (`PostToolUse  (harness-only — no model context cost)`) | the note is a component detail, not part of the name |
 | a plugin with no manifest and a root `SKILL.md` loads under the directory name | no-manifest loading is real, and worth a fixture |
+
+### 10.4 S3 second layer: the DSH oracle runs the installed harness
+
+The DSH side is not a re-implementation of the registry, because a
+re-implementation would agree with itself. The oracle boots the packages the
+desktop app actually runs.
+
+The enabling discovery: `$(dirname "$DSH_INSTALL_DIR")` is a **plain
+directory**, not an `asar` archive — 338 `@deepseek-ai` packages that ordinary
+Node can `import()`. So the oracle loads `cordis`, `cordis-plugin-loader` and
+`dsh-skill` straight out of the installation (`4.1.0` / `1.1.0` / `0.2.2-rc.2`)
+and never touches npm (D9).
+
+```
+dialect → IR → emit (group entry, pure data) → installed Loader → materializer
+        → installed ctx.skills.register → ctx.skills.list() → inventory
+```
+
+Two traps that cost real time and are now load-bearing:
+
+- **One cordis, or none.** The oracle must import `Context` from the installed
+  tree too. A `Context` from our devDependency with services from the installed
+  `dsh-skill` would give two `Service` base classes, and the registry would
+  never see the context that owns it.
+- **Registration is lifecycle-scoped.** `ctx.skills.register()` returns a
+  disposer, and cordis has no `dispose` event (S1 finding 3), so the
+  materializer wraps it in `ctx.effect`. A materializer that forgets this leaks
+  the skill after the entry is removed — invisible in a green test, visible in
+  a reload.
+
+Measured coverage across the six fixtures (declared components from the
+goldens, matched by the DSH oracle):
+
+| Fixture | Declared | Matched | Missing | What the gap needs |
+| --- | --- | --- | --- | --- |
+| `claude-skills-only` | 2 | 2 | 0 | — |
+| `claude-root-skill` | 1 | 1 | 0 | — |
+| `claude-command-nested` | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
+| `claude-commands-flat` | 2 | 0 | 2 | command materializer + alias-table dispatch |
+| `claude-agents` | 1 | 0 | 1 | named-agent catalog seam |
+| `claude-hooks-mcp` | 2 | 0 | 2 | interception kernel; MCP `serverName` policy |
+| **total** | **8** | **3** | **5** | |
+
+The number the project reports is `matched / declared`, never a percentage of
+"things we tried". `coverage.test.mjs` pins every row: closing a gap is a
+reviewable edit to that matrix, and a regression fails on the same line.
 
 Still open on this layer: the inventory says *what* loaded, not *how it
 behaves*. Invocation semantics (is a flat command auto-invocable like a skill?

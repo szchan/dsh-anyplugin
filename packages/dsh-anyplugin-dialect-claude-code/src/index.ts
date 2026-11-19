@@ -1,0 +1,482 @@
+/**
+ * Claude Code dialect — reads a plugin directory and produces an IR.
+ *
+ * Every rule here is pinned to the behaviour *observed* from the host at
+ * `CLAUDE_CODE_PIN`, not to the documentation (D8: the host's own report wins).
+ * When the pin moves, `npm run capture:fixtures` must be re-run and this file
+ * re-read against the new goldens.
+ *
+ * The dialect never inspects DSH. Whether a node can be materialized is the
+ * materializer's business; this file only records what the source declares and
+ * how faithfully we expect to carry it.
+ */
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import type {
+  Annotation,
+  ClaudePluginIr,
+  IrAgent,
+  IrHook,
+  IrMcpServer,
+  IrPin,
+  IrSkill,
+  IrUnmaterialized,
+} from '../../dsh-anyplugin-ir/src/index.ts'
+import { IR_SCHEMA } from '../../dsh-anyplugin-ir/src/index.ts'
+
+export const CLAUDE_CODE_PIN: IrPin = { tool: 'claude-code', version: '2.1.322' }
+
+export interface ReadOptions {
+  pin?: IrPin
+  /** Label recorded in the IR, e.g. `plugin-dir:fixtures/claude-skills-only`. */
+  source?: string
+}
+
+export interface Frontmatter {
+  data: Record<string, unknown>
+  body: string
+  /** False when the file opens with `---` but never closes it. */
+  closed: boolean
+}
+
+function parseScalar(raw: string): unknown {
+  const value = raw.trim()
+  if (value === '') return ''
+  if (
+    (value.startsWith('"') && value.endsWith('"') && value.length > 1) ||
+    (value.startsWith("'") && value.endsWith("'") && value.length > 1)
+  ) {
+    return value.slice(1, -1)
+  }
+  if (value === 'true') return true
+  if (value === 'false') return false
+  if (value === 'null') return null
+  if (/^-?\d+$/.test(value)) return Number(value)
+  if (value.startsWith('[') && value.endsWith(']')) {
+    return value
+      .slice(1, -1)
+      .split(',')
+      .map((part) => parseScalar(part))
+      .filter((part) => part !== '')
+  }
+  return value
+}
+
+/**
+ * Minimal YAML subset: scalar keys, inline arrays, and `|` block scalars.
+ * Deliberately not a full YAML parser — anything it does not understand stays a
+ * raw string rather than being silently dropped.
+ */
+export function parseFrontmatter(text: string): Frontmatter {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
+  if (!match) return { data: {}, body: text, closed: true }
+  const data: Record<string, unknown> = {}
+  const lines = match[1].split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim() || line.trimStart().startsWith('#')) continue
+    const pair = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line)
+    if (!pair) continue
+    const key = pair[1]
+    const rest = pair[2]
+    if (rest === '|' || rest === '>' || rest === '|-') {
+      const collected: string[] = []
+      while (i + 1 < lines.length && (/^\s+/.test(lines[i + 1]) || lines[i + 1] === '')) {
+        collected.push(lines[i + 1].replace(/^\s{2}/, ''))
+        i++
+      }
+      data[key] = collected.join('\n').replace(/\n+$/, '')
+      continue
+    }
+    data[key] = parseScalar(rest)
+  }
+  return { data, body: text.slice(match[0].length), closed: true }
+}
+
+function stringField(data: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === 'string' && value.trim()) return value
+  }
+  return undefined
+}
+
+function boolField(data: Record<string, unknown>, key: string): boolean | undefined {
+  const value = data[key]
+  if (typeof value === 'boolean') return value
+  if (value === 'true') return true
+  if (value === 'false') return false
+  return undefined
+}
+
+function readIfFile(path: string): string | undefined {
+  try {
+    return statSync(path).isFile() ? readFileSync(path, 'utf8') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+interface MarkdownFile {
+  /** Path relative to the plugin root, with forward slashes. */
+  rel: string
+  abs: string
+  /** 1 for `dir/file.md`, 2 for `dir/sub/file.md`, … */
+  depth: number
+}
+
+function markdownFiles(dir: string, root: string): MarkdownFile[] {
+  const found: MarkdownFile[] = []
+  const visit = (current: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const abs = join(current, entry.name)
+      if (entry.isDirectory()) visit(abs)
+      else if (entry.isFile() && entry.name.endsWith('.md')) {
+        const rel = abs.slice(root.length + 1).split('\\').join('/')
+        found.push({ rel, abs, depth: rel.split('/').length - 1 })
+      }
+    }
+  }
+  visit(dir)
+  return found.sort((a, b) => (a.rel < b.rel ? -1 : 1))
+}
+
+function readManifest(root: string): Record<string, unknown> {
+  const path = join(root, '.claude-plugin', 'plugin.json')
+  const text = readIfFile(path)
+  if (!text) return {}
+  try {
+    return JSON.parse(text) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+const SKILL_EXACT: Annotation = {
+  fidelity: 'exact',
+  reason:
+    'SKILL.md frontmatter and body are carried verbatim into the DSH skill registry; name, description and body are preserved byte for byte.',
+}
+
+const COMMAND_PLANNED: Annotation = {
+  fidelity: 'planned',
+  reason:
+    'The host reports commands in the skills inventory at this pin, but a command is also a user-typed /plugin:name affordance with $ARGUMENTS substitution. Reproducing that needs the alias-table dispatch seam (ARCHITECTURE §9); until then the body is not emitted, so no half-working command can shadow a skill.',
+}
+
+const NESTED_UNSUPPORTED: Annotation = {
+  fidelity: 'unsupported',
+  reason:
+    'Not loaded by the host at this pin: `claude --plugin-dir … plugin details` reports Skills (0) / Agents (1) for nested files. Recorded so the gap is visible rather than silently dropped.',
+}
+
+function skillFromFile(
+  file: MarkdownFile,
+  root: string,
+  origin: IrSkill['origin'],
+  annotation: Annotation,
+  fallbackName?: string,
+): IrSkill | undefined {
+  const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
+  if (!parsed.closed) {
+    // A broken frontmatter block still loads upstream, with every field
+    // ignored — so the body is kept and the identity falls back to the path.
+    return {
+      kind: 'skill',
+      name: fallbackName ?? basename(dirname(file.abs)),
+      description: '',
+      content: readFileSync(file.abs, 'utf8'),
+      invocation: { modelInvocable: true, userInvocable: true },
+      origin,
+      sourcePath: file.rel,
+      annotation: {
+        fidelity: 'equivalent',
+        reason: 'Unterminated frontmatter: the host ignores all fields but still loads the body, so the raw file is used as the body and identity falls back to the path.',
+      },
+    }
+  }
+  const name = stringField(parsed.data, 'name') ?? fallbackName
+  if (!name) return undefined
+  const invocation = {
+    modelInvocable: !boolField(parsed.data, 'disable-model-invocation'),
+    userInvocable: boolField(parsed.data, 'user-invocable') !== false,
+  }
+  return {
+    kind: 'skill',
+    name,
+    description: stringField(parsed.data, 'description') ?? '',
+    content: parsed.body,
+    ...(stringField(parsed.data, 'whenToUse', 'when-to-use')
+      ? { whenToUse: stringField(parsed.data, 'whenToUse', 'when-to-use') }
+      : {}),
+    invocation,
+    origin,
+    sourcePath: file.rel,
+    resourceDir: dirname(file.abs),
+    annotation,
+  }
+}
+
+function readSkillsAndCommands(root: string): {
+  skills: IrSkill[]
+  pending: IrUnmaterialized[]
+  unsupported: IrUnmaterialized[]
+} {
+  const skills: IrSkill[] = []
+  const pending: IrUnmaterialized[] = []
+  const unsupported: IrUnmaterialized[] = []
+
+  const rootSkill = readIfFile(join(root, 'SKILL.md'))
+  if (rootSkill !== undefined) {
+    const skill = skillFromFile(
+      { rel: 'SKILL.md', abs: join(root, 'SKILL.md'), depth: 0 },
+      root,
+      'root-skill',
+      SKILL_EXACT,
+      basename(root),
+    )
+    if (skill) skills.push(skill)
+  }
+
+  const skillsDir = join(root, 'skills')
+  if (existsSync(skillsDir)) {
+    for (const entry of readdirSync(skillsDir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const abs = join(skillsDir, entry.name)
+      if (entry.isDirectory()) {
+        const file = join(abs, 'SKILL.md')
+        if (!readIfFile(file)) {
+          pending.push({
+            surface: 'skills',
+            name: entry.name,
+            sourcePath: `skills/${entry.name}`,
+            annotation: {
+              fidelity: 'planned',
+              reason: 'Directory has no SKILL.md; nothing to load. Kept in the report so an empty skill slot is visible.',
+            },
+          })
+          continue
+        }
+        const skill = skillFromFile(
+          { rel: `skills/${entry.name}/SKILL.md`, abs: file, depth: 2 },
+          root,
+          'skills-dir',
+          SKILL_EXACT,
+        )
+        if (skill) skills.push(skill)
+      } else if (entry.name.endsWith('.md')) {
+        unsupported.push({
+          surface: 'skills',
+          name: entry.name.replace(/\.md$/, ''),
+          sourcePath: `skills/${entry.name}`,
+          annotation: {
+            fidelity: 'unsupported',
+            reason: 'A bare skills/<name>.md is a DSH discovery form, not a Claude Code one; the host loads only skills/<dir>/SKILL.md.',
+          },
+        })
+      }
+    }
+  }
+
+  const commandsDir = join(root, 'commands')
+  if (existsSync(commandsDir)) {
+    for (const file of markdownFiles(commandsDir, root)) {
+      const name = basename(file.abs).replace(/\.md$/, '')
+      if (file.depth !== 1) {
+        unsupported.push({ surface: 'commands', name, sourcePath: file.rel, annotation: NESTED_UNSUPPORTED })
+        continue
+      }
+      const skill = skillFromFile(file, root, 'commands-dir', COMMAND_PLANNED, name)
+      if (skill) skills.push(skill)
+    }
+  }
+
+  return { skills, pending, unsupported }
+}
+
+function readAgents(root: string): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
+  const agents: IrAgent[] = []
+  const unsupported: IrUnmaterialized[] = []
+  const dir = join(root, 'agents')
+  if (!existsSync(dir)) return { agents, unsupported }
+  for (const file of markdownFiles(dir, root)) {
+    const fallback = basename(file.abs).replace(/\.md$/, '')
+    if (file.depth !== 1) {
+      unsupported.push({ surface: 'agents', name: fallback, sourcePath: file.rel, annotation: NESTED_UNSUPPORTED })
+      continue
+    }
+    const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
+    const name = stringField(parsed.data, 'name') ?? fallback
+    agents.push({
+      kind: 'agent',
+      name,
+      ...(stringField(parsed.data, 'description') ? { description: stringField(parsed.data, 'description') } : {}),
+      content: parsed.body,
+      ...(stringField(parsed.data, 'model') ? { model: stringField(parsed.data, 'model') } : {}),
+      ...(Array.isArray(parsed.data.tools) ? { tools: parsed.data.tools as string[] } : {}),
+      origin: 'agents-dir',
+      sourcePath: file.rel,
+      annotation: {
+        fidelity: 'planned',
+        reason:
+          'DSH has no description-driven named-agent catalog (dsh-subagent is a named provider registry), so an agent has no address to occupy yet. Planned for v0.4 (ARCHITECTURE §9).',
+      },
+    })
+  }
+  return { agents, unsupported }
+}
+
+function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[] } {
+  const hooks: IrHook[] = []
+  const pending: IrUnmaterialized[] = []
+  const path = join(root, 'hooks', 'hooks.json')
+  const text = readIfFile(path)
+  if (!text) return { hooks, pending }
+  let document: Record<string, unknown>
+  try {
+    document = JSON.parse(text) as Record<string, unknown>
+  } catch {
+    pending.push({
+      surface: 'hooks',
+      name: 'hooks.json',
+      sourcePath: 'hooks/hooks.json',
+      annotation: { fidelity: 'unsupported', reason: 'hooks.json is not valid JSON; the host cannot load it either.' },
+    })
+    return { hooks, pending }
+  }
+  const table = (document.hooks ?? {}) as Record<string, unknown>
+  for (const [event, groups] of Object.entries(table)) {
+    if (!Array.isArray(groups)) {
+      pending.push({
+        surface: 'hooks',
+        name: event,
+        sourcePath: 'hooks/hooks.json',
+        annotation: { fidelity: 'unsupported', reason: 'Event value is not an array of matcher groups; not a shape the host accepts.' },
+      })
+      continue
+    }
+    for (const group of groups as Record<string, unknown>[]) {
+      const handlers = Array.isArray(group.hooks) ? (group.hooks as Record<string, unknown>[]) : []
+      const matcher = typeof group.matcher === 'string' ? group.matcher : undefined
+      handlers.forEach((handler, index) => {
+        hooks.push({
+          kind: 'hook',
+          event,
+          ...(matcher === undefined ? {} : { matcher }),
+          index,
+          handler: typeof handler.type === 'string' ? handler.type : 'unknown',
+          sourcePath: 'hooks/hooks.json',
+          annotation: {
+            fidelity: 'planned',
+            reason:
+              'Hook handlers are not executed yet: they need the shared interception kernel (v0.1 skeleton) and the event-vocabulary mapping (v0.2). Recorded now so the report counts them.',
+          },
+        })
+      })
+    }
+  }
+  if (Array.isArray(document.modules) && document.modules.length > 0) {
+    pending.push({
+      surface: 'mods',
+      name: 'modules',
+      sourcePath: 'hooks/hooks.json',
+      annotation: {
+        fidelity: 'planned',
+        reason: 'In-process mods are a second subsystem (ARCHITECTURE §7): static scanner + mod host, v0.5+. Loaded as authored, never transpiled.',
+      },
+    })
+  }
+  return { hooks, pending }
+}
+
+function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmaterialized[] } {
+  const servers: IrMcpServer[] = []
+  const pending: IrUnmaterialized[] = []
+  const text = readIfFile(join(root, '.mcp.json'))
+  if (text) {
+    try {
+      const document = JSON.parse(text) as Record<string, unknown>
+      const table = (document.mcpServers ?? document) as Record<string, unknown>
+      for (const name of Object.keys(table)) {
+        servers.push({
+          kind: 'mcp-server',
+          name,
+          sourcePath: '.mcp.json',
+          annotation: {
+            fidelity: 'planned',
+            reason:
+              'The server can be carried by dsh-mcp-client, but the plugin-scoped tool name mcp__plugin_<plugin>_<server>__<tool> needs the serverName policy (≤32 chars, ARCHITECTURE §9). Planned for v0.2.',
+          },
+        })
+      }
+    } catch {
+      pending.push({
+        surface: 'mcpServers',
+        name: '.mcp.json',
+        sourcePath: '.mcp.json',
+        annotation: { fidelity: 'unsupported', reason: '.mcp.json is not valid JSON.' },
+      })
+    }
+  }
+  for (const [surface, dir, reason] of [
+    ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
+    ['outputStyles', 'output-styles', 'Output styles are prompt-level and byte-preservable; planned after the command seam (v0.4).'],
+    ['themes', 'themes', 'Terminal colour palettes have no DSH palette seam yet (F2); planned for v0.4.'],
+    ['workflows', 'workflows', 'Workflow scripts are close to dsh-tool-workflow but the agent()/pipeline() contract differs; planned for v0.4.'],
+    ['bin', 'bin', 'bin/ must join the model shell PATH; dsh-shell-env only manages DSH_* keys (ARCHITECTURE §9). Planned for v0.3.'],
+    ['monitors', 'monitors', 'Monitors need a channel from a background process stdout into the model context; planned for v0.4.'],
+  ] as const) {
+    const abs = join(root, dir)
+    if (!existsSync(abs)) continue
+    pending.push({
+      surface,
+      name: dir,
+      sourcePath: dir,
+      annotation: { fidelity: 'planned', reason },
+    })
+  }
+  return { servers, pending }
+}
+
+export function readClaudePlugin(root: string, options: ReadOptions = {}): ClaudePluginIr {
+  const manifest = readManifest(root)
+  const pin = options.pin ?? CLAUDE_CODE_PIN
+  const { skills, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
+  const { agents, unsupported: agentUnsupported } = readAgents(root)
+  const { hooks, pending: hookPending } = readHooks(root)
+  const { servers, pending: mcpPending } = readMcp(root)
+
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending]
+  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported]
+
+  for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
+    if (key in manifest) {
+      pending.push({
+        surface: key,
+        name: `manifest:${key}`,
+        sourcePath: '.claude-plugin/plugin.json',
+        annotation: {
+          fidelity: 'planned',
+          reason: `Inline manifest \`${key}\` overrides directory discovery upstream; carrying the override is planned for the same release as that surface's materializer.`,
+        },
+      })
+    }
+  }
+
+  return {
+    ir: IR_SCHEMA,
+    plugin: {
+      name: typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root),
+      ...(typeof manifest.version === 'string' ? { version: manifest.version } : {}),
+      ...(typeof manifest.description === 'string' ? { description: manifest.description } : {}),
+      source: options.source ?? `plugin-dir:${root}`,
+      root,
+    },
+    pin,
+    skills,
+    agents,
+    hooks,
+    mcpServers: servers,
+    pending,
+    unsupported,
+  }
+}

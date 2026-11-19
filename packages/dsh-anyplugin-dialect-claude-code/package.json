@@ -1,0 +1,9 @@
+{
+  "name": "dsh-anyplugin-dialect-claude-code",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads a Claude Code plugin directory into the IR, at a pinned host version.",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "dsh-anyplugin-ir": "*" }
+}

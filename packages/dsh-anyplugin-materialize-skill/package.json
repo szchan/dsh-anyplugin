@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-materialize-skill",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin that registers skills from its config; the payload is data, never generated code.",
+  "exports": { ".": "./src/index.ts" }
+}

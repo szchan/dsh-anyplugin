@@ -143,3 +143,32 @@ components the host does not have — 100 % wrong precisely where fidelity is
 measured. When the pin moves, `npm run capture:fixtures` re-captures and the
 golden diff is reviewed like code; a changed golden without a new pin profile
 is a bug, not an upgrade.
+
+---
+
+## D9 — The DSH oracle runs the installed harness, never npm
+
+**Status:** ratified 2026-11-18, forced by the first transplant.
+
+The rig's actual side boots the harness from
+`$(dirname "$DSH_INSTALL_DIR")` — a plain directory of 338 `@deepseek-ai`
+packages — and imports `cordis`, `cordis-plugin-loader` and `dsh-skill` from
+there via `pathToFileURL`. One `Context`, created by that cordis, owns both the
+loader and the registries.
+
+**Why:** the products differ. npm publishes `dsh-skill@0.0.1-rc.1` while the
+desktop installation runs `0.2.2-rc.2`, and some packages the harness uses
+(`dsh-command`) are not published at all. A comparison against npm would
+measure a different product and could pass while the real harness fails. The
+claim is about what the user runs.
+
+**Consequences:**
+
+- The DSH-side tests require a local installation and **skip** without
+  `DSH_INSTALL_DIR`; they are not meaningful in a bare checkout.
+- Tests assert the exact installed version (`0.2.2-rc.2` today), because the
+  pin is part of the claim (AGENTS §3.8). A harness upgrade is a deliberate
+  re-baseline, not a green run that silently moved.
+- If the Desktop bundle ever ships as a real `asar` archive again, the oracle
+  must switch to the `ELECTRON_RUN_AS_NODE=1` access path; that is the only
+  place the access mode is allowed to matter.
