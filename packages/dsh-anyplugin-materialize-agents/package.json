@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-materialize-agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin that exposes one model-facing tool per Claude agent file; the catalog is data, the child is started through ctx.subagents (S10).",
+  "exports": { ".": "./src/index.ts" }
+}

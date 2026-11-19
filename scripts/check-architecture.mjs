@@ -40,6 +40,7 @@ const ALLOWED = {
   'dsh-anyplugin-install': ['dsh-anyplugin-dialect-claude-code', 'dsh-anyplugin-emit', 'dsh-anyplugin-trust'],
   'dsh-anyplugin-dialect-claude-code': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-materialize-skill': ['dsh-anyplugin-ir'],
+  'dsh-anyplugin-materialize-agents': [],
   'dsh-anyplugin-materialize-command': ['dsh-anyplugin-ir', 'dsh-anyplugin-command-template'],
   'dsh-anyplugin-materialize-hook': ['dsh-anyplugin-hook-runner', 'dsh-anyplugin-trust'],
   'dsh-anyplugin-materialize-mcp': [],
@@ -146,11 +147,64 @@ for (const pkg of packages) {
   }
 }
 
+// R10. npm ci is a structural gate: a workspace package missing from the lock
+//      entry makes CI fail before a single test runs, and the local tree still
+//      looks fine because a dev's npm install already knows the directory.
+//      The key is the relative path ("packages/<name>", never node_modules).
+const lockPath = join(root, 'package-lock.json')
+if (!existsSync(lockPath)) {
+  fail('R10 lockfile', lockPath, 'package-lock.json is missing; run npm install')
+} else {
+  const lock = readJson(lockPath)
+  for (const name of readdirSync(join(root, 'packages'))) {
+    if (!existsSync(join(root, 'packages', name, 'package.json'))) continue
+    const key = `packages/${name}`
+    if (lock.packages?.[key] === undefined) {
+      fail('R10 lockfile', lockPath, `${key} has no workspace entry in package-lock.json; run npm install`)
+    }
+  }
+}
+
 // R9. The ratchet lives in one place. Two files claiming the coverage totals
 //     would let one drift while the other stays green.
 const totalsFiles = walk(join(root, 'packages')).filter((file) => /coverage\.test\.mjs$/.test(file))
 if (totalsFiles.length > 1) {
   for (const file of totalsFiles.slice(1)) fail('R9 single-ratchet', file, 'coverage totals are asserted in more than one file')
+}
+
+// R11. Materializers are enumerated exactly once. `rig report` used to keep
+//      its own literal and called the agents surface skipped while emit could
+//      place it; the next materializer would repeat that. Every
+//      `packages/dsh-anyplugin-materialize-*` must be in DEFAULT_MATERIALIZERS,
+//      and every name there must have a package (the map is not a wish list).
+const materializerMap = join(root, 'packages', 'dsh-anyplugin-emit', 'src', 'materializers.ts')
+if (!existsSync(materializerMap)) {
+  fail('R11 materializer-set', materializerMap, 'missing the DEFAULT_MATERIALIZERS map')
+} else {
+  const source = readFileSync(materializerMap, 'utf8')
+  const block = source.match(/DEFAULT_MATERIALIZERS\s*=\s*\{([\s\S]*?)\n\}/)
+  if (!block) {
+    fail('R11 materializer-set', materializerMap, 'could not find the DEFAULT_MATERIALIZERS object literal')
+  } else {
+    const named = [...block[1].matchAll(/'([^']*dsh-anyplugin-materialize-[^']*)'/g)].map((match) => match[1])
+    const listed = readdirSync(join(root, 'packages')).filter(
+      (name) => name.startsWith('dsh-anyplugin-materialize-') && existsSync(join(root, 'packages', name, 'package.json')),
+    )
+    for (const name of listed) {
+      if (!named.includes(name)) {
+        fail(
+          'R11 materializer-set',
+          materializerMap,
+          `${name} has no entry in DEFAULT_MATERIALIZERS; add it so rig report and emit agree`,
+        )
+      }
+    }
+    for (const name of named) {
+      if (!listed.includes(name)) {
+        fail('R11 materializer-set', materializerMap, `DEFAULT_MATERIALIZERS names ${name}, but packages/${name} does not exist`)
+      }
+    }
+  }
 }
 
 const summary = {

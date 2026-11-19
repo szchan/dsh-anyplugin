@@ -59,6 +59,26 @@ export interface IrSkill {
   annotation: Annotation
 }
 
+/**
+ * An agent has more than one observable face, and they do not all survive the
+ * same way (S10):
+ *
+ * - `catalog` — what the model sees when it chooses the persona: its name and
+ *   the frontmatter description. A registered tool carries both byte for byte.
+ * - `invocation` — what happens when it is chosen. Claude's single `Task` tool
+ *   starts a child whose system prompt is the agent body; ours is one tool per
+ *   agent and the body is the child's first user message.
+ * - `model`, `tools`, `limits` — frontmatter keys that need a per-activation
+ *   seam the pin does not have; present only when the file declares them.
+ */
+export interface IrAgentFaces {
+  catalog: Annotation
+  invocation: Annotation
+  model?: Annotation
+  tools?: Annotation
+  limits?: Annotation
+}
+
 export interface IrAgent {
   kind: 'agent'
   name: string
@@ -66,8 +86,18 @@ export interface IrAgent {
   content: string
   model?: string
   tools?: string[]
+  disallowedTools?: string[]
+  effort?: string
+  maxTurns?: number
+  isolation?: string
   origin: 'agents-dir'
   sourcePath: string
+  /**
+   * Per-face annotation (S10). `annotation` below is the weakest face, so the
+   * component is only as faithful as its worst surface. Present on agents read
+   * by the Claude dialect; an IR from an older producer may omit it.
+   */
+  faces?: IrAgentFaces
   annotation: Annotation
 }
 
@@ -186,6 +216,17 @@ const FIDELITIES: readonly Fidelity[] = ['exact', 'equivalent', 'derived', 'plan
 /** Strongest first. A component's overall annotation may never be stronger than its weakest face. */
 const RANK: Record<Fidelity, number> = { exact: 0, equivalent: 1, derived: 2, planned: 3, unsupported: 4 }
 
+/** The weakest annotation in the list; the component overall is exactly this one. */
+export function weakestAnnotation(annotations: readonly Annotation[]): Annotation {
+  return annotations.reduce((weakest, annotation) =>
+    RANK[annotation.fidelity] > RANK[weakest.fidelity] ? annotation : weakest)
+}
+
+/** True when emit would place a node carrying this annotation. */
+export function isCarried(annotation: Annotation): boolean {
+  return annotation.fidelity === 'exact' || annotation.fidelity === 'equivalent'
+}
+
 function annotationProblems(where: string, annotation: Annotation | undefined): string[] {
   if (!annotation) return [`${where}: missing annotation`]
   const problems: string[] = []
@@ -228,7 +269,30 @@ export function validateIr(ir: ClaudePluginIr): string[] {
     }
   }
   for (const agent of ir.agents ?? []) {
-    problems.push(...annotationProblems(`agent ${JSON.stringify(agent.name)}`, agent.annotation))
+    const where = `agent ${JSON.stringify(agent.name)}`
+    // Emittability is decided by the catalog face: the agent is emitted when
+    // its name and description can be shown to the model, even if invocation
+    // or the model/tools/limits faces are still planned (S10). The overall
+    // annotation keeps the weakest face and its reason, so the report cannot
+    // read as a whole success.
+    const catalogFace = agent.faces?.catalog ?? agent.annotation
+    if (catalogFace?.fidelity === 'planned' || catalogFace?.fidelity === 'unsupported') {
+      problems.push(`${where}: ${catalogFace.fidelity} catalog nodes must not sit in the emittable lists`)
+    }
+    problems.push(...annotationProblems(where, agent.annotation))
+    if (agent.faces) {
+      problems.push(...annotationProblems(`${where} catalog face`, agent.faces.catalog))
+      problems.push(...annotationProblems(`${where} invocation face`, agent.faces.invocation))
+      if (agent.faces.model) problems.push(...annotationProblems(`${where} model face`, agent.faces.model))
+      if (agent.faces.tools) problems.push(...annotationProblems(`${where} tools face`, agent.faces.tools))
+      if (agent.faces.limits) problems.push(...annotationProblems(`${where} limits face`, agent.faces.limits))
+      const weakest = Math.max(
+        ...Object.values(agent.faces).filter((face): face is Annotation => face !== undefined).map((face) => RANK[face.fidelity]),
+      )
+      if (agent.annotation && RANK[agent.annotation.fidelity] < weakest) {
+        problems.push(`${where}: overall ${agent.annotation.fidelity} claims more than its weakest face`)
+      }
+    }
   }
   for (const hook of ir.hooks ?? []) {
     problems.push(...annotationProblems(`hook ${hook.event}#${hook.index}`, hook.annotation))
@@ -276,7 +340,12 @@ export function summarizeIr(ir: ClaudePluginIr): FidelityReport {
     counts,
     totals: {
       declared: entries.length,
-      emittable: ir.skills.length,
+      // What emit can place today: a skill whose model face is carried, or an
+      // agent whose catalog face is carried. The other faces still count
+      // against the component's overall class.
+      emittable:
+        ir.skills.filter((skill) => isCarried(skill.faces?.model ?? skill.annotation)).length +
+        ir.agents.filter((agent) => isCarried(agent.faces?.catalog ?? agent.annotation)).length,
     },
   }
 }

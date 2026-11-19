@@ -26,6 +26,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories, normalizeInventory, type Inventory } from './inventory.ts'
 import { probeWithClaude, resolvePluginName } from './oracles/claude.ts'
@@ -127,15 +128,11 @@ function parseScope(value: string | boolean | undefined): Scope {
 }
 
 /**
- * The materializer set this build ships, named the way emit expects. The report
- * must ask emit with the real set: "skipped" has to mean the compiler decided
- * not to place a component, never that the reporter forgot to pass a seam.
+ * The materializer set this build ships comes from emit's single map, never a
+ * local literal: "skipped" has to mean the compiler decided not to place a
+ * component, never that the reporter forgot to pass a seam (S10 review, R11).
  */
-const MATERIALIZERS = {
-  skill: new URL('../../dsh-anyplugin-materialize-skill/src/index.ts', import.meta.url).href,
-  mcp: new URL('../../dsh-anyplugin-materialize-mcp/src/index.ts', import.meta.url).href,
-  hooks: new URL('../../dsh-anyplugin-materialize-hook/src/index.ts', import.meta.url).href,
-}
+const MATERIALIZERS = defaultMaterializers()
 
 function hasString(record: object, key: string): boolean {
   return typeof (record as Record<string, unknown>)[key] === 'string'

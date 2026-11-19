@@ -622,7 +622,7 @@ run degraded *by design*.
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
 | hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 already wires `tools/pre-execute` and `tools/post-execute`. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
-| subagent catalog | catalog API present | agent → prompt template, `derived` |
+| subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
@@ -765,7 +765,7 @@ references before removing or updating anything.
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
   the emitted entry into the *pinned* harness and reads the same inventory
   back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  table: 11 declared rows, 9 matched, 1 missing, 1 refused. Both halves also
+  table: 11 declared rows, 10 matched, 0 missing, 1 refused. Both halves also
   run in CI, with the pinned Claude CLI fetched from npm (D24).
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
@@ -888,12 +888,12 @@ goldens, matched by the DSH oracle). CI measures the same rows against both
 | `claude-root-skill` | 1 | 1 | 0 | 0 | — |
 | `claude-command-nested` | 0 | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
 | `claude-commands-flat` | 2 | 2 | 0 | 0 | model face done; human face needs the two seams in D10 |
-| `claude-agents` | 1 | 0 | 1 | 0 | named-agent catalog seam |
+| `claude-agents` | 1 | 1 | 0 | 0 | one tool per agent; description byte for byte, body as the first user block (S10; invocation `equivalent`) |
 | `claude-hooks-mcp` | 2 | 2 | 0 | 0 | hook mounted on `tools/post-execute` and observed on a real call (D20) |
 | `claude-mcp-http` | 1 | 1 | 0 | 0 | streamable-http arm; the server is started by the test (D12) |
 | `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
-| **total** | **11** | **9** | **1** | **1** | |
+| **total** | **11** | **10** | **0** | **1** | |
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
@@ -992,7 +992,7 @@ agents + bin + theme.
 | v0.1 | S1 + S3 rig; **`dsh-anyplugin-intercept` skeleton**; skills + commands materializers; Claude Code dialect read-only; fidelity report |
 | v0.2 | MCP; classic hooks on the shared kernel (command handler, event subset); exec trust grants; project/user scope |
 | v0.3 | Codex dialect via portable IR; LSP; output-styles; bin |
-| v0.4 | agents (catalog or prompt template); themes (F2 ANSI seam); monitors; workflows |
+| v0.4 | agents (per-agent tools or prompt template); themes (F2 ANSI seam); monitors; workflows |
 | v0.5 | `dsh-mod-host` alpha: static scanner + chain engine + fs/store/http/session bridges + `AbovePrompt` render site |
 | v0.6 | mod host beta: element runtime (~17 elements), panes, redraw scheduler, guard layer (sec-default equivalent) |
 | v0.7 | Claude mod API adapter; symbol coverage tracked from the pinned `.d.ts`; `.tsx` and `Client` resolved |
@@ -1201,3 +1201,112 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   skipped required probe is a failed run. `spikes/s9-host-events/out/` (including
   `out/settings-profile/`) is report output only and gitignored. CI runs the
   spike after installing the same pins (`.github/workflows/verify.yml`).
+
+- **S10 — can a plugin make its `agents/*.md` personas model-selectable?**
+  ✅ **Answered 2026-11-19** by `spikes/s10-agents/run.mjs` against the pinned
+  `0.2.2-rc.5` harness (16/16 checks). Yes, without a new seam — but not through
+  a catalog. `dsh-subagent` registers no tool at all (it is a named-provider
+  registry), and `dsh-tool-subagent` registers **one fixed tool per provider
+  instance**, not one per agent. A plugin can register **its own tool per
+  agent**: the tool name is `<plugin>:<agent>` — Claude's Task convention — the
+  description is the frontmatter description byte for byte, and invoking it
+  starts a child through `ctx.subagents.startActivation`. The body cannot be the child's system prompt
+  at this pin: `SubagentStartRequest.prompt` is explicitly "Content delivered as
+  the child's user message" and there is no instructions field. So the body is
+  the first block of the child's initial user message, ahead of the task. That
+  carries Claude's *effect* (`equivalent` invocation) with a different tool
+  shape: N named tools instead of one `Task` tool with a `subagent_type` enum.
+
+  **1. What the model sees.** `@deepseek-ai/dsh-subagent` mounts a service
+  (`super(ctx, 'subagents')`, `src/index.ts:210`) and exposes
+  `registerProvider` (`src/index.ts:522`, wrapped by `ctx.effect` at
+  `:540`); it never calls `ctx.tools.register`. The consumer,
+  `@deepseek-ai/dsh-tool-subagent`, registers exactly one tool per instance in
+  `mount(provider)`, with a description built from
+  `providerWording(provider.inheritsParentContext)` — fixed per provider, not
+  per agent. The spike mounts two instances named `subagent` and `delegate`
+  and observes two tools with the **same** description, both free of the agent
+  text. `ctx.tools.schemas()` is the model-visible list. The spike registers the
+  materializer from `fixtures/claude-agents`, observes the scoped tool
+  `agents-fixture:reviewer` with description `Reviews a diff for defects.` byte
+  for byte, and calls it through `ctx.tools.execute` with a live parent; the
+  colon is accepted by `dsh-tools` (the charset rule that rejects it lives in
+  the MCP client, not the tool registry), so cross-plugin name collisions are
+  gone and the body does not appear in the description.
+
+  **2. Where the body goes.** `SubagentStartRequest.prompt: ContentBlock[]`
+  carries the JSDoc "Content delivered as the child's user message"
+  (`dsh-subagent/src/types.ts:155-156`); the interface has no
+  `instructions`/`systemPrompt` field (asserted lexically in the spike).
+  `SubagentManager.startLocal` submits exactly that prompt through
+  `submitMaterialized(..., { source: { kind: 'user' } })`
+  (`dsh-subagent/src/manager.ts:409-410`). At runtime the child is a real agent
+  (`agent/created` with `session.header.parentSession === parent.id`, settling
+  through `subagent/end` with `completed`); its system prompt is the composed
+  deployment/agent-loop prompt and does **not** contain the body; its first
+  user message starts with the body, then the task, then the manager's delivery
+  guidance. The only fresh-start route to the system prompt is an Agent Preset:
+  `applyChildComposition` calls `presets.mount(childCtx, agentPreset)`
+  (`dsh-subagent/src/child-agent.ts`) and `dsh-persona` contributes the
+  `deployment:persona-prefix` section inside such a composition. That is a
+  preset id, not a description-driven catalog, and it requires the
+  `agentPresets` service (`dsh-agent-preset-registry`, whose own README says
+  its Model Experience is "Nothing directly"); `dsh-tool-subagent`'s
+  `agent_preset` parameter is an enum of allowed **ids** with one fixed
+  sentence, not per-agent descriptions (`src/preset-selection.ts`).
+
+  **3. The other frontmatter keys.** `model`, `effort`, `tools`,
+  `disallowedTools`, `maxTurns` and `isolation` are not fields of
+  `SubagentActivationSpec`. Passing them anyway is silently ignored — the
+  harness neither maps nor refuses them (probe: an activation with all six
+  still runs and the child still sees the parent toolset). `agentOptions` is the
+  only per-activation escape: `agentOptions.model: 'sonnet'` reaches the
+  provider as the raw model id `sonnet` with the parent's provider, so Claude's
+  aliases would need the §9 escape layer to name a real provider model; model
+  identity therefore stays `planned`. `tools`/`disallowedTools` stay `planned`:
+  `startActivation` has no per-activation tool filter, and
+  `childCtx.tools.restrict` is only reachable from a preset or a cold-resume
+  descriptor (`dsh-subagent/src/child-agent.ts:218`). `maxTurns`/`isolation`
+  would need the child loop, reachable only through a preset; `effort` exists
+  on `AgentOptions` as `reasoningEffort` but the frontmatter value has no
+  provider-neutral spelling. All six are recorded in the IR with reasons,
+  never invented.
+
+  **What this buys, and what it does not.** Catalog face `exact` (name and
+  description are what the model sees), invocation `equivalent` (N tools vs
+  one `Task` tool with `subagent_type`), model/tools/limits `planned`.
+  The DSH oracle learns `agents:<name>` only from a schema it observes in
+  `ctx.tools.schemas()` whose scoped name and description equal the **emitted
+  declaration** byte for byte — never from the IR skeleton. `agents.test.mjs`
+  is the independent fixture anchor: it reads the description from the
+  fixture's frontmatter bytes and the body from the emitted `agents` child, so
+  the two sides cannot drift together. A tool cannot put the body in its
+  description (we forbid it), cannot set the child's fresh system prompt,
+  cannot filter the child's tools or cap its turns per activation, and cannot
+  resolve a Claude model alias. `fixtures/claude-agents` therefore moves to
+  `agents:reviewer:match`; the truthful totals become **11 declared / 10
+  matched / 0 missing / 1 refused** (the goldens declare 11 rows in total, and the
+  nested `agents/deep/planner.md` is not loaded at the pin, so it is not a
+  declared row — the issue text's "12/10/1/1" counts a row the host does not
+  have).
+
+  Reproduce:
+
+  ```bash
+  node scripts/fetch-harness.mjs 0.2.2-rc.5
+  npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
+    --cache "$PWD/.npm-cache" @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
+    @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
+    @deepseek-ai/dsh-subagent-spawn-in-process@0.2.2-rc.5 \
+    @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
+    @deepseek-ai/dsh-session-persistence-jsonl@0.2.2-rc.5 \
+    @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
+    @deepseek-ai/dsh-fs-local@0.2.2-rc.5
+  DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+    npm run spike:s10
+  ```
+
+  An explicitly configured but incomplete harness exits 2 naming the missing
+  packages; the spike never falls back to another install and never calls a
+  missing package a pass. `spikes/s10-agents/out/` is report output only and
+  gitignored.
