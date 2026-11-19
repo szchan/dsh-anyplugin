@@ -1,0 +1,17 @@
+{
+  "__provenance": {
+    "source": "capture",
+    "claude": "2.1.322",
+    "backend": "deepseek (https://api.deepseek.com/anthropic)",
+    "command": "claude --plugin-dir <plugin> -p \"<prompt>\" --allowedTools Bash --output-format json",
+    "spike": "spikes/s6-hook-payloads",
+    "note": "session_id and transcript_path replaced; every other field verbatim"
+  },
+  "payload": {
+    "session_id": "abc123",
+    "transcript_path": "<transcript.jsonl>",
+    "cwd": "/home/szchan/Projects/dsh-anyplugin",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

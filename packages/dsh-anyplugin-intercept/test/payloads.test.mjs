@@ -27,16 +27,16 @@ const readAll = (kind) => readdirSync(new URL(`${kind}/`, root))
   })
 
 const documented = readAll('payloads')
-const captured = readAll('captured')
+const observed = readAll('observed')
 
 test('every fixture event is in the pinned event table, and vice versa', () => {
-  const fixtures = [...new Set([...documented, ...captured].map((f) => f.payload.hook_event_name))].sort()
+  const fixtures = [...new Set([...documented, ...observed].map((f) => f.payload.hook_event_name))].sort()
   assert.deepEqual(fixtures, [...CLASSIC_HOOK_EVENTS].sort(),
     'fixtures/hooks/*/ and CLASSIC_HOOK_EVENTS must name the same events')
 })
 
 test('each fixture is titled by its own hook_event_name', () => {
-  for (const fixture of [...documented, ...captured]) {
+  for (const fixture of [...documented, ...observed]) {
     assert.equal(fixture.payload.hook_event_name, fixture.file,
       `${fixture.file}: hook_event_name disagrees with the file name`)
     assert.ok(fixture.__provenance?.source, `${fixture.file}: missing provenance`)
@@ -44,7 +44,7 @@ test('each fixture is titled by its own hook_event_name', () => {
 })
 
 test('a subject is derived only from a field the payload actually carries', () => {
-  for (const fixture of [...documented, ...captured]) {
+  for (const fixture of [...documented, ...observed]) {
     const field = CLASSIC_SUBJECT_FIELD[fixture.file]
     const subject = classicSubject({ name: fixture.file, data: fixture.payload })
     if (field === undefined) {
@@ -109,10 +109,10 @@ test('a rewrite reaches the deepest handler intact', async () => {
   assert.deepEqual(result.decision, { kind: 'deny', reason: 'stop here' })
 })
 
-test('captured variants may carry fields the docs do not show', () => {
+test('observed variants may carry fields the docs do not show', () => {
   // Direction matters: a doc example that omits a field is not evidence the
   // field is absent. prompt_id is the known case.
-  const submit = captured.find((f) => f.file === 'UserPromptSubmit')
+  const submit = observed.find((f) => f.file === 'UserPromptSubmit')
   assert.ok(Object.hasOwn(submit.payload, 'prompt_id'),
     'the capture is the record that prompt_id is sent')
   const documentedKeys = new Set(Object.keys(documented.find((f) => f.file === 'UserPromptSubmit').payload))

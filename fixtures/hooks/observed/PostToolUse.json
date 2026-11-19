@@ -1,0 +1,35 @@
+{
+  "__provenance": {
+    "source": "capture",
+    "claude": "2.1.322",
+    "backend": "deepseek (https://api.deepseek.com/anthropic)",
+    "command": "claude --plugin-dir <plugin> -p \"<prompt>\" --allowedTools Bash --output-format json",
+    "spike": "spikes/s6-hook-payloads",
+    "note": "session_id and transcript_path replaced; every other field verbatim"
+  },
+  "payload": {
+    "session_id": "abc123",
+    "transcript_path": "<transcript.jsonl>",
+    "cwd": "/home/szchan/Projects/dsh-anyplugin",
+    "prompt_id": "b7f20053-ae8a-403c-80fa-c2c21a15c69c",
+    "permission_mode": "default",
+    "effort": {
+      "level": "high"
+    },
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo hook-probe",
+      "description": "Echo a probe string"
+    },
+    "tool_response": {
+      "stdout": "hook-probe",
+      "stderr": "",
+      "interrupted": false,
+      "isImage": false,
+      "noOutputExpected": false
+    },
+    "tool_use_id": "call_00_kdcwgfZoP2yYIEXRqBtI6842",
+    "duration_ms": 81
+  }
+}

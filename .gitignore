@@ -5,4 +5,6 @@ dist/
 .DS_Store
 tmp/
 spikes/**/out/
+# raw traces land here and are never committed (AGENTS.md §8); the
+# reviewed, scrubbed copies live in fixtures/hooks/observed/
 fixtures/**/captured/

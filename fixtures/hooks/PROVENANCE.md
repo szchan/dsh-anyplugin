@@ -5,7 +5,7 @@ Two kinds of fixture live here, and they do not have the same authority.
 | Directory | Source | Authority |
 | --- | --- | --- |
 | `payloads/` | The canonical examples on the pinned docs page, extracted by `scripts/extract-hook-payloads.mjs` | Illustrative. The harness sends more fields than the examples show, and shows optional ones as present. |
-| `captured/` | Six real `claude` 2.1.322 payloads recorded by `spikes/s6-hook-payloads` on a DeepSeek backend | Verbatim, minus `session_id` and `transcript_path`. |
+| `observed/` | Six real `claude` 2.1.322 payloads recorded by `spikes/s6-hook-payloads` on a DeepSeek backend | Verbatim, minus `session_id` and `transcript_path`. |
 
 Pin: **claude-code 2.1.322**. Re-run `node scripts/extract-hook-payloads.mjs`
 when the pin moves, then review the diff — a removed event or a renamed field is
@@ -28,9 +28,9 @@ Two fields exist in captures and are absent from the doc examples:
 `prompt_id` on `UserPromptSubmit` and `SessionEnd`. That direction is the one to
 pay attention to — the capture is the authority where both exist.
 
-## What the captures settled
+## What the recordings settled
 
-Six events are captured: `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+Six events are recorded: `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 `PostToolUse`, `Stop`, `SessionEnd`. Five shape facts came out of them, and
 each one is a rule for whoever writes the classic arm:
 
@@ -42,7 +42,7 @@ each one is a rule for whoever writes the classic arm:
 3. **`effort: {level}`** rides on turn-interior events and appears in no doc
    example. Same lesson as `prompt_id`: the payload grows.
 4. **A documented field can still be absent.** The `PreToolUse` doc example has
-   `scratchpad_dir`; the capture does not. Documentation is a union of
+   `scratchpad_dir`; the recording does not. Documentation is a union of
    variants, in both directions.
 5. **`stop_hook_active`** is `false` in a normal turn. `true` means the turn was
    itself started by a `Stop` hook — the guard against a Stop hook looping.
@@ -55,7 +55,7 @@ DEEPSEEK_API_KEY=sk-... node spikes/s6-hook-payloads/run.mjs --deepseek
 
 The spike prints each payload and writes a record (payload, plugin-root env
 vars, hook cwd) under a temp directory. Copy the interesting ones into
-`captured/` with the same scrubbing and update the provenance block.
+`observed/` with the same scrubbing and update the provenance block.
 
 ## Running the client at all: the DeepSeek backend
 
