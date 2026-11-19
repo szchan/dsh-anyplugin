@@ -306,21 +306,37 @@ async function main() {
   // a model turn, and registers a section on the invoking agent. `complete`
   // makes the style the whole system prompt, byte for byte.
   let handled = false
-  const command = ctx.commands.register({
-    name: 's11-style',
-    description: 'S11 probe: apply a complete output style to the invoking agent',
-    handler: (invocation) => {
-      handled = true
-      invocation.agent.ctx.systemPrompt.section({
-        name: 'anyplugin:output-style:complete',
-        order: ORDER,
-        text: COMPLETE_STYLE,
-        complete: true,
+  let commandDispose
+  // Register the command from a real Loader entry, not from the boot context:
+  // this is the "a plugin can" half of the claim. The entry's own section is
+  // global; the handler reaches the *invoking* agent through `invocation.agent`.
+  const styleEntry = {
+    name: 's11-style-entry',
+    inject: ['commands', 'systemPrompt'],
+    apply(pluginCtx) {
+      commandDispose = pluginCtx.commands.register({
+        name: 's11-style',
+        description: 'S11 probe: apply a complete output style to the invoking agent',
+        handler: (invocation) => {
+          handled = true
+          invocation.agent.ctx.systemPrompt.section({
+            name: 'anyplugin:output-style:complete',
+            order: ORDER,
+            text: COMPLETE_STYLE,
+            complete: true,
+          })
+          return { kind: 'success' }
+        },
       })
-      return { kind: 'success' }
     },
-  })
-  check('a command handler can be registered and receives the invoking agent', typeof command === 'function' && !!ctx.commands.find(plain, 's11-style'))
+  }
+  ctx.plugin(styleEntry)
+  await sleep(50)
+  check(
+    'a Loader entry can register the command handler',
+    typeof commandDispose === 'function' && !!ctx.commands.find(plain, 's11-style'),
+    JSON.stringify({ dispose: typeof commandDispose }),
+  )
 
   const commandAgent = await ctx.agentLoop.create('s11-command', { provider: 'fake', model: 'fake-command' })
   const execution = await ctx.commands.execute(commandAgent, '/s11-style', [], new AbortController().signal)
@@ -387,6 +403,15 @@ async function main() {
     JSON.stringify(personaPrompt?.slice(0, 120)),
   )
 
+  const personaSibling = await ctx.agentLoop.create('s11-persona-sibling', { provider: 'fake', model: 'fake-persona-sibling' })
+  await drive(ctx, personaSibling, createUserMessage, 'S11-PERSONA-SIBLING', 1)
+  const personaSiblingPrompt = systemPromptFor(adapter, 'S11-PERSONA-SIBLING')
+  check(
+    'the persona style is absent from a sibling agent',
+    personaSiblingPrompt === baseline,
+    JSON.stringify({ equal: personaSiblingPrompt === baseline, prompt: personaSiblingPrompt?.slice(0, 120) }),
+  )
+
   const presets = ctx.get('agentPresets')
   const unregisterPreset = await presets.register({
     id: 's11-preset',
@@ -421,6 +446,15 @@ async function main() {
     'an agent preset mounted in setup contributes its persona section',
     (presetPrompt ?? '').includes(PRESET_STYLE),
     JSON.stringify({ preset: presets.composedPreset(presetAgent.agent.ctx), contains: (presetPrompt ?? '').includes(PRESET_STYLE) }),
+  )
+
+  const presetSibling = await ctx.agentLoop.create('s11-preset-sibling', { provider: 'fake', model: 'fake-preset-sibling' })
+  await drive(ctx, presetSibling, createUserMessage, 'S11-PRESET-SIBLING', 1)
+  const presetSiblingPrompt = systemPromptFor(adapter, 'S11-PRESET-SIBLING')
+  check(
+    'the preset style is absent from a sibling agent',
+    presetSiblingPrompt === baseline,
+    JSON.stringify({ equal: presetSiblingPrompt === baseline, prompt: presetSiblingPrompt?.slice(0, 120) }),
   )
 
   // --- 5. compaction: the agent-scoped section is re-assembled each request --

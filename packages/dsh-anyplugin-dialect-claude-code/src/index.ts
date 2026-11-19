@@ -858,7 +858,7 @@ function readMcp(root: string, plugin: string): {
 const OUTPUT_STYLE_SEAM =
   'DSH 0.2.2-rc.5 can carry it: a command handler receives `invocation.agent`, and `invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces that agent\'s system prompt byte for byte; `createAgent(..., { setup })`, an `agent/created` listener, `dsh-persona`, and an agent preset reach the same scoped seam (S11). ' +
   'Carrying output-styles waits on four gaps: (i) an at-start contribution needs plugin provenance — `agent/created` carries the agent but no plugin id — or a plugin-created agent; ' +
-  '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam, because a command name cannot contain `:` until that lands (a non-colon alias already carries the body as `equivalent`); ' +
+  '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam, because a command name cannot contain `:` until that lands (an alias would be new additive work, not an existing equivalent); ' +
   '(iii) `claude plugin details` does not inventory output styles at 2.1.322, so the inventory oracle cannot anchor the row and a fixture must compare a dumped composed prompt; ' +
   '(iv) `keep-coding-instructions: true` keeps Claude\'s built-in coding instructions, which a `complete` section cannot express because it replaces the whole prompt.'
 

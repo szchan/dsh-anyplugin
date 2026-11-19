@@ -1477,8 +1477,8 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   (i) **provenance** — `agent/created` carries the agent but no plugin id, so an
   at-start contribution needs an id filter or a plugin-created agent;
   (ii) **activation name** — `/<plugin>:<name>` needs D10's additive
-  command-alias seam, because a command name cannot contain `:` at this pin (a
-  non-colon alias already carries the body as `equivalent`);
+  command-alias seam, because a command name cannot contain `:` at this pin (an
+  alias would be new additive work, not an existing equivalent);
   (iii) **oracle anchor** — `claude plugin details` does not inventory output
   styles at 2.1.322, so the inventory oracle cannot see the row and a fixture
   would have to compare a dumped composed prompt;
