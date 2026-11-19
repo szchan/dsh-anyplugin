@@ -43,7 +43,7 @@ test('one group per enabled plugin with an emittable surface, with a dialect-qua
   assert.equal(entries[0].group, true)
   assert.deepEqual(
     entries[0].config.map((child) => child.id),
-    [`anyplugin.${scopeOf('claude-code:skills-only')}.skill`],
+    [`anyplugin.${scopeOf('claude-code:skills-only')}#skill`],
   )
 })
 
@@ -60,7 +60,7 @@ test('children are exactly what emitPlugin produced, with ids qualified', () => 
   assert.deepEqual(compiled, {
     ...emitted.entry,
     id: `anyplugin.${scope}`,
-    config: emitted.entry.config.map((child) => ({ ...child, id: `anyplugin.${scope}.${child.id}` })),
+    config: emitted.entry.config.map((child) => ({ ...child, id: `anyplugin.${scope}#${child.id}` })),
   })
 })
 

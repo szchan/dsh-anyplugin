@@ -73,6 +73,7 @@ export function readEnablements(options: { projectDir: string; home?: string }):
 export function parseEnablements(text: string, file = '<enablements>'): EnablementLayer {
   const plugins: Record<string, Enablement> = {}
   let sawPlugins = false
+  let inlineEmpty = false
   const lines = text.replace(/^\uFEFF/, '').split('\n')
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index].replace(/\r$/, '')
@@ -83,7 +84,11 @@ export function parseEnablements(text: string, file = '<enablements>'): Enableme
         throw new InstallsFileError('expected `plugins:` on the first non-comment line', { file, line: number })
       }
       sawPlugins = true
+      inlineEmpty = /^\s*plugins:\s*\[\s*\]\s*$/.test(line)
       continue
+    }
+    if (inlineEmpty) {
+      throw new InstallsFileError('`plugins: []` cannot be followed by plugin entries', { file, line: number })
     }
     const match = ENTRY_LINE.exec(line)
     if (!match) {

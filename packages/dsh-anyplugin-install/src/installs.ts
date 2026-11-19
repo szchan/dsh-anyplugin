@@ -177,6 +177,7 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
     })
   }
 
+  const inlineEmpty = /^plugins:\s*\[\s*\]\s*$/.test(lines[1].text)
   const records: InstallRecord[] = []
   const seen = new Map<string, number>()
   let current: { values: Record<string, string>; line: number } | undefined
@@ -198,6 +199,9 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
     const { text: raw, line } = lines[index]
     let body: string
     if (raw.startsWith('  - ')) {
+      if (inlineEmpty) {
+        throw new InstallsFileError('`plugins: []` cannot be followed by plugin records', { file, line })
+      }
       finish()
       current = { values: {}, line }
       body = raw.slice(4)

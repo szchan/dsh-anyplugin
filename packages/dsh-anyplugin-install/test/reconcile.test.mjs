@@ -75,7 +75,7 @@ class FakeLoader {
   }
   async create(options) {
     this.calls.push(['create', options.id])
-    const entry = { options, fiber: new FakeFiber(), parent: this.root }
+    const entry = { options, fiber: new FakeFiber(), parent: this.root, subgroup: {} }
     this.store.set(options.id, entry)
     this.applyChildren(options, entry)
     return options.id
@@ -90,13 +90,14 @@ class FakeLoader {
       this.store.delete(child.id)
     }
     entry.options = options
+    entry.subgroup = {}
     this.applyChildren(options, entry)
   }
-  applyChildren(options, parent) {
+  applyChildren(options, entry) {
     for (const child of options.config ?? []) {
       const fiber = new FakeFiber(this.childFiber)
       if (this.quietChild) fiber.state = 0
-      this.store.set(child.id, { options: child, fiber, parent })
+      this.store.set(child.id, { options: child, fiber, parent: entry.subgroup })
     }
   }
   remove(id) {
@@ -278,15 +279,16 @@ test('a group id owned by a foreign entry is refused, not adopted', async () => 
   assert.deepEqual(loader.calls, [])
 })
 
-test('a child id owned by another group under anyplugin. is refused, not adopted', async () => {
+test('a child id parented under another group is refused, not adopted', async () => {
   const loader = new FakeLoader()
   const otherGroup = { id: 'anyplugin.other', name: 'group', group: true, config: [] }
-  loader.store.set(otherGroup.id, { options: otherGroup, fiber: new FakeFiber(), parent: loader.root })
+  const otherEntry = { options: otherGroup, fiber: new FakeFiber(), parent: loader.root, subgroup: {} }
+  loader.store.set(otherGroup.id, otherEntry)
   const foreignFiber = new FakeFiber()
   loader.store.set(CHILD_ID, {
     options: { id: CHILD_ID, name: 'other-plugins-child' },
     fiber: foreignFiber,
-    parent: { options: otherGroup },
+    parent: otherEntry.subgroup,
   })
 
   const result = await reconcile(loader, desiredEntries())
@@ -295,7 +297,26 @@ test('a child id owned by another group under anyplugin. is refused, not adopted
     { id: GROUP_ID, child: CHILD_ID, reason: 'child id is already owned by another entry' },
   ])
   assert.equal(loader.store.get(CHILD_ID).options.name, 'other-plugins-child')
+  assert.equal(loader.store.get(CHILD_ID).parent, otherEntry.subgroup)
   assert.equal(foreignFiber.state, 2)
+})
+
+test('the ownership check also runs before a group is kept', async () => {
+  const loader = new FakeLoader()
+  const shared = 'anyplugin.shared.child'
+  const g = { id: 'anyplugin.g', name: 'group', group: true, config: [{ id: shared, name: 'child' }] }
+  const h = { id: 'anyplugin.h', name: 'group', group: true, config: [{ id: shared, name: 'child' }] }
+  await loader.create(g)
+  await loader.create(h) // the second create adopts the shared child, as EntryGroup.create would
+
+  const result = await reconcile(loader, [g, h])
+
+  assert.deepEqual(result.kept, [h.id], 'h still owns the child')
+  assert.deepEqual(result.failed, [
+    { id: g.id, child: shared, reason: 'child id is already owned by another entry' },
+  ])
+  assert.equal(loader.store.get(shared).parent, loader.store.get(h.id).subgroup)
+  assert.deepEqual(loader.calls, [['create', g.id], ['create', h.id]], 'the guard fired before any write')
 })
 
 test('a dropped child that settles without passing 5 does not wait for the timeout', async () => {

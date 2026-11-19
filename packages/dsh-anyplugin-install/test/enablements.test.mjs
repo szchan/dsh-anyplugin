@@ -73,6 +73,7 @@ test('a layer file is a strict, tiny subset; malformed input is rejected with a 
     ['plugins:\n  Claude-Code:x: { enabled: true }\n', /not a <dialect>/],
     [`plugins:\n  ${id}: { enabled: true }\n  ${id}: { enabled: false }\n`, /duplicate plugin/],
     ['plugins:\n  claude-code:x: { enabled: true, grants: [exec: hooks] }\n', /bare capability names/],
+    ['plugins: []\n  claude-code:x: { enabled: true }\n', /cannot be followed by plugin entries/],
   ]
   for (const [text, reason] of bad) {
     assert.throws(

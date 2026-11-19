@@ -76,6 +76,11 @@ const malformed = [
   ['missing field', 'schema: "dsh-anyplugin/installs@1"\nplugins:\n  - dialect: "claude-code"\n    name: "x"\n    version: "1"\n    root: "/a"\n    pin: "claude-code@1"\n', /missing required field "dataDir"/],
   ['relative root', 'schema: "dsh-anyplugin/installs@1"\nplugins:\n  - dialect: "claude-code"\n    name: "x"\n    version: "1"\n    root: "relative"\n    dataDir: "/b"\n    pin: "claude-code@1"\n', /absolute path/],
   ['colon in name', serializeInstalls(lock(sample())).replace('name: "skills-only"', 'name: "a:b"'), /bare plugin name/],
+  [
+    'records after an empty list',
+    'schema: "dsh-anyplugin/installs@1"\nplugins: []\n  - dialect: "claude-code"\n    name: "x"\n    version: "1"\n    root: "/a"\n    dataDir: "/b"\n    pin: "claude-code@1"\n',
+    /cannot be followed by plugin records/,
+  ],
 ]
 
 for (const [label, text, reason] of malformed) {

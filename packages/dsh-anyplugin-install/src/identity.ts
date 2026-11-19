@@ -36,7 +36,15 @@ export function pluginEntryId(dialect: string, name: string): string {
  * Child ids are global in the root store; qualify them with the plugin scope
  * and keep them under `anyplugin.` so a foreign entry can never be mistaken
  * for ours (and vice versa).
+ *
+ * The separator must be a character `mangleId` can never emit. Its alphabet
+ * is `[A-Za-z0-9_.@-]` plus `~` + two hex digits, so `.` is already taken by
+ * plugin names (`x` + surface `skill` would collide with plugin `x.skill`).
+ * `#` is outside both the alphabet and the escape form, which makes the
+ * composition injective: group ids are `anyplugin.` + scope, child ids are
+ * `anyplugin.` + scope + `#` + mangled surface. The surface is mangled too so
+ * the separator stays unique even if a future emitter id contains `#`.
  */
 export function childEntryId(scope: string, surfaceId: string): string {
-  return `${ENTRY_PREFIX}${scope}.${surfaceId}`
+  return `${ENTRY_PREFIX}${scope}#${mangleId(surfaceId)}`
 }

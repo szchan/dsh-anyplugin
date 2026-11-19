@@ -24,8 +24,9 @@
  * - **Ids are identity, not ownership.** `EntryGroup.create` reuses
  *   `store[id] ??=`; applying a child id that belongs to someone else would
  *   reparent (and later dispose) their entry. Child ids are namespaced under
- *   `anyplugin.`, and a desired child id that is already resolvable outside the
- *   group — or a group id held by a non-group entry — is refused before apply.
+ *   `anyplugin.`, and a desired child whose existing entry is not parented by
+ *   the group it would be applied to — or a group id held by a non-group
+ *   entry — is refused before apply, including on the `kept` path.
  */
 import { isDeepStrictEqual } from 'node:util'
 
@@ -41,6 +42,8 @@ export interface FiberLike {
 export interface LoaderEntryLike {
   options: EntryOptions
   fiber?: FiberLike | null
+  /** For a group entry: the `EntryGroup` its children are parented to. */
+  subgroup?: unknown
   parent?: unknown
 }
 
@@ -163,25 +166,48 @@ function fibersById(
   return out
 }
 
+/** Map every descendant id to its immediate parent id in an options tree. */
+function parentIds(options: EntryOptions, parentId = options.id, out = new Map<string, string>()): Map<string, string> {
+  const config = options.config
+  if (Array.isArray(config)) {
+    for (const child of config as EntryOptions[]) {
+      if (out.has(child.id)) continue
+      out.set(child.id, parentId)
+      parentIds(child, child.id, out)
+    }
+  }
+  return out
+}
+
 /**
- * Refuse to apply a child id that another entry already owns. `EntryGroup.create`
- * would reuse the store entry (`??=`) and reparent it, silently adopting a
- * foreign plugin's fiber; a half-applied group would then take it down.
+ * Refuse a desired child whose store entry is parented somewhere else.
+ *
+ * Ownership is decided by the actual parent, not by the id being present in
+ * `actual.options`: a group entry can name a child it does not own (two groups
+ * can both declare the same child id), and `EntryGroup.create` would then
+ * reuse (`??=`) and reparent the other group's entry. A child id that no entry
+ * owns is free. The check runs before `kept` as well, because a matching
+ * options tree is not proof of ownership.
  */
 function foreignChild(
   loader: LoaderLike,
   wanted: EntryOptions,
-  actual: LoaderEntryLike | undefined,
 ): { child: string; reason: string } | undefined {
-  const own = actual ? collectIds(actual.options) : new Set<string>()
-  for (const childId of collectIds(wanted)) {
-    if (own.has(childId)) continue
+  for (const [childId, parentId] of parentIds(wanted)) {
+    let entry: LoaderEntryLike
     try {
-      loader.resolve(childId)
-      return { child: childId, reason: 'child id is already owned by another entry' }
+      entry = loader.resolve(childId)
     } catch {
-      // Not present: free to create.
+      continue // Not present: free to create.
     }
+    let parent: LoaderEntryLike
+    try {
+      parent = loader.resolve(parentId)
+    } catch {
+      return { child: childId, reason: 'child id is already owned by another entry' }
+    }
+    if (parent.subgroup !== undefined && entry.parent === parent.subgroup) continue
+    return { child: childId, reason: 'child id is already owned by another entry' }
   }
   return undefined
 }
@@ -258,10 +284,6 @@ export async function reconcile(
   for (const id of desiredIds) {
     const wanted = desiredById.get(id) as EntryOptions
     const actual = actualById.get(id)
-    if (actual && isDeepStrictEqual(actual.options, wanted)) {
-      result.kept.push(id)
-      continue
-    }
     if (!actual) {
       // The group id itself is identity too: creating over a foreign entry
       // would reparent it exactly like a child collision. A top-level
@@ -274,9 +296,13 @@ export async function reconcile(
         // Free to create.
       }
     }
-    const foreign = foreignChild(loader, wanted, actual)
+    const foreign = foreignChild(loader, wanted)
     if (foreign) {
       result.failed.push({ id, ...foreign })
+      continue
+    }
+    if (actual && isDeepStrictEqual(actual.options, wanted)) {
+      result.kept.push(id)
       continue
     }
     try {

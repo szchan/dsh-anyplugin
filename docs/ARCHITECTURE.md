@@ -501,31 +501,40 @@ installs.yml + scope layers
 
 Ids are dialect-qualified and mangled (D7): group
 `anyplugin.<mangleId("<dialect>:<plugin>")>`, child
-`anyplugin.<mangleId("<dialect>:<plugin>")>.<surface>` (`skill`, `mcp`,
-`hook`). The colon-separated form is stored but unaddressable (S1 id grammar),
-and group children share the root store, so the bare surface id must be
-qualified or two plugins collide. The `anyplugin.` prefix on children matters
-twice: it keeps them inside the namespace this layer owns, and `reconcile`
-ignores top-level non-group entries there (a child id is never mistaken for a
-managed group).
+`anyplugin.<mangleId("<dialect>:<plugin>")>#<mangleId(surface)>` (`skill`,
+`mcp`, `hook`). The colon-separated form is stored but unaddressable (S1 id
+grammar), and group children share the root store, so the bare surface id must
+be qualified or two plugins collide. The separator is `#`, which `mangleId`
+can never emit: its alphabet is `[A-Za-z0-9_.@-]` plus `~` and two hex
+digits. A dot would not be injective — plugin `x` with surface `skill` would
+collide with plugin `x.skill` — and any character in the safe alphabet has the
+same problem. The `anyplugin.` prefix on children matters twice: it keeps them
+inside the namespace this layer owns, and `reconcile` ignores top-level
+non-group entries there (a child id is never mistaken for a managed group).
 
 `reconcile` touches only top-level **group** entries whose id starts with
 `anyplugin.`; every other entry is left alone. It compares the loader's stored
 options with the desired ones using deep structural equality
 (`isDeepStrictEqual`); there is no normalization, and the loader's key sorting
 does not affect the comparison. A second call with the same desired set
-therefore writes nothing: `created`, `updated`, `removed` and `failed` are
-empty and the ids are reported as `kept`. It is safe to run on every boot,
-after every install, and on file watch events.
+therefore writes nothing: `created`, `updated` and `removed` are empty and the
+ids are reported as `kept`. A converged set also reports no `failed`; a
+half-applied group is re-verified on the second call, still writes nothing, and
+reports the same `failed` entry — "kept" is a verified no-op, not a claim that
+the group is healthy. It is safe to run on every boot, after every install, and
+on file watch events.
 
 Three substrate obligations are part of the result, not hidden (S1). After each
 apply, the group and every child fiber must be active; otherwise the id is
 reported in `failed` (with the child id) and removed from
 `created`/`updated`/`kept` — group entries are not atomic, so "applied" has to
-be checked rather than assumed. A desired child id that is already resolvable
-outside the group — or a group id held by a non-group entry — is refused before
-apply, because `EntryGroup.create` reuses the store slot (`??=`) and would
-reparent and later dispose someone else's fiber. Removal captures the group and subtree fibers before `loader.remove`,
+be checked rather than assumed. A desired child whose existing entry is
+parented somewhere other than the group it would be applied to — or a group id
+held by a non-group entry — is refused before apply, including when the options
+already match, so a `kept` result cannot launder an adoption. The parent is
+read from the store, not inferred from ids: two groups can both name the same
+child, and `EntryGroup.create` would reuse the slot (`??=`), reparent the
+other group's entry and later dispose its fiber. Removal captures the group and subtree fibers before `loader.remove`,
 then waits for them to settle at state 4; state 5 is unloading, not done. The
 same wait applies to children an `update` drops: `EntryGroup.update` removes
 them without awaiting their disposers, and `loader.await()` no longer sees
