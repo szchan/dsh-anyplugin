@@ -22,8 +22,9 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D8. **Do not relitigate these in code review or in a PR without a new decision entry.** |
-| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S4) and what a spike must prove. |
+| `docs/DECISIONS.md` | Ratified decisions D1–D12. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
+| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S5) and what a spike must prove. |
 | `docs/ARCHITECTURE.md` §13 | Open questions. If your work answers one, move it to a decision. |
 
 ## 3. Non-negotiables
@@ -73,9 +74,11 @@ AGENTS.md              this file
 docs/                  design and decisions (all prose docs live here)
   ARCHITECTURE.md      the design
   DECISIONS.md         ratified decision log
+  TODO.md              ordered burn-down list (outcomes, not intentions)
+  CONFORMANCE.md       the differential rig
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
   dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
-spikes/                throwaway experiments; each answers one question (S1–S4)
+spikes/                throwaway experiments; each answers one question (S1–S5)
 fixtures/              foreign-plugin fixtures used by the conformance rig
 scripts/               repo tooling that is not a package
 ```
@@ -97,11 +100,15 @@ npm test                          # node --test over packages/ and spikes' asser
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.
 
+A change that closes a line in `docs/TODO.md` deletes the line in the same
+commit that moves the coverage row. A list that only grows is a diary.
+
 ## 6. Probing the installed harness
 
-The reference installation lives at `$DSH_INSTALL_DIR` (Desktop app, asar).
-Reading it needs DSH's own Node, because the app archive is not a real
-directory to ordinary tools:
+The reference installation lives at `$DSH_INSTALL_DIR`. On this machine the
+Desktop bundle is **extracted**, not archived, so ordinary `node` can import the
+sibling `@deepseek-ai/*` packages directly (D9). On a truly archived (asar)
+install, read it with DSH's own Node instead:
 
 ```bash
 ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" -e \
