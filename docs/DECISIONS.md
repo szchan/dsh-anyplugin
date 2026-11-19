@@ -1115,3 +1115,92 @@ These rules are the surface's contract, not preferences:
 - A grant is one artifact's manifest at one scope. It does not cover data bytes,
   `matcher`, `timeout`, environment, the interpreter on `PATH`, or files read at
   run time (D25).
+
+## D28 — Classic hooks fan out; the kernel owns the continuation rule
+
+**Status:** ratified 2026-11-19 (ticket #25, spike S12).
+
+Measured against `claude-code@2.1.322`, not inferred: a plugin with two hooks
+on the same event, the first exiting 2 (deny) and the second writing a marker —
+**the second still ran**. The same held for `PostToolUse` and `Stop`. The
+upstream client dispatches matching hooks concurrently, so marker arrival order
+varies; what is stable is that every matching hook runs. A decision therefore
+does not stop its siblings (this is the rule D19 stated for classic hooks, now
+measured rather than asserted).
+
+Our encoding:
+
+- `runChain` has two continuation modes. `first-decision` is the mod front-end
+  default (a mod that returns a decision ends its chain). **`fan-out`** runs
+  every matching registration, records every trace step, and returns the
+  collected decisions. `classicHookRegistration` declares `fan-out`, so a
+  caller cannot register classic hooks and silently get `first-decision`.
+- We run handlers sequentially in registration order. That is a deliberate
+  divergence for a deterministic trace; we do **not** claim the upstream
+  concurrent interleaving.
+- Aggregation belongs to the front-end, because only it knows the host channel:
+  `PreToolUse` denies if any handler denies (reason = the first denying
+  handler's text, by order) and keeps every `additionalContext`;
+  `PostToolUse` appends every context and treats a denial as feedback, never as
+  a chain stop; lifecycle events report decisions without skipping siblings.
+- A handler that throws or exceeds its budget is skipped in the trace and does
+  not silence the rest. Timeouts are per handler, never per chain.
+
+**Consequences:**
+
+- Any future consumer of the kernel picks a continuation mode explicitly; the
+  disagreement case (registrations declaring different modes with no option)
+  is an error, not a guess.
+- The upstream concurrency is a declared divergence, recorded in
+  `ARCHITECTURE.md` §7.2/§10. If a plugin depends on hook ordering between
+  siblings, we cannot reproduce it.
+- Evidence: `spikes/s12-hook-fanout` (local-only, key-gated),
+  `fixtures/claude-hooks-fanout`, and the kernel-on-path tests.
+
+## D29 — Output styles are `planned`: the agent-scoped prompt seam is reachable
+
+**Status:** ratified 2026-11-19 (ticket #26, spike S11).
+
+Earlier in the same ticket the project recorded output styles as `unsupported`
+on the claim that DSH had no seam. That claim was **wrong** and is withdrawn.
+What is true:
+
+- There is no plugin-*keyed* prompt layer, but there is an **agent-scoped** one:
+  a section registered through an agent's `ctx.systemPrompt.section()` belongs
+  to that agent and unwinds with it. A plugin can reach that scope in four
+  proved ways: `agentLoop.createAgent(ownerCtx, { setup(agentCtx) })` for an
+  agent it creates; an `agent/created` listener using `payload.agent.ctx`
+  (filtered by id — the event carries no plugin id); a command handler using
+  `invocation.agent.ctx` for the agent that invoked it; or `dsh-persona` /
+  agent-preset mounting on the agent scope.
+- `complete: true` makes the style body the sole prompt section byte for byte;
+  without it the section appends. A setup section survives compaction.
+- A direct `section()` from a Loader entry's own `apply(ctx)` lands in the root
+  layer and reaches every agent. That is the one form we must not use.
+
+So each `output-styles/*.md` is one `planned` row, and `manifest:outputStyles`
+is a `planned` row. Four gaps keep it from being carried today:
+
+1. **Provenance.** `agent/created` carries the agent but no plugin id; an
+   at-start contribution needs an id filter or a plugin-created agent.
+2. **Activation.** `/<plugin>:<name>` needs D10's additive command-alias seam;
+   `COMMAND_NAME` rejects `:`, and no non-colon alias mapping exists — an alias
+   would be new additive work, not an existing equivalent.
+3. **Oracle.** `claude plugin details` at 2.1.322 does not inventory output
+   styles, so a carry fixture must compare a dumped composed prompt rather than
+   a golden component list.
+4. **Composition.** `keep-coding-instructions: true` retains Claude's built-in
+   coding instructions, which a `complete` section cannot express;
+   `force-for-plugin` is session-wide, so applying a style to the whole session
+   is an explicit user choice, never an automatic global injection.
+
+**Consequences:**
+
+- `unsupported` is reserved for a style that cannot be represented even per
+  agent; none is. No fixture is added until the carry exists; the coverage
+  matrix stays at 16 declared / 15 matched / 0 missing / 1 refused, and no row
+  moves until a dumped prompt shows the style text.
+- The upstream ask is D10's command alias, not a new prompt-seam proposal.
+- Evidence: `spikes/s11-prompt-scope` (18 checks, in CI) dumping
+  `options.messages[0]` for each path, including the exact `complete` prompt
+  and sibling isolation.
