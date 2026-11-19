@@ -46,6 +46,14 @@ export {
   type HookArtifact,
 } from './hash.ts'
 export { classify, pluginIdentity, type ArtifactRow } from './classify.ts'
-export { authorize, type Refusal, type RefusalCode, type TrustDecision } from './authorize.ts'
+export {
+  authorize,
+  resolveGrant,
+  type GrantResolution,
+  type Refusal,
+  type RefusalCode,
+  type ScopedRecord,
+  type TrustDecision,
+} from './authorize.ts'
 export { gate, hookEntryName, type Gated } from './gate.ts'
 export { GrantTargetError, grantFor, revokeFor } from './grant-target.ts'

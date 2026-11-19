@@ -63,6 +63,12 @@ export interface ReportComponent {
   /** True when the emitter placed the component in the entry; false when it skipped it. */
   carried: boolean
   /**
+   * The artifact hash the grant pins, when trust allowed an exec artifact and
+   * the emitter carried it. This is the hash a human consented to; the report
+   * would otherwise show "emitted" without the value the gate checked.
+   */
+  grantedHash?: string
+  /**
    * Set when the component was carried by the IR but withheld by trust, e.g.
    * `exec` for a hook with no matching grant. Distinct from `carried: false`
    * alone, which also covers "no seam". D25.
@@ -135,11 +141,20 @@ export function buildTransplantReport(
   const refusedTargets = new Map(
     gated.decision.refused.map((refusal) => [`hooks/${refusal.target.slice('hook:'.length)}`, refusal.capability]),
   )
+  const allowedTargets = new Set(gated.decision.allowed)
+  const grantedHashes = new Map<string, string>()
+  for (const hook of gated.ir.hooks) {
+    const target = `hook:${hook.event}#${hook.index}`
+    if (hook.artifactHash !== undefined && allowedTargets.has(target)) {
+      grantedHashes.set(target, hook.artifactHash)
+    }
+  }
   const faces = facesByName(gated.ir)
 
   const components: ReportComponent[] = summary.entries.map((entry) => {
     const key = identityKey(entry.surface, entry.name)
     const refused = refusedTargets.get(`${entry.surface}/${entry.name}`)
+    const grantedHash = entry.surface === 'hooks' ? grantedHashes.get(`hook:${entry.name}`) : undefined
     return {
       surface: entry.surface,
       name: entry.name,
@@ -152,6 +167,7 @@ export function buildTransplantReport(
       carried:
         considered.has(`${entry.surface}/${entry.name}`) &&
         !skippedEntries.has(`${entry.surface}/${entry.name}`),
+      ...(grantedHash === undefined ? {} : { grantedHash }),
       ...(refused === undefined ? {} : { refused }),
     }
   })
@@ -189,6 +205,7 @@ export function formatTransplantReport(report: TransplantReport): string {
     const carry = component.refused === undefined ? (component.carried ? 'emitted' : 'skipped') : `refused:${component.refused}`
     lines.push(`${component.surface}/${component.name}  class=${component.class}  carry=${carry}`)
     lines.push(`  reason: ${component.reason}`)
+    if (component.grantedHash !== undefined) lines.push(`  grant: ${component.grantedHash}`)
     for (const face of component.faces) {
       lines.push(`  face ${face.face}=${face.class}  reason: ${face.reason}`)
     }
