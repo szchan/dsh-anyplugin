@@ -608,12 +608,11 @@ before install; the trust prompt must show `scan.dynamic` and `SCAN_CAVEAT`
 alongside them.
 
 **The limit is part of the claim.** A lexical scan cannot see a capability that
-leaves no literal site. At least these are invisible: a `$` alias binding
-(`const fs = $.fs`), an imported helper that calls the API for the mod,
-`eval`/`new Function`, and any syntax the scanner does not recognize. The
-scanner exports those categories as one fixed `SCAN_CAVEAT` sentence; a trust
-prompt that shows only `scan.dynamic` would still imply the list is exhaustive,
-so it must display the caveat too.
+leaves no literal site. The scanner exports a fixed, two-sentence `SCAN_CAVEAT`
+naming the invisible categories: aliases (`const fs = $.fs`), imported helpers,
+`eval`/`new Function`, and unrecognised syntax. A trust prompt that shows only
+`scan.dynamic` would still imply the list is exhaustive, so it must display the
+caveat too.
 
 **Why:** a mod body is arbitrary JavaScript, and the pre-install review is only
 worth anything if the reviewer sees both the capabilities that were found and

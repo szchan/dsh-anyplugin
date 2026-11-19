@@ -185,8 +185,9 @@ test('carries the file it was asked to scan and states the scan limits', () => {
   assert.deepEqual(result.calls, [])
   assert.deepEqual(result.dynamic, [])
   assert.deepEqual(capabilityList(result), ['hooks:', 'calls:'])
-  assert.match(SCAN_CAVEAT, /aliases or imported helpers/)
+  assert.match(SCAN_CAVEAT, /Aliases, imported helpers/)
   assert.match(SCAN_CAVEAT, /eval\/new Function/)
+  assert.match(SCAN_CAVEAT, /unrecognised syntax/)
 })
 
 test('validates its inputs', () => {

@@ -13,18 +13,18 @@
  * namespace and method are direct identifiers. Every capability-shaped site it
  * can see but cannot prove is reported under `dynamic` with a reason instead of
  * being dropped. Some capabilities leave no literal site at all (aliases,
- * imported helpers, `eval`/`new Function`, unrecognized syntax); those are
+ * imported helpers, `eval`/`new Function`, unrecognised syntax); those are
  * outside a lexical scan and are named in `SCAN_CAVEAT`. The limits are part of
  * D21.
  */
 
 /**
- * The limits of every scan, as one stable sentence. `capabilityList` is a
- * literal list, not a completeness claim: a trust prompt must display this
- * caveat and `scan.dynamic`, or a caller could read the list as exhaustive.
+ * The limits of every scan, as fixed text. `capabilityList` is a literal list,
+ * not a completeness claim: a trust prompt must display this caveat and
+ * `scan.dynamic`, or a caller could read the list as exhaustive.
  */
 export const SCAN_CAVEAT =
-  'The scan proves only literal on() and $.namespace.method() sites. Calls through aliases or imported helpers, eval/new Function, and syntax the scanner does not recognize are invisible.'
+  'The scan proves only literal on() and $.namespace.method() sites. Aliases, imported helpers, eval/new Function, and unrecognised syntax are invisible to it.'
 
 export interface ModEvent {
   /** The literal event name, e.g. `tool.call`. */
@@ -178,8 +178,10 @@ function isMemberName(tokens: Token[], index: number): boolean {
 /**
  * Index of the `(` that opens an `on` call, or -1 when this `on` is not a call.
  * Accepts the authored call syntax a mod may use without a transform:
- * `on(...)`, `on?.(...)`, `on<T>(...)` and `on?.<T>(...)`. The scanner reads
- * text, so a generic argument list is skipped lexically, never typechecked.
+ * `on(...)`, `on?.(...)`, `on<T>(...)` and `on?.<T>(...)`. Only simple type
+ * arguments are recognized; `on<{ a: string }>(...)` and `on<T = string>(...)`
+ * fall under `SCAN_CAVEAT`. The scanner reads text, so a generic argument list
+ * is skipped lexically, never typechecked.
  */
 function onCallOpen(tokens: Token[], index: number): number {
   const previous = tokens[index - 1]
