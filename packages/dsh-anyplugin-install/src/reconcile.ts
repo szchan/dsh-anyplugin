@@ -5,7 +5,7 @@
  * outside `anyplugin.`, and a second call with the same desired set performs no
  * writes (`kept` names the entries it verified).
  *
- * Two substrate obligations are handled here rather than pushed to callers:
+ * Three substrate obligations are handled here rather than pushed to callers:
  *
  * - **Atomicity is not provided by group entries.** `EntryGroup.update()`
  *   catches each child's error, so a group can end up half-applied. After
@@ -17,6 +17,15 @@
  *   wait until they settle disposed (state 4), recording whether state 5
  *   (unloading) was observed on the way. `fiber.dispose()` is not reliably
  *   awaitable — it returns void once disposal is already in flight (S1).
+ *   The same wait applies to children *dropped by an update*: `EntryGroup.update`
+ *   removes them without awaiting their disposers, and `loader.await()` no
+ *   longer sees them, so an update that changes the child set would otherwise
+ *   return while the old subtree is still unloading.
+ * - **Ids are identity, not ownership.** `EntryGroup.create` reuses
+ *   `store[id] ??=`; applying a child id that belongs to someone else would
+ *   reparent (and later dispose) their entry. Child ids are namespaced under
+ *   `anyplugin.`, and a desired child id that is already resolvable outside the
+ *   group is refused before apply.
  */
 import { isDeepStrictEqual } from 'node:util'
 
@@ -87,7 +96,8 @@ function describeError(error: unknown): string {
 }
 
 /**
- * Wait for fibers captured before a `remove()` to reach the disposed state.
+ * Wait for fibers captured before a `remove()`/`update()` to reach the disposed
+ * state.
  *
  * State 5 is the unloading state; it is not the end state. The async disposer
  * chains to `_unload()`, which flips the fiber to 4 (uid null) when every
@@ -117,25 +127,63 @@ export async function waitForDisposal(
   return { settled: pending.size === 0, sawUnloading, states: unique.map((fiber) => fiber.state) }
 }
 
-function captureFibers(
+/** Every entry id in a (possibly nested) options tree, excluding the root id. */
+function collectIds(options: EntryOptions, out = new Set<string>()): Set<string> {
+  const config = options.config
+  if (Array.isArray(config)) {
+    for (const child of config as EntryOptions[]) {
+      if (out.has(child.id)) continue
+      out.add(child.id)
+      collectIds(child, out)
+    }
+  }
+  return out
+}
+
+/** Capture the live fibers of a subtree by id, before a mutation drops them. */
+function fibersById(
   loader: LoaderLike,
   options: EntryOptions,
-  seen: Set<string>,
-  out: FiberLike[],
-): void {
-  if (seen.has(options.id)) return
+  seen = new Set<string>(),
+  out = new Map<string, FiberLike>(),
+): Map<string, FiberLike> {
+  if (seen.has(options.id)) return out
   seen.add(options.id)
   let entry: LoaderEntryLike
   try {
     entry = loader.resolve(options.id)
   } catch {
-    return
+    return out
   }
-  if (entry.fiber && !out.includes(entry.fiber)) out.push(entry.fiber)
-  const config = entry.options?.config
+  if (entry.fiber && !out.has(options.id)) out.set(options.id, entry.fiber)
+  const config = entry.options?.config ?? options.config
   if (Array.isArray(config)) {
-    for (const child of config as EntryOptions[]) captureFibers(loader, child, seen, out)
+    for (const child of config as EntryOptions[]) fibersById(loader, child, seen, out)
   }
+  return out
+}
+
+/**
+ * Refuse to apply a child id that another entry already owns. `EntryGroup.create`
+ * would reuse the store entry (`??=`) and reparent it, silently adopting a
+ * foreign plugin's fiber; a half-applied group would then take it down.
+ */
+function foreignChild(
+  loader: LoaderLike,
+  wanted: EntryOptions,
+  actual: LoaderEntryLike | undefined,
+): { child: string; reason: string } | undefined {
+  const own = actual ? collectIds(actual.options) : new Set<string>()
+  for (const childId of collectIds(wanted)) {
+    if (own.has(childId)) continue
+    try {
+      loader.resolve(childId)
+      return { child: childId, reason: 'child id is already owned by another entry' }
+    } catch {
+      // Not present: free to create.
+    }
+  }
+  return undefined
 }
 
 function verifyChildren(
@@ -196,11 +244,16 @@ export async function reconcile(
   for (const entry of loader.entries()) {
     if (entry.parent !== loader.root) continue
     const id = entry.options?.id
-    if (typeof id === 'string' && id.startsWith(ENTRY_PREFIX)) actualById.set(id, entry)
+    // A child id also starts with `anyplugin.` now; only group entries are ours
+    // to update or remove. Anything else at top level is left untouched.
+    if (typeof id === 'string' && id.startsWith(ENTRY_PREFIX) && entry.options.group === true) {
+      actualById.set(id, entry)
+    }
   }
 
   const result: ReconcileResult = { created: [], updated: [], removed: [], kept: [], failed: [] }
   const desiredIds = [...desiredById.keys()].sort()
+  const timeoutMs = options.disposeTimeoutMs ?? 2000
 
   for (const id of desiredIds) {
     const wanted = desiredById.get(id) as EntryOptions
@@ -209,10 +262,41 @@ export async function reconcile(
       result.kept.push(id)
       continue
     }
+    if (!actual) {
+      // The group id itself is identity too: creating over a foreign entry
+      // would reparent it exactly like a child collision. A top-level
+      // `anyplugin.` entry that is not a group is never ours to overwrite.
+      try {
+        loader.resolve(id)
+        result.failed.push({ id, reason: 'group id is already owned by another entry' })
+        continue
+      } catch {
+        // Free to create.
+      }
+    }
+    const foreign = foreignChild(loader, wanted, actual)
+    if (foreign) {
+      result.failed.push({ id, ...foreign })
+      continue
+    }
     try {
       if (actual) {
+        const before = fibersById(loader, actual.options)
+        const wantedIds = collectIds(wanted)
+        const droppedIds = [...before.keys()].filter((childId) => childId !== id && !wantedIds.has(childId))
         await loader.update(id, wanted)
         result.updated.push(id)
+        if (droppedIds.length > 0) {
+          const droppedFibers = droppedIds.map((childId) => before.get(childId) as FiberLike)
+          const disposal = await waitForDisposal(droppedFibers, timeoutMs)
+          if (!disposal.settled) {
+            result.failed.push({
+              id,
+              child: droppedIds[0],
+              reason: `dropped child did not settle disposed (states: ${disposal.states.join(', ')})`,
+            })
+          }
+        }
       } else {
         await loader.create(wanted)
         result.created.push(id)
@@ -223,12 +307,10 @@ export async function reconcile(
   }
   await loader.await()
 
-  const timeoutMs = options.disposeTimeoutMs ?? 2000
   const removedIds = [...actualById.keys()].filter((id) => !desiredById.has(id)).sort()
   for (const id of removedIds) {
     const entry = actualById.get(id) as LoaderEntryLike
-    const fibers: FiberLike[] = []
-    captureFibers(loader, entry.options, new Set(), fibers)
+    const fibers = [...fibersById(loader, entry.options).values()]
     try {
       loader.remove(id)
     } catch (error) {

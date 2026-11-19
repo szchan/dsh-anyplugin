@@ -32,7 +32,7 @@ const lock = (...plugins) => ({ schema: 'dsh-anyplugin/installs@1', plugins })
 const enabled = (id, scope = 'user') => ({ [scope]: { plugins: { [id]: { enabled: true, grants: [] } } } })
 const scopeOf = (id) => mangleId(id)
 
-test('one group entry per enabled plugin, with a dialect-qualified id', () => {
+test('one group per enabled plugin with an emittable surface, with a dialect-qualified id', () => {
   const entries = compileEntries(lock(record('skills-only', 'claude-skills-only')), {
     materializers,
     enablements: enabled('claude-code:skills-only'),
@@ -43,7 +43,7 @@ test('one group entry per enabled plugin, with a dialect-qualified id', () => {
   assert.equal(entries[0].group, true)
   assert.deepEqual(
     entries[0].config.map((child) => child.id),
-    [`${scopeOf('claude-code:skills-only')}.skill`],
+    [`anyplugin.${scopeOf('claude-code:skills-only')}.skill`],
   )
 })
 
@@ -60,7 +60,7 @@ test('children are exactly what emitPlugin produced, with ids qualified', () => 
   assert.deepEqual(compiled, {
     ...emitted.entry,
     id: `anyplugin.${scope}`,
-    config: emitted.entry.config.map((child) => ({ ...child, id: `${scope}.${child.id}` })),
+    config: emitted.entry.config.map((child) => ({ ...child, id: `anyplugin.${scope}.${child.id}` })),
   })
 })
 

@@ -1,18 +1,62 @@
-// The real-loader half of the reconcile proof: a group entry with a child
-// materializer is created, kept and disposed against the *installed* cordis
-// 4.1.0 / cordis-plugin-loader 1.1.0, not the fake. Skipped when no harness is
-// present (CI without DSH); the fake-loader test covers the same contract there.
+// The real-loader half of the reconcile proof: group entries and their children
+// are created, kept and disposed against the *installed* cordis 4.1.0 /
+// cordis-plugin-loader 1.1.0, not the fake. Skipped when no harness is present
+// (CI without DSH); the fake-loader test covers the same contract there.
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import { compileEntries, reconcile } from '../src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
-const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
+
+// TEMPORARY harness gate until PR #8 (issue #7) lands the shared resolver.
+// Order: DSH_HARNESS_DIR → DSH_INSTALL_DIR → any .harness/<version>, and in CI
+// an unresolved harness is a failure rather than a skip. When #8 merges this
+// block is replaced by `resolveHarness()`/`harnessSkipReason()`; do not grow it.
+const HARNESS_PACKAGES = ['cordis', 'cordis-plugin-loader', 'dsh-skill']
+function isHarnessDir(dir) {
+  return HARNESS_PACKAGES.every((name) => existsSync(join(dir, name, 'package.json')))
+}
+function locateHarness(root) {
+  for (const candidate of [
+    join(root, 'node_modules', '@deepseek-ai'),
+    join(root, '@deepseek-ai'),
+    root,
+    dirname(root),
+  ]) {
+    if (isHarnessDir(candidate)) return candidate
+  }
+}
+function resolveHarnessTemporarily() {
+  const explicit = process.env.DSH_HARNESS_DIR?.trim()
+  if (explicit) {
+    const found = locateHarness(explicit)
+    if (!found) throw new Error(`DSH_HARNESS_DIR=${explicit} does not contain a DSH harness`)
+    return found
+  }
+  const install = process.env.DSH_INSTALL_DIR?.trim()
+  if (install) {
+    const found = locateHarness(install)
+    if (!found) throw new Error(`DSH_INSTALL_DIR=${install} does not contain a DSH harness`)
+    return found
+  }
+  const fetched = join(repoRoot, '.harness')
+  if (existsSync(fetched)) {
+    for (const version of readdirSync(fetched).sort()) {
+      const found = locateHarness(join(fetched, version))
+      if (found) return found
+    }
+  }
+  if (process.env.CI === 'true' || process.env.CI === '1') {
+    throw new Error('CI requires a resolved harness; set DSH_HARNESS_DIR or DSH_INSTALL_DIR')
+  }
+  return undefined
+}
+const installedDir = resolveHarnessTemporarily()
 const workspace = mkdtempSync(join(tmpdir(), 'anyplugin-dsh-'))
 const materializerUrl = pathToFileURL(
   join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts'),
@@ -31,10 +75,10 @@ const installs = {
     },
   ],
 }
-const desired = compileEntries(installs, {
-  materializers: { skill: materializerUrl },
-  enablements: { user: { plugins: { 'claude-code:skills-only': { enabled: true, grants: [] } } } },
-})
+const enablements = {
+  user: { plugins: { 'claude-code:skills-only': { enabled: true, grants: [] } } },
+}
+const desired = compileEntries(installs, { materializers: { skill: materializerUrl }, enablements })
 const GROUP_ID = desired[0].id
 const CHILD_ID = desired[0].config[0].id
 
@@ -48,47 +92,176 @@ async function until(predicate, label) {
   throw new Error(`timed out waiting for ${label}`)
 }
 
+function loaderBaseUrl(harnessDir) {
+  const product = join(harnessDir, 'dsh')
+  const anchor = existsSync(join(product, 'package.json')) ? product : join(harnessDir, '..', '..')
+  return pathToFileURL(anchor + '/').href
+}
+
+async function withLoader(run) {
+  const load = (specifier) => import(pathToFileURL(join(installedDir, specifier)).href)
+  const { Context } = await load('cordis/lib/index.js')
+  const Loader = (await load('cordis-plugin-loader/lib/index.js')).default
+  const SkillRegistry = (await load('dsh-skill/lib/index.js')).default
+
+  const ctx = new Context()
+  const loaderFiber = ctx.plugin(Loader, { baseUrl: loaderBaseUrl(installedDir) })
+  ctx.plugin(SkillRegistry, {})
+  await until(() => Boolean(ctx.loader) && Boolean(ctx.skills), 'loader and skills services')
+  try {
+    await run(ctx)
+  } finally {
+    loaderFiber.dispose()
+  }
+}
+
+const gate = installedDir ? false : 'no DSH harness resolved (set DSH_HARNESS_DIR or DSH_INSTALL_DIR)'
+const when = { skip: gate }
+
 test(
   'reconcile creates, keeps, and only reports removed after the subtree settles disposed',
-  { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
-  async () => {
-    const load = (specifier) => import(pathToFileURL(join(installedDir, specifier)).href)
-    const { Context } = await load('cordis/lib/index.js')
-    const Loader = (await load('cordis-plugin-loader/lib/index.js')).default
-    const SkillRegistry = (await load('dsh-skill/lib/index.js')).default
+  when,
+  () => withLoader(async (ctx) => {
+    const first = await reconcile(ctx.loader, desired)
+    assert.deepEqual(first, { created: [GROUP_ID], updated: [], removed: [], kept: [], failed: [] })
+    assert.equal(ctx.loader.resolve(GROUP_ID).fiber.state, 2, 'group is active')
+    assert.equal(ctx.loader.resolve(CHILD_ID).fiber.state, 2, 'skill materializer applied')
 
-    const ctx = new Context()
-    const loaderFiber = ctx.plugin(Loader, { baseUrl: pathToFileURL(join(installedDir, 'dsh') + '/').href })
-    ctx.plugin(SkillRegistry, {})
-    await until(() => Boolean(ctx.loader) && Boolean(ctx.skills), 'loader and skills services')
+    const second = await reconcile(ctx.loader, desired)
+    assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [GROUP_ID], failed: [] })
 
-    try {
-      const first = await reconcile(ctx.loader, desired)
-      assert.deepEqual(first, { created: [GROUP_ID], updated: [], removed: [], kept: [], failed: [] })
-      assert.equal(ctx.loader.resolve(GROUP_ID).fiber.state, 2, 'group is active')
-      assert.equal(ctx.loader.resolve(CHILD_ID).fiber.state, 2, 'skill materializer applied')
-
-      const second = await reconcile(ctx.loader, desired)
-      assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [GROUP_ID], failed: [] })
-
-      const groupFiber = ctx.loader.resolve(GROUP_ID).fiber
-      const childFiber = ctx.loader.resolve(CHILD_ID).fiber
-      let unloading
-      const realRemove = ctx.loader.remove.bind(ctx.loader)
-      ctx.loader.remove = (id) => {
-        realRemove(id)
-        unloading = groupFiber.state
-      }
-
-      const third = await reconcile(ctx.loader, [])
-      assert.deepEqual(third, { created: [], updated: [], removed: [GROUP_ID], kept: [], failed: [] })
-      assert.equal(unloading, 5, 'teardown observed at fiber.state === 5 (unloading)')
-      assert.equal(groupFiber.state, 4, 'group settled disposed')
-      assert.equal(childFiber.state, 4, 'child settled disposed')
-      assert.throws(() => ctx.loader.resolve(GROUP_ID), 'group is gone from the store')
-      assert.throws(() => ctx.loader.resolve(CHILD_ID), 'child is gone from the store')
-    } finally {
-      loaderFiber.dispose()
+    const groupFiber = ctx.loader.resolve(GROUP_ID).fiber
+    const childFiber = ctx.loader.resolve(CHILD_ID).fiber
+    let unloading
+    const realRemove = ctx.loader.remove.bind(ctx.loader)
+    ctx.loader.remove = (id) => {
+      realRemove(id)
+      unloading = groupFiber.state
     }
-  },
+
+    const third = await reconcile(ctx.loader, [])
+    assert.deepEqual(third, { created: [], updated: [], removed: [GROUP_ID], kept: [], failed: [] })
+    assert.equal(unloading, 5, 'teardown observed at fiber.state === 5 (unloading)')
+    assert.equal(groupFiber.state, 4, 'group settled disposed')
+    assert.equal(childFiber.state, 4, 'child settled disposed')
+    assert.throws(() => ctx.loader.resolve(GROUP_ID), 'group is gone from the store')
+    assert.throws(() => ctx.loader.resolve(CHILD_ID), 'child is gone from the store')
+  }),
+)
+
+test(
+  'a throwing child is caught by the loader and reported as failed, not created',
+  when,
+  () => withLoader(async (ctx) => {
+    const dir = mkdtempSync(join(tmpdir(), 'anyplugin-throw-'))
+    const throwing = join(dir, 'throwing-materializer.mjs')
+    writeFileSync(
+      throwing,
+      [
+        "export const name = 'anyplugin-throwing-materializer'",
+        "export const inject = ['skills']",
+        'export function apply() {',
+        "  throw new Error('materializer exploded')",
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const wanted = compileEntries(installs, {
+      materializers: { skill: pathToFileURL(throwing).href },
+      enablements,
+    })
+
+    const result = await reconcile(ctx.loader, wanted)
+
+    assert.deepEqual(result.created, [], 'the group is not reported applied')
+    assert.equal(result.failed.length, 1)
+    assert.equal(result.failed[0].id, GROUP_ID)
+    assert.equal(result.failed[0].child, CHILD_ID)
+    assert.match(result.failed[0].reason, /expected active \(2\)/)
+    assert.equal(ctx.loader.resolve(GROUP_ID).fiber.state, 2, 'the group itself is active')
+    assert.notEqual(ctx.loader.resolve(CHILD_ID).fiber.state, 2, 'the throwing child is not active')
+  }),
+)
+
+// A child materializer whose disposer takes a controllable amount of time. It
+// exercises the two paths `loader.await()` cannot see: a child dropped by an
+// update, and a disposer slower than the reconcile deadline.
+function disposerMaterializer({ delay = 150 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-disposer-'))
+  const file = join(dir, 'disposer-materializer.mjs')
+  writeFileSync(
+    file,
+    [
+      "export const name = 'anyplugin-test-disposer'",
+      'export function apply(ctx, config) {',
+      '  ctx.effect(() => () => new Promise((resolve) => setTimeout(resolve, config.delay ?? 0)))',
+      '}',
+      '',
+    ].join('\n'),
+  )
+  return { url: pathToFileURL(file).href, delay }
+}
+
+test(
+  'an update waits for a dropped child to finish disposing (real loader)',
+  when,
+  () => withLoader(async (ctx) => {
+    const materializer = disposerMaterializer({ delay: 150 })
+    const group = (children) => ({
+      id: 'anyplugin.dispose.group',
+      name: '@deepseek-ai/cordis-plugin-group',
+      group: true,
+      config: children,
+    })
+    const child = (surface) => ({
+      id: `anyplugin.dispose.${surface}`,
+      name: materializer.url,
+      config: { delay: materializer.delay },
+    })
+    await reconcile(ctx.loader, [group([child('a'), child('b')])])
+    const dropped = ctx.loader.resolve('anyplugin.dispose.b').fiber
+    assert.equal(dropped.state, 2)
+
+    const started = performance.now()
+    const result = await reconcile(ctx.loader, [group([child('a')])], { disposeTimeoutMs: 1000 })
+    const elapsed = performance.now() - started
+
+    assert.deepEqual(result.failed, [])
+    assert.deepEqual(result.updated, ['anyplugin.dispose.group'])
+    assert.equal(dropped.state, 4, 'the dropped fiber settled before reconcile returned')
+    assert.ok(elapsed >= 120, `reconcile waited for the 150ms disposer (took ${elapsed.toFixed(1)}ms)`)
+  }),
+)
+
+test(
+  'a disposer slower than the deadline is reported, then settles (real loader)',
+  when,
+  () => withLoader(async (ctx) => {
+    const materializer = disposerMaterializer({ delay: 300 })
+    const id = 'anyplugin.slow-dispose.group'
+    const childId = 'anyplugin.slow-dispose.child'
+    await reconcile(ctx.loader, [
+      {
+        id,
+        name: '@deepseek-ai/cordis-plugin-group',
+        group: true,
+        config: [{ id: childId, name: materializer.url, config: { delay: materializer.delay } }],
+      },
+    ])
+    const childFiber = ctx.loader.resolve(childId).fiber
+
+    const started = performance.now()
+    const result = await reconcile(ctx.loader, [], { disposeTimeoutMs: 50 })
+    const elapsed = performance.now() - started
+
+    assert.deepEqual(result.removed, [])
+    assert.equal(result.failed.length, 1)
+    assert.equal(result.failed[0].id, id)
+    assert.match(result.failed[0].reason, /dispose did not settle/)
+    assert.equal(childFiber.state, 5, 'still unloading when the deadline expired')
+    assert.ok(elapsed >= 45, `reconcile bounded the wait (took ${elapsed.toFixed(1)}ms)`)
+
+    await sleep(350)
+    assert.equal(childFiber.state, 4, 'the disposer did finish after reconcile reported the timeout')
+  }),
 )

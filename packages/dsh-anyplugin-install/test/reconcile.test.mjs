@@ -38,15 +38,19 @@ const GROUP_ID = desiredEntries()[0].id
 const CHILD_ID = desiredEntries()[0].config[0].id
 
 class FakeFiber {
-  constructor() {
+  constructor({ delay = 2, stuck = false, skipUnloading = false } = {}) {
     this.state = 2
+    this.delay = delay
+    this.stuck = stuck
+    this.skipUnloading = skipUnloading
   }
   dispose() {
     if (this.state === 4) return
-    this.state = 5
+    if (!this.skipUnloading) this.state = 5
+    if (this.stuck) return
     setTimeout(() => {
       this.state = 4
-    }, 2)
+    }, this.delay)
   }
 }
 
@@ -55,6 +59,7 @@ class FakeLoader {
     this.root = {}
     this.store = new Map()
     this.quietChild = options.quietChild ?? false
+    this.childFiber = options.childFiber ?? {}
     this.calls = []
   }
   entries() {
@@ -78,13 +83,18 @@ class FakeLoader {
   async update(id, options) {
     this.calls.push(['update', id])
     const entry = this.resolve(id)
-    for (const child of entry.options.config ?? []) this.store.delete(child.id)
+    for (const child of entry.options.config ?? []) {
+      const childEntry = this.store.get(child.id)
+      if (!childEntry) continue
+      childEntry.fiber.dispose()
+      this.store.delete(child.id)
+    }
     entry.options = options
     this.applyChildren(options, entry)
   }
   applyChildren(options, parent) {
     for (const child of options.config ?? []) {
-      const fiber = new FakeFiber()
+      const fiber = new FakeFiber(this.childFiber)
       if (this.quietChild) fiber.state = 0
       this.store.set(child.id, { options: child, fiber, parent })
     }
@@ -191,4 +201,116 @@ test('reconcile refuses ids outside its namespace and duplicates', async () => {
     () => reconcile(loader, [{ id: `${GROUP_ID}`, name: 'x' }, { id: `${GROUP_ID}`, name: 'y' }]),
     /duplicate desired id/,
   )
+})
+
+test('a child id owned by a foreign entry is refused, not adopted', async () => {
+  const loader = new FakeLoader()
+  const foreignFiber = new FakeFiber()
+  loader.store.set(CHILD_ID, {
+    options: { id: CHILD_ID, name: 'foreign-plugin-child' },
+    fiber: foreignFiber,
+    parent: loader.root,
+  })
+
+  const result = await reconcile(loader, desiredEntries())
+
+  assert.deepEqual(result.created, [])
+  assert.deepEqual(result.failed, [
+    { id: GROUP_ID, child: CHILD_ID, reason: 'child id is already owned by another entry' },
+  ])
+  assert.equal(foreignFiber.state, 2, 'the foreign fiber was not disposed or reparented')
+  assert.equal(loader.store.get(CHILD_ID).options.name, 'foreign-plugin-child')
+  assert.deepEqual(loader.calls, [], 'nothing was written before the collision was found')
+})
+
+test('an update waits for children it drops, even with a slow disposer', async () => {
+  const loader = new FakeLoader({ childFiber: { delay: 120 } })
+  const group = (children) => ({ id: 'anyplugin.slow', name: 'group', group: true, config: children })
+  const one = { id: 'anyplugin.slow.one', name: 'child', config: { tag: 'one' } }
+  const two = { id: 'anyplugin.slow.two', name: 'child', config: { tag: 'two' } }
+  await reconcile(loader, [group([one, two])])
+  const droppedFiber = loader.resolve(two.id).fiber
+
+  const started = performance.now()
+  const result = await reconcile(loader, [group([one])], { disposeTimeoutMs: 1000 })
+  const elapsed = performance.now() - started
+
+  assert.deepEqual(result, {
+    created: [],
+    updated: ['anyplugin.slow'],
+    removed: [],
+    kept: [],
+    failed: [],
+  })
+  assert.equal(droppedFiber.state, 4, 'the dropped child settled before reconcile returned')
+  assert.ok(elapsed >= 100, `waited for the 120ms disposer (took ${elapsed.toFixed(1)}ms)`)
+})
+
+test('a stuck disposer is reported as failed, not removed', async () => {
+  const loader = new FakeLoader({ childFiber: { stuck: true } })
+  await reconcile(loader, desiredEntries())
+  const childFiber = loader.resolve(CHILD_ID).fiber
+
+  const result = await reconcile(loader, [], { disposeTimeoutMs: 30 })
+
+  assert.deepEqual(result.removed, [])
+  assert.equal(result.failed.length, 1)
+  assert.equal(result.failed[0].id, GROUP_ID)
+  assert.match(result.failed[0].reason, /dispose did not settle/)
+  assert.equal(childFiber.state, 5, 'the stuck fiber never reached the settled state')
+})
+
+test('a group id owned by a foreign entry is refused, not adopted', async () => {
+  const loader = new FakeLoader()
+  const foreignFiber = new FakeFiber()
+  loader.store.set(GROUP_ID, {
+    options: { id: GROUP_ID, name: 'foreign-plugin' },
+    fiber: foreignFiber,
+    parent: loader.root,
+  })
+
+  const result = await reconcile(loader, desiredEntries())
+
+  assert.deepEqual(result.created, [])
+  assert.deepEqual(result.failed, [{ id: GROUP_ID, reason: 'group id is already owned by another entry' }])
+  assert.equal(loader.store.get(GROUP_ID).options.name, 'foreign-plugin')
+  assert.equal(foreignFiber.state, 2)
+  assert.deepEqual(loader.calls, [])
+})
+
+test('a child id owned by another group under anyplugin. is refused, not adopted', async () => {
+  const loader = new FakeLoader()
+  const otherGroup = { id: 'anyplugin.other', name: 'group', group: true, config: [] }
+  loader.store.set(otherGroup.id, { options: otherGroup, fiber: new FakeFiber(), parent: loader.root })
+  const foreignFiber = new FakeFiber()
+  loader.store.set(CHILD_ID, {
+    options: { id: CHILD_ID, name: 'other-plugins-child' },
+    fiber: foreignFiber,
+    parent: { options: otherGroup },
+  })
+
+  const result = await reconcile(loader, desiredEntries())
+
+  assert.deepEqual(result.failed, [
+    { id: GROUP_ID, child: CHILD_ID, reason: 'child id is already owned by another entry' },
+  ])
+  assert.equal(loader.store.get(CHILD_ID).options.name, 'other-plugins-child')
+  assert.equal(foreignFiber.state, 2)
+})
+
+test('a dropped child that settles without passing 5 does not wait for the timeout', async () => {
+  const loader = new FakeLoader({ childFiber: { delay: 10, skipUnloading: true } })
+  const group = (children) => ({ id: 'anyplugin.direct', name: 'group', group: true, config: children })
+  const one = { id: 'anyplugin.direct.one', name: 'child' }
+  const two = { id: 'anyplugin.direct.two', name: 'child' }
+  await reconcile(loader, [group([one, two])])
+  const droppedFiber = loader.resolve(two.id).fiber
+
+  const started = performance.now()
+  const result = await reconcile(loader, [group([one])], { disposeTimeoutMs: 1000 })
+  const elapsed = performance.now() - started
+
+  assert.deepEqual(result.failed, [])
+  assert.equal(droppedFiber.state, 4)
+  assert.ok(elapsed < 500, `settled without unloading instead of timing out (took ${elapsed.toFixed(1)}ms)`)
 })

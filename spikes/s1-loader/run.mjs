@@ -266,19 +266,26 @@ async function settle() {
     loader.remove('demo3')
     const beforeAwait = globalThis.__S1__.events.filter((e) => e.type === 'dispose').length
 
-    // fiber.dispose() returns a promise for plugin fibers but void for others,
-    // so normalize it and then wait for the state to settle.
-    await Promise.all(fibers.map((fiber) => Promise.resolve(fiber.dispose()).catch(() => {})))
+    // fiber.dispose() returns a promise for plugin fibers but void for others.
+    // Calling it again while unloading is a no-op, so record the shape, then
+    // watch the states: 5 = unloading (transient), 4 = settled (uid === null).
+    const returns = fibers.map((fiber) => {
+      try { return typeof fiber.dispose() } catch { return 'threw' }
+    })
     const deadline = Date.now() + 2000
-    while (Date.now() < deadline && !fibers.every((fiber) => fiber.state === 5)) {
+    let sawUnloading = false
+    while (Date.now() < deadline) {
+      if (fibers.some((fiber) => fiber.state === 5)) sawUnloading = true
+      if (fibers.every((fiber) => fiber.state === 4)) break
       await new Promise((r) => setTimeout(r, 5))
     }
+    const settled = fibers.every((fiber) => fiber.state === 4)
     const afterAwait = globalThis.__S1__.events.filter((e) => e.type === 'dispose').map((e) => e.tag)
 
     record(s, 'remove() alone has not run the disposers synchronously', beforeAwait === 0, { beforeAwait })
-    record(s, 'dispose() is not uniformly awaitable (return value may be void)', true, fibers.map((f) => typeof f.dispose()))
-    record(s, 'awaiting dispose + state 5 completes teardown', afterAwait.includes('teardown'), { afterAwait, states: fibers.map((f) => f.state) })
-    findings.push('loader.remove() returns void and entries() drops the entry immediately, so loader.await() can return before disposers ran; deterministic teardown needs Promise.resolve(fiber.dispose()) plus waiting for fiber.state === 5 (dispose() is void for some fibers)')
+    record(s, 'dispose() is not uniformly awaitable (return value may be void)', true, returns)
+    record(s, 'observing state 5 (unloading) then settling at state 4 finishes teardown', sawUnloading && settled && afterAwait.includes('teardown'), { sawUnloading, settled, afterAwait, states: fibers.map((f) => f.state) })
+    findings.push('loader.remove() returns void and entries() drops the entry immediately, so loader.await() can return before disposers ran; deterministic teardown needs captured fibers, observation of state 5 (unloading) and a wait for state 4 (settled, uid === null) — 5 is not terminal, and dispose() is void for some fibers')
     s.afterAwait = afterAwait
   })
   await sc.run()

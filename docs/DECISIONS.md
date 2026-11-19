@@ -747,10 +747,12 @@ old record.
   unquoted values and non-canonical list forms are rejected with
   `InstallsFileError.reason` and a line. `writeInstalls` validates before
   writing and replaces the file via a same-directory temp file + rename.
-- The writer sorts records and fields, so the audit diff is stable even though
-  the file is generated.
+- The writer emits fields in the fixed schema order and sorts records by
+  identity, so the audit diff is stable even though the file is generated.
 - `grants` live in the scope layers (D2), not here. Enabling a plugin that the
   lock lists but the layers do not mention is inert.
-- Disabled plugins stay in the lock and produce no loader entry: group entries
-  ignore `disabled` (S1), so "inert" is represented by absence. Uninstall means
-  removing the record and reconciling, not writing a disabled flag.
+- Disabled plugins stay in the lock and produce no loader entry. The group's
+  own fiber ignores `disabled`; child entries inherit it (S1). "Inert" is
+  therefore represented by absence, and a UI shows "installed, disabled" by
+  joining the lock with the scope layers. Uninstall means removing the record
+  and reconciling, not writing a disabled flag.

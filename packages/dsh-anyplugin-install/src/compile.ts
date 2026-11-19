@@ -1,7 +1,8 @@
 /**
  * Compile the lock + scope replay into loader entries.
  *
- * One installed plugin → one group entry, with children produced by
+ * One enabled installed plugin with an emittable surface → one group entry,
+ * with children produced by
  * `emitPlugin` (AGENTS.md §3.3: there is no second emitter). Identity is the
  * only thing this layer adds: the group id is dialect-qualified and the
  * emitter's per-surface child ids are made profile-global (see identity.ts).

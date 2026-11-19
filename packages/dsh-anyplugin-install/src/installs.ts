@@ -1,7 +1,7 @@
 /**
  * `installs.yml` — the profile-global installation lock.
  *
- * Format decision D22. The file is machine-written and human-audited, so it is
+ * Format decision D23. The file is machine-written and human-audited, so it is
  * a deliberately small YAML subset: a `schema` tag, then one record per
  * installed plugin, one field per line, every value a double-quoted JSON
  * string. JSON quoting keeps the reader exact (no YAML implicit types: `no`

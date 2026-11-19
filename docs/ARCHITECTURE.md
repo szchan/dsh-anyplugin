@@ -215,7 +215,7 @@ source-agent cache layout reproduced (versioned `root`, stable `dataDir`) so
 `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}` keep their semantics.
 
 The lock is `installs.yml` under the profile's anyplugin dir, one record per
-installed plugin (D22):
+installed plugin (D23):
 
 ```yaml
 schema: "dsh-anyplugin/installs@1"
@@ -257,10 +257,13 @@ user scope — the narrower scope has the final word, which is the only rule tha
 behaves sanely in a shared repo.
 
 `compileEntries(installs, { projectDir, enablements })` replays those files into
-one group entry per enabled plugin, with children from `emitPlugin`. A plugin
-that is installed but not enabled contributes **no entry**: cordis' group
-entries ignore `disabled` (S1), and "inert" is the absence of a fiber, not a
-disabled one.
+one group entry per enabled plugin **that has an emittable surface**, with
+children from `emitPlugin`. A plugin that is installed but not enabled — or
+enabled but with nothing to emit — contributes no entry. The group's own fiber
+ignores `disabled`; child entries inherit it (S1). Disabling is therefore
+expressed by absence, and "inert" is the absence of a fiber, not a disabled
+one. A UI that wants to show "installed, disabled" joins `installs.yml` with
+the scope layers; there is no loader entry to read a flag from.
 
 Consequences we surface in the UI: "installed, enabled in 2 of 5 projects",
 and a per-workspace badge. The reconciler is workspace-aware: it materializes
@@ -489,7 +492,7 @@ Implemented in `packages/dsh-anyplugin-install` (v0.1). The pipeline is:
 ```
 installs.yml + scope layers
   → compileEntries(installs, { projectDir, enablements })
-  → one group entry per enabled plugin, children from emitPlugin
+  → one group per enabled plugin with an emittable surface, children from emitPlugin
   → reconcile(loader, entries)
        create (absent) · update (options changed) · keep (equal)
        remove (present but no longer desired) — capture fibers, remove, await settle
@@ -498,25 +501,36 @@ installs.yml + scope layers
 
 Ids are dialect-qualified and mangled (D7): group
 `anyplugin.<mangleId("<dialect>:<plugin>")>`, child
-`<mangleId("<dialect>:<plugin>")>.<surface>` (`skill`, `mcp`, `hook`). The
-colon-separated form is stored but unaddressable (S1 id grammar), and group
-children share the root store, so the bare surface id must be qualified or two
-plugins collide. Version lives in the record/config, not the id.
+`anyplugin.<mangleId("<dialect>:<plugin>")>.<surface>` (`skill`, `mcp`,
+`hook`). The colon-separated form is stored but unaddressable (S1 id grammar),
+and group children share the root store, so the bare surface id must be
+qualified or two plugins collide. The `anyplugin.` prefix on children matters
+twice: it keeps them inside the namespace this layer owns, and `reconcile`
+ignores top-level non-group entries there (a child id is never mistaken for a
+managed group).
 
-`reconcile` touches only top-level ids under `anyplugin.`; every other entry is
-left alone. It compares normalized options with deep structural equality, so a
-second call with the same desired set writes nothing: `created`, `updated` and
-`removed` are empty and the ids are reported as `kept`. It is safe to run on
-every boot, after every install, and on file watch events.
+`reconcile` touches only top-level **group** entries whose id starts with
+`anyplugin.`; every other entry is left alone. It compares the loader's stored
+options with the desired ones using deep structural equality
+(`isDeepStrictEqual`); there is no normalization, and the loader's key sorting
+does not affect the comparison. A second call with the same desired set
+therefore writes nothing: `created`, `updated`, `removed` and `failed` are
+empty and the ids are reported as `kept`. It is safe to run on every boot,
+after every install, and on file watch events.
 
-Two substrate obligations are part of the result, not hidden (S1). After each
+Three substrate obligations are part of the result, not hidden (S1). After each
 apply, the group and every child fiber must be active; otherwise the id is
 reported in `failed` (with the child id) and removed from
 `created`/`updated`/`kept` — group entries are not atomic, so "applied" has to
-be checked rather than assumed. Removal captures the group and subtree fibers
-before `loader.remove`, then waits for them to settle at state 4; state 5 is
-unloading, not done. `removed` therefore means the subtree was actually torn
-down, not merely dropped from `entries()`.
+be checked rather than assumed. A desired child id that is already resolvable
+outside the group is refused before apply, because `EntryGroup.create` reuses
+the store slot (`??=`) and would reparent and later dispose someone else's
+fiber. Removal captures the group and subtree fibers before `loader.remove`,
+then waits for them to settle at state 4; state 5 is unloading, not done. The
+same wait applies to children an `update` drops: `EntryGroup.update` removes
+them without awaiting their disposers, and `loader.await()` no longer sees
+them. `removed` therefore means the subtree was actually torn down, not merely
+dropped from `entries()`.
 
 ## 10. Verification plan
 
@@ -540,10 +554,11 @@ give us, and what the emitter therefore owes:
 | **Teardown** | `remove()` returns void and drops the entry from `entries()` immediately, so `loader.await()` can return before disposers ran. Deterministic teardown = capture the fiber references, `remove()`, observe state 5 (unloading), then wait for state 4 (disposed, `uid === null`). `dispose()` is void for some fiber kinds and is not reliably awaitable, so never rely on its return value. |
 | **Plugin cleanup** | cordis has no `'dispose'` event. Cleanup is `ctx.effect(execute)` where `execute` returns the disposer — a materializer that registers teardown any other way silently never cleans up. |
 
-Consequences, all of which are now constraints on the emitter: rollback is
-explicit; ids are mangled before they reach the loader; every materializer
-registers cleanup through `ctx.effect`; reconcile captures fiber references
-before removing anything.
+Consequences, all of which are now constraints on the emitter: a failed apply
+is reported, never rolled back; ids are mangled and namespaced before they
+reach the loader, and an id already owned outside the group is refused; every
+materializer registers cleanup through `ctx.effect`; reconcile captures fiber
+references before removing or updating anything.
 
 - **S2 — mod surface.** ✅ **Answered 2026-11-18** (§7): the mod API is a large
   but fully specified surface with a machine-readable declaration file, so it
