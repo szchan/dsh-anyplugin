@@ -120,7 +120,14 @@ jobs:
                 echo "::error::DSH_HARNESS_DIR is unset or missing for DSH $version"
                 status=1
               else
-                npm run verify || status=1
+                verify_log="$(mktemp)"
+                npm run verify >"$verify_log" 2>&1 || status=1
+                cat "$verify_log"
+                if ! grep -Eq '^ℹ skipped 0$' "$verify_log"; then
+                  echo "::error::verify skipped at least one test for DSH $version; a skipped fidelity test on CI is a bug"
+                  status=1
+                fi
+                rm -f "$verify_log"
               fi
             fi
             echo "::endgroup::"

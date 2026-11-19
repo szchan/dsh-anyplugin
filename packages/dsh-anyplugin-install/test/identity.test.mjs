@@ -124,7 +124,7 @@ test('two plugins whose names differ only by a dot both install', async () => {
     updated: [],
     removed: [],
     kept: [],
-    failed: [],
+    failed: [], refused: [],
   })
   assert.equal(loader.creates, 2)
 
@@ -134,7 +134,7 @@ test('two plugins whose names differ only by a dot both install', async () => {
     updated: [],
     removed: [],
     kept: ['anyplugin.claude-code~3ax', 'anyplugin.claude-code~3ax.skill'],
-    failed: [],
+    failed: [], refused: [],
   })
   assert.equal(loader.creates, 2, 'the second pass wrote nothing')
 })

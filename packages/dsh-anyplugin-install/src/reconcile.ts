@@ -31,6 +31,7 @@
 import { isDeepStrictEqual } from 'node:util'
 
 import type { EntryOptions } from '../../dsh-anyplugin-emit/src/index.ts'
+import type { Refusal, TrustDecision } from '../../dsh-anyplugin-trust/src/index.ts'
 
 import { ENTRY_PREFIX } from './identity.ts'
 
@@ -74,11 +75,30 @@ export interface ReconcileResult {
   kept: string[]
   /** Entries that are not live after the loop. Never duplicated in the lists above. */
   failed: ReconcileFailure[]
+  /**
+   * Exec artifacts the trust gate refused. They never became loader entries,
+   * so they are reported here rather than invented as disabled groups. Filled
+   * after removals/updates so a UI cannot show "refused" while the old child
+   * is still loaded.
+   */
+  refused: RefusedExec[]
+}
+
+/** A refused exec artifact, tagged with the plugin whose compile decision produced it. */
+export interface RefusedExec extends Refusal {
+  plugin: string
 }
 
 export interface ReconcileOptions {
   /** How long to wait for a removed subtree to settle disposed. Default 2000 ms. */
   disposeTimeoutMs?: number
+  /**
+   * Trust decisions from `compileReport`. Reconcile cannot put a refused
+   * artifact in the loader (there is no entry to carry it), so the caller gets
+   * them through `onRefused` and can print/prompt without inventing a group.
+   */
+  decisions?: readonly TrustDecision[]
+  onRefused?: (refused: readonly RefusedExec[]) => void
 }
 
 export interface DisposalObservation {
@@ -277,7 +297,7 @@ export async function reconcile(
     }
   }
 
-  const result: ReconcileResult = { created: [], updated: [], removed: [], kept: [], failed: [] }
+  const result: ReconcileResult = { created: [], updated: [], removed: [], kept: [], failed: [], refused: [] }
   const desiredIds = [...desiredById.keys()].sort()
   const timeoutMs = options.disposeTimeoutMs ?? 2000
 
@@ -383,5 +403,9 @@ export async function reconcile(
   result.created = result.created.filter((id) => !failedIds.has(id))
   result.updated = result.updated.filter((id) => !failedIds.has(id))
   result.kept = result.kept.filter((id) => !failedIds.has(id))
+  result.refused = (options.decisions ?? []).flatMap((decision) =>
+    decision.refused.map((refusal) => ({ plugin: decision.plugin, ...refusal })),
+  )
+  options.onRefused?.(result.refused)
   return result
 }

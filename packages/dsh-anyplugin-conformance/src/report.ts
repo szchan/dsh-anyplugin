@@ -15,6 +15,7 @@ import {
   type ClaudePluginIr,
   type Fidelity,
 } from '../../dsh-anyplugin-ir/src/index.ts'
+import { emptyGrants, gate, type Grants } from '../../dsh-anyplugin-trust/src/index.ts'
 
 const STATUS_MARK: Record<DiffRow['status'], string> = {
   match: 'ok  ',
@@ -61,6 +62,12 @@ export interface ReportComponent {
   faces: ReportFace[]
   /** True when the emitter placed the component in the entry; false when it skipped it. */
   carried: boolean
+  /**
+   * Set when the component was carried by the IR but withheld by trust, e.g.
+   * `exec` for a hook with no matching grant. Distinct from `carried: false`
+   * alone, which also covers "no seam". D25.
+   */
+  refused?: string
 }
 
 /**
@@ -76,7 +83,7 @@ export interface TransplantReport {
   plugin: string
   pin: { tool: string; version: string }
   components: ReportComponent[]
-  totals: { declared: number; emitted: number; skipped: number }
+  totals: { declared: number; emitted: number; refused: number; skipped: number }
   /** `validateIr` problems; a non-empty list is what makes the command exit non-zero. */
   problems: string[]
 }
@@ -108,15 +115,31 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
  * emit is pure data (AGENTS §3.3), and nothing here probes a host. That is why
  * the report can run in CI, where `DSH_INSTALL_DIR` and `claude` are absent.
  */
-export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions): TransplantReport {
-  const summary = summarizeIr(ir)
-  const emit = emitPlugin(ir, options)
+export function buildTransplantReport(
+  ir: ClaudePluginIr,
+  options: EmitOptions & { grants?: Grants },
+): TransplantReport {
+  // Trust runs before emission: refused hooks become `planned` pending nodes,
+  // so the emitter cannot place them and the report can name the reason. An
+  // absent store means no grants, which is the default-off state (D25).
+  const gated = gate(ir, options.grants ?? emptyGrants())
+  const summary = summarizeIr(gated.ir)
+  const emit = emitPlugin(gated.ir, {
+    materializers: options.materializers,
+    ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
+    ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+    trusted: gated.decision.allowed,
+  })
   const considered = new Set(emit.considered)
   const skippedEntries = new Set(emit.skipped)
-  const faces = facesByName(ir)
+  const refusedTargets = new Map(
+    gated.decision.refused.map((refusal) => [`hooks/${refusal.target.slice('hook:'.length)}`, refusal.capability]),
+  )
+  const faces = facesByName(gated.ir)
 
   const components: ReportComponent[] = summary.entries.map((entry) => {
     const key = identityKey(entry.surface, entry.name)
+    const refused = refusedTargets.get(`${entry.surface}/${entry.name}`)
     return {
       surface: entry.surface,
       name: entry.name,
@@ -129,11 +152,13 @@ export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions):
       carried:
         considered.has(`${entry.surface}/${entry.name}`) &&
         !skippedEntries.has(`${entry.surface}/${entry.name}`),
+      ...(refused === undefined ? {} : { refused }),
     }
   })
 
   const emitted = components.filter((component) => component.carried).length
-  const problems = validateIr(ir)
+  const refused = components.filter((component) => component.refused !== undefined).length
+  const problems = validateIr(gated.ir)
   return {
     ok: problems.length === 0,
     plugin: summary.plugin,
@@ -142,7 +167,8 @@ export function buildTransplantReport(ir: ClaudePluginIr, options: EmitOptions):
     totals: {
       declared: summary.totals.declared,
       emitted,
-      skipped: components.length - emitted,
+      refused,
+      skipped: components.length - emitted - refused,
     },
     problems,
   }
@@ -160,9 +186,8 @@ export function formatTransplantReport(report: TransplantReport): string {
   if (report.components.length === 0) lines.push('  (no components)')
   for (const component of report.components) {
     lines.push('')
-    lines.push(
-      `${component.surface}/${component.name}  class=${component.class}  carry=${component.carried ? 'emitted' : 'skipped'}`,
-    )
+    const carry = component.refused === undefined ? (component.carried ? 'emitted' : 'skipped') : `refused:${component.refused}`
+    lines.push(`${component.surface}/${component.name}  class=${component.class}  carry=${carry}`)
     lines.push(`  reason: ${component.reason}`)
     for (const face of component.faces) {
       lines.push(`  face ${face.face}=${face.class}  reason: ${face.reason}`)
@@ -170,7 +195,8 @@ export function formatTransplantReport(report: TransplantReport): string {
   }
   lines.push('')
   lines.push(
-    `totals: ${report.totals.declared} declared, ${report.totals.emitted} emitted, ${report.totals.skipped} skipped`,
+    `totals: ${report.totals.declared} declared, ${report.totals.emitted} emitted, ` +
+      `${report.totals.refused} refused, ${report.totals.skipped} skipped`,
   )
   if (report.problems.length > 0) {
     lines.push(`problems: ${report.problems.length}`)

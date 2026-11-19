@@ -118,6 +118,7 @@ Claude Code to Codex to Cursor without rewrite; §9 makes it an acceptance test.
 | `dsh-anyplugin-dialect-codex` | portable `plugin.json` / `.codex-plugin/` → IR |
 | `dsh-anyplugin-dialect-portable` | `agent-plugins.org` 1.0 → IR (shared by Codex and future sources) |
 | `dsh-anyplugin-materialize-{skill,command,hook,mcp,agent,bin,theme,output-style,monitor,workflow}` | IR → one seam each |
+| `dsh-anyplugin-trust` | exec classify/authorize/gate + the canonical `grants.yml` store (D25) |
 | `dsh-anyplugin-emit` | IR → `EntryTree` patch |
 | `dsh-anyplugin-install` | lock + scope replay → loader entries; idempotent reconcile |
 | `dsh-anyplugin-ui` | client plugin: install list, fidelity report, trust grants |
@@ -248,16 +249,18 @@ Resolution for a plugin in a given workspace: first layer that mentions it wins
 
 ```yaml
 plugins:
-  claude-code:my-plugin: { enabled: true,  grants: [exec:hooks] }
+  claude-code:my-plugin: { enabled: true }
   claude-code:other:     { enabled: false }
 ```
 
-No mention = installed but inert. Disabling at project scope beats enabling at
+Grants are written to `grants.yml`, not to this line (D25); an older
+`grants: […]` field is parsed and ignored. No mention = installed but inert.
+Disabling at project scope beats enabling at
 user scope — the narrower scope has the final word, which is the only rule that
 behaves sanely in a shared repo.
 
-`compileEntries(installs, { projectDir, enablements })` replays those files into
-one group entry per enabled plugin **that has an emittable surface**, with
+`compileEntries(installs, { projectDir, enablements, grants })` replays those
+files into one group entry per enabled plugin **that has an emittable surface**, with
 children from `emitPlugin`. A plugin that is installed but not enabled — or
 enabled but with nothing to emit — contributes no entry. The group's own fiber
 ignores `disabled`; child entries inherit it (S1). Disabling is therefore
@@ -280,11 +283,170 @@ Capabilities, not plugins, are granted.
 | exec (full user privileges) | hook, monitor, bin, **mod** (later) | prompt: show exact command line; off by default |
 | model identity | agent `model:`/`effort:` | prompt: show substitution or delegate cost |
 
-A grant records `{ capability, target, artifactHash, grantedAt, scope }` and is
-**pinned to the artifact hash**: edit the hook script and the grant is void, so
-the next reconcile re-prompts. Revocation is one UI action and one lockfile
-line. Because hooks run as `sh -c` with the user's privileges, "install" is
-never sufficient authority for `exec`.
+Content classes are emitted without a grant. Exec-class artifacts are **default
+off**: `emitPlugin` only places a hook whose target is in its `trusted` list,
+and that list is empty unless the caller passed an authorized decision. A
+refused hook is not dropped silently — `gate` moves it to the IR's `pending`
+list as `planned` with a reason, and the report marks the component
+`refused:<capability>` from that decision, not by inferring it after emission.
+`emitPlugin` also reports `refused` for any carried surface whose target was
+not trusted, so a caller that skips the gate is still default-off. The refusal
+carries the exact command line (`command`, `args`), so the prompt can show what
+would run without re-reading the plugin. If the plugin has no other emittable
+surface, there is no group entry at all: the refused hook does not reach the
+loader as a disabled or inert child, because it does not reach the loader.
+
+### 6.1 The store
+
+`grants.yml` lives next to `installs.yml` in the profile's anyplugin dir and
+uses the same canonical YAML subset as D23 (D25):
+
+```yaml
+schema: "dsh-anyplugin/grants@1"
+grants:
+  - plugin: "claude-code:my-plugin"
+    capability: "exec"
+    target: "hook:PostToolUse#0"
+    artifactHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    grantedAt: "2026-11-19T00:00:00.000Z"
+    scope: "user"
+revokes: []
+```
+
+The canonical writer sorts records, quotes every value, writes fixed field
+order, and replaces the file through a same-directory temp file plus rename.
+It also holds an `O_EXCL` `grants.yml.lock` (bounded retry) across the write;
+`updateGrants` keeps that lock across read-modify-write, so two concurrent
+granting actions cannot silently lose one record to last-rename-wins. The
+reader accepts only that subset: unknown fields, missing fields, unquoted
+values, duplicate records, an unknown schema, a malformed hash, or a
+capability outside `exec` are rejected with a `file:line` reason and the file
+is left untouched. A missing file is an
+empty store — which is also the safe state, because exec is default-off. A
+malformed file is an error, never an empty store: "cannot parse" must not
+become "everything is revoked" or "everything is granted".
+
+Scope is a property of the record, not of the file's location. `grants.yml` is
+one profile file; each grant and revoke names `local`, `project`, or `user`.
+Resolution takes the **narrowest scope that mentions** a given
+`(plugin, capability, target)` — `local` beats `project` beats `user` — and
+within that scope a revoke beats a grant. A narrower refusal does not fall
+back to a broader grant, otherwise a stale user grant would revive an artifact
+after a local revoke. D23's statement that grants live in the enablement scope
+layers is superseded by this store; an enablement line that still carries
+`grants: […]` parses, but the field is ignored, because a capability name is
+not a hash pin.
+
+### 6.2 What is pinned
+
+A row is one exec artifact, named within its plugin. `index` is flat per event
+across matcher groups, so two groups under `PostToolUse` are `#0` and `#1`,
+not two `#0`s:
+
+| Target | Artifact |
+| --- | --- |
+| `hook:<event>#<index>` | one command handler in `hooks/hooks.json` |
+| `bin:<path>`, `monitor:<path>`, `mod:<path>` | one file under `bin/`, `monitors/`, `mods/` |
+
+A grant is keyed by `(plugin, capability, target)` and matches only when the
+current `artifactHash` also equals the granted one. `plugin` is
+`<dialect>:<plugin>`, so identical bytes in two plugins are two artifacts. A
+hash mismatch refuses and reports both the pinned and the current hash in the
+refusal; it never re-grants, because that is the caller's prompt to show.
+
+`artifactHash` is `sha256:<64 lowercase hex>` over a **manifest resolved once**,
+at classify/grant time:
+
+```
+artifact = { mode: "file" | "text" | "composite",
+             invocation,                        // exact text or argv; hashed
+             command,                           // eval payload, else ""; hashed
+             files: [{ path, sha256, bytes }] } // the program only; hashed
+hash     = sha256(mode, invocation, command, then each file's path + sha256, in order)
+```
+
+The boundary is **code versus data**. A hook's program is code and its bytes
+are pinned; everything else is data and only its text is hashed.
+
+- The program is `command[0]` when it resolves to a file inside the root. For
+  a known interpreter (`node`, `sh`, `bash`, `zsh`, `python*`, `deno`,
+  `bun`, `ruby`, `perl`, `pwsh`), it is the first non-flag operand that
+  resolves to a file inside the root. For `node fmt.js data.txt` that is
+  `fmt.js`, not `data.txt`.
+- A pure program (`command: "${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh"`, or
+  `bin/…`) is `mode: "file"`: one file path and its bytes.
+- A command with no program inside the root (`echo …`, `sh -c '…'`,
+  `node -e '…'`, `cat data.txt`) is `mode: "text"`: the exact invocation is
+  the artifact. Interpreter eval payloads are code and are never mistaken for
+  a flag; editing `node -e '…'` invalidates the grant.
+- A program plus other words (`node …/fmt.js data.txt`, `…/hook.sh --out
+  …/out.txt`) is `mode: "composite"`: the exact invocation plus the
+  program's bytes.
+- Data operands — positional inputs, `--out` values, redirect targets — are
+  not read and not pinned. Editing `data.txt` does not invalidate a formatter
+  hook; editing `fmt.js` does. A data operand outside the root, or a relative
+  one, is allowed: the hook's cwd decides what it means. Only a **program**
+  outside the root or named relatively is refused, because hashing it against
+  the plugin root while executing it in the project would pin one file and run
+  another. The refusal names the fix (`use ${CLAUDE_PLUGIN_ROOT}/…`). A
+  missing program is refused too.
+- `invocation` is hashed word for word: order, duplicates, flags, and data
+  names are part of what was approved. A changed flag or a renamed data operand
+  is a new artifact; changed data bytes are not. This keeps `cp a b` distinct
+  from `cp b a` without turning output files into artifacts.
+
+The path is not identity by itself: it is one field of the manifest hash, so a
+byte-identical copy does **not** keep a grant when the command names a
+different path. mtime is never used. A symlink inside the root that points
+outside pins the outside file's bytes (conservative: the bytes that run are
+what matters), not the link target string.
+
+`classify` reports a row for every hook with a command and every file in the
+three exec directories. `authorize` gates the rows it can emit today — command
+hooks that are `exact`/`equivalent`. A `planned` hook was not going to run, so
+it is not reported as refused, and `bin`/`monitor`/`mod` rows have no
+materializer yet, so nothing runs; they are classified for the UI and for the
+mod host, not silently executed.
+
+### 6.3 The check at spawn
+
+A hash checked only at reconcile time is a TOCTOU hole: the loader keeps the
+child config, and the script can change before the next tool call. The gate
+attaches the resolved manifest and `artifactHash` to the IR hook; emit copies
+them verbatim into the child — it never resolves the command a second time. A
+trusted hook with no attached artifact fails closed (no child, recorded
+refusal). The emitted child carries the full `artifact` manifest plus
+`artifactHash`, `artifactMode` (`file`, `text`, or `composite`), `artifactRoot`,
+and the flat `index`. The materializer never re-parses the command at spawn:
+it re-reads exactly `artifact.files[].path`, re-hashes the same
+`mode`/`invocation`/`command`/files order, and checks that the config still
+names the same invocation and mode. On
+a mismatch, `PreToolUse` returns `deny` without spawning, and `PostToolUse`
+warns and adds the reason (both hashes and the command line) to
+`additionalContexts` without spawning. One file read per matched hook call is
+acceptable; the call is about to spawn a process anyway. A re-grant followed by
+reconcile re-emits the child config with the new manifest, and the next call
+runs the new bytes. The guarantee is therefore at the manifest boundary: the
+inside-root file bytes, inline text, and interpreter payloads that were pinned
+are exactly what the next spawn checks, at the moment it would run.
+
+### 6.4 What a grant does not cover
+
+An exec grant is not install authority, not enablement, and not a network
+decision. It does not cover an MCP server or any content-class artifact. It
+does not pin the `matcher`, `timeout`, or environment. It pins the exact
+invocation text (including flags, order, and data names) and the program's
+bytes; it does not pin the bytes a positional input, output path, or redirect
+target points at. It does not pin the interpreter binary found on `PATH` or
+files a script reads at run time. A relative or outside-root **program** is
+refused, never silently treated as pinned; a relative or outside-root **data**
+operand is allowed and is only invocation text. It does not re-grant a changed
+program, and it does not transfer to another plugin. There is a small
+unavoidable window between the spawn-time re-read and `exec`; the guarantee is
+that the bytes checked are the bytes named by the manifest, not that no process
+can ever race the check. Those limits are deliberate; a grant is one artifact's
+manifest at one scope, and anything broader would be a capability the user did
+not approve.
 
 ## 7. `mods`: a second subsystem, not a materializer (D3)
 
@@ -491,13 +653,38 @@ Implemented in `packages/dsh-anyplugin-install` (v0.1). The pipeline is:
 
 ```
 installs.yml + scope layers
-  → compileEntries(installs, { projectDir, enablements })
+  → compileReport(installs, { projectDir, enablements, grants })
+       per plugin: read → gate(ir, grants) → authorize + attach artifact
+                 → emitPlugin(attached, { trusted })
+       → { entries, decisions, problems }   (compileEntries fails closed on problems)
   → one group per enabled plugin with an emittable surface, children from emitPlugin
-  → reconcile(loader, entries)
+  → reconcile(loader, entries, { decisions, onRefused })
        create (absent) · update (options changed) · keep (equal)
        remove (present but no longer desired) — capture fibers, remove, await settle
-  → { created, updated, removed, kept, failed }
+       after removals/updates: refused ← decisions (tagged with plugin)
+  → { created, updated, removed, kept, failed, refused }
 ```
+
+The trust gate runs before emit, not after reconcile: a hook with no matching
+grant is moved to `pending` as `planned` with a reason naming the missing
+grant, and `emitPlugin` never puts it in the child's `hooks` config. If that
+leaves no children, the plugin contributes no group. Reconcile therefore cannot
+"keep" a previously trusted hook after its hash changes: the next desired set
+simply does not contain it, and the entry is removed or updated like any other
+desired-state change. A hash mismatch never mutates the store; the refusal
+carries the new hash for the UI to prompt with.
+
+The install path needs the same refusals that the report shows. `compileReport`
+returns every per-plugin `TrustDecision` alongside the entry list;
+`compileEntries` is the reduced form and throws if any per-record problem was
+collected, so a caller cannot silently lose a plugin. `compileReport` itself
+keeps a malformed or unsupported lock row as a per-record `problems` entry,
+not an abort of every other plugin. A refused hook has no loader entry to attach to, so `reconcile`
+does not invent one: the caller passes the decisions, and the result carries
+`refused` (tagged with plugin identity) after removals and updates have settled.
+`onRefused` fires in that same phase, so a UI cannot show a refusal while an old
+trusted child is still mounted. A refusal is a compile decision, not a loader
+failure, and is not reported as `failed`.
 
 Ids are dialect-qualified and mangled (D7): group
 `anyplugin.<mangleId("<dialect>:<plugin>")>`, child

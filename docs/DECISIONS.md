@@ -826,3 +826,173 @@ edit.
   path is deliberately not written into a golden, which must stay reproducible.
 - The behavior face (`claude plugin eval`) and the Desktop-specific DSH paths
   remain local evidence: CI holds the inventory gate, not the money gate.
+
+---
+
+## D25 — Exec grants are pinned to artifact bytes in `grants.yml`
+
+**Status:** ratified 2026-11-19, making AGENTS.md §3.5 true for the compile
+path (ticket #11).
+
+An `exec` artifact (`hook`, `monitor`, `bin`, `mod`) runs only when a grant
+for its current bytes exists. The grant store is `grants.yml` next to
+`installs.yml`, not a capability list inside an enablement line. A grant is
+`{plugin, capability, target, artifactHash, grantedAt, scope}`; a revoke is
+`{plugin, capability, target, scope}`. `plugin` is the install identity
+(`<dialect>:<plugin>`), because `hook:PostToolUse#0` is only unique inside a
+plugin and identical bytes in another plugin are a different artifact.
+
+**The store is a canonical subset, like D23.** The file starts with
+`schema: "dsh-anyplugin/grants@1"`, then `grants:` and `revokes:` lists, one
+field per line, every value a double-quoted JSON string. The writer sorts records, quotes
+values, writes fixed field order, and replaces the file through a
+same-directory temp file plus rename. The reader refuses unknown or missing
+fields, unquoted values, duplicate records, an unknown schema, a malformed
+hash, or a capability outside `exec` with a `file:line` reason and leaves the
+file alone. A missing file is an empty store; a malformed file is an error.
+"Cannot parse" must never become "everything is granted" or "everything is
+revoked". The writer takes an `O_EXCL` `grants.yml.lock` with a bounded retry,
+and `updateGrants` holds it across read-modify-write; concurrent granting
+actions must not lose one record to last-rename-wins.
+
+```yaml
+schema: "dsh-anyplugin/grants@1"
+grants:
+  - plugin: "claude-code:my-plugin"
+    capability: "exec"
+    target: "hook:PostToolUse#0"
+    artifactHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    grantedAt: "2026-11-19T00:00:00.000Z"
+    scope: "user"
+revokes: []
+```
+
+**Scope is a record field, not a file location.** The install identity is
+profile-global, so one file is the lock; each grant and revoke names `local`,
+`project`, or `user`. Resolution takes the narrowest scope that mentions a
+`(plugin, capability, target)` — `local` > `project` > `user` — and at that
+scope a revoke beats a grant. A narrower refusal never falls back to a broader
+grant: after a local revoke, an old user grant must not revive the artifact.
+This supersedes the sentence in D23 that grants live in the enablement scope
+layers (D2). An existing enablement line carrying `grants: […]` still parses
+and the field is ignored; it cannot pin bytes, so it cannot authorize.
+
+**A grant pins a manifest, not a promise to re-discover operands later.**
+The manifest is resolved once, at classify/grant time:
+
+```
+artifact = { mode: "file" | "text" | "composite",
+             invocation,                        // exact text or argv; hashed
+             command,                           // eval payload, else ""; hashed
+             files: [{ path, sha256, bytes }] } // the program only; hashed
+hash     = sha256(mode, invocation, command, then each file's path + sha256, in order)
+```
+
+The boundary is **code versus data**. The program is code and its bytes are
+pinned; every other operand is data and only the exact invocation text is
+hashed. A program is `command[0]` when it resolves to a file inside the root,
+or, for a known interpreter (`node`, `sh`, `bash`, `zsh`, `python*`,
+`deno`, `bun`, `ruby`, `perl`, `pwsh`), the first non-flag operand that
+resolves to a file inside the root. `node fmt.js data.txt` pins `fmt.js`;
+`data.txt` is data.
+
+`artifactHash` is `sha256:<64 lowercase hex>`. There is no sorting and no
+`Set`: the invocation keeps order and duplicate words, so `cp a b` and
+`cp b a` differ. At spawn the materializer re-reads exactly `files[].path`
+and never re-parses the command. Editing `data.txt` does not invalidate a
+formatter hook; editing `fmt.js` does. An output file cannot turn into a false
+artifact on the second run.
+
+- A program named by an absolute `${CLAUDE_PLUGIN_ROOT}/…` path, by an
+  exec-form `args` entry, or by shell words is pinned. A **relative or
+  outside-root program** is refused, because hashing it against the plugin
+  root while executing it in the project would pin one file and run another.
+  The reason names the fix (`use ${CLAUDE_PLUGIN_ROOT}/…`). Refused
+  artifacts are `unsupported`: they cannot be granted at all.
+- A **relative or outside-root data operand** is allowed. The hook's own cwd
+  decides what it means; it is invocation text, not a pinned file.
+- Flags, `--out` values, redirect targets, and positional inputs are data.
+  Their **text** is in the invocation hash, so renaming a data operand or
+  changing a flag is a new artifact; their **bytes** are not pinned, so
+  editing the data does not re-prompt. `--out …/out.txt` can therefore be
+  written twice without refusing itself.
+- A command with no program inside the root (`echo …`, `sh -c '…'`,
+  `node -e '…'`, `cat data.txt`) is `mode: "text"`: the exact invocation is
+  the artifact. Interpreter eval payloads are code and are never mistaken for a
+  flag; editing the payload invalidates the grant.
+- A program plus other words is `mode: "composite"`: the exact invocation
+  plus the program's bytes. A pure program is `mode: "file"`.
+- Files under `bin/`, `monitors/`, and `mods/` are `mode: "file"` and pin
+  their bytes.
+
+Path is not identity by itself, but it is part of the manifest hash: a
+byte-identical copy at another path does **not** match when the command names
+the new path. mtime is never used. A symlink inside the root that points
+outside pins the outside file's bytes — conservative, because those are the
+bytes that run.
+
+A hook target is `hook:<event>#<index>`, where `index` is flat per event
+across matcher groups (two `PostToolUse` groups are `#0` and `#1`); a
+directory artifact is `bin:<path>`, `monitor:<path>`, or `mod:<path>`.
+Renaming a directory artifact changes its target (and therefore needs a grant
+for the new target). Renaming a hook's script keeps the target but changes the
+manifest path, so the grant refuses with the new hash; it is a re-prompt, not a
+silent re-grant.
+
+`grantFor`/`revokeFor` are the UI path: they validate the target against the
+plugin's classification and reject an unknown or unpinnable target. `grant`/
+`revoke` remain the low-level store operations for tests and for callers that
+have already resolved a row.
+
+**Default-off, and refused is not skipped.** `authorize(plugin, grants)`
+returns allowed targets and refusals. A missing grant is `no-grant`, a matching
+revoke is `revoked`, and a matching grant with different bytes is
+`hash-mismatch`; the last carries both hashes so a UI can prompt, and it
+never silently re-grants. Every refusal also carries the exact `command` (and
+`args`, when the exec form has them). `gate` moves refused hooks out of the emittable
+`hooks` list into `pending` as `planned` with a reason. `emitPlugin` takes a
+`trusted` list (default empty); for a caller that skips the gate it reports a
+carried-but-untrusted hook in `refused`, not `skipped`. The conformance report
+marks `carry=refused:<capability>` from the gate decision, not by inferring it
+from the emitter, and its totals line counts it separately. A plugin whose only
+surface was refused contributes no group entry, so the hook does not reach the
+loader as a disabled child or "not run"; it does not reach the loader.
+`compileReport` returns the same per-plugin decisions for the install path, and
+`reconcile` returns `refused` after removals/updates settle, without inventing
+an entry.
+
+**The pin is checked again at spawn.** The emitted hook child carries the full
+`artifact` manifest plus `artifactHash`, `artifactMode`, `artifactRoot`, and its
+flat `index`. The materializer re-reads exactly the manifest's files and
+re-hashes the same mode/invocation/command/files order immediately before every
+spawn; a
+mismatch or a missing file does not run. `PreToolUse` denies with both hashes
+and the command line, `PostToolUse` warns and skips the spawn. A re-grant plus
+reconcile re-emits the new manifest, after which the new bytes run. Without
+this, a grant checked only at reconcile time would claim more than it delivers:
+the loader keeps the child config while the script can change underneath it.
+There remains an unavoidable window between the re-read and `exec`; the claim is
+about the manifest boundary, not about making the filesystem immutable.
+
+**Consequences:**
+
+- The conformance totals are unchanged: the hook fixture is granted explicitly
+  in the DSH oracle tests, so `11 declared / 9 matched / 1 missing / 1 refused`
+  still holds. A refused hook is a new row only when a fixture exercises refusal
+  — none does yet.
+- `bin`/`monitor`/`mod` rows are classified today but not gated, because no
+  materializer emits them and nothing runs. When the mod host lands (§7) it
+  must consume `authorize`, not invent a second gate.
+- An exec grant is not install authority, enablement, a network decision, or a
+  blanket `--yes`. It does not cover MCP or content-class artifacts, `matcher`,
+  `timeout`, environment, the interpreter binary found on `PATH`, or files a
+  script reads at run time. It pins the exact invocation text (including flags,
+  order, and data names) and the program bytes; it does not pin the bytes of
+  positional inputs, output paths, or redirect targets. It is one artifact's
+  manifest at one scope. A relative or outside-root **program** is refused
+  rather than pinned, so a plugin that relies on one loses fidelity until it
+  uses `${CLAUDE_PLUGIN_ROOT}`; relative and outside-root **data** operands
+  are allowed and are only invocation text.
+- The claim is against claude-code `2.1.322` and the DSH pins in D22; a pin
+  bump that changes hook semantics must revisit the hash rules, not just the
+  goldens.

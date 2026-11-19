@@ -17,6 +17,7 @@ import { isAbsolute } from 'node:path'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin, type EntryOptions, type Materializers } from '../../dsh-anyplugin-emit/src/index.ts'
+import { emptyGrants, gate, type Grants, type TrustDecision } from '../../dsh-anyplugin-trust/src/index.ts'
 
 import type { InstallRecord, Installs } from './installs.ts'
 import { validateInstalls } from './installs.ts'
@@ -37,6 +38,12 @@ export interface CompileOptions {
   home?: string
   /** Already-read layers. When present, no file is touched. */
   enablements?: Enablements
+  /**
+   * Hash-pinned exec grants (D25). Absent means an empty store, so exec
+   * artifacts stay off. The installer reads `grants.yml` next to
+   * `installs.yml` and passes it here.
+   */
+  grants?: Grants
 }
 
 const SUPPORTED_DIALECT = 'claude-code'
@@ -55,18 +62,45 @@ function layersFor(options: CompileOptions): Enablements {
   return readEnablements({ projectDir, home: options.home })
 }
 
+export interface CompileProblem {
+  plugin: string
+  /** Readable reason, without the internal `compileEntries:` prefix. */
+  reason: string
+}
+
+export interface CompileReport {
+  /** One group per enabled plugin with at least one carried surface. */
+  entries: EntryOptions[]
+  /**
+   * One decision per compiled plugin, including plugins that produced no
+   * entry. This is where a refused exec artifact stays visible: reconcile has
+   * no loader entry to report it against, and inventing a disabled one would
+   * claim a surface exists.
+   */
+  decisions: TrustDecision[]
+  /**
+   * A per-record failure: unsupported dialect, pin/name mismatch, unreadable
+   * plugin. One bad lock row must not abort every other installed plugin; the
+   * row is reported here and the rest still compile.
+   */
+  problems: CompileProblem[]
+}
+
 /**
- * Return one `EntryOptions` group per enabled installed plugin, in stable id
- * order. Disabled/inert plugins and plugins with no emittable surface are
- * absent rather than empty groups: there is nothing for the loader to start.
+ * Compile the lock and retain the trust decisions alongside the entries.
+ *
+ * `compileEntries` returns only `entries`; the install path calls this when it
+ * needs to surface refusals rather than treat them as "nothing to do".
  */
-export function compileEntries(installs: Installs, options: CompileOptions): EntryOptions[] {
+export function compileReport(installs: Installs, options: CompileOptions): CompileReport {
   validateInstalls(installs)
   if (!options.materializers || typeof options.materializers.skill !== 'string') {
     fail('materializers.skill is required')
   }
   const layers = layersFor(options)
   const entries: EntryOptions[] = []
+  const decisions: TrustDecision[] = []
+  const problems: CompileProblem[] = []
   const records = [...installs.plugins].sort((a, b) => {
     const left = `${a.dialect}:${a.name}`
     const right = `${b.dialect}:${b.name}`
@@ -76,13 +110,41 @@ export function compileEntries(installs: Installs, options: CompileOptions): Ent
   for (const record of records) {
     const enablement = resolveEnablement(`${record.dialect}:${record.name}`, layers)
     if (!enablement.enabled) continue
-    const entry = compileRecord(record, options)
-    if (entry) entries.push(entry)
+    try {
+      const compiled = compileRecord(record, options)
+      decisions.push(compiled.decision)
+      if (compiled.entry) entries.push(compiled.entry)
+    } catch (error) {
+      problems.push({
+        plugin: `${record.dialect}:${record.name}`,
+        reason: (error as Error).message.replace(/^compileEntries:\s*/, ''),
+      })
+    }
   }
-  return entries
+  return { entries, decisions, problems }
 }
 
-function compileRecord(record: InstallRecord, options: CompileOptions): EntryOptions | undefined {
+/**
+ * Return one `EntryOptions` group per enabled installed plugin, in stable id
+ * order. Disabled/inert plugins and plugins with no emittable surface are
+ * absent rather than empty groups: there is nothing for the loader to start.
+ *
+ * A per-record problem fails closed here instead of being dropped: callers that
+ * want to keep compiling the rest of the lock and report each problem must use
+ * `compileReport`. Refused artifacts are decisions, not problems.
+ */
+export function compileEntries(installs: Installs, options: CompileOptions): EntryOptions[] {
+  const report = compileReport(installs, options)
+  if (report.problems.length > 0) {
+    throw new Error(`compileEntries: ${report.problems.map((problem) => problem.reason).join('; ')}`)
+  }
+  return report.entries
+}
+
+function compileRecord(
+  record: InstallRecord,
+  options: CompileOptions,
+): { entry?: EntryOptions; decision: TrustDecision } {
   const id = `${record.dialect}:${record.name}`
   if (record.dialect !== SUPPORTED_DIALECT) {
     fail(`plugin "${id}" uses unsupported dialect "${record.dialect}" (only ${SUPPORTED_DIALECT} is installed)`)
@@ -100,8 +162,15 @@ function compileRecord(record: InstallRecord, options: CompileOptions): EntryOpt
     fail(`plugin "${id}" was read at ${ir.pin.tool}@${ir.pin.version}, expected ${EXPECTED_PIN}`)
   }
 
-  const emitted = emitPlugin(ir, { materializers: options.materializers, sdkRoot: options.sdkRoot })
-  if (!emitted.entry) return undefined
+  // Gate before emit: refused exec artifacts become `planned` pending nodes and
+  // the emitter is given only the targets whose current hash is granted.
+  const gated = gate(ir, options.grants ?? emptyGrants())
+  const emitted = emitPlugin(gated.ir, {
+    materializers: options.materializers,
+    ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
+    trusted: gated.decision.allowed,
+  })
+  if (!emitted.entry) return { decision: gated.decision }
   const scope = pluginScope(record.dialect, record.name)
   const children = emitted.entry.config
   if (!Array.isArray(children)) fail(`plugin "${id}" emitted a group without a config array`)
@@ -110,8 +179,11 @@ function compileRecord(record: InstallRecord, options: CompileOptions): EntryOpt
     id: childEntryId(scope, child.id),
   }))
   return {
-    ...emitted.entry,
-    id: pluginEntryId(record.dialect, record.name),
-    config: qualified,
+    entry: {
+      ...emitted.entry,
+      id: pluginEntryId(record.dialect, record.name),
+      config: qualified,
+    },
+    decision: gated.decision,
   }
 }

@@ -7,7 +7,7 @@
  *   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
  *   rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
  *   rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
- *   rig report  <plugin-dir> [--json]
+ *   rig report  <plugin-dir> [--json] [--grants <grants.yml>]
  *
  * `capture` records what the upstream host reports about a plugin. `verify`
  * replays the probe and diffs it against that golden, which is how a pin bump
@@ -23,6 +23,7 @@ import { diffInventories, normalizeInventory, type Inventory } from './inventory
 import { probeWithClaude, resolvePluginName } from './oracles/claude.ts'
 import { readInventoryFile } from './oracles/file.ts'
 import { buildTransplantReport, formatDiff, formatTransplantReport } from './report.ts'
+import { readGrants } from '../../dsh-anyplugin-trust/src/index.ts'
 import { diffTraces, formatTraceDiff, normalizeTrace, readTraceFile } from './trace.ts'
 
 interface Args {
@@ -73,8 +74,11 @@ const USAGE = `usage:
   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
   rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
   rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
-  rig report  <plugin-dir> [--json]      what the transplant would do, compile-side
-  rig report  --ir <file> [--json]       report a compiled IR instead of compiling a directory`
+  rig report  <plugin-dir> [--json] [--grants <grants.yml>]   what the transplant would do
+  rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
+
+  --grants reads the hash-pinned exec grant store; without it the store is
+  empty, so exec artifacts report refused:exec and are not emitted (D25).`
 
 /**
  * The materializer set this build ships, named the way emit expects. The report
@@ -150,7 +154,12 @@ async function main(argv: string[]): Promise<number> {
       if (!pluginDir) throw new Error(`missing <plugin-dir>\n${USAGE}`)
       ir = readClaudePlugin(pluginDir)
     }
-    const report = buildTransplantReport(ir, { materializers: MATERIALIZERS })
+    const grantsPath = args.options.get('grants')
+    const grants = typeof grantsPath === 'string' ? readGrants(grantsPath) : undefined
+    const report = buildTransplantReport(ir, {
+      materializers: MATERIALIZERS,
+      ...(grants === undefined ? {} : { grants }),
+    })
     console.log(args.options.get('json') === true ? JSON.stringify(report, null, 2) : formatTransplantReport(report))
     return report.ok ? 0 : 1
   }

@@ -419,10 +419,11 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
       })
       continue
     }
+    let index = 0
     for (const group of groups as Record<string, unknown>[]) {
       const handlers = Array.isArray(group.hooks) ? (group.hooks as Record<string, unknown>[]) : []
       const matcher = typeof group.matcher === 'string' ? group.matcher : undefined
-      handlers.forEach((handler, index) => {
+      handlers.forEach((handler) => {
         const type = typeof handler.type === 'string' ? handler.type : 'unknown'
         const command = typeof handler.command === 'string' ? handler.command : undefined
         const args = Array.isArray(handler.args) && handler.args.every((item) => typeof item === 'string')
@@ -433,7 +434,7 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
           kind: 'hook',
           event,
           ...(matcher === undefined ? {} : { matcher }),
-          index,
+          index: index++,
           handler: type,
           ...(command === undefined ? {} : { command }),
           ...(args === undefined ? {} : { args }),

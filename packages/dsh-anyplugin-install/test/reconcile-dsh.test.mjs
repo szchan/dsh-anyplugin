@@ -82,12 +82,12 @@ test(
   when,
   () => withLoader(async (ctx) => {
     const first = await reconcile(ctx.loader, desired)
-    assert.deepEqual(first, { created: [GROUP_ID], updated: [], removed: [], kept: [], failed: [] })
+    assert.deepEqual(first, { created: [GROUP_ID], updated: [], removed: [], kept: [], failed: [], refused: [] })
     assert.equal(ctx.loader.resolve(GROUP_ID).fiber.state, 2, 'group is active')
     assert.equal(ctx.loader.resolve(CHILD_ID).fiber.state, 2, 'skill materializer applied')
 
     const second = await reconcile(ctx.loader, desired)
-    assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [GROUP_ID], failed: [] })
+    assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [GROUP_ID], failed: [], refused: [] })
 
     const groupFiber = ctx.loader.resolve(GROUP_ID).fiber
     const childFiber = ctx.loader.resolve(CHILD_ID).fiber
@@ -99,7 +99,7 @@ test(
     }
 
     const third = await reconcile(ctx.loader, [])
-    assert.deepEqual(third, { created: [], updated: [], removed: [GROUP_ID], kept: [], failed: [] })
+    assert.deepEqual(third, { created: [], updated: [], removed: [GROUP_ID], kept: [], failed: [], refused: [] })
     assert.equal(unloading, 5, 'teardown observed at fiber.state === 5 (unloading)')
     assert.equal(groupFiber.state, 4, 'group settled disposed')
     assert.equal(childFiber.state, 4, 'child settled disposed')

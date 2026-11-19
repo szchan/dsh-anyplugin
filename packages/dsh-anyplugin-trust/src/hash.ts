@@ -1,0 +1,444 @@
+/**
+ * Exec artifacts are **manifests** (D25).
+ *
+ * A grant pins code, not data:
+ *
+ * ```
+ * artifact = { mode, invocation, command, files: [{ path, sha256, bytes }] }
+ * hash     = sha256(mode, invocation, command, each code file's path + sha256)
+ * ```
+ *
+ * `invocation` is the exact text/argv handed to the shell or `spawn`, and it is
+ * hashed: changing a data operand's *name* is a different invocation. Only the
+ * program is pinned by bytes:
+ *
+ * - `command[0]` when it resolves to a file inside the plugin root, or
+ * - for a known interpreter, the first non-flag operand that resolves to a file
+ *   inside the root (for `node fmt.js data.txt`, that is `fmt.js`).
+ *
+ * Every other operand is data: positional inputs, `--out` values, redirect
+ * targets. Its bytes are not read and editing it does not invalidate the grant.
+ * Interpreter eval payloads (`sh -c`, `node -e`, `python -m`, …) are code and
+ * stay in the hashed text.
+ *
+ * Relative and outside-root **program** files are refused: hooks run with the
+ * project directory as cwd, so `./hook.sh` would pin one file and execute
+ * another. A relative/outside-root *data* operand is allowed; the hook's own
+ * cwd decides what it means. Nothing is sorted, and duplicate words are kept.
+ */
+import { createHash } from 'node:crypto'
+import { readFileSync, statSync } from 'node:fs'
+import { basename, isAbsolute, relative, resolve } from 'node:path'
+
+import type { IrHook } from '../../dsh-anyplugin-ir/src/index.ts'
+
+export type ArtifactMode = 'file' | 'text' | 'composite'
+
+export interface ArtifactFile {
+  /** Absolute path, exactly the path re-read before every spawn. */
+  path: string
+  /** sha256 of the file's bytes. */
+  sha256: string
+  bytes: number
+}
+
+export interface ArtifactManifest {
+  mode: ArtifactMode
+  /**
+   * The exact command text (shell form) or argv (exec form), as handed to the
+   * runner. Hashed: a changed flag, operand name, or order is a new artifact.
+   */
+  invocation: string | readonly string[]
+  /**
+   * Code-bearing text when the program is an eval payload, otherwise `''`.
+   * Hashed. The bytes of `files` cover the program itself.
+   */
+  command: string | readonly string[]
+  /** The program's files, in discovery order; duplicates are kept. */
+  files: readonly ArtifactFile[]
+}
+
+export interface HookArtifact {
+  artifactHash: string
+  manifest: ArtifactManifest
+  /** Plugin-relative file for a pure-file artifact, otherwise `hooks/hooks.json`. */
+  sourcePath: string
+  mode: ArtifactMode
+  /** Set when no honest manifest can be resolved (relative/outside/missing program). */
+  unsupported?: string
+}
+
+/** `sha256:<hex>` over the given bytes. */
+export function hashBytes(bytes: Uint8Array | string): string {
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  return `sha256:${digest}`
+}
+
+/** `sha256:<hex>` over a file's bytes. */
+export function hashFile(file: string): string {
+  return hashBytes(readFileSync(file))
+}
+
+function updateFramed(hash: ReturnType<typeof createHash>, label: string, value: string): void {
+  hash.update(`${label}${Buffer.byteLength(value)}\u0000`)
+  hash.update(value)
+  hash.update('\u0000')
+}
+
+/**
+ * Hash a manifest exactly as resolved: mode, exact invocation, code-bearing
+ * command, then each program file's path and pinned hash in order.
+ */
+export function hashManifest(manifest: ArtifactManifest): string {
+  const hash = createHash('sha256')
+  hash.update('dsh-anyplugin/artifact@1\u0000')
+  updateFramed(hash, 'mode:', manifest.mode)
+  if (typeof manifest.invocation === 'string') {
+    updateFramed(hash, 'invocation-text:', manifest.invocation)
+  } else {
+    updateFramed(hash, 'invocation-count:', String(manifest.invocation.length))
+    for (const word of manifest.invocation) updateFramed(hash, 'invocation:', word)
+  }
+  if (typeof manifest.command === 'string') {
+    updateFramed(hash, 'text:', manifest.command)
+  } else {
+    updateFramed(hash, 'argv-count:', String(manifest.command.length))
+    for (const word of manifest.command) updateFramed(hash, 'argv:', word)
+  }
+  for (const file of manifest.files) {
+    updateFramed(hash, 'file-path:', file.path)
+    updateFramed(hash, 'file-hash:', file.sha256)
+  }
+  return `sha256:${hash.digest('hex')}`
+}
+
+/** Read a file into the manifest shape; one read, so size and hash agree. */
+function fileEntry(file: string): ArtifactFile {
+  const bytes = readFileSync(file)
+  return { path: file, sha256: hashBytes(bytes), bytes: bytes.byteLength }
+}
+
+/**
+ * Re-read exactly the manifest's paths and return the current hash. This never
+ * re-parses the command. Throws if a pinned file is gone or unreadable.
+ */
+export function hashManifestAtSpawn(manifest: ArtifactManifest): string {
+  const current: ArtifactManifest = {
+    ...manifest,
+    files: manifest.files.map((file) => fileEntry(file.path)),
+  }
+  return hashManifest(current)
+}
+
+/** Hash a whole file as a pure-file manifest (bin/monitor/mod rows). */
+export function fileArtifact(file: string): { artifactHash: string; manifest: ArtifactManifest } {
+  const manifest: ArtifactManifest = {
+    mode: 'file',
+    invocation: file,
+    command: '',
+    files: [fileEntry(file)],
+  }
+  return { artifactHash: hashManifest(manifest), manifest }
+}
+
+/**
+ * A deliberately small shell word splitter: quotes and backslash escapes are
+ * honoured, expansions are not performed. Enough to find the program word
+ * without pretending to be a shell.
+ */
+export function shellWords(command: string): string[] {
+  const words: string[] = []
+  let current = ''
+  let quote: '"' | "'" | undefined
+  let escaped = false
+  for (const char of command) {
+    if (escaped) {
+      current += char
+      escaped = false
+      continue
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true
+      continue
+    }
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined
+      else current += char
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (current.length > 0) {
+        words.push(current)
+        current = ''
+      }
+      continue
+    }
+    current += char
+  }
+  if (current.length > 0) words.push(current)
+  return words
+}
+
+function expandRoot(value: string, root: string): string {
+  return value
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, root)
+    .replace(/\$CLAUDE_PLUGIN_ROOT(?![A-Za-z0-9_])/g, root)
+}
+
+function insideRoot(root: string, file: string): boolean {
+  const rel = relative(root, file)
+  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+function relativePath(root: string, file: string): string {
+  return relative(root, file).split('\\').join('/')
+}
+
+function looksPathLike(word: string): boolean {
+  if (word === '.' || word === '..') return true
+  if (word.startsWith('./') || word.startsWith('../') || word.startsWith('/')) return true
+  if (word.includes('/') || word.includes('\\')) return true
+  return /\.[A-Za-z0-9]{1,8}$/.test(word)
+}
+
+function fileKind(file: string): 'file' | 'missing' | 'directory' {
+  try {
+    const stat = statSync(file)
+    if (stat.isFile() || stat.isSymbolicLink()) return 'file'
+    return 'directory'
+  } catch {
+    return 'missing'
+  }
+}
+
+/** Interpreters whose first non-flag operand names the program to run. */
+const INTERPRETERS = new Set([
+  'bash',
+  'bun',
+  'dash',
+  'deno',
+  'ksh',
+  'node',
+  'nodejs',
+  'perl',
+  'php',
+  'pwsh',
+  'python',
+  'python3',
+  'ruby',
+  'sh',
+  'zsh',
+])
+
+function isInterpreter(word: string): boolean {
+  const name = basename(expandRoot(word, '')).toLowerCase()
+  return INTERPRETERS.has(name) || /^python\d+(?:\.\d+)?$/.test(name)
+}
+
+/** Interpreter flags whose *value* is code, not a path. */
+function evalFlag(executable: string, words: readonly string[], start: number): boolean {
+  const program = basename(executable)
+  // Only flags before the first operand belong to the interpreter. In
+  // `node fmt.js -e x`, `-e` is an argument to fmt.js, not an eval flag.
+  for (let index = start; index < words.length; index++) {
+    const word = words[index] as string
+    if (word === '--') return false
+    if (!word.startsWith('-')) return false
+    if (program === 'node' || program === 'nodejs') {
+      if (word === '-e' || word === '--eval' || word === '-p' || word === '--print') return true
+      if (word.startsWith('--eval=') || word.startsWith('--print=')) return true
+    } else if (['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(program)) {
+      if (word === '-c') return true
+      if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word) && word.length > 2) return true
+    } else if (['perl', 'ruby'].includes(program)) {
+      if (word === '-e') return true
+    } else if (program === 'php') {
+      if (word === '-r') return true
+    } else if (program === 'python' || program === 'python3' || /^python\d/.test(program)) {
+      if (word === '-c' || word === '-m') return true
+    }
+  }
+  return false
+}
+function shellHasEval(words: readonly string[]): boolean {
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index] as string
+    if (evalFlag(word, words, index + 1)) return true
+  }
+  return false
+}
+
+interface Program {
+  file?: ArtifactFile
+  unsupported?: string
+}
+
+function absoluteProgram(word: string, root: string): Program {
+  const absolute = resolve(expandRoot(word, root))
+  if (!insideRoot(root, absolute)) {
+    return {
+      unsupported: `program "${word}" is outside the plugin root; copy it in or use an absolute path inside \${CLAUDE_PLUGIN_ROOT}`,
+    }
+  }
+  if (fileKind(absolute) !== 'file') {
+    return { unsupported: `program "${word}" does not exist and cannot be pinned` }
+  }
+  return { file: fileEntry(absolute) }
+}
+
+function relativeProgram(word: string, root: string): Program {
+  const relativeToRoot = fileKind(resolve(root, word)) === 'file'
+  const relativeToCwd = fileKind(resolve(process.cwd(), word)) === 'file'
+  if (!looksPathLike(word) && !relativeToRoot && !relativeToCwd) return {}
+  return {
+    unsupported: `program "${word}" is relative; hooks run with the project directory as cwd; use \${CLAUDE_PLUGIN_ROOT}/${word.replace(/^\.\//, '')}`,
+  }
+}
+
+/**
+ * Find the program word. `words[0]` can name the program directly, or name a
+ * known interpreter whose first non-flag operand is the program. Everything
+ * after that first operand is data.
+ */
+function programFor(words: readonly string[], root: string): Program {
+  const first = words[0]
+  if (first === undefined) return {}
+  const expanded = expandRoot(first, root)
+  if (isAbsolute(expanded)) return absoluteProgram(first, root)
+  if (looksPathLike(first)) return relativeProgram(first, root)
+  if (!isInterpreter(first)) return {}
+
+  for (const word of words.slice(1)) {
+    if (word === '--') continue
+    if (word.startsWith('-')) continue
+    if (isAbsolute(expandRoot(word, root))) return absoluteProgram(word, root)
+    const candidate = resolve(root, word)
+    const inRoot = fileKind(candidate) === 'file'
+    const inCwd = fileKind(resolve(process.cwd(), word)) === 'file'
+    if (looksPathLike(word) || inRoot || inCwd) return relativeProgram(word, root)
+    // A non-file word is not the program; keep looking for the first operand
+    // that resolves to a file.
+  }
+  return {}
+}
+
+const SHELL_OPERATORS = new Set(['|', '||', '&&', ';', '&'])
+
+/**
+ * A shell command can run several programs (`cat data | node fmt.js`). Pin the
+ * program of each segment; data operands in every segment stay text. A refused
+ * program in any segment refuses the whole artifact.
+ */
+function programsForShell(
+  words: readonly string[],
+  root: string,
+): { files: ArtifactFile[]; unsupported?: string } {
+  const files: ArtifactFile[] = []
+  let segment: string[] = []
+  const flush = (): string | undefined => {
+    if (segment.length === 0) return undefined
+    const program = programFor(segment, root)
+    if (program.file !== undefined) files.push(program.file)
+    segment = []
+    return program.unsupported
+  }
+  for (const word of words) {
+    if (SHELL_OPERATORS.has(word)) {
+      const problem = flush()
+      if (problem !== undefined) return { files, unsupported: problem }
+      continue
+    }
+    segment.push(word)
+  }
+  const problem = flush()
+  return { files, ...(problem === undefined ? {} : { unsupported: problem }) }
+}
+
+/**
+ * Resolve one command hook into a manifest plus hash.
+ *
+ * Exec form (`args` present) and shell form share the same rule: the program
+ * is code and is pinned; data operands are invocation text only. Eval payloads
+ * are code text and pin no file.
+ */
+export function hashHook(root: string, hook: IrHook): HookArtifact {
+  const command = hook.command
+  if (command === undefined) throw new Error(`hook ${hook.event}#${hook.index} has no command`)
+  const base = resolve(root)
+
+  if (hook.args !== undefined) {
+    const invocation = [command, ...hook.args]
+    if (evalFlag(command, invocation, 1)) {
+      const manifest: ArtifactManifest = { mode: 'text', invocation, command: invocation, files: [] }
+      return {
+        artifactHash: hashManifest(manifest),
+        manifest,
+        sourcePath: hook.sourcePath,
+        mode: 'text',
+      }
+    }
+    const program = programFor(invocation, base)
+    const manifest: ArtifactManifest = {
+      mode: program.file === undefined ? 'text' : invocation.length === 1 ? 'file' : 'composite',
+      invocation,
+      command: '',
+      files: program.file === undefined ? [] : [program.file],
+    }
+    return {
+      artifactHash: hashManifest(manifest),
+      manifest,
+      sourcePath:
+        program.file === undefined ? hook.sourcePath : relativePath(base, program.file.path),
+      mode: manifest.mode,
+      ...(program.unsupported === undefined ? {} : { unsupported: program.unsupported }),
+    }
+  }
+
+  const words = shellWords(command)
+  if (shellHasEval(words)) {
+    const manifest: ArtifactManifest = { mode: 'text', invocation: command, command, files: [] }
+    return {
+      artifactHash: hashManifest(manifest),
+      manifest,
+      sourcePath: hook.sourcePath,
+      mode: 'text',
+    }
+  }
+
+  const program = programsForShell(words, base)
+  const manifest: ArtifactManifest = {
+    mode: program.files.length === 0 ? 'text' : words.length === 1 ? 'file' : 'composite',
+    invocation: command,
+    command: '',
+    files: program.files,
+  }
+  return {
+    artifactHash: hashManifest(manifest),
+    manifest,
+    sourcePath:
+      program.files.length === 1
+        ? relativePath(base, (program.files[0] as ArtifactFile).path)
+        : hook.sourcePath,
+    mode: manifest.mode,
+    ...(program.unsupported === undefined ? {} : { unsupported: program.unsupported }),
+  }
+}
+
+/**
+ * UI preview of the exact manifest, not a re-scan: the command line, mode, and
+ * the pinned program files. A changed artifact is shown as a different line,
+ * which is what the installer prompts with.
+ */
+export function hookArtifactText(root: string, hook: IrHook): string {
+  const artifact = hashHook(root, hook)
+  const invitation =
+    typeof artifact.manifest.invocation === 'string'
+      ? artifact.manifest.invocation
+      : artifact.manifest.invocation.map((word) => JSON.stringify(word)).join(' ')
+  const files = artifact.manifest.files.map((file) => `${file.path} ${file.sha256}`).join(', ')
+  return `${artifact.mode}: ${invitation}${files.length > 0 ? ` [${files}]` : ''}${artifact.unsupported === undefined ? '' : ` (unsupported: ${artifact.unsupported})`}`
+}

@@ -4,5 +4,6 @@
   "private": true,
   "type": "module",
   "description": "DSH plugin that mounts a plugin's command hooks on the tool waterfalls (D19).",
-  "exports": { ".": "./src/index.ts" }
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "dsh-anyplugin-trust": "*" }
 }

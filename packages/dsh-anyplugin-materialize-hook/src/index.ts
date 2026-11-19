@@ -18,16 +18,26 @@ import {
   matcherMatches,
   runCommandHook,
 } from '../../dsh-anyplugin-hook-runner/src/index.ts'
+import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const name = 'anyplugin-materialize-hook'
 export const inject = ['tools']
 
 export interface MaterialHook {
   event: string
+  /** Flat per-event position; names the artifact in refusal messages. */
+  index?: number
   matcher?: string
   command: string
   args?: string[]
   timeout?: number
+  /** D25 pin carried by the emitter; absent on a hand-written config. */
+  artifactHash?: string
+  /** How the pin was taken: a pure file, command text, or a composite. */
+  artifactMode?: ArtifactMode
+  artifactRoot?: string
+  /** The resolved manifest: exact invocation plus ordered files and hashes. */
+  artifact?: ArtifactManifest
 }
 
 export interface Config {
@@ -68,6 +78,58 @@ export function apply(ctx: any, config: Config = {}): void {
   if (config.pluginData !== undefined) env.CLAUDE_PLUGIN_DATA = config.pluginData
   env.CLAUDE_PROJECT_DIR = process.cwd()
 
+  /**
+   * Re-read exactly the manifest's files immediately before every spawn (D25).
+   * The command is never re-scanned: a grant pins one resolution, so an output
+   * a hook writes (`--out ./out.txt`) or a later-created relative file can
+   * neither change the artifact nor trigger a false refusal. A mismatch means
+   * the bytes that would run are not the granted bytes, and the invocation is
+   * refused.
+   */
+  const sameInvocation = (hook: MaterialHook, manifest: ArtifactManifest): boolean => {
+    if (typeof manifest.invocation === 'string') {
+      return hook.args === undefined && manifest.invocation === hook.command
+    }
+    if (hook.args === undefined) return false
+    return (
+      manifest.invocation.length === hook.args.length + 1 &&
+      manifest.invocation[0] === hook.command &&
+      hook.args.every((arg, index) => manifest.invocation[index + 1] === arg)
+    )
+  }
+
+  const artifactChange = (hook: MaterialHook): string | undefined => {
+    const label = `${hook.event}#${hook.index ?? 0}`
+    const invocation = hook.args === undefined
+      ? hook.command
+      : [hook.command, ...hook.args].map((part) => JSON.stringify(part)).join(' ')
+    if (hook.artifactHash === undefined) {
+      return `refused ${label}: no hash-pinned grant was carried; command: ${invocation}`
+    }
+    const manifest = hook.artifact
+    if (manifest === undefined) {
+      return `refused ${label}: no artifact manifest was carried with the grant; pinned ${hook.artifactHash}; command: ${invocation}`
+    }
+    const pinnedManifest = hashManifest(manifest)
+    if (pinnedManifest !== hook.artifactHash) {
+      return `refused ${label}: the carried manifest does not match the grant (granted ${hook.artifactHash}, manifest ${pinnedManifest}); command: ${invocation}`
+    }
+    if (hook.artifactMode !== undefined && manifest.mode !== hook.artifactMode) {
+      return `refused ${label}: artifact mode changed since the grant (pinned ${hook.artifactMode}, now ${manifest.mode}); command: ${invocation}`
+    }
+    if (!sameInvocation(hook, manifest)) {
+      return `refused ${label}: the config no longer names the pinned invocation; command: ${invocation}`
+    }
+    let current: string
+    try {
+      current = hashManifestAtSpawn(manifest)
+    } catch (error) {
+      return `refused ${label}: artifact cannot be re-hashed (${(error as Error).message}); pinned ${hook.artifactHash}; command: ${invocation}`
+    }
+    if (current === hook.artifactHash) return undefined
+    return `refused ${label}: artifact changed since the grant (pinned ${hook.artifactHash}, now ${current}); command: ${invocation}`
+  }
+
   const warn = (message: string): void => {
     const logger = ctx.logger
     if (typeof logger?.warn === 'function') logger.warn(message)
@@ -83,6 +145,8 @@ export function apply(ctx: any, config: Config = {}): void {
       ctx.on('tools/pre-execute', async (exec: ExecView, next: () => Promise<unknown>) => {
         for (const hook of pre) {
           if (!matcherMatches(hook.matcher, exec.name)) continue
+          const changed = artifactChange(hook)
+          if (changed !== undefined) return { kind: 'deny', reason: changed }
           const payload = buildHookPayload('PreToolUse', {
             toolName: exec.name,
             toolInput: exec.arguments,
@@ -107,6 +171,12 @@ export function apply(ctx: any, config: Config = {}): void {
         const contexts: unknown[] = [...(decision.additionalContexts ?? [])]
         for (const hook of post) {
           if (!matcherMatches(hook.matcher, exec.name)) continue
+          const changed = artifactChange(hook)
+          if (changed !== undefined) {
+            warn(changed)
+            contexts.push({ role: 'user', content: [{ type: 'text', text: changed }] })
+            continue
+          }
           const payload = buildHookPayload('PostToolUse', {
             toolName: exec.name,
             toolInput: exec.arguments,
