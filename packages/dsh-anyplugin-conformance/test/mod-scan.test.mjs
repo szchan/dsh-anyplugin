@@ -58,7 +58,8 @@ test('the pinned upstream diff mod scans deterministically and every line exists
   ])
 
   // A line number that does not point at the construct would still pass a
-  // "line <= length" check. Require the line to contain the syntax it claims.
+  // "line <= length" check. Require the line to contain the exact namespace the
+  // call claims, and lock the one split call by its two lines.
   const lines = source.split('\n')
   for (const event of first.events) {
     assert.ok(Number.isInteger(event.line) && event.line >= 1 && event.line <= lines.length, `event line ${event.line} exists`)
@@ -66,6 +67,15 @@ test('the pinned upstream diff mod scans deterministically and every line exists
   }
   for (const call of first.calls) {
     assert.ok(Number.isInteger(call.line) && call.line >= 1 && call.line <= lines.length, `call line ${call.line} exists`)
-    assert.match(lines[call.line - 1], /\$\./, `call line ${call.line} points at a $. site`)
+    assert.ok(
+      lines[call.line - 1].includes(`$.${call.namespace}`),
+      `call line ${call.line} points at $.${call.namespace} (not just any $. site)`,
+    )
   }
+
+  const usage = first.calls.find((call) => call.namespace === 'session' && call.method === 'usage')
+  assert.ok(usage, 'the scanner found $.session.usage')
+  assert.equal(usage.line, 964)
+  assert.match(lines[usage.line - 1], /\$\.session\s*$/, 'line 964 is the namespace half')
+  assert.match(lines[usage.line], /^\s*\.usage\(\)/, 'line 965 is the method half')
 })

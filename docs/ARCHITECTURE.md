@@ -113,6 +113,7 @@ Claude Code to Codex to Cursor without rewrite; §9 makes it an acceptance test.
 | --- | --- |
 | `dsh-anyplugin` | host controller: reconcile loop, `anyplugin` command family, API for UI |
 | `dsh-anyplugin-ir` | IR schema, normalizer, fidelity algebra, validators |
+| `dsh-anyplugin-mod-scan` | static mod scanner: literal `on` / `$` sites, capability list, `dynamic` for what it can see but cannot prove |
 | `dsh-anyplugin-dialect-claude-code` | `.claude-plugin/` → IR |
 | `dsh-anyplugin-dialect-codex` | portable `plugin.json` / `.codex-plugin/` → IR |
 | `dsh-anyplugin-dialect-portable` | `agent-plugins.org` 1.0 → IR (shared by Codex and future sources) |
@@ -355,8 +356,9 @@ What a faithful host needs, in dependency order:
 
 1. **static scanner** — *landed* in `dsh-anyplugin-mod-scan`: recognize literal
    `on('event')` / `$.ns.method()` and emit the capability list, with every
-   unprovable site in `dynamic` (D21). This is also the trust UI's data source,
-   and it does not run a mod;
+   visible capability-shaped site it cannot prove in `dynamic` (D21). It names
+   its invisible categories in `SCAN_CAVEAT`; it is not a completeness claim.
+   This is also the trust UI's data source, and it does not run a mod;
 2. **chain engine** — `next(e)` re-entry, tiers (`prepend|user|append|builtin`),
    `next.to`, `next.budget`, `next.signal`, `.catch`, per-event timeouts;
 3. **element runtime** — ~17 elements with validated prop schemas, render sites,
@@ -393,12 +395,13 @@ ordering tiers plus guard mods (`sec-default`, `hipaa-default`) hold it back.
 
 So a mod host must ship an **equivalent guard layer** or it is strictly less
 safe than the thing it emulates. The mitigation that comes for free: the static
-scan produces the exact capability list *before* install. That list feeds §6's
-grant UI directly — we show `hooks: tool.call, prompt.submit` and
+scan produces the literal capability list *before* install. That list feeds
+§6's grant UI directly — we show `hooks: tool.call, prompt.submit` and
 `calls: fs.write, process.run, env.get` and pin the grant to the artifact hash.
-The scanner has landed in `dsh-anyplugin-mod-scan`; it is literal-only and
-reports what it cannot prove (D21), so the grant prompt must show that report
-too.
+The scanner has landed in `dsh-anyplugin-mod-scan`; it is literal-only, reports
+the capability-shaped sites it can see but cannot prove, and names the
+categories it cannot see at all (`SCAN_CAVEAT`, D21). The grant prompt must show
+that report and that caveat, not the list alone.
 
 ### 7.6 Known portability limits (declare them, do not discover them)
 

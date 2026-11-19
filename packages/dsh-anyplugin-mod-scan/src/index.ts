@@ -10,10 +10,21 @@
  * The scanner is not a JavaScript parser. It skips comments, strings, regular
  * expression literals and template-literal bodies; it records a literal event
  * only when the first argument is one literal, and records a call only when the
- * namespace and method are direct identifiers. Everything it cannot prove is
- * reported under `dynamic` with a reason instead of being dropped. The limits
- * (aliasing, imports, computed access, template expressions) are part of D21.
+ * namespace and method are direct identifiers. Every capability-shaped site it
+ * can see but cannot prove is reported under `dynamic` with a reason instead of
+ * being dropped. Some capabilities leave no literal site at all (aliases,
+ * imported helpers, `eval`/`new Function`, unrecognized syntax); those are
+ * outside a lexical scan and are named in `SCAN_CAVEAT`. The limits are part of
+ * D21.
  */
+
+/**
+ * The limits of every scan, as one stable sentence. `capabilityList` is a
+ * literal list, not a completeness claim: a trust prompt must display this
+ * caveat and `scan.dynamic`, or a caller could read the list as exhaustive.
+ */
+export const SCAN_CAVEAT =
+  'The scan proves only literal on() and $.namespace.method() sites. Calls through aliases or imported helpers, eval/new Function, and syntax the scanner does not recognize are invisible.'
 
 export interface ModEvent {
   /** The literal event name, e.g. `tool.call`. */
@@ -45,11 +56,17 @@ export interface DynamicSite {
 }
 
 export interface ModScan {
+  /** The file path or URL the caller asked to scan. */
+  file: string
   /** Every proven `on('event', ...)` site, in source order. Duplicates are kept. */
   events: ModEvent[]
   /** Every proven `$.namespace.method(...)` site, in source order. Duplicates are kept. */
   calls: ModCall[]
-  /** Every capability-shaped site the scan could not prove, with a reason. */
+  /**
+   * Every capability-shaped site the scan can see but could not prove, with a
+   * reason. A capability that leaves no literal site is outside the scan; see
+   * `SCAN_CAVEAT`.
+   */
   dynamic: DynamicSite[]
 }
 
@@ -130,21 +147,22 @@ export function scanModSource(source: string, options: ScanOptions): ModScan {
     }
     if (token.kind !== 'ident') continue
 
-    if (token.value === 'on' && isOnCall(tokens, index)) {
-      scanOn(tokens, index, source, events, dynamic)
+    if (token.value === 'on') {
+      const open = onCallOpen(tokens, index)
+      if (open !== -1) scanOn(tokens, index, open, source, events, dynamic)
     } else if (token.value === '$' && !isMemberName(tokens, index)) {
       scanDollar(tokens, index, calls, dynamic)
     }
   }
 
-  return { events, calls, dynamic }
+  return { file, events, calls, dynamic }
 }
 
 /**
  * The capability list in the shape Claude prints before install: one sorted,
  * deduplicated `hooks:` line and one `calls:` line. `dynamic` is not folded in
- * here; a trust prompt must show `scan.dynamic` as well, or it would hide the
- * sites the scan could not prove.
+ * here; a trust prompt must show `scan.dynamic` and `SCAN_CAVEAT` as well, or it
+ * would present a literal list as a complete one.
  */
 export function capabilityList(scan: ModScan): string[] {
   const hooks = [...new Set(scan.events.map((event) => event.name))].sort()
@@ -157,16 +175,63 @@ function isMemberName(tokens: Token[], index: number): boolean {
   return tokens[index - 1]?.value === '.'
 }
 
-function isOnCall(tokens: Token[], index: number): boolean {
+/**
+ * Index of the `(` that opens an `on` call, or -1 when this `on` is not a call.
+ * Accepts the authored call syntax a mod may use without a transform:
+ * `on(...)`, `on?.(...)`, `on<T>(...)` and `on?.<T>(...)`. The scanner reads
+ * text, so a generic argument list is skipped lexically, never typechecked.
+ */
+function onCallOpen(tokens: Token[], index: number): number {
   const previous = tokens[index - 1]
-  if (previous?.value === '.') return false
-  if (previous?.kind === 'ident' && previous.value === 'function') return false
-  return tokens[index + 1]?.value === '('
+  if (previous?.value === '.') return -1
+  if (previous?.kind === 'ident' && previous.value === 'function') return -1
+
+  let at = index + 1
+  if (tokens[at]?.value === '?') {
+    if (tokens[at + 1]?.value !== '.') return -1
+    at += 2
+  }
+  if (tokens[at]?.value === '<') {
+    const close = typeArgumentEnd(tokens, at)
+    if (close === -1) return -1
+    at = close + 1
+  }
+  if (tokens[at]?.value === '?') {
+    if (tokens[at + 1]?.value !== '.') return -1
+    at += 2
+  }
+  return tokens[at]?.value === '(' ? at : -1
 }
 
-function scanOn(tokens: Token[], index: number, source: string, events: ModEvent[], dynamic: DynamicSite[]): void {
+/**
+ * Index of the `>` that closes a simple type-argument list, or -1. Only tokens
+ * that can appear in a type are accepted, so a comparison such as
+ * `on < x > (y)` is not mistaken for a generic call unless its tokens also look
+ * like a type. Nested generics (`on<Map<string, T>>`) are handled by depth.
+ */
+function typeArgumentEnd(tokens: Token[], open: number): number {
+  let depth = 0
+  for (let at = open; at < tokens.length; at += 1) {
+    const token = tokens[at]
+    if (token.value === '<') {
+      depth += 1
+      continue
+    }
+    if (token.value === '>') {
+      depth -= 1
+      if (depth === 0) return at
+      continue
+    }
+    if (token.kind === 'ident') continue
+    if (token.kind === 'punct' && ['[', ']', ',', '.', '|', '&', '?', ':'].includes(token.value)) continue
+    return -1
+  }
+  return -1
+}
+
+function scanOn(tokens: Token[], index: number, open: number, source: string, events: ModEvent[], dynamic: DynamicSite[]): void {
   const line = tokens[index].line
-  const { args } = readArguments(tokens, index + 1)
+  const { args } = readArguments(tokens, open)
   if (args.length === 0) {
     addDynamic(dynamic, line, 'on(...) has no event argument, so the scanner cannot prove what is hooked')
     return
@@ -201,32 +266,59 @@ function scanDollar(tokens: Token[], index: number, calls: ModCall[], dynamic: D
   const line = tokens[index].line
   let at = index + 1
 
-  if (tokens[at]?.value === '?') at += 1
-  if (tokens[at]?.value === '[') {
+  // `$.ns`, `$?.ns`, or the computed forms `$[ns]` / `$?.[ns]` / `$(ns)`.
+  if (tokens[at]?.value === '?') {
+    if (tokens[at + 1]?.value === '.' && tokens[at + 2]?.value === '[') {
+      addDynamic(dynamic, line, 'computed namespace access $?.[...] cannot be proven by the lexical scan')
+      return
+    }
+    if (tokens[at + 1]?.value !== '.') return
+    at += 2
+  } else if (tokens[at]?.value === '.') {
+    at += 1
+  } else if (tokens[at]?.value === '[') {
     addDynamic(dynamic, line, 'computed namespace access $[...] cannot be proven by the lexical scan')
     return
-  }
-  if (tokens[at]?.value === '(') {
+  } else if (tokens[at]?.value === '(') {
     addDynamic(dynamic, line, 'a call of $ itself cannot be proven by the lexical scan')
     return
-  }
-  if (tokens[at]?.value !== '.') return
-
-  const namespace = tokens[at + 1]
-  if (namespace?.kind !== 'ident') return
-  at += 2
-
-  if (tokens[at]?.value === '[') {
-    addDynamic(dynamic, line, `computed method name on $.${namespace.value} cannot be proven by the lexical scan`)
+  } else {
     return
   }
-  if (tokens[at]?.value !== '.') return
 
-  const method = tokens[at + 1]
+  const namespace = tokens[at]
+  if (namespace?.kind !== 'ident') return
+  at += 1
+
+  // `$.ns.method`, `$.ns?.method`, or the computed form `$.ns[method]`.
+  // `$.ns?.[method]` lexes as `?` `.` `[`, so the bracket is one token later.
+  if (tokens[at]?.value === '?') {
+    if (tokens[at + 1]?.value === '.' && tokens[at + 2]?.value === '[') {
+      addDynamic(dynamic, line, `computed method name on $.${namespace.value} cannot be proven by the lexical scan`)
+      return
+    }
+    if (tokens[at + 1]?.value !== '.') return
+    at += 2
+  } else if (tokens[at]?.value === '[') {
+    addDynamic(dynamic, line, `computed method name on $.${namespace.value} cannot be proven by the lexical scan`)
+    return
+  } else if (tokens[at]?.value === '.') {
+    at += 1
+  } else {
+    return
+  }
+
+  const method = tokens[at]
   if (method?.kind !== 'ident') return
+  at += 1
 
-  const open = tokens[at + 2]?.value === '?' && tokens[at + 3]?.value === '(' ? at + 3 : at + 2
-  if (tokens[open]?.value !== '(') return
+  // A direct call, optionally with the optional-call operator: `m(...)` or
+  // `m?.(...)`.
+  if (tokens[at]?.value === '?') {
+    if (tokens[at + 1]?.value !== '.') return
+    at += 2
+  }
+  if (tokens[at]?.value !== '(') return
 
   calls.push({ namespace: namespace.value, method: method.value, line })
 }

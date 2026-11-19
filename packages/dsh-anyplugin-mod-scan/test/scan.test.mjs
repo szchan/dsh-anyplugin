@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { capabilityList, scanModSource } from '../src/index.ts'
+import { SCAN_CAVEAT, capabilityList, scanModSource } from '../src/index.ts'
 
 const scan = (source) => scanModSource(source, { file: 'fixture.ts' })
 
@@ -62,14 +62,53 @@ test('reports a template-literal event under dynamic', () => {
 })
 
 test('reports computed namespace and method access under dynamic', () => {
-  const source = ['$(namespace)', '$[namespace].read()', '$.fs[method]()'].join('\n')
+  const source = ['$(namespace)', '$[namespace].read()', '$?.[namespace].read()', '$.fs[method]()'].join('\n')
 
   const result = scan(source)
   assert.deepEqual(result.calls, [])
-  assert.equal(result.dynamic.length, 3)
+  assert.equal(result.dynamic.length, 4)
   assert.match(result.dynamic[0].reason, /call of \$ itself/)
   assert.match(result.dynamic[1].reason, /computed namespace/)
-  assert.match(result.dynamic[2].reason, /computed method name on \$\.fs/)
+  assert.match(result.dynamic[2].reason, /computed namespace/)
+  assert.match(result.dynamic[3].reason, /computed method name on \$\.fs/)
+})
+
+test('records an on call and a $ call through optional chaining or generics', () => {
+  const source = [
+    "$?.fs.read('a')",
+    "$.fs?.read('b')",
+    "$.fs.read?.('c')",
+    "on?.('tool.call', handler)",
+    "on<T>('tool.call', handler)",
+  ].join('\n')
+
+  const result = scan(source)
+  assert.deepEqual(result.events, [
+    { name: 'tool.call', line: 4 },
+    { name: 'tool.call', line: 5 },
+  ])
+  assert.deepEqual(result.calls, [
+    { namespace: 'fs', method: 'read', line: 1 },
+    { namespace: 'fs', method: 'read', line: 2 },
+    { namespace: 'fs', method: 'read', line: 3 },
+  ])
+  assert.deepEqual(result.dynamic, [])
+})
+
+test('records a call whose namespace and method are on different lines', () => {
+  const source = ['$.session', '  .usage()'].join('\n')
+
+  const result = scan(source)
+  assert.deepEqual(result.calls, [{ namespace: 'session', method: 'usage', line: 1 }])
+  assert.deepEqual(result.dynamic, [])
+})
+
+test('reports optional computed method access under dynamic', () => {
+  const result = scan("$.fs?.[method]('x')")
+
+  assert.deepEqual(result.calls, [])
+  assert.equal(result.dynamic.length, 1)
+  assert.match(result.dynamic[0].reason, /computed method name on \$\.fs/)
 })
 
 test('deduplicates and sorts only in the capability list', () => {
@@ -136,6 +175,18 @@ test('reports template interpolations the lexical scan does not descend into', (
     result.dynamic.some((site) => site.line === 1 && /template interpolation/.test(site.reason)),
     'a capability-shaped interpolation must be reported, not silently skipped',
   )
+})
+
+test('carries the file it was asked to scan and states the scan limits', () => {
+  const result = scanModSource('', { file: 'mods/example.ts' })
+
+  assert.equal(result.file, 'mods/example.ts')
+  assert.deepEqual(result.events, [])
+  assert.deepEqual(result.calls, [])
+  assert.deepEqual(result.dynamic, [])
+  assert.deepEqual(capabilityList(result), ['hooks:', 'calls:'])
+  assert.match(SCAN_CAVEAT, /aliases or imported helpers/)
+  assert.match(SCAN_CAVEAT, /eval\/new Function/)
 })
 
 test('validates its inputs', () => {
