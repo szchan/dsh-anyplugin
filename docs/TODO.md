@@ -86,8 +86,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
   record that decides and exits non-zero while a narrower grant still allows
   the artifact.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
-- Interception kernel skeleton (`dsh-anyplugin-intercept`): ordering, matcher,
-  decisions, budgets, trace, `observe`/`wrap` continuation modes.
+- Interception kernel (`dsh-anyplugin-intercept`), adopted by the classic hook
+  materializer (ticket #25): ordering, matcher, decisions, budgets, trace,
+  `observe`/`wrap` continuation modes. `materialize-hook` registers every tool
+  and lifecycle handler through `runChain`, so the kernel owns tier order,
+  matcher skips and first-decision-wins; there is one `CLASSIC_SUBJECT_FIELD`
+  table, and the rig reads the run through `onTrace`.
 - Skill argument engine: the documented rules ($N zero-based, $name,
   the trailer, escapes) implemented and tested against a recorded trace;
   waiting on the tool-schema seam (D17).

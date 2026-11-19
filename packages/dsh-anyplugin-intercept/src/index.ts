@@ -5,10 +5,10 @@
  * Building the hook bridge as a one-off would guarantee rebuilding it for mods
  * and would leave mods architected out (ARCHITECTURE §7.2, AGENTS.md §3.6).
  *
- * This file is the *skeleton*: event points, matcher grammar, decision
- * protocol, tier ordering, budgets, timeouts and determinism. It has no
- * consumers yet and no I/O. Anything that later intercepts must go through
- * `runChain`, not around it.
+ * This file is the kernel: event points, matcher grammar, decision protocol,
+ * tier ordering, budgets, timeouts and determinism. It has no I/O. The classic
+ * hook materializer is its first consumer; anything that intercepts must go
+ * through `runChain`, not around it.
  */
 
 /** Where a handler sits relative to the others. Outermost first. */
@@ -104,9 +104,12 @@ export interface ChainEvent {
   /**
    * The string a matcher is tested against. Front-ends may set it explicitly;
    * when absent it is derived from the payload by `classicSubject` (mod events
-   * carry their own shapes and set it themselves).
+   * carry their own shapes and set it themselves). `null` means the front-end
+   * knows this event has no subject: a matcher-bearing handler is then skipped
+   * (recorded as `skipped-matcher` with no subject) instead of matching
+   * everything.
    */
-  subject?: string
+  subject?: string | null
   /** Event payload; shape is per event point and owned by the front-end. */
   data: Record<string, unknown>
 }
@@ -116,6 +119,20 @@ export function classicSubject(event: ChainEvent): string {
   const field = CLASSIC_SUBJECT_FIELD[event.name]
   const value = field === undefined ? undefined : event.data[field]
   return typeof value === 'string' ? value : ''
+}
+
+/**
+ * Build a classic-hook event from its payload. Subject extraction stays in the
+ * one table above: a front-end never re-derives the field. `null` records that
+ * this event carries no subject, which the kernel uses to skip a matcher
+ * instead of testing it against the empty string.
+ */
+export function classicEvent(name: string, data: Record<string, unknown>): ChainEvent {
+  const field = CLASSIC_SUBJECT_FIELD[name]
+  const value = field === undefined ? undefined : data[field]
+  // An empty string is still a value the author can match; only a missing or
+  // non-string field means there is no subject.
+  return { name, data, subject: typeof value === 'string' ? value : null }
 }
 
 export type Decision =
@@ -171,6 +188,13 @@ export interface HandlerRegistration {
    */
   matcher?: string
   /**
+   * A matcher compiled by the front-end at registration. When absent the
+   * kernel compiles `matcher` itself. Front-ends that must fail closed on an
+   * invalid pattern (classic hooks, D20) use `classicHookRegistration`, which
+   * stores a matcher that never matches instead of throwing mid-turn.
+   */
+  compiledMatcher?: CompiledMatcher
+  /**
    * `observe` (default, classic hooks) or `wrap` (mods). See runChain.
    */
   mode?: 'observe' | 'wrap'
@@ -211,6 +235,13 @@ export interface ChainResult {
 
 export interface CompiledMatcher {
   pattern: string | undefined
+  /**
+   * True when the declaration named a matcher. This is deliberately about the
+   * authored text, not the compiled pattern: `*` compiles to match-all but is
+   * still an authored matcher, and on an event with no subject the classic
+   * lifecycle mounts report it and skip the handler rather than run it.
+   */
+  specified: boolean
   test: (subject: string) => boolean
 }
 
@@ -221,7 +252,7 @@ export interface CompiledMatcher {
 export function compileMatcher(pattern?: string): CompiledMatcher {
   const trimmed = pattern?.trim()
   if (trimmed === undefined || trimmed === '' || trimmed === '*') {
-    return { pattern: undefined, test: () => true }
+    return { pattern: undefined, specified: pattern !== undefined && pattern !== '', test: () => true }
   }
   let expression: RegExp
   try {
@@ -229,7 +260,63 @@ export function compileMatcher(pattern?: string): CompiledMatcher {
   } catch (error) {
     throw new Error(`matcher ${JSON.stringify(pattern)} is not a valid regular expression: ${(error as Error).message}`)
   }
-  return { pattern: trimmed, test: (subject) => expression.test(subject) }
+  return { pattern: trimmed, specified: true, test: (subject) => expression.test(subject) }
+}
+
+/**
+ * Compile a classic-hook matcher. The grammar is the kernel's, with two
+ * differences from `compileMatcher` that the classic front-end has always had
+ * and that a consumer may not reimplement:
+ * - the authored text is used as is (no trimming): whitespace is significant
+ *   in a regex, so `" Write "` is not `"Write"`;
+ * - a malformed pattern matches nothing (D20), because the hook is already
+ *   installed and a turn must not fail on a typo.
+ * An empty or absent pattern matches everything; `*` is an authored matcher
+ * (it matches everything, but it is still reported on a subject-less event).
+ */
+export function compileClassicMatcher(pattern?: string): CompiledMatcher {
+  const specified = pattern !== undefined && pattern !== ''
+  if (pattern === undefined || pattern === '' || pattern === '*') {
+    return { pattern: undefined, specified, test: () => true }
+  }
+  let expression: RegExp
+  try {
+    expression = new RegExp(pattern)
+  } catch {
+    return { pattern, specified, test: () => false }
+  }
+  return { pattern, specified, test: (subject) => expression.test(subject) }
+}
+
+/** One classic hook as the materializer knows it, before the kernel orders it. */
+export interface ClassicHookSpec {
+  event: string
+  matcher?: string
+  /** Budget for one run, including the command's own timeout. */
+  timeoutMs?: number
+  /** Who registered it, for traces. */
+  source: string
+  run: Handler
+}
+
+/**
+ * Translate one classic hook into a kernel registration. A settings hook has
+ * no notion of `next`, so it is always `user` tier and `observe` mode; the
+ * kernel owns tier order, matcher skips and first-decision-wins. The matcher
+ * is compiled here, at registration, and an invalid one becomes a matcher that
+ * never matches rather than an exception during a turn.
+ */
+export function classicHookRegistration(spec: ClassicHookSpec): HandlerRegistration {
+  return {
+    event: spec.event,
+    tier: 'user',
+    mode: 'observe',
+    matcher: spec.matcher,
+    compiledMatcher: compileClassicMatcher(spec.matcher),
+    timeoutMs: spec.timeoutMs,
+    source: spec.source,
+    run: spec.run,
+  }
 }
 
 export interface ResolvedHandler {
@@ -275,29 +362,20 @@ async function withinLimit<T>(work: Promise<T>, ms: number, signal: AbortSignal)
 /**
  * Run one event through the chain.
  *
- * Semantics that the two front-ends share:
- * - a handler that returns a decision ends the chain (first decision wins);
- * - in `observe` mode a handler that returns nothing has simply run: the trace
- *   records `ran` and the chain continues;
- * - in `wrap` mode a handler that returns nothing never handed control on, so
- *   it ends the chain and the trace records `not-called`;
- * - a handler that throws is skipped and recorded (`error`), never propagated;
- * - a handler that exceeds its budget is aborted, recorded (`timeout`), and
- *   skipped.
- */
-/**
- * Run one event through the chain.
- *
  * Two shapes share one engine, because the two front-ends need different ones:
  *
- * - `observe` (classic hooks): the kernel always continues after the handler.
- *   A settings hook has no notion of "next"; several matching hooks all run.
+ * - `observe` (classic hooks): a handler that returns nothing has simply run;
+ *   the kernel continues to the next handler. A settings hook has no notion of
+ *   "next", so several matching hooks all run unless one returns a decision
+ *   (first-decision-wins).
  * - `wrap` (mods): the handler owns continuation. Not calling `next()` and
  *   returning nothing ends the chain — that is what a wrapper means. Returning
  *   a decision also ends it.
  *
  * Shared semantics:
  * - the first non-continue decision wins;
+ * - a matcher-bearing handler is skipped when the event has no subject (`null`),
+ *   rather than matching the empty string;
  * - a handler that throws is skipped and recorded (`error`), never propagated;
  * - a handler that exceeds its budget is aborted, recorded (`timeout`), and
  *   skipped;
@@ -328,9 +406,13 @@ export async function runChain(
   const step = async (position: number, current: ChainEvent): Promise<Decision> => {
     for (let at = position; at < ordered.length; at += 1) {
       const { registration } = ordered[at]
-      const subject = current.subject ?? classicSubject(current)
-      if (!compileMatcher(registration.matcher).test(subject)) {
-        record(registration, at, 'skipped-matcher')
+      const subject = current.subject === undefined ? classicSubject(current) : current.subject
+      const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
+      // No subject means the matcher cannot be evaluated. Running it would
+      // match everything; the classic front-end reports this as a skip.
+      const matched = subject === null ? !matcher.specified : matcher.test(subject)
+      if (!matched) {
+        record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
         continue
       }
 

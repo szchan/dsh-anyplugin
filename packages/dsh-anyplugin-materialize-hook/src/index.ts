@@ -10,6 +10,12 @@
  * registered through `ctx.effect` so unloading the plugin removes it
  * (S1 finding 3).
  *
+ * Matcher evaluation, tier order, first-decision-wins and per-handler budgets
+ * belong to `dsh-anyplugin-intercept` (D13): every mount translates its hooks
+ * into `classicHookRegistration`s and calls `runChain` in `observe` mode. This
+ * file keeps only the host wiring, the trust re-hash, the spawn and the
+ * verdict translation.
+ *
  * PreToolUse runs *before* the host dispatches; the first denial wins, matching
  * the upstream "block" semantics. PostToolUse runs after the call settled and
  * only when it was accepted — a failed call takes the upstream's separate
@@ -23,10 +29,19 @@
  */
 import { mkdirSync } from 'node:fs'
 import {
+  CONTINUE,
+  classicEvent,
+  classicHookRegistration,
+  runChain,
+  type ChainEvent,
+  type ChainResult,
+  type HandlerRegistration,
+} from '../../dsh-anyplugin-intercept/src/index.ts'
+import {
   buildHookPayload,
   judgeHookResult,
-  matcherMatches,
   runCommandHook,
+  type HookVerdict,
 } from '../../dsh-anyplugin-hook-runner/src/index.ts'
 import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
@@ -56,6 +71,12 @@ export interface Config {
   /** Persistent directory across versions; `${CLAUDE_PLUGIN_DATA}`. */
   pluginData?: string
   hooks?: MaterialHook[]
+  /**
+   * Diagnostic sink for the kernel trace of every chain run. The conformance
+   * rig uses it to diff hook steps; it must not change hook behavior, and a
+   * sink that throws is reported as a warning rather than failing the turn.
+   */
+  onTrace?: (event: string, result: ChainResult) => void
 }
 
 interface ExecView {
@@ -73,8 +94,6 @@ interface PostDecision {
 interface LifecycleOccurrence {
   /** Event-specific payload fields; the mount adds hook_event_name and cwd. */
   fields: Record<string, unknown>
-  /** The value Claude's matcher matches on, when this host event carries one. */
-  subject?: string
 }
 
 /** `agent/created`, `agent/turn-stopping` and `agent/disposed` carry the agent. */
@@ -151,6 +170,14 @@ const messageText = (value: unknown): string | undefined => {
  */
 const LIFECYCLE_EVENTS = ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'] as const
 
+/**
+ * The runner's own default when the declaration names no timeout. The kernel
+ * budget is this plus a grace window, so the command's timeout (and its kill)
+ * settles before the kernel treats the handler as over budget.
+ */
+const DEFAULT_HOOK_TIMEOUT_MS = 60_000
+const KERNEL_GRACE_MS = 5_000
+
 const textify = (value: unknown): string => {
   if (typeof value === 'string') return value
   try {
@@ -159,6 +186,8 @@ const textify = (value: unknown): string => {
     return String(value)
   }
 }
+
+const textContext = (text: string): unknown => ({ role: 'user', content: [{ type: 'text', text }] })
 
 export function apply(ctx: any, config: Config = {}): void {
   const hooks = config.hooks ?? []
@@ -242,24 +271,61 @@ export function apply(ctx: any, config: Config = {}): void {
   const of = (event: string): MaterialHook[] =>
     hooks.filter((hook) => hook.event === event).sort((a, b) => (a.matcher ?? '').localeCompare(b.matcher ?? ''))
 
+  /**
+   * One classic hook's kernel budget: the command's own timeout plus headroom.
+   * The chain deadline is the sum of the budgets, because handlers run in
+   * sequence; a slow handler is then cut off by the kernel at its own budget
+   * instead of stretching the turn past it.
+   */
+  const hookBudgetMs = (hook: MaterialHook): number =>
+    (hook.timeout === undefined ? DEFAULT_HOOK_TIMEOUT_MS : hook.timeout * 1000) + KERNEL_GRACE_MS
+
+  const runKernel = async (event: ChainEvent, registrations: readonly HandlerRegistration[]): Promise<ChainResult> => {
+    const result = await runChain(event, registrations, {
+      timeoutMs: DEFAULT_HOOK_TIMEOUT_MS + KERNEL_GRACE_MS,
+      deadlineMs: registrations.reduce((total, registration) => total + (registration.timeoutMs ?? 0), 0) + KERNEL_GRACE_MS,
+    })
+    try {
+      config.onTrace?.(event.name, result)
+    } catch (error) {
+      warn(`anyplugin hook ${event.name}: trace observer failed (${(error as Error).message})`)
+    }
+    return result
+  }
+
+  /** Spawn one hook with the chain event's payload and translate its verdict. */
+  const execute = async (hook: MaterialHook, event: ChainEvent): Promise<HookVerdict> => {
+    const result = await runCommandHook(hook, event.data, { env })
+    const verdict = judgeHookResult(result, hook.event)
+    if (verdict.warn !== undefined) warn(`anyplugin hook ${hook.event}: ${verdict.warn}`)
+    return verdict
+  }
+
   const pre = of('PreToolUse')
   if (pre.length > 0) {
-    ctx.effect(() =>
-      ctx.on('tools/pre-execute', async (exec: ExecView, next: () => Promise<unknown>) => {
-        for (const hook of pre) {
-          if (!matcherMatches(hook.matcher, exec.name)) continue
+    const registrations = pre.map((hook, index) =>
+      classicHookRegistration({
+        event: hook.event,
+        matcher: hook.matcher,
+        timeoutMs: hookBudgetMs(hook),
+        source: `${hook.event}#${hook.index ?? index}`,
+        run: async (_context, event) => {
           const changed = artifactChange(hook)
           if (changed !== undefined) return { kind: 'deny', reason: changed }
-          const payload = buildHookPayload('PreToolUse', {
-            toolName: exec.name,
-            toolInput: exec.arguments,
-            toolUseId: String(exec.callId),
-          })
-          const result = await runCommandHook(hook, payload, { env })
-          const verdict = judgeHookResult(result, 'PreToolUse')
-          if (verdict.warn !== undefined) warn(`anyplugin hook PreToolUse: ${verdict.warn}`)
-          if (verdict.deny !== undefined) return { kind: 'deny', reason: verdict.deny }
-        }
+          const verdict = await execute(hook, event)
+          return verdict.deny === undefined ? CONTINUE : { kind: 'deny', reason: verdict.deny }
+        },
+      }),
+    )
+    ctx.effect(() =>
+      ctx.on('tools/pre-execute', async (exec: ExecView, next: () => Promise<unknown>) => {
+        const payload = buildHookPayload('PreToolUse', {
+          toolName: exec.name,
+          toolInput: exec.arguments,
+          toolUseId: String(exec.callId),
+        })
+        const result = await runKernel(classicEvent('PreToolUse', payload), registrations)
+        if (result.decision.kind === 'deny') return { kind: 'deny', reason: result.decision.reason }
         return next()
       }),
     )
@@ -271,33 +337,39 @@ export function apply(ctx: any, config: Config = {}): void {
       ctx.on('tools/post-execute', async (exec: ExecView, result: unknown, next: () => Promise<PostDecision>) => {
         const decision = await next()
         if (decision.kind !== 'accept') return decision
-        const contexts: unknown[] = [...(decision.additionalContexts ?? [])]
-        for (const hook of post) {
-          if (!matcherMatches(hook.matcher, exec.name)) continue
-          const changed = artifactChange(hook)
-          if (changed !== undefined) {
-            warn(changed)
-            contexts.push({ role: 'user', content: [{ type: 'text', text: changed }] })
-            continue
-          }
-          const payload = buildHookPayload('PostToolUse', {
-            toolName: exec.name,
-            toolInput: exec.arguments,
-            toolUseId: String(exec.callId),
-            toolResponse: result,
-          })
-          const ran = await runCommandHook(hook, payload, { env })
-          const verdict = judgeHookResult(ran, 'PostToolUse')
-          if (verdict.warn !== undefined) warn(`anyplugin hook PostToolUse: ${verdict.warn}`)
-          if (verdict.additionalContext !== undefined) {
-            contexts.push({ role: 'user', content: [{ type: 'text', text: verdict.additionalContext }] })
-          }
-          // A PostToolUse denial is feedback, not a block: the call already ran.
-          if (verdict.deny !== undefined) {
-            contexts.push({ role: 'user', content: [{ type: 'text', text: verdict.deny }] })
-          }
-        }
-        if (contexts.length === (decision.additionalContexts ?? []).length) return decision
+        const before = decision.additionalContexts ?? []
+        const contexts: unknown[] = [...before]
+        const payload = buildHookPayload('PostToolUse', {
+          toolName: exec.name,
+          toolInput: exec.arguments,
+          toolUseId: String(exec.callId),
+          toolResponse: result,
+        })
+        // PostToolUse is feedback, never a block: every matching handler runs
+        // and contributes contexts, so each one returns CONTINUE.
+        const registrations = post.map((hook, index) =>
+          classicHookRegistration({
+            event: hook.event,
+            matcher: hook.matcher,
+            timeoutMs: hookBudgetMs(hook),
+            source: `${hook.event}#${hook.index ?? index}`,
+            run: async (_context, event) => {
+              const changed = artifactChange(hook)
+              if (changed !== undefined) {
+                warn(changed)
+                contexts.push(textContext(changed))
+                return CONTINUE
+              }
+              const verdict = await execute(hook, event)
+              if (verdict.additionalContext !== undefined) contexts.push(textContext(verdict.additionalContext))
+              // A PostToolUse denial is feedback, not a block: the call already ran.
+              if (verdict.deny !== undefined) contexts.push(textContext(verdict.deny))
+              return CONTINUE
+            },
+          }),
+        )
+        await runKernel(classicEvent('PostToolUse', payload), registrations)
+        if (contexts.length === before.length) return decision
         return { ...decision, additionalContexts: contexts }
       }),
     )
@@ -307,7 +379,8 @@ export function apply(ctx: any, config: Config = {}): void {
    * One lifecycle mount for all five events: matcher, artifact re-hash, spawn
    * and verdict translation are the same code the tool mounts use. The host
    * event is an emit or a serial, never a waterfall, so a decision is reported
-   * and dropped rather than applied.
+   * and dropped rather than applied; every handler returns CONTINUE so the
+   * kernel still runs all matching hooks.
    */
   const lifecycle = <T>(
     event: (typeof LIFECYCLE_EVENTS)[number],
@@ -316,34 +389,45 @@ export function apply(ctx: any, config: Config = {}): void {
   ): void => {
     const selected = of(event)
     if (selected.length === 0) return
-    ctx.effect(() =>
-      ctx.on(host, async (value: T) => {
-        const occurrence = read(value)
-        if (occurrence === undefined) return
-        const payload = { hook_event_name: event, cwd: process.cwd(), ...occurrence.fields }
-        for (const hook of selected) {
-          if (hook.matcher !== undefined && hook.matcher !== '') {
-            if (occurrence.subject === undefined) {
-              warn(`anyplugin hook ${event}: matcher ${JSON.stringify(hook.matcher)} has no value in ${host}; skipped`)
-              continue
-            }
-            if (!matcherMatches(hook.matcher, occurrence.subject)) continue
-          }
+    const registrations = selected.map((hook, index) =>
+      classicHookRegistration({
+        event: hook.event,
+        matcher: hook.matcher,
+        timeoutMs: hookBudgetMs(hook),
+        source: `${hook.event}#${hook.index ?? index}`,
+        run: async (_context, chainEvent) => {
           const changed = artifactChange(hook)
           if (changed !== undefined) {
             warn(changed)
-            continue
+            return CONTINUE
           }
-          const ran = await runCommandHook(hook, payload, { env })
-          const verdict = judgeHookResult(ran, event)
-          if (verdict.warn !== undefined) warn(`anyplugin hook ${event}: ${verdict.warn}`)
+          const verdict = await execute(hook, chainEvent)
           if (verdict.additionalContext !== undefined) {
             warn(`anyplugin hook ${event}: ${host} has no context channel; additionalContext reported, not delivered`)
           }
           if (verdict.deny !== undefined) {
             warn(`anyplugin hook ${event}: ${textify(verdict.deny)} cannot be enforced through ${host}; reported, not obeyed`)
           }
+          return CONTINUE
+        },
+      }),
+    )
+    ctx.effect(() =>
+      ctx.on(host, async (value: T) => {
+        const occurrence = read(value)
+        if (occurrence === undefined) return
+        const payload = { hook_event_name: event, cwd: process.cwd(), ...occurrence.fields }
+        const chainEvent = classicEvent(event, payload)
+        // A host event with no matcher subject skips every authored matcher;
+        // the kernel records that, and this front-end reports it (D19).
+        if (chainEvent.subject === null) {
+          for (const hook of selected) {
+            if (hook.matcher !== undefined && hook.matcher !== '') {
+              warn(`anyplugin hook ${event}: matcher ${JSON.stringify(hook.matcher)} has no value in ${host}; skipped`)
+            }
+          }
         }
+        await runKernel(chainEvent, registrations)
       }),
     )
   }
@@ -354,10 +438,7 @@ export function apply(ctx: any, config: Config = {}): void {
     if (value.source !== undefined) fields.source = value.source
     const model = modelName(value)
     if (model !== undefined) fields.model = model
-    return {
-      fields,
-      ...(typeof value.source === 'string' ? { subject: value.source } : {}),
-    }
+    return { fields }
   })
   // Stop and SessionEnd carry the agent only; the session id and cwd still come
   // from the header. No matcher subject exists for either, so a configured

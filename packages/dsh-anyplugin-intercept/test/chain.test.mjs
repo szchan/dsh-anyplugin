@@ -1,6 +1,6 @@
-// The kernel's contract. The skeleton ships with no consumers, so these tests
-// are the whole specification of ordering, matching and decision protocol until
-// the classic-hook front-end (v0.2) starts depending on them.
+// The kernel's contract: ordering, matching and the decision protocol. The
+// classic-hook materializer is the first consumer, so these tests also pin the
+// translation it relies on (`classicEvent`, `classicHookRegistration`).
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -8,6 +8,8 @@ import test from 'node:test'
 import {
   CONTINUE,
   TIER_ORDER,
+  classicEvent,
+  classicHookRegistration,
   compileMatcher,
   describeTrace,
   resolveOrder,
@@ -150,4 +152,57 @@ test('a wrapper that declines to continue ends the chain and says so', async () 
   assert.deepEqual(seen, ['guarded'])
   assert.deepEqual(describeTrace(result.trace), ['0 user/guarded: not-called'])
   assert.deepEqual(result.decision, CONTINUE)
+})
+
+test('a classic event derives its subject from the one table, null when absent', () => {
+  assert.equal(classicEvent('PreToolUse', { tool_name: 'Write' }).subject, 'Write')
+  // An empty string is a real value; only a missing or non-string field means
+  // the event has no subject.
+  assert.equal(classicEvent('SessionStart', { source: '' }).subject, '')
+  assert.equal(classicEvent('Stop', { session_id: 's' }).subject, null)
+  assert.equal(classicEvent('Notification', { notification_type: 3 }).subject, null)
+  assert.equal(classicEvent('FutureEvent', { tool_name: 'Write' }).subject, null)
+})
+
+test('a classic hook translates to one user-tier observe registration', async () => {
+  const registration = classicHookRegistration({ event: 'PreToolUse', matcher: 'Write', source: 'formatter', run: () => {} })
+  assert.equal(registration.tier, 'user')
+  assert.equal(registration.mode, 'observe')
+  assert.equal(registration.matcher, 'Write')
+  assert.equal(registration.source, 'formatter')
+  assert.equal(registration.compiledMatcher.specified, true)
+
+  const seen = []
+  const result = await runChain(classicEvent('PreToolUse', { tool_name: 'Write' }), [
+    classicHookRegistration({ event: 'PreToolUse', matcher: 'Write(', source: 'bad', run: () => { seen.push('bad') } }),
+    classicHookRegistration({ event: 'PreToolUse', matcher: 'Write', source: 'good', run: () => { seen.push('good') } }),
+  ])
+  assert.deepEqual(seen, ['good'], 'a malformed pattern matches nothing instead of throwing mid-turn')
+  assert.deepEqual(result.trace.map((step) => step.status), ['skipped-matcher', 'ran'])
+})
+
+test('a matcher-bearing classic handler is skipped on a subjectless event', async () => {
+  const seen = []
+  const result = await runChain(classicEvent('Stop', { session_id: 's' }), [
+    classicHookRegistration({ event: 'Stop', matcher: '.*', source: 'matcher', run: () => { seen.push('matcher') } }),
+    classicHookRegistration({ event: 'Stop', source: 'bare', run: () => { seen.push('bare') } }),
+  ])
+  assert.deepEqual(seen, ['bare'])
+  assert.deepEqual(result.trace[0], {
+    source: 'matcher',
+    tier: 'user',
+    index: 0,
+    status: 'skipped-matcher',
+    detail: 'no subject',
+  })
+  assert.equal(result.trace[1].status, 'ran')
+})
+
+test('the classic matcher keeps the authored text, whitespace included', async () => {
+  const seen = []
+  await runChain(classicEvent('PreToolUse', { tool_name: 'Write' }), [
+    classicHookRegistration({ event: 'PreToolUse', matcher: 'Write ', source: 'spaced', run: () => { seen.push('spaced') } }),
+    classicHookRegistration({ event: 'PreToolUse', matcher: 'Write', source: 'unspaced', run: () => { seen.push('unspaced') } }),
+  ])
+  assert.deepEqual(seen, ['unspaced'], 'the classic grammar does not trim a regex')
 })

@@ -497,9 +497,16 @@ architected out by construction. This is the single most important structural
 decision in this section, and it is why the kernel's skeleton must land early
 (§12) even though full mod support is late.
 
-**Skeleton landed (v0.1):** `packages/dsh-anyplugin-intercept` — `runChain`,
-`resolveOrder`, `compileMatcher`, the `Decision` union, per-handler budgets and
-a deterministic trace. No consumer yet; its test file is the specification.
+**Landed and consumed (v0.1–v0.2):** `packages/dsh-anyplugin-intercept` —
+`runChain`, `resolveOrder`, `compileMatcher`, the `Decision` union, per-handler
+budgets and a deterministic trace. The first consumer is
+`dsh-anyplugin-materialize-hook`: every mount translates its hook entries into
+`classicHookRegistration`s (`user` tier, `observe` mode) and calls `runChain`,
+so tier order, matcher skips, first-decision-wins, budgets and the trace belong
+to the kernel. The materializer keeps only the host wiring, the artifact
+re-hash, the spawn and the D20 verdict translation; an optional `onTrace` sink
+exposes the kernel trace to a caller such as the conformance rig. The mod
+front-end is the second consumer (v0.5+).
 
 The one thing the skeleton had to add beyond the plan is a **mode**. The two
 front-ends need opposite continuation rules, and encoding only one would have
@@ -516,6 +523,13 @@ run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single table 
 `builtin` innermost; D13 records that its values are still a prose-derived
 assumption until the pinned `claude-code.d.ts` lands in v0.5.
 
+A classic hook has no `next`, so `classicHookRegistration` always produces
+`observe` mode; the materializer never sorts handlers, evaluates a matcher or
+decides continuation itself. Its per-hook budget is the command's own timeout
+plus a grace window, and the chain deadline is the sum of those budgets, so a
+slow handler is cut off at its own budget instead of truncating a healthy one
+or stretching the turn past the declared timeouts.
+
 **Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds 32
 payloads extracted from the pinned docs plus 3 captures from a live 2.1.322.
 Two corrections came out of running them through the kernel:
@@ -527,11 +541,15 @@ Two corrections came out of running them through the kernel:
   not calling it is not declining, so the trace now says `ran`. `not-called`
   is reserved for a wrapper that ended the chain.
 
-Matchers read the subject from the event's own field (`CLASSIC_SUBJECT_FIELD`:
-`tool_name` for tool events, `agent_type`, `notification_type`, `trigger`,
-`source`, `reason`, …). Events whose matcher semantics are still unknown leave
-the subject empty — a recorded gap, because a plugin's matcher then cannot
-narrow anything instead of narrowing wrongly.
+Matchers read the subject from the event's own field through the single
+`CLASSIC_SUBJECT_FIELD` table: `classicEvent` builds the kernel event from a
+classic payload and records `null` when the field is absent, so a
+matcher-bearing handler is skipped and reported instead of matching the empty
+string. `compileClassicMatcher` is the kernel's classic grammar: the authored
+text is kept as is (whitespace is significant) and a malformed pattern matches
+nothing (D20) rather than throwing mid-turn. Events whose matcher semantics are
+still unknown have no field in the table — a recorded gap, because a plugin's
+matcher then cannot narrow anything instead of narrowing wrongly.
 
 ### 7.3 The mod host must be generic, so it is its own package
 
@@ -620,7 +638,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts use the same existing `ctx.on` path as the tool hooks (matcher → artifact re-hash → spawn → verdict translation); the intercept kernel is **not** wired into this materializer yet — `runChain` still has no consumer — so this is one materializer path, not kernel adoption (follow-up ticket). Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` in `observe` mode, so tier order, matcher skips and first-decision-wins are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
