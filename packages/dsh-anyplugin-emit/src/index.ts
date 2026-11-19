@@ -77,7 +77,18 @@ export interface EmitResult {
   entry: EntryOptions | null
   /** Surfaces that produced a child entry, for the report. */
   emitted: string[]
-  /** Skills the IR carries but the emitter cannot place yet — must be empty. */
+  /**
+   * Every IR entry emit looked at, as `surface/name`, carried or refused.
+   * Surfaces emit does not place (agents, output-styles, …) are absent, which
+   * is how the report tells "refused" apart from "never considered".
+   */
+  considered: string[]
+  /**
+   * IR entries emit considered but could not place, as `surface/name` (hooks:
+   * `hooks/<event>#<index>`): either no seam carries the annotation, or the
+   * surface's materializer is absent. `considered` minus `skipped` is exactly
+   * what the report calls carried.
+   */
   skipped: string[]
 }
 
@@ -106,6 +117,12 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   const children: EntryOptions[] = []
   const emitted: string[] = []
   const skipped: string[] = []
+  // The three surfaces emit can place. An IR entry on any other surface
+  // (agents, output-styles, pending themes, …) was never a decision emit made.
+  const considered: string[] = []
+  for (const skill of ir.skills) considered.push(`skills/${skill.name}`)
+  for (const server of ir.mcpServers) considered.push(`mcpServers/${server.name}`)
+  for (const hook of ir.hooks) considered.push(`hooks/${hook.event}#${hook.index}`)
 
   const modelFace = (skill: IrSkill) => skill.faces?.model ?? skill.annotation
   const skills = ir.skills.filter((skill) => {
@@ -120,11 +137,12 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
 
   const carried = (annotation: { fidelity: string }) =>
     annotation.fidelity === 'exact' || annotation.fidelity === 'equivalent'
+  const mcpMaterializer = options.materializers.mcp
   const servers = ir.mcpServers.filter((server) => carried(server.annotation))
-  if (servers.length > 0 && options.materializers.mcp !== undefined) {
+  if (servers.length > 0 && mcpMaterializer !== undefined) {
     children.push({
       id: 'mcp',
-      name: options.materializers.mcp,
+      name: mcpMaterializer,
       config: {
         plugin: ir.plugin.name,
         ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
@@ -143,17 +161,19 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     emitted.push('mcpServers')
   }
   for (const server of ir.mcpServers) {
-    if (!servers.includes(server)) skipped.push(`mcpServers/${server.name}`)
+    // Without an MCP materializer no server can be placed, carried or not.
+    if (!servers.includes(server) || mcpMaterializer === undefined) skipped.push(`mcpServers/${server.name}`)
   }
 
   // Hooks are mounted on the tool waterfalls (D19). Only command handlers that
   // land on PreToolUse/PostToolUse are `equivalent` today; everything else is
   // `planned` and stays out of the entry — the report keeps it visible.
   const hooks = ir.hooks.filter((hook) => carried(hook.annotation) && hook.command !== undefined)
-  if (hooks.length > 0 && options.materializers.hooks !== undefined) {
+  const hooksMaterializer = options.materializers.hooks
+  if (hooks.length > 0 && hooksMaterializer !== undefined) {
     children.push({
       id: 'hook',
-      name: options.materializers.hooks,
+      name: hooksMaterializer,
       config: {
         pluginRoot: ir.plugin.root,
         hooks: hooks.map((hook) => ({
@@ -168,10 +188,11 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     emitted.push('hooks')
   }
   for (const hook of ir.hooks) {
-    if (!hooks.includes(hook)) skipped.push(`hooks/${hook.event}#${hook.index}`)
+    // Without a hook materializer no hook can be placed, carried or not.
+    if (!hooks.includes(hook) || hooksMaterializer === undefined) skipped.push(`hooks/${hook.event}#${hook.index}`)
   }
 
-  if (children.length === 0) return { entry: null, emitted, skipped }
+  if (children.length === 0) return { entry: null, emitted, considered, skipped }
 
   const prefix = options.prefix ?? 'anyplugin.'
   return {
@@ -182,6 +203,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       config: children,
     },
     emitted,
+    considered,
     skipped,
   }
 }

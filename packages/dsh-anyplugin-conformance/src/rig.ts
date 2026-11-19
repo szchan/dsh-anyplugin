@@ -7,31 +7,48 @@
  *   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
  *   rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
  *   rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
+ *   rig report  <plugin-dir> [--json]
  *
  * `capture` records what the upstream host reports about a plugin. `verify`
  * replays the probe and diffs it against that golden, which is how a pin bump
  * that changes behavior gets caught instead of silently redefining "100 %".
+ * `report` compiles a plugin in memory and prints what the transplant would do
+ * to it — no host, no golden, no installed harness.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
+import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories, normalizeInventory, type Inventory } from './inventory.ts'
 import { probeWithClaude, resolvePluginName } from './oracles/claude.ts'
 import { readInventoryFile } from './oracles/file.ts'
-import { formatDiff } from './report.ts'
+import { buildTransplantReport, formatDiff, formatTransplantReport } from './report.ts'
 import { diffTraces, formatTraceDiff, normalizeTrace, readTraceFile } from './trace.ts'
 
 interface Args {
   command: string
   options: Map<string, string | boolean>
+  positionals: string[]
 }
+
+/** Flags that never take a value, so a following token is a positional. */
+const BOOLEAN_OPTIONS = new Set(['json', 'help', 'verbose', 'allow-pin-mismatch'])
 
 function parseArgs(argv: string[]): Args {
   const [command, ...rest] = argv
   const options = new Map<string, string | boolean>()
+  const positionals: string[] = []
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]
-    if (!token.startsWith('--')) throw new Error(`unexpected argument: ${token}`)
+    if (!token.startsWith('--')) {
+      positionals.push(token)
+      continue
+    }
     const key = token.slice(2)
+    if (BOOLEAN_OPTIONS.has(key)) {
+      options.set(key, true)
+      continue
+    }
     const next = rest[index + 1]
     if (next && !next.startsWith('--')) {
       options.set(key, next)
@@ -40,7 +57,7 @@ function parseArgs(argv: string[]): Args {
       options.set(key, true)
     }
   }
-  return { command, options }
+  return { command, options, positionals }
 }
 
 function requiredOptions(args: Args, ...names: string[]): string[] {
@@ -55,12 +72,88 @@ const USAGE = `usage:
   rig capture --plugin <dir> [--out <file>] [--name <plugin-name>]
   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
   rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
-  rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]`
+  rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
+  rig report  <plugin-dir> [--json]      what the transplant would do, compile-side
+  rig report  --ir <file> [--json]       report a compiled IR instead of compiling a directory`
+
+/**
+ * The materializer set this build ships, named the way emit expects. The report
+ * must ask emit with the real set: "skipped" has to mean the compiler decided
+ * not to place a component, never that the reporter forgot to pass a seam.
+ */
+const MATERIALIZERS = {
+  skill: new URL('../../dsh-anyplugin-materialize-skill/src/index.ts', import.meta.url).href,
+  mcp: new URL('../../dsh-anyplugin-materialize-mcp/src/index.ts', import.meta.url).href,
+  hooks: new URL('../../dsh-anyplugin-materialize-hook/src/index.ts', import.meta.url).href,
+}
+
+function hasString(record: object, key: string): boolean {
+  return typeof (record as Record<string, unknown>)[key] === 'string'
+}
+
+/** The shape emit and `summarizeIr` read unconditionally; a missing array is a usage error, not a crash. */
+function isClaudePluginIr(value: unknown): value is ClaudePluginIr {
+  if (typeof value !== 'object' || value === null) return false
+  const ir = value as Record<string, unknown>
+  for (const key of ['skills', 'agents', 'hooks', 'mcpServers', 'pending', 'unsupported']) {
+    if (!Array.isArray(ir[key])) return false
+  }
+  return (
+    typeof ir.plugin === 'object' &&
+    ir.plugin !== null &&
+    hasString(ir.plugin, 'name') &&
+    typeof ir.pin === 'object' &&
+    ir.pin !== null &&
+    hasString(ir.pin, 'tool') &&
+    hasString(ir.pin, 'version')
+  )
+}
+
+function parseIrJson(text: string, path: string): ClaudePluginIr {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`--ir: ${path} is not JSON (${detail})\n${USAGE}`)
+  }
+  if (!isClaudePluginIr(parsed)) {
+    throw new Error(
+      `--ir: expected a ClaudePluginIr (skills/agents/hooks/mcpServers/pending/unsupported arrays, plugin.name, pin.tool, pin.version)\n${USAGE}`,
+    )
+  }
+  return parsed
+}
 
 async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
   const allowPinMismatch = args.options.get('allow-pin-mismatch') === true
+  if (args.command !== 'report' && args.positionals.length > 0) {
+    throw new Error(`unexpected argument: ${args.positionals[0]}\n${USAGE}`)
+  }
+
+  if (args.command === 'report') {
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    const irPath = args.options.get('ir')
+    let ir: ClaudePluginIr
+    if (typeof irPath === 'string') {
+      if (args.positionals.length > 0) {
+        throw new Error(`--ir and <plugin-dir> are alternatives; got ${args.positionals[0]}`)
+      }
+      ir = parseIrJson(await readFile(irPath, 'utf8'), irPath)
+    } else {
+      const pluginDir = args.positionals[0]
+      if (!pluginDir) throw new Error(`missing <plugin-dir>\n${USAGE}`)
+      ir = readClaudePlugin(pluginDir)
+    }
+    const report = buildTransplantReport(ir, { materializers: MATERIALIZERS })
+    console.log(args.options.get('json') === true ? JSON.stringify(report, null, 2) : formatTransplantReport(report))
+    return report.ok ? 0 : 1
+  }
 
   if (args.command === 'capture') {
     const [pluginDir] = requiredOptions(args, 'plugin')
