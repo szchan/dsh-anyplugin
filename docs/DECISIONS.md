@@ -263,6 +263,22 @@ to the full `mcp__plugin_<plugin>_<server>__<tool>`.
 
 ---
 
+### Enforcement, added with the first over-budget fixture
+
+The budget binds two moments, so it is checked twice and never repaired:
+
+- **Plan time** (dialect): the prefix `mcp__plugin_<plugin>_<server>__` is
+  knowable without connecting. If `prefix.length + 1 > 64`, the server is
+  `unsupported` and the reason carries the arithmetic — `claude-mcp-budget` has
+  65 characters before a one-character tool.
+- **Attach time** (materializer): a single tool's name is only known after
+  `tools/list`. An over-budget tool is skipped and logged while its siblings
+  register — `claude-mcp-tool-budget` registers `ok` and drops its
+  46-character tool.
+
+The rig counts a refused declared component as `refused`, never `missing` and
+never `match`; the coverage table states all three.
+
 ## D12 — The MCP materializer owns its connection
 
 **Status:** ratified 2026-11-18, on S5.

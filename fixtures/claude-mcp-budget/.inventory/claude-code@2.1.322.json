@@ -1,0 +1,25 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "claude-mcp-budget",
+    "source": "plugin-dir:fixtures/claude-mcp-budget"
+  },
+  "components": [
+    {
+      "surface": "mcpServers",
+      "name": "a-server-name-that-is-long-enough",
+      "details": {
+        "note": "tool schemas resolved at runtime; not counted"
+      }
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 0
+    }
+  }
+}

@@ -37,7 +37,9 @@ const EXPECTED_ROWS = {
   'claude-command-nested': [],
   'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
   'claude-hooks-mcp': ['hooks:PostToolUse:missing', 'mcpServers:probe:match'],
+  'claude-mcp-budget': ['mcpServers:a-server-name-that-is-long-enough:refused'],
   'claude-mcp-http': ['mcpServers:http-probe:match'],
+  'claude-mcp-tool-budget': ['mcpServers:probe:match'],
   'claude-root-skill': ['skills:rooty:match'],
   'claude-skills-only': ['skills:greet:match', 'skills:hello:match'],
 }
@@ -64,19 +66,20 @@ async function inventoryFor(fixture) {
   const dir = join(repoRoot, 'fixtures', fixture)
   const ir = readClaudePlugin(dir, { source: `plugin-dir:fixtures/${fixture}` })
   const { entry } = emitPlugin(ir, { materializers, sdkRoot: installedDir ? join(installedDir, '..') : undefined })
+  const refused = new Set((ir.unsupported ?? []).map((item) => `${item.surface}:${item.name}`))
   if (!entry) {
     const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${dshVersion(installedDir)}` })
     inventory.pin = { tool: 'dsh', version: dshVersion(installedDir) }
-    return inventory
+    return { inventory, refused }
   }
-  return (await probeWithDsh({ installedDir, entry })).inventory
+  return { inventory: (await probeWithDsh({ installedDir, entry })).inventory, refused }
 }
 
 test(
   'fixture coverage matches the recorded matrix',
   { skip: installedDir ? false : 'DSH_INSTALL_DIR is not set' },
   async () => {
-    const totals = { declared: 0, matched: 0, missing: 0 }
+    const totals = { declared: 0, matched: 0, missing: 0, refused: 0 }
     for (const fixture of Object.keys(EXPECTED_ROWS).sort()) {
       assert.ok(existsSync(join(repoRoot, 'fixtures', fixture)), `${fixture} exists`)
       const golden = JSON.parse(
@@ -84,22 +87,29 @@ test(
       )
       const cleanup = await PREPARE[fixture]?.()
       try {
-        const inventory = await inventoryFor(fixture)
+        const { inventory, refused } = await inventoryFor(fixture)
         assert.equal(inventory.pin?.tool, 'dsh', 'the actual side is DSH')
         const report = diffInventories(golden, inventory, { allowPinMismatch: true })
+        // A declared component we refuse on purpose is not a gap: D11 says we
+        // report the budget instead of renaming a tool into existence.
+        const statusOf = (row) =>
+          row.status === 'missing' && refused.has(`${row.surface}:${row.name}`) ? 'refused' : row.status
         assert.deepEqual(
-          report.rows.map((row) => `${row.surface}:${row.name}:${row.status}`),
+          report.rows.map((row) => `${row.surface}:${row.name}:${statusOf(row)}`),
           EXPECTED_ROWS[fixture],
           `${fixture}: the transplant result changed`,
         )
-        totals.declared += report.summary.expected
-        totals.matched += report.summary.match
-        totals.missing += report.summary.missing
+        for (const row of report.rows) {
+          totals.declared += 1
+          if (statusOf(row) === 'match') totals.matched += 1
+          else if (statusOf(row) === 'refused') totals.refused += 1
+          else totals.missing += 1
+        }
       } finally {
         await cleanup?.()
       }
     }
-    assert.deepEqual(totals, { declared: 9, matched: 7, missing: 2 })
+    assert.deepEqual(totals, { declared: 11, matched: 8, missing: 2, refused: 1 })
   },
 )
 

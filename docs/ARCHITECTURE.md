@@ -576,19 +576,21 @@ Two traps that cost real time and are now load-bearing:
   the skill after the entry is removed — invisible in a green test, visible in
   a reload.
 
-Measured coverage across the seven fixtures (declared components from the
+Measured coverage across the nine fixtures (declared components from the
 goldens, matched by the DSH oracle):
 
-| Fixture | Declared | Matched | Missing | What the gap needs |
-| --- | --- | --- | --- | --- |
-| `claude-skills-only` | 2 | 2 | 0 | — |
-| `claude-root-skill` | 1 | 1 | 0 | — |
-| `claude-command-nested` | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
-| `claude-commands-flat` | 2 | 2 | 0 | model face done; human face needs the two seams in D10 |
-| `claude-agents` | 1 | 0 | 1 | named-agent catalog seam |
-| `claude-hooks-mcp` | 2 | 1 | 1 | MCP done (D12); hook needs the interception kernel |
-| `claude-mcp-http` | 1 | 1 | 0 | streamable-http arm; the server is started by the test (D12) |
-| **total** | **9** | **7** | **2** | |
+| Fixture | Declared | Matched | Missing | Refused | What the gap needs |
+| --- | --- | --- | --- | --- | --- |
+| `claude-skills-only` | 2 | 2 | 0 | 0 | — |
+| `claude-root-skill` | 1 | 1 | 0 | 0 | — |
+| `claude-command-nested` | 0 | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
+| `claude-commands-flat` | 2 | 2 | 0 | 0 | model face done; human face needs the two seams in D10 |
+| `claude-agents` | 1 | 0 | 1 | 0 | named-agent catalog seam |
+| `claude-hooks-mcp` | 2 | 1 | 1 | 0 | MCP done (D12); hook needs the interception kernel |
+| `claude-mcp-http` | 1 | 1 | 0 | 0 | streamable-http arm; the server is started by the test (D12) |
+| `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
+| `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
+| **total** | **11** | **8** | **2** | **1** | |
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
@@ -596,6 +598,13 @@ and the `/plugin:name args` typing surface — so its IR node carries
 `faces.model` / `faces.human`; the count moves on the model face, while the
 component's overall fidelity stays `planned` (D10). Reporting 6/8 without that
 distinction would claim a two-component win that a user still cannot type.
+
+**Refused** is a third outcome, not a softer `missing`. It means we read a
+component, judged it unrepresentable, and said so with a reason — the
+over-budget MCP fixture is the first case: every tool name from it would start
+with 65 characters before the tool's own name, so nothing it exposes can fit the
+64-character limit both hosts share (D11). Counting it as `missing` would show a
+failure we chose; counting it as `match` would be a lie.
 
 The number the project reports is `matched / declared`, never a percentage of
 "things we tried". `coverage.test.mjs` pins every row: closing a gap is a

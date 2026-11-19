@@ -13,9 +13,7 @@ claude-code `2.1.322`.
 
 ## Now
 
-- [ ] **MCP name budget, enforced in anger.** The rule is in place and the rig
-      asserts no `_[0-9a-f]{12}` suffix, but no fixture breaks it yet. Done when
-      a fixture with an over-budget name reports `unsupported`.
+_(empty — the next item is chosen from Next.)_
 
 ## Next
 
@@ -85,8 +83,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Hook payload fixtures: 32 doc-derived payloads plus 6 live captures from
   2.1.322 (DeepSeek backend), run through `runChain`; the event table and
   matcher subject are derived from them (D15).
+- MCP name budget, enforced at both moments: an over-budget prefix refuses the
+  server at plan time (`claude-mcp-budget`) and an over-budget tool is skipped
+  while its sibling registers (`claude-mcp-tool-budget`). The rig counts a
+  deliberate refusal as `refused`, not `missing` (D11).
 - MCP: stdio and streamable-http servers connect under the materializer and
-  expose `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (9 / 7 / 2).
+  expose `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (11 declared / 8 matched / 2 missing / 1 refused).
   The HTTP fixture carries `${ANYPLUGIN_MCP_URL}`, so the materializer resolves
   the URL from the environment at attach time instead of pinning a port.
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize

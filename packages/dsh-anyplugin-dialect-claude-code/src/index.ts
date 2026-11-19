@@ -477,7 +477,7 @@ const MCP_UNRESOLVED: Annotation = {
     'The server configuration references ${CLAUDE_PROJECT_DIR} or ${user_config.*}, which belong to the loading session; resolving them needs the install-time-to-load-time context handoff that the scope layer (D2) owns.',
 }
 
-function readMcp(root: string): {
+function readMcp(root: string, plugin: string): {
   servers: IrMcpServer[]
   pending: IrUnmaterialized[]
   unsupported: IrUnmaterialized[]
@@ -520,6 +520,23 @@ function readMcp(root: string): {
     const url = typeof entry.url === 'string' ? entry.url : undefined
     const type = typeof entry.type === 'string' ? entry.type : command !== undefined ? 'stdio' : url !== undefined ? 'http' : ''
     const substitute = (value: string): string => substitutePluginRoot(value, root)
+    // Both hosts limit a tool name to 64 characters (D11). Every tool from this
+    // server would carry the same prefix, so an over-budget prefix means the
+    // whole server is unusable — refusing here is honest; truncating would
+    // register a name the model cannot call.
+    const prefix = `mcp__plugin_${plugin}_${name}__`
+    if (prefix.length + 1 > 64) {
+      unsupported.push({
+        surface: 'mcpServers',
+        name,
+        sourcePath: '.mcp.json',
+        annotation: {
+          fidelity: 'unsupported',
+          reason: `Every tool of this server would start with ${JSON.stringify(prefix)} (${prefix.length} characters) before the tool's own name, so even a one-character tool exceeds the shared 64-character limit; refused rather than truncated (D11).`,
+        },
+      })
+      continue
+    }
     if (type === 'stdio') {
       if (command === undefined || command.trim() === '') {
         unsupported.push({ surface: 'mcpServers', name, sourcePath: '.mcp.json', annotation: { fidelity: 'unsupported', reason: 'stdio server without a command cannot start.' } })
@@ -592,10 +609,11 @@ function readMcp(root: string): {
 export function readClaudePlugin(root: string, options: ReadOptions = {}): ClaudePluginIr {
   const manifest = readManifest(root)
   const pin = options.pin ?? CLAUDE_CODE_PIN
+  const pluginName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root)
   const { skills, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
   const { agents, unsupported: agentUnsupported } = readAgents(root)
   const { hooks, pending: hookPending } = readHooks(root)
-  const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root)
+  const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
 
   const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending]
   const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
@@ -617,7 +635,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   return {
     ir: IR_SCHEMA,
     plugin: {
-      name: typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root),
+      name: pluginName,
       ...(typeof manifest.version === 'string' ? { version: manifest.version } : {}),
       ...(typeof manifest.description === 'string' ? { description: manifest.description } : {}),
       source: options.source ?? `plugin-dir:${root}`,
