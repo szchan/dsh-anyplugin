@@ -411,34 +411,139 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
   return { hooks, pending }
 }
 
-function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmaterialized[] } {
+/**
+ * `$` + 'CLAUDE_PLUGIN_ROOT' is the only path variable the dialect can resolve:
+ * the project directory and user config belong to the loading session, not to
+ * the install, so a server that needs them is reported rather than guessed.
+ */
+const PLUGIN_ROOT_VARIABLE = /\$\{CLAUDE_PLUGIN_ROOT\}/g
+
+function substitutePluginRoot(value: string, root: string): string {
+  return value.replace(PLUGIN_ROOT_VARIABLE, root)
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map((item) => (typeof item === 'string' ? item : String(item)))
+}
+
+function stringMap(value: unknown): Record<string, string> | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const map: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') map[key] = entry
+  }
+  return Object.keys(map).length > 0 ? map : undefined
+}
+
+/**
+ * MCP servers we connect ourselves (D12). The name is Claude's, byte for byte;
+ * the schema is passed through; the reason names what this path does not carry
+ * yet — server instructions and a reconnect policy.
+ */
+const MCP_EQUIVALENT: Annotation = {
+  fidelity: 'equivalent',
+  reason:
+    'Tool names and input schemas are registered byte for byte under mcp__plugin_<plugin>_<server>__<tool>. Server instructions are not injected into the system prompt and no reconnect policy is applied yet (D12).',
+}
+
+const MCP_UNRESOLVED: Annotation = {
+  fidelity: 'planned',
+  reason:
+    'The server configuration references ${CLAUDE_PROJECT_DIR} or ${user_config.*}, which belong to the loading session; resolving them needs the install-time-to-load-time context handoff that the scope layer (D2) owns.',
+}
+
+function readMcp(root: string): {
+  servers: IrMcpServer[]
+  pending: IrUnmaterialized[]
+  unsupported: IrUnmaterialized[]
+} {
   const servers: IrMcpServer[] = []
   const pending: IrUnmaterialized[] = []
+  const unsupported: IrUnmaterialized[] = []
   const text = readIfFile(join(root, '.mcp.json'))
-  if (text) {
-    try {
-      const document = JSON.parse(text) as Record<string, unknown>
-      const table = (document.mcpServers ?? document) as Record<string, unknown>
-      for (const name of Object.keys(table)) {
-        servers.push({
-          kind: 'mcp-server',
-          name,
-          sourcePath: '.mcp.json',
-          annotation: {
-            fidelity: 'planned',
-            reason:
-              'The server can be carried by dsh-mcp-client, but the plugin-scoped tool name mcp__plugin_<plugin>_<server>__<tool> needs the serverName policy (≤32 chars, ARCHITECTURE §9). Planned for v0.2.',
-          },
-        })
-      }
-    } catch {
-      pending.push({
+  if (text === undefined) return { servers, pending, unsupported }
+  let table: Record<string, unknown>
+  try {
+    const document = JSON.parse(text) as Record<string, unknown>
+    table = (document.mcpServers ?? document) as Record<string, unknown>
+  } catch {
+    unsupported.push({
+      surface: 'mcpServers',
+      name: '.mcp.json',
+      sourcePath: '.mcp.json',
+      annotation: { fidelity: 'unsupported', reason: '.mcp.json is not valid JSON.' },
+    })
+    return { servers, pending, unsupported }
+  }
+  for (const [name, raw] of Object.entries(table)) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      unsupported.push({
         surface: 'mcpServers',
-        name: '.mcp.json',
+        name,
         sourcePath: '.mcp.json',
-        annotation: { fidelity: 'unsupported', reason: '.mcp.json is not valid JSON.' },
+        annotation: { fidelity: 'unsupported', reason: 'A server entry must be an object.' },
       })
+      continue
     }
+    const entry = raw as Record<string, unknown>
+    const serialized = JSON.stringify(entry)
+    if (serialized.includes('${CLAUDE_PROJECT_DIR}') || serialized.includes('${user_config.')) {
+      pending.push({ surface: 'mcpServers', name, sourcePath: '.mcp.json', annotation: MCP_UNRESOLVED })
+      continue
+    }
+    const command = typeof entry.command === 'string' ? entry.command : undefined
+    const url = typeof entry.url === 'string' ? entry.url : undefined
+    const type = typeof entry.type === 'string' ? entry.type : command !== undefined ? 'stdio' : url !== undefined ? 'http' : ''
+    const substitute = (value: string): string => substitutePluginRoot(value, root)
+    if (type === 'stdio') {
+      if (command === undefined || command.trim() === '') {
+        unsupported.push({ surface: 'mcpServers', name, sourcePath: '.mcp.json', annotation: { fidelity: 'unsupported', reason: 'stdio server without a command cannot start.' } })
+        continue
+      }
+      const args = stringList(entry.args)?.map(substitute)
+      const env = stringMap(entry.env)
+      servers.push({
+        kind: 'mcp-server',
+        name,
+        transport: 'stdio',
+        command: substitute(command),
+        ...(args === undefined ? {} : { args }),
+        ...(env === undefined ? {} : { env: Object.fromEntries(Object.entries(env).map(([key, value]) => [key, substitute(value)])) }),
+        ...(typeof entry.cwd === 'string' ? { cwd: substitute(entry.cwd) } : {}),
+        pluginRoot: root,
+        sourcePath: '.mcp.json',
+        annotation: MCP_EQUIVALENT,
+      })
+      continue
+    }
+    if (type === 'http' || type === 'streamable-http') {
+      if (url === undefined || url.trim() === '') {
+        unsupported.push({ surface: 'mcpServers', name, sourcePath: '.mcp.json', annotation: { fidelity: 'unsupported', reason: 'http server without a url cannot connect.' } })
+        continue
+      }
+      const headers = stringMap(entry.headers)
+      servers.push({
+        kind: 'mcp-server',
+        name,
+        transport: 'http',
+        url: substitute(url),
+        ...(headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, substitute(value)])) }),
+        pluginRoot: root,
+        sourcePath: '.mcp.json',
+        annotation: MCP_EQUIVALENT,
+      })
+      continue
+    }
+    unsupported.push({
+      surface: 'mcpServers',
+      name,
+      sourcePath: '.mcp.json',
+      annotation: {
+        fidelity: 'unsupported',
+        reason: `Transport ${JSON.stringify(type)} is not carried: this materializer speaks stdio and Streamable HTTP (D12).`,
+      },
+    })
   }
   for (const [surface, dir, reason] of [
     ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
@@ -457,7 +562,7 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
       annotation: { fidelity: 'planned', reason },
     })
   }
-  return { servers, pending }
+  return { servers, pending, unsupported }
 }
 
 export function readClaudePlugin(root: string, options: ReadOptions = {}): ClaudePluginIr {
@@ -466,10 +571,10 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { skills, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
   const { agents, unsupported: agentUnsupported } = readAgents(root)
   const { hooks, pending: hookPending } = readHooks(root)
-  const { servers, pending: mcpPending } = readMcp(root)
+  const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root)
 
   const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending]
-  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported]
+  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
     if (key in manifest) {

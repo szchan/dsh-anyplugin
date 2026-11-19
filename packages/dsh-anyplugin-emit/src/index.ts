@@ -56,11 +56,19 @@ export function unmangleId(escaped: string): string {
 /** Absolute module specifiers for the materializers a build ships. */
 export interface Materializers {
   skill: string
-  [surface: string]: string
+  /** The MCP materializer (D12); absent means MCP is not carried by this build. */
+  mcp?: string
+  [surface: string]: string | undefined
 }
 
 export interface EmitOptions {
   materializers: Materializers
+  /**
+   * Directory holding `@modelcontextprotocol/client` in the *target* harness.
+   * The MCP materializer prefers a bare import and falls back to this path, so
+   * emission stays data while still naming the environment it targets.
+   */
+  sdkRoot?: string
   /** Id prefix; `anyplugin.` keeps our subtree addressable in the same store. */
   prefix?: string
 }
@@ -109,6 +117,34 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
     emitted.push('skills')
   }
   for (const skill of ir.skills) if (!skills.includes(skill)) skipped.push(`skills/${skill.name}`)
+
+  const carried = (annotation: { fidelity: string }) =>
+    annotation.fidelity === 'exact' || annotation.fidelity === 'equivalent'
+  const servers = ir.mcpServers.filter((server) => carried(server.annotation))
+  if (servers.length > 0 && options.materializers.mcp !== undefined) {
+    children.push({
+      id: 'mcp',
+      name: options.materializers.mcp,
+      config: {
+        plugin: ir.plugin.name,
+        ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
+        servers: servers.map((server) => ({
+          name: server.name,
+          transport: server.transport,
+          ...(server.command === undefined ? {} : { command: server.command }),
+          ...(server.args === undefined ? {} : { args: server.args }),
+          ...(server.env === undefined ? {} : { env: server.env }),
+          ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
+          ...(server.url === undefined ? {} : { url: server.url }),
+          ...(server.headers === undefined ? {} : { headers: server.headers }),
+        })),
+      },
+    })
+    emitted.push('mcpServers')
+  }
+  for (const server of ir.mcpServers) {
+    if (!servers.includes(server)) skipped.push(`mcpServers/${server.name}`)
+  }
 
   if (children.length === 0) return { entry: null, emitted, skipped }
 

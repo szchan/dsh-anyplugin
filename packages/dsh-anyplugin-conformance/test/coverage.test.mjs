@@ -20,9 +20,11 @@ import { probeWithDsh, dshVersion } from '../src/oracles/dsh.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const installedDir = process.env.DSH_INSTALL_DIR ? join(process.env.DSH_INSTALL_DIR, '..') : undefined
-const materializerUrl = pathToFileURL(
-  join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts'),
-).href
+const materializerUrl = (pkg) => pathToFileURL(join(repoRoot, 'packages', pkg, 'src', 'index.ts')).href
+const materializers = {
+  skill: materializerUrl('dsh-anyplugin-materialize-skill'),
+  mcp: materializerUrl('dsh-anyplugin-materialize-mcp'),
+}
 
 /**
  * What the transplant produces per fixture, as of this commit. Closing a gap
@@ -33,7 +35,7 @@ const EXPECTED_ROWS = {
   'claude-agents': ['agents:reviewer:missing'],
   'claude-command-nested': [],
   'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
-  'claude-hooks-mcp': ['hooks:PostToolUse:missing', 'mcpServers:probe:missing'],
+  'claude-hooks-mcp': ['hooks:PostToolUse:missing', 'mcpServers:probe:match'],
   'claude-root-skill': ['skills:rooty:match'],
   'claude-skills-only': ['skills:greet:match', 'skills:hello:match'],
 }
@@ -41,7 +43,7 @@ const EXPECTED_ROWS = {
 async function inventoryFor(fixture) {
   const dir = join(repoRoot, 'fixtures', fixture)
   const ir = readClaudePlugin(dir, { source: `plugin-dir:fixtures/${fixture}` })
-  const { entry } = emitPlugin(ir, { materializers: { skill: materializerUrl } })
+  const { entry } = emitPlugin(ir, { materializers, sdkRoot: installedDir ? join(installedDir, '..') : undefined })
   if (!entry) {
     const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${dshVersion(installedDir)}` })
     inventory.pin = { tool: 'dsh', version: dshVersion(installedDir) }
@@ -72,7 +74,7 @@ test(
       totals.matched += report.summary.match
       totals.missing += report.summary.missing
     }
-    assert.deepEqual(totals, { declared: 8, matched: 5, missing: 3 })
+    assert.deepEqual(totals, { declared: 8, matched: 6, missing: 2 })
   },
 )
 

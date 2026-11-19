@@ -527,6 +527,13 @@ Two traps that cost real time and are now load-bearing:
   tree too. A `Context` from our devDependency with services from the installed
   `dsh-skill` would give two `Service` base classes, and the registry would
   never see the context that owns it.
+- **The fiber is the teardown handle.** `Loader` has no `stop()` — its own
+  prototype is `constructor, commit, showLog, locate, exit, unwrapExports` and
+  `stop` is simply undefined on an instance. A probe that calls
+  `loader.stop?.()` therefore tears nothing down: an MCP transport keeps its
+  child process alive and the test runner never exits. The handle is the fiber
+  returned by `ctx.plugin(Loader, …)`; disposing it runs every entry's effect
+  disposers, which is what closes the transport.
 - **Registration is lifecycle-scoped.** `ctx.skills.register()` returns a
   disposer, and cordis has no `dispose` event (S1 finding 3), so the
   materializer wraps it in `ctx.effect`. A materializer that forgets this leaks
@@ -543,14 +550,14 @@ goldens, matched by the DSH oracle):
 | `claude-command-nested` | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
 | `claude-commands-flat` | 2 | 2 | 0 | model face done; human face needs the two seams in D10 |
 | `claude-agents` | 1 | 0 | 1 | named-agent catalog seam |
-| `claude-hooks-mcp` | 2 | 0 | 2 | interception kernel; MCP `serverName` policy |
-| **total** | **8** | **5** | **3** | |
+| `claude-hooks-mcp` | 2 | 1 | 1 | MCP done (D12); hook needs the interception kernel |
+| **total** | **8** | **6** | **2** | |
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
 and the `/plugin:name args` typing surface — so its IR node carries
 `faces.model` / `faces.human`; the count moves on the model face, while the
-component's overall fidelity stays `planned` (D10). Reporting 5/8 without that
+component's overall fidelity stays `planned` (D10). Reporting 6/8 without that
 distinction would claim a two-component win that a user still cannot type.
 
 The number the project reports is `matched / declared`, never a percentage of

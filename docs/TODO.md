@@ -13,17 +13,27 @@ claude-code `2.1.322`.
 
 ## Now
 
-- [ ] **MCP materializer, stdio arm** (D12). Own the connection; register
-      `mcp__plugin_<plugin>_<server>__<tool>` byte for byte. Done when
-      `fixtures/claude-hooks-mcp`'s `probe` server reports as `mcp:probe:match`
-      and the tool is callable end to end.
-- [ ] **MCP name budget.** Reject `> 64` characters and names outside
-      `[A-Za-z0-9_-]` as `unsupported` with a reason — never truncate, never
-      hash (D11). Done when a fixture with an over-budget name reports
-      `unsupported` and no `_[0-9a-f]{12}$` suffix can appear in an inventory.
-- [ ] **Oracle learns MCP.** The DSH oracle currently reads `ctx.skills` only;
-      it must project connected servers out of `ctx.tools` names. Done when
-      coverage moves `8 / 5 / 3 → 8 / 6 / 2`.
+- [ ] **MCP materializer, HTTP arm.** `streamable-http` servers connect and
+      register their tools. Done when a fixture server over HTTP reports
+      `match` and the stdio arm still does (the stdio arm landed with 8/6/2).
+- [ ] **MCP name budget, enforced in anger.** The rule is in place and the rig
+      asserts no `_[0-9a-f]{12}# TODO
+
+The burn-down list. Every line names an outcome that can be checked, and every
+item is finished the same way (AGENTS.md §7): code, test, doc, and the coverage
+row moving in one commit.
+
+The design lives in `docs/ARCHITECTURE.md`; the reasons live in
+`docs/DECISIONS.md`. This file only orders the work. If a line here disagrees
+with those two, they win and this file is wrong.
+
+Pins for everything below: DSH `0.2.2-rc.2` (installed harness, D9),
+claude-code `2.1.322`.
+
+## Now
+
+ can appear, but no fixture breaks it yet.
+      Done when a fixture with an over-budget name reports `unsupported`.
 - [ ] **Interception kernel skeleton** (AGENTS.md §3.6). Event points, matcher
       grammar, decision protocol, tier ordering — one module, no consumers yet.
       Done when a unit test drives a synthetic event through the chain twice and
@@ -78,6 +88,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - S3 conformance rig, both halves: upstream oracle (`claude plugin details`)
   and the installed DSH oracle.
 - S5 tool-name budget — the 32-character cap is one plugin's schema (D12).
+- MCP: stdio servers connect under the materializer and expose
+  `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (8 / 6 / 2).
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize
   with 0 diff against the pinned goldens.
 - D7 id escaping, D8 pin-gated surface mapping, D9 installed-oracle-only,

@@ -78,9 +78,12 @@ export function normalizeInventory(input: Inventory): Inventory {
     const surface: Surface = isSurface(component.surface) ? component.surface : 'other'
     const key = `${surface}\u0000${name}`
     if (seen.has(key)) continue
+    // `details` is kept verbatim: a note is an observation the host made, and
+    // dropping it here would make it impossible to *read* the inventory. The
+    // comparison policy (ignore host prose) lives in `diffInventories`.
     const details = component.details
     const normalized: InventoryComponent = { surface, name }
-    if (details) {
+    if (details && Object.keys(details).length > 0) {
       const entries = Object.entries(details).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       if (entries.length > 0) normalized.details = Object.fromEntries(entries)
     }
@@ -154,7 +157,11 @@ export function diffInventories(
       rows.push({ surface: component.surface, name: component.name, status: 'missing' })
       continue
     }
-    if (JSON.stringify(component.details ?? null) !== JSON.stringify(observed.details ?? null)) {
+    const comparable = (details: InventoryComponent['details']): string =>
+      JSON.stringify(
+        Object.fromEntries(Object.entries(details ?? {}).filter(([key]) => key !== 'note').sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+      )
+    if (comparable(component.details) !== comparable(observed.details)) {
       rows.push({
         surface: component.surface,
         name: component.name,

@@ -37,12 +37,17 @@ export interface DshProbeResult {
   inventory: Inventory
   dshVersion: string
   skills: DshSkillReport[]
+  /** Public tool names the harness actually exposes, for MCP assertions. */
+  tools: string[]
 }
 
 interface BootedHarness {
   ctx: any
   loader: any
+  /** The fiber that owns the loader; disposing it tears down every entry. */
+  loaderFiber: any
   skills: any
+  tools: any
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -60,16 +65,35 @@ async function until(predicate: () => boolean, timeoutMs: number, label: string)
   throw new Error(`dsh oracle: timed out waiting for ${label}`)
 }
 
-async function boot(installedDir: string, timeoutMs: number): Promise<BootedHarness> {
+async function boot(installedDir: string, timeoutMs: number, needTools: boolean): Promise<BootedHarness> {
   const { Context } = await loadInstalled(installedDir, 'cordis/lib/index.js')
   const Loader = (await loadInstalled(installedDir, 'cordis-plugin-loader/lib/index.js')).default
   const SkillRegistry = (await loadInstalled(installedDir, 'dsh-skill/lib/index.js')).default
 
   const ctx = new Context()
-  ctx.plugin(Loader, { baseUrl: pathToFileURL(join(installedDir, 'dsh') + '/').href })
+  // Keep the fiber: `Loader` exposes no stop(), so the fiber *is* the teardown
+  // handle (ARCHITECTURE §10.4). Disposing it runs every effect disposer.
+  const loaderFiber = ctx.plugin(Loader, { baseUrl: pathToFileURL(join(installedDir, 'dsh') + '/').href })
   ctx.plugin(SkillRegistry, {})
+  if (needTools) {
+    // The tool registry reads the system prompt service; S5 booted the same pair.
+    const SystemPrompt = (await loadInstalled(installedDir, 'dsh-system-prompt/lib/index.js')).default
+    const ToolsService = (await loadInstalled(installedDir, 'dsh-tools/lib/index.js')).ToolsService
+    ctx.plugin(SystemPrompt)
+    await until(() => Boolean(ctx.systemPrompt), timeoutMs, 'system prompt service')
+    ctx.plugin(ToolsService, {})
+    await until(() => Boolean(ctx.tools), timeoutMs, 'tools service')
+  }
   await until(() => Boolean(ctx.loader) && Boolean(ctx.skills), timeoutMs, 'loader and skills services')
-  return { ctx, loader: ctx.loader, skills: ctx.skills }
+  return { ctx, loader: ctx.loader, loaderFiber, skills: ctx.skills, tools: ctx.tools }
+}
+
+/** The MCP child entry, when the emitter placed one. */
+function mcpChild(entry: EntryOptions): { plugin: string; servers: Array<{ name: string }> } | undefined {
+  const children = (entry.config ?? []) as Array<{ id?: string; config?: { plugin?: string; servers?: Array<{ name: string }> } }>
+  const child = children.find((item) => item.id === 'mcp')
+  if (child?.config?.plugin === undefined) return undefined
+  return { plugin: child.config.plugin, servers: child.config.servers ?? [] }
 }
 
 export function dshVersion(installedDir: string): string {
@@ -85,7 +109,9 @@ export function dshVersion(installedDir: string): string {
  */
 export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeResult> {
   const timeoutMs = options.timeoutMs ?? 5000
-  const { ctx, loader, skills } = await boot(options.installedDir, timeoutMs)
+  const mcp = mcpChild(options.entry)
+  const booted = await boot(options.installedDir, timeoutMs, mcp !== undefined)
+  const { ctx, loader, skills } = booted
 
   try {
     await loader.create(options.entry)
@@ -94,31 +120,49 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
     const started = Date.now()
     while (Date.now() - started < timeoutMs) {
       const names = (await skills.list({})).map((skill: { name: string }) => skill.name).join(',')
-      if (names === lastSignature) stable += 1
+      // MCP registration is asynchronous (connect, then list, then register), so
+      // the signal has to include the tool names or the sample could land between
+      // the handshake and the first registration.
+      const toolNames = mcp === undefined ? '' : (ctx.tools?.schemas?.() ?? []).map((schema: { name: string }) => schema.name).join(',')
+      const signature = `${names}|${toolNames}`
+      if (signature === lastSignature) stable += 1
       else {
-        lastSignature = names
+        lastSignature = signature
         stable = 0
       }
-      if (stable >= 3) break
+      // An MCP registration is only observable once it happens, so "no change"
+      // is not settle evidence until at least one tool exists; otherwise a slow
+      // server would be reported as missing after one poll.
+      const waiting = mcp !== undefined && toolNames === ''
+      if (stable >= 3 && !waiting) break
       await sleep(10)
     }
 
     const listed = (await skills.list({})) as DshSkillReport[]
+    const exposed: string[] = mcp === undefined ? [] : (booted.tools?.schemas?.() ?? []).map((schema: { name: string }) => schema.name)
+    // A server is observable exactly when it contributes a tool: the inventory
+    // reports what the model can call, not what a config file declared.
+    const servers = (mcp?.servers ?? []).filter((server) =>
+      exposed.some((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)))
     const inventory = emptyInventory({
       name: options.entry.id,
       version: undefined,
       source: `dsh:${dshVersion(options.installedDir)}`,
     })
     inventory.pin = { tool: 'dsh', version: dshVersion(options.installedDir) }
-    inventory.components = listed.map((skill) => ({ surface: 'skills' as const, name: skill.name }))
+    inventory.components = [
+      ...listed.map((skill) => ({ surface: 'skills' as const, name: skill.name })),
+      ...servers.map((server) => ({ surface: 'mcpServers' as const, name: server.name })),
+    ]
     inventory.notes = [
       `${INVENTORY_SCHEMA}: ${listed.length} skill(s) reported by dsh-skill`,
       ...listed.map((skill) => `skills/${skill.name} via ${skill.provider}`),
+      ...servers.map((server) => `mcpServers/${server.name}: ${exposed.filter((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)).length} tool(s) registered`),
     ]
-    return { inventory, dshVersion: dshVersion(options.installedDir), skills: listed }
+    return { inventory, dshVersion: dshVersion(options.installedDir), skills: listed, tools: exposed }
   } finally {
     try {
-      loader.stop?.()
+      await Promise.resolve(booted?.loaderFiber?.dispose?.())
       await sleep(20)
     } catch {
       // Teardown failures must not mask the assertion that follows.

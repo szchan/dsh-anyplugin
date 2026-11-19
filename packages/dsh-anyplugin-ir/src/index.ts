@@ -86,6 +86,20 @@ export interface IrHook {
 export interface IrMcpServer {
   kind: 'mcp-server'
   name: string
+  /**
+   * Where the server lives. `stdio` is a child process; `http` is Streamable
+   * HTTP. Claude's `sse` transport is not carried yet, so it arrives as an
+   * `unsupported` entry rather than a server.
+   */
+  transport: 'stdio' | 'http'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string
+  url?: string
+  headers?: Record<string, string>
+  /** Absolute path that `${CLAUDE_PLUGIN_ROOT}` resolved to, kept for the report. */
+  pluginRoot?: string
   sourcePath: string
   annotation: Annotation
 }
@@ -194,7 +208,11 @@ export function validateIr(ir: ClaudePluginIr): string[] {
     problems.push(...annotationProblems(`hook ${hook.event}#${hook.index}`, hook.annotation))
   }
   for (const server of ir.mcpServers ?? []) {
-    problems.push(...annotationProblems(`mcp ${JSON.stringify(server.name)}`, server.annotation))
+    const where = `mcp ${JSON.stringify(server.name)}`
+    problems.push(...annotationProblems(where, server.annotation))
+    // A server that cannot be started is a claim with no mechanism behind it.
+    if (server.transport === 'stdio' && !server.command?.trim()) problems.push(`${where}: stdio server needs a command`)
+    if (server.transport === 'http' && !server.url?.trim()) problems.push(`${where}: http server needs a url`)
   }
   for (const item of ir.pending ?? []) {
     const where = `pending ${item.surface}/${JSON.stringify(item.name)}`

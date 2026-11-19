@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-materialize-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin that connects a plugin's MCP servers itself and registers Claude Code's exact tool names (D12).",
+  "exports": { ".": "./src/index.ts" }
+}
