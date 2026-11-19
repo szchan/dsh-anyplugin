@@ -1,6 +1,7 @@
 // `considered` is the report's only evidence that emit looked at an IR entry.
-// It must name refused entries (they also appear in `skipped`) and must not name
-// surfaces emit never places (agents, output-styles, …), or the report cannot
+// It must name refused entries (they also appear in `skipped`) and must name
+// every surface emit can place (agents included since S10) while staying silent
+// about surfaces with no materializer (output-styles, …), or the report cannot
 // tell "refused" apart from "never seen".
 
 import assert from 'node:assert/strict'
@@ -38,7 +39,7 @@ function buildIr() {
       {
         name: 'reviewer',
         description: 'Not an emit surface.',
-        annotation: annotation('planned', 'No catalog seam.'),
+        annotation: annotation('planned', 'Body and description are not carried on a planned face.'),
       },
     ],
     mcpServers: [
@@ -104,12 +105,13 @@ test('considered names the refused entries too', () => {
   assert.deepEqual(result.considered, [
     'skills/good',
     'skills/refused',
+    'agents/reviewer',
     'mcpServers/probe',
     'mcpServers/off',
     'hooks/PostToolUse#0',
     'hooks/Stop#1',
   ])
-  assert.deepEqual(result.skipped, ['skills/refused', 'mcpServers/off', 'hooks/Stop#1'])
+  assert.deepEqual(result.skipped, ['skills/refused', 'agents/reviewer', 'mcpServers/off', 'hooks/Stop#1'])
   assert.deepEqual(result.emitted, ['skills', 'mcpServers', 'hooks'])
   assert.deepEqual(result.refused, [])
 })
@@ -122,23 +124,24 @@ test('exec is default-off: an authorized seam still refuses an untrusted hook', 
 
   assert.deepEqual(result.emitted, ['skills', 'mcpServers'])
   assert.deepEqual(result.refused, ['hooks/PostToolUse#0'])
-  assert.deepEqual(result.skipped, ['skills/refused', 'mcpServers/off', 'hooks/Stop#1'])
+  assert.deepEqual(result.skipped, ['skills/refused', 'agents/reviewer', 'mcpServers/off', 'hooks/Stop#1'])
   assert.ok(result.entry)
   assert.ok(!result.entry.config.some((child) => child.id === 'hook'))
 })
 
-test('considered does not name surfaces emit never places', () => {
+test('considered names every placeable surface and no materializer-less one', () => {
   const result = emitPlugin(buildIr(), { materializers: { skill: 'skill-materializer' } })
 
   assert.deepEqual(result.considered, [
     'skills/good',
     'skills/refused',
+    'agents/reviewer',
     'mcpServers/probe',
     'mcpServers/off',
     'hooks/PostToolUse#0',
     'hooks/Stop#1',
   ])
-  assert.ok(!result.considered.some((entry) => entry.startsWith('agents/')))
+  assert.ok(result.considered.includes('agents/reviewer'))
   assert.ok(!result.considered.some((entry) => entry.startsWith('output-styles/')))
 })
 

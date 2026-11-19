@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { buildTransplantReport, formatTransplantReport } from '../src/report.ts'
 import { classify, emptyGrants, grant, pluginIdentity } from '../../dsh-anyplugin-trust/src/index.ts'
 
@@ -25,11 +26,7 @@ const rigPath = fileURLToPath(new URL('../src/rig.ts', import.meta.url))
 
 // The same shipped set `rig report` passes, so the library test and the CLI
 // test agree on what "skipped" can mean.
-const materializers = {
-  skill: new URL('../../dsh-anyplugin-materialize-skill/src/index.ts', import.meta.url).href,
-  mcp: new URL('../../dsh-anyplugin-materialize-mcp/src/index.ts', import.meta.url).href,
-  hooks: new URL('../../dsh-anyplugin-materialize-hook/src/index.ts', import.meta.url).href,
-}
+const materializers = defaultMaterializers()
 
 function grantsFor(ir) {
   let grants = emptyGrants()
@@ -128,6 +125,33 @@ test('rig report prints the compile-side report as JSON', () => {
   const reordered = runRig(['report', '--json', 'fixtures/claude-commands-flat'])
   assert.equal(reordered.status, 0, reordered.stderr)
   assert.deepEqual(JSON.parse(reordered.stdout).totals, { declared: 2, emitted: 2, refused: 0, skipped: 0 })
+})
+
+test('rig report carries the agent fixture through the shipped materializer set', () => {
+  // The CLI used to keep its own three-entry literal, so it printed this
+  // fixture as `emitted: 0, skipped: 2` while the build could place it. The
+  // report now asks emit with DEFAULT_MATERIALIZERS (R11).
+  const result = runRig(['report', 'fixtures/claude-agents', '--json'])
+
+  assert.equal(result.status, 0, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.totals, { declared: 2, emitted: 1, refused: 0, skipped: 1 })
+  assert.deepEqual(
+    report.components.map((component) => [component.surface, component.name, component.carried]),
+    [
+      ['agents', 'reviewer', true],
+      ['agents', 'planner', false],
+    ],
+  )
+  assert.deepEqual(
+    report.components[0].faces.map((face) => [face.face, face.class]),
+    [
+      ['catalog', 'exact'],
+      ['invocation', 'equivalent'],
+      ['tools', 'planned'],
+    ],
+  )
 })
 
 test('rig report fails on an IR that violates the contract', () => {

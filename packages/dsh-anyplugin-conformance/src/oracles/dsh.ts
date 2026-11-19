@@ -57,8 +57,10 @@ export interface DshProbeResult {
   inventory: Inventory
   dshVersion: string
   skills: DshSkillReport[]
-  /** Public tool names the harness actually exposes, for MCP assertions. */
+  /** Public tool names the harness actually exposes, for MCP and agent assertions. */
   tools: string[]
+  /** The public schemas behind {@link tools}; agent rows compare `description` byte for byte. */
+  toolSchemas: Array<{ name: string; description?: string }>
   /** Present when the caller asked for a behavioural probe. */
   behavior?: BehaviorObservation
 }
@@ -136,6 +138,30 @@ function mcpChild(entry: EntryOptions): { plugin: string; servers: Array<{ name:
   return { plugin: child.config.plugin, servers: child.config.servers ?? [] }
 }
 
+/** The agents child, when the emitter placed one. */
+function agentsChild(
+  entry: EntryOptions,
+): { plugin: string; agents: Array<{ name: string; toolName: string; description: string }> } | undefined {
+  const children = (entry.config ?? []) as Array<{
+    id?: string
+    config?: { plugin?: unknown; agents?: Array<{ name?: unknown; description?: unknown }> }
+  }>
+  const child = children.find((item) => item.id === 'agents')
+  if (!Array.isArray(child?.config?.agents)) return undefined
+  const plugin = typeof child.config.plugin === 'string' ? child.config.plugin : ''
+  if (plugin.trim() === '') return undefined
+  // The materializer registers `<plugin>:<agent>` (S10); the expected name is
+  // derived here rather than trusted from a per-agent field, so a config that
+  // claims a different tool name cannot make the oracle agree with itself.
+  const agents = child.config.agents
+    .filter(
+      (agent): agent is { name: string; description: string } =>
+        typeof agent?.name === 'string' && typeof agent?.description === 'string',
+    )
+    .map((agent) => ({ name: agent.name, toolName: `${plugin}:${agent.name}`, description: agent.description }))
+  return agents.length === 0 ? undefined : { plugin, agents }
+}
+
 /** Version of the harness packages under `harnessDir` (see `readHarnessVersion`). */
 export function dshVersion(harnessDir: string): string {
   return readHarnessVersion(harnessDir)
@@ -150,8 +176,10 @@ export function dshVersion(harnessDir: string): string {
 export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeResult> {
   const timeoutMs = options.timeoutMs ?? 5000
   const mcp = mcpChild(options.entry)
+  const agents = agentsChild(options.entry)
+  const wantTools = mcp !== undefined || agents !== undefined
   const behavior = options.behavior
-  const booted = await boot(options.harnessDir, timeoutMs, mcp !== undefined || behavior !== undefined, behavior !== undefined)
+  const booted = await boot(options.harnessDir, timeoutMs, wantTools || behavior !== undefined, behavior !== undefined)
   const { ctx, loader, skills } = booted
 
   try {
@@ -163,8 +191,12 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
       const names = (await skills.list({})).map((skill: { name: string }) => skill.name).join(',')
       // MCP registration is asynchronous (connect, then list, then register), so
       // the signal has to include the tool names or the sample could land between
-      // the handshake and the first registration.
-      const toolNames = mcp === undefined ? '' : (ctx.tools?.schemas?.() ?? []).map((schema: { name: string }) => schema.name).join(',')
+      // the handshake and the first registration. Agent tools register during
+      // apply, but the inventory still reads the registry, so they belong to the
+      // same signal.
+      const toolNames = wantTools
+        ? (ctx.tools?.schemas?.() ?? []).map((schema: { name: string }) => schema.name).join(',')
+        : ''
       const signature = `${names}|${toolNames}`
       if (signature === lastSignature) stable += 1
       else {
@@ -180,7 +212,8 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
     }
 
     const listed = (await skills.list({})) as DshSkillReport[]
-    const exposed: string[] = mcp === undefined ? [] : (booted.tools?.schemas?.() ?? []).map((schema: { name: string }) => schema.name)
+    const schemas = (booted.tools?.schemas?.() ?? []) as Array<{ name: string; description?: string }>
+    const exposed: string[] = wantTools ? schemas.map((schema) => schema.name) : []
 
     // One real call through the pipeline. The tool is registered here, after the
     // plugin applied, so a hook mounted on the waterfall cannot be applied too
@@ -216,6 +249,14 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
     // reports what the model can call, not what a config file declared.
     const servers = (mcp?.servers ?? []).filter((server) =>
       exposed.some((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)))
+    // An agent is observable only when a registered tool carries its name *and*
+    // its description byte for byte. The IR's declaration is the claim; the
+    // registry is the evidence (S10). A tool with the right name but different
+    // text is the exact failure this row exists to catch, so it does not count.
+    const declaredAgents = agents?.agents ?? []
+    const observedAgents = declaredAgents.filter((agent) =>
+      schemas.some((schema) => schema.name === agent.toolName && schema.description === agent.description))
+    const unobservedAgents = declaredAgents.filter((agent) => !observedAgents.includes(agent))
     const inventory = emptyInventory({
       name: options.entry.id,
       version: undefined,
@@ -224,11 +265,18 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
     inventory.pin = { tool: 'dsh', version: dshVersion(options.harnessDir) }
     inventory.components = [
       ...listed.map((skill) => ({ surface: 'skills' as const, name: skill.name })),
+      ...observedAgents.map((agent) => ({ surface: 'agents' as const, name: agent.name })),
       ...servers.map((server) => ({ surface: 'mcpServers' as const, name: server.name })),
     ]
     inventory.notes = [
       `${INVENTORY_SCHEMA}: ${listed.length} skill(s) reported by dsh-skill`,
       ...listed.map((skill) => `skills/${skill.name} via ${skill.provider}`),
+      ...observedAgents.map(
+        (agent) => `agents/${agent.name}: tool "${agent.toolName}" matches the emitted declaration (name and description)`,
+      ),
+      ...unobservedAgents.map(
+        (agent) => `agents/${agent.name}: no registered tool with the declared name and description`,
+      ),
       ...servers.map((server) => `mcpServers/${server.name}: ${exposed.filter((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)).length} tool(s) registered`),
     ]
     return {
@@ -236,6 +284,7 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
       dshVersion: dshVersion(options.harnessDir),
       skills: listed,
       tools: exposed,
+      toolSchemas: schemas,
       ...(observation === undefined ? {} : { behavior: observation }),
     }
   } finally {

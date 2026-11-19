@@ -45,9 +45,9 @@ export function formatDiff(report: DiffReport, options: { verbose?: boolean } = 
   return lines.join('\n')
 }
 
-/** One observable face of a component, mirroring `IrSkill.faces`. */
+/** One observable face of a component, mirroring the IR's per-face annotations. */
 export interface ReportFace {
-  face: 'model' | 'human'
+  face: 'model' | 'human' | 'catalog' | 'invocation' | 'tools' | 'limits'
   class: Fidelity
   reason: string
 }
@@ -98,7 +98,7 @@ function identityKey(surface: string, name: string): string {
   return `${surface}\u0000${name}`
 }
 
-/** Identity → the faces the IR models for it. Non-command skills carry none. */
+/** Identity → the faces the IR models for it. Non-command skills carry none; agents carry catalog/invocation plus optional model/tools/limits. */
 function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
   const faces = new Map<string, ReportFace[]>()
   for (const skill of ir.skills) {
@@ -110,6 +110,18 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
       present.push({ face: 'human', class: skill.faces.human.fidelity, reason: skill.faces.human.reason })
     }
     faces.set(identityKey('skills', skill.name), present)
+  }
+  for (const agent of ir.agents) {
+    if (!agent.faces) continue
+    const present: ReportFace[] = [
+      { face: 'catalog', class: agent.faces.catalog.fidelity, reason: agent.faces.catalog.reason },
+      { face: 'invocation', class: agent.faces.invocation.fidelity, reason: agent.faces.invocation.reason },
+    ]
+    for (const name of ['model', 'tools', 'limits'] as const) {
+      const face = agent.faces[name]
+      if (face) present.push({ face: name, class: face.fidelity, reason: face.reason })
+    }
+    faces.set(identityKey('agents', agent.name), present)
   }
   return faces
 }

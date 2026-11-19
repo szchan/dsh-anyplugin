@@ -10,12 +10,12 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { startHttpServer } from '../../../fixtures/claude-mcp-http/http-server.mjs'
-import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
+import { defaultMaterializers, emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import {
   classify,
   emptyGrants,
@@ -29,12 +29,7 @@ import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const harness = resolveHarness()
-const materializerUrl = (pkg) => pathToFileURL(join(repoRoot, 'packages', pkg, 'src', 'index.ts')).href
-const materializers = {
-  skill: materializerUrl('dsh-anyplugin-materialize-skill'),
-  mcp: materializerUrl('dsh-anyplugin-materialize-mcp'),
-  hooks: materializerUrl('dsh-anyplugin-materialize-hook'),
-}
+const materializers = defaultMaterializers()
 
 /**
  * What the transplant produces per fixture, as of this commit. Closing a gap
@@ -42,7 +37,7 @@ const materializers = {
  * it true.
  */
 const EXPECTED_ROWS = {
-  'claude-agents': ['agents:reviewer:missing'],
+  'claude-agents': ['agents:reviewer:match'],
   'claude-command-nested': [],
   'claude-commands-flat': ['skills:migrate:match', 'skills:review:match'],
   'claude-hooks-mcp': ['hooks:PostToolUse:match', 'mcpServers:probe:match'],
@@ -151,7 +146,10 @@ test(
         await cleanup?.()
       }
     }
-    assert.deepEqual(totals, { declared: 11, matched: 9, missing: 1, refused: 1 })
+    // S10 turned the last missing row into a match: the golden still declares
+    // 11 components (the nested `planner.md` is not loaded by Claude at this
+    // pin), so declared/refused do not move — matched absorbs the missing row.
+    assert.deepEqual(totals, { declared: 11, matched: 10, missing: 0, refused: 1 })
   },
 )
 

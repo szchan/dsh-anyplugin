@@ -16,13 +16,14 @@ import type {
   Annotation,
   ClaudePluginIr,
   IrAgent,
+  IrAgentFaces,
   IrHook,
   IrMcpServer,
   IrPin,
   IrSkill,
   IrUnmaterialized,
 } from '../../dsh-anyplugin-ir/src/index.ts'
-import { IR_SCHEMA } from '../../dsh-anyplugin-ir/src/index.ts'
+import { IR_SCHEMA, weakestAnnotation } from '../../dsh-anyplugin-ir/src/index.ts'
 
 export const CLAUDE_CODE_PIN: IrPin = { tool: 'claude-code', version: '2.1.322' }
 
@@ -106,6 +107,35 @@ function boolField(data: Record<string, unknown>, key: string): boolean | undefi
   if (typeof value === 'boolean') return value
   if (value === 'true') return true
   if (value === 'false') return false
+  return undefined
+}
+
+/**
+ * Claude accepts a comma-separated string (`tools: Read, Grep`) as well as an
+ * inline array. The string form is the common one in agent files, so a parser
+ * that only accepts arrays silently drops the restriction.
+ */
+function stringListField(data: Record<string, unknown>, ...keys: string[]): string[] | undefined {
+  for (const key of keys) {
+    const value = data[key]
+    if (Array.isArray(value)) {
+      const list = value.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+      if (list.length > 0) return list
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const list = value.split(',').map((item) => item.trim()).filter(Boolean)
+      if (list.length > 0) return list
+    }
+  }
+  return undefined
+}
+
+function numberField(data: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value)
+  }
   return undefined
 }
 
@@ -194,10 +224,15 @@ const COMMAND_PLANNED: Annotation = {
     'Weakest-face rule: the model catalog face is materialized as a skill, but the human face (/plugin:name with $ARGUMENTS) still needs the two additive seams described in DECISIONS D10.',
 }
 
-const NESTED_UNSUPPORTED: Annotation = {
-  fidelity: 'unsupported',
-  reason:
-    'Not loaded by the host at this pin: `claude --plugin-dir … plugin details` reports Skills (0) / Agents (1) for nested files. Recorded so the gap is visible rather than silently dropped.',
+function nestedUnsupported(surface: 'commands' | 'agents'): Annotation {
+  const detail =
+    surface === 'agents'
+      ? 'a nested `agents/**/*.md` file is outside the top-level agents surface; `claude --plugin-dir … plugin details` reports Agents (0) for a nested-only tree (the fixture reports Agents (1) because `agents/reviewer.md` is top-level)'
+      : 'a nested command file is outside the top-level commands surface'
+  return {
+    fidelity: 'unsupported',
+    reason: `Not loaded by the host at this pin: ${detail}. Recorded so the gap is visible rather than silently dropped.`,
+  }
 }
 
 function skillFromFile(
@@ -316,7 +351,7 @@ function readSkillsAndCommands(root: string): {
     for (const file of markdownFiles(commandsDir, root)) {
       const name = basename(file.abs).replace(/\.md$/, '')
       if (file.depth !== 1) {
-        unsupported.push({ surface: 'commands', name, sourcePath: file.rel, annotation: NESTED_UNSUPPORTED })
+        unsupported.push({ surface: 'commands', name, sourcePath: file.rel, annotation: nestedUnsupported('commands') })
         continue
       }
       const skill = skillFromFile(file, root, 'commands-dir', COMMAND_PLANNED, name, {
@@ -330,34 +365,164 @@ function readSkillsAndCommands(root: string): {
   return { skills, pending, unsupported }
 }
 
-function readAgents(root: string): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
+/**
+ * S10 — what an agent file can and cannot become at this pin.
+ *
+ * The catalog face is exact because a plugin can register its own tool with the
+ * agent's name and its frontmatter description, verbatim; `ctx.tools.schemas()`
+ * is what the model reads. The invocation face is equivalent because the
+ * daemon-side seam starts the child with the body as a *user message*
+ * (`SubagentStartRequest.prompt`), not as its system prompt, and because N tools
+ * replace Claude's single `Task` with a `subagent_type` enum.
+ *
+ * Everything else in the frontmatter needs a per-activation field that
+ * `SubagentStartRequest` does not have. `agentOptions` can carry a provider
+ * model id and effort for a route the deployment knows, but Claude's
+ * `model: sonnet|opus|haiku` aliases are not such ids; tools need the
+ * preset/toolFilter path; `maxTurns`/`isolation` need the child loop. Those
+ * stay planned, each with its own reason, and the overall annotation is their
+ * weakest so the component cannot read as fully carried.
+ */
+export function agentFaces(
+  agent: Pick<IrAgent, 'name' | 'model' | 'tools' | 'disallowedTools' | 'effort' | 'maxTurns' | 'isolation'>,
+  plugin: string,
+): IrAgentFaces {
+  const toolName = `${plugin}:${agent.name}`
+  const catalog: Annotation = {
+    fidelity: 'exact',
+    reason:
+      `Registered as the model-facing tool named ${JSON.stringify(toolName)} (Claude's \`<plugin>:<agent>\` convention) with the frontmatter description byte for byte. ` +
+      'The model sees exactly the name/description pair Claude\'s Task tool shows for `subagent_type` (S10).',
+  }
+  const invocation: Annotation = {
+    fidelity: 'equivalent',
+    reason:
+      'Invoking the tool calls `ctx.subagents.startActivation`; the agent body is the first block of the child\'s initial user message. ' +
+      'Claude starts the child with the body as its system prompt and exposes one `Task` tool with a `subagent_type` field, so the effect is the same but the tool shape and message position differ (S10).',
+  }
+
+  const faces: IrAgentFaces = { catalog, invocation }
+
+  if (agent.model !== undefined) {
+    faces.model = {
+      fidelity: 'planned',
+      reason:
+        `Frontmatter \`model: ${agent.model}\` is recorded, not forwarded. \`startActivation\` accepts \`agentOptions.model\`/\`reasoningEffort\`, ` +
+        'but Claude\'s alias names no provider model id at this pin; resolving it needs the model-escape layer (ARCHITECTURE §9), not a guess.',
+    }
+  }
+
+  const toolList = [...(agent.tools ?? []), ...(agent.disallowedTools ?? [])]
+  if (toolList.length > 0) {
+    faces.tools = {
+      fidelity: 'planned',
+      reason:
+        `Frontmatter tools ${JSON.stringify(toolList)} recorded, not enforced. \`startActivation\` has no per-activation tool filter ` +
+        '(`childCtx.tools.restrict` is reachable only from a preset composition or the cold-resume descriptor), so the child inherits the parent\'s toolset.',
+    }
+  }
+
+  const limits = [
+    ...(agent.effort === undefined ? [] : [`effort: ${agent.effort}`]),
+    ...(agent.maxTurns === undefined ? [] : [`maxTurns: ${agent.maxTurns}`]),
+    ...(agent.isolation === undefined ? [] : [`isolation: ${agent.isolation}`]),
+  ]
+  if (limits.length > 0) {
+    faces.limits = {
+      fidelity: 'planned',
+      reason:
+        `Frontmatter ${limits.join(', ')} recorded, not enforced. \`SubagentStartRequest\` has no per-activation field for them; ` +
+        '`maxTurns`/`isolation` need enforcement inside the child loop, which only an agent preset can select today.',
+    }
+  }
+
+  return faces
+}
+
+function readAgents(root: string, plugin: string): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
   const agents: IrAgent[] = []
   const unsupported: IrUnmaterialized[] = []
+  const seen = new Map<string, string>()
   const dir = join(root, 'agents')
   if (!existsSync(dir)) return { agents, unsupported }
   for (const file of markdownFiles(dir, root)) {
     const fallback = basename(file.abs).replace(/\.md$/, '')
     if (file.depth !== 1) {
-      unsupported.push({ surface: 'agents', name: fallback, sourcePath: file.rel, annotation: NESTED_UNSUPPORTED })
+      unsupported.push({ surface: 'agents', name: fallback, sourcePath: file.rel, annotation: nestedUnsupported('agents') })
       continue
     }
     const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
     const name = stringField(parsed.data, 'name') ?? fallback
-    agents.push({
+    const description = stringField(parsed.data, 'description')
+    if (description === undefined) {
+      // Claude's agent format requires a description: it is the text the Task
+      // tool shows when the model chooses a subagent_type. Without it there is
+      // no model-visible entry to carry, and inventing one would be a fake row.
+      unsupported.push({
+        surface: 'agents',
+        name,
+        sourcePath: file.rel,
+        annotation: {
+          fidelity: 'unsupported',
+          reason:
+            'Malformed agent: Claude requires a non-empty `description` in the frontmatter (it is the subagent_type description the Task tool shows). Nothing model-visible is defined to carry.',
+        },
+      })
+      continue
+    }
+    if (parsed.body.trim() === '') {
+      // The body is the only instructions the child receives. Emitting an
+      // empty tool would let the model select a persona that says nothing.
+      unsupported.push({
+        surface: 'agents',
+        name,
+        sourcePath: file.rel,
+        annotation: {
+          fidelity: 'unsupported',
+          reason:
+            'Malformed agent: the body is empty, so the tool would start a child with no instructions. Nothing model-visible is lost by refusing it, and emitting it silently would imply a persona that does not exist.',
+        },
+      })
+      continue
+    }
+    const previous = seen.get(name)
+    if (previous !== undefined) {
+      unsupported.push({
+        surface: 'agents',
+        name,
+        sourcePath: file.rel,
+        annotation: {
+          fidelity: 'unsupported',
+          reason: `Duplicate agent name ${JSON.stringify(name)}: ${file.rel} and ${previous} both declare it. Claude registers one subagent_type per name, so the later file is skipped rather than shadowing the first silently.`,
+        },
+      })
+      continue
+    }
+    seen.set(name, file.rel)
+    const model = stringField(parsed.data, 'model')
+    const tools = stringListField(parsed.data, 'tools')
+    const disallowedTools = stringListField(parsed.data, 'disallowedTools')
+    const effort = stringField(parsed.data, 'effort')
+    const maxTurns = numberField(parsed.data, 'maxTurns')
+    const isolation = stringField(parsed.data, 'isolation')
+    const faces = agentFaces({ name, model, tools, disallowedTools, effort, maxTurns, isolation }, plugin)
+    const agent: IrAgent = {
       kind: 'agent',
       name,
-      ...(stringField(parsed.data, 'description') ? { description: stringField(parsed.data, 'description') } : {}),
+      description,
       content: parsed.body,
-      ...(stringField(parsed.data, 'model') ? { model: stringField(parsed.data, 'model') } : {}),
-      ...(Array.isArray(parsed.data.tools) ? { tools: parsed.data.tools as string[] } : {}),
+      ...(model === undefined ? {} : { model }),
+      ...(tools === undefined ? {} : { tools }),
+      ...(disallowedTools === undefined ? {} : { disallowedTools }),
+      ...(effort === undefined ? {} : { effort }),
+      ...(maxTurns === undefined ? {} : { maxTurns }),
+      ...(isolation === undefined ? {} : { isolation }),
       origin: 'agents-dir',
       sourcePath: file.rel,
-      annotation: {
-        fidelity: 'planned',
-        reason:
-          'DSH has no description-driven named-agent catalog (dsh-subagent is a named provider registry), so an agent has no address to occupy yet. Planned for v0.4 (ARCHITECTURE §9).',
-      },
-    })
+      faces,
+      annotation: weakestAnnotation(Object.values(faces).filter((face): face is Annotation => face !== undefined)),
+    }
+    agents.push(agent)
   }
   return { agents, unsupported }
 }
@@ -645,7 +810,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const pin = options.pin ?? CLAUDE_CODE_PIN
   const pluginName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root)
   const { skills, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
-  const { agents, unsupported: agentUnsupported } = readAgents(root)
+  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName)
   const { hooks, pending: hookPending } = readHooks(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
 

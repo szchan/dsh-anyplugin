@@ -7,7 +7,10 @@
  * dispose and crash isolation that S1 verified; a stable id makes
  * re-materialization an update instead of a remove+create.
  */
-import type { ClaudePluginIr, IrSkill } from '../../dsh-anyplugin-ir/src/index.ts'
+import { isCarried } from '../../dsh-anyplugin-ir/src/index.ts'
+import type { ClaudePluginIr, IrAgent, IrSkill } from '../../dsh-anyplugin-ir/src/index.ts'
+
+export { DEFAULT_MATERIALIZERS, defaultMaterializers, materializerUrl } from './materializers.ts'
 
 export const GROUP_PLUGIN = '@deepseek-ai/cordis-plugin-group'
 
@@ -120,6 +123,23 @@ function skillConfig(skills: IrSkill[]): unknown {
 }
 
 /**
+ * The agents child. The body is payload, never prompt text: the materializer
+ * keeps it out of the tool description and hands it to `startActivation` when
+ * the tool is invoked (S10).
+ */
+function agentConfig(agents: IrAgent[], plugin: string): unknown {
+  return {
+    plugin,
+    agents: agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
+      content: agent.content,
+      ...(agent.sourcePath ? { path: agent.sourcePath } : {}),
+    })),
+  }
+}
+
+/**
  * Emittability is decided per *face*, not per component. A command whose human
  * face is still `planned` is emitted as a skill on purpose — its overall
  * annotation keeps saying `planned`, so the report cannot read as a success
@@ -131,10 +151,11 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   const skipped: string[] = []
   const refused: string[] = []
   const trusted = new Set(options.trusted ?? [])
-  // The three surfaces emit can place. An IR entry on any other surface
-  // (agents, output-styles, pending themes, …) was never a decision emit made.
+  // Every surface emit knows how to place. Skipping is a decision recorded
+  // below; an IR entry on an unknown surface was never one emit made.
   const considered: string[] = []
   for (const skill of ir.skills) considered.push(`skills/${skill.name}`)
+  for (const agent of ir.agents) considered.push(`agents/${agent.name}`)
   for (const server of ir.mcpServers) considered.push(`mcpServers/${server.name}`)
   for (const hook of ir.hooks) considered.push(`hooks/${hook.event}#${hook.index}`)
 
@@ -149,10 +170,21 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   }
   for (const skill of ir.skills) if (!skills.includes(skill)) skipped.push(`skills/${skill.name}`)
 
-  const carried = (annotation: { fidelity: string }) =>
-    annotation.fidelity === 'exact' || annotation.fidelity === 'equivalent'
+  // An agent is placed when its catalog face is carried: the tool name and
+  // description are what the model reads. Its invocation/model/tools/limits
+  // faces keep their own annotations; the overall stays the weakest (S10).
+  const agentsMaterializer = options.materializers.agents
+  const agents = ir.agents.filter((agent) => isCarried(agent.faces?.catalog ?? agent.annotation))
+  if (agents.length > 0 && agentsMaterializer !== undefined) {
+    children.push({ id: 'agents', name: agentsMaterializer, config: agentConfig(agents, ir.plugin.name) })
+    emitted.push('agents')
+  }
+  for (const agent of ir.agents) {
+    if (!agents.includes(agent) || agentsMaterializer === undefined) skipped.push(`agents/${agent.name}`)
+  }
+
   const mcpMaterializer = options.materializers.mcp
-  const servers = ir.mcpServers.filter((server) => carried(server.annotation))
+  const servers = ir.mcpServers.filter((server) => isCarried(server.annotation))
   if (servers.length > 0 && mcpMaterializer !== undefined) {
     children.push({
       id: 'mcp',
@@ -184,7 +216,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   // `planned` and stays out of the entry — the report keeps it visible.
   const hooks = ir.hooks.filter((hook) => {
     return (
-      carried(hook.annotation) &&
+      isCarried(hook.annotation) &&
       hook.command !== undefined &&
       trusted.has(`hook:${hook.event}#${hook.index}`) &&
       hook.artifact !== undefined &&
@@ -219,7 +251,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   for (const hook of ir.hooks) {
     const name = `hooks/${hook.event}#${hook.index}`
     // Without a hook materializer no hook can be placed, carried or not.
-    if (!carried(hook.annotation) || hook.command === undefined || hooksMaterializer === undefined) {
+    if (!isCarried(hook.annotation) || hook.command === undefined || hooksMaterializer === undefined) {
       skipped.push(name)
     } else if (
       !trusted.has(`hook:${hook.event}#${hook.index}`) ||

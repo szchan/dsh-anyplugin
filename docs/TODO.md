@@ -22,9 +22,6 @@ Nothing claimed.
       test time or from the installed tree; never vendored), starting with
       `diff` because it ships its own `hooks/` and `tests/`. Done when one
       real mod loads in the host and its own test expectations pass against us.
-- [ ] **Agents.** Needs a catalog seam (`dsh-subagent` has a provider registry,
-      not a discoverable directory). Done when `fixtures/claude-agents` matches
-      and the persona is selectable by description.
 
 ## Upstream proposals (union-only seams, T2)
 
@@ -37,7 +34,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
       sends expanded text as a user message.
 - [ ] `dsh-mcp-client:51` — derived namespace budget instead of a flat 32.
       Optional since D12; no longer on the critical path.
-- [ ] `dsh-subagent` — a named, described agent catalog.
+- [ ] `dsh-subagent` — a named, described agent catalog whose one
+      `Task`-shaped tool carries the name/description pair. Optional since S10:
+      S10 already makes agents selectable as one tool per agent (`catalog`
+      exact, `invocation` equivalent); a catalog would restore Claude's
+      single-tool shape and let a preset own the child system prompt, but it is
+      no longer on the critical path.
 - [ ] Hook events with no host today (S9): `PreModelSwitch`, `InstructionsLoaded`,
       `DirectoryAdded`, `Setup`, `UserPromptExpansion`, `MessageDisplay`,
       `PostToolBatch`, `Notification`, `Elicitation`, `ElicitationResult` are
@@ -84,6 +86,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Skill argument engine: the documented rules ($N zero-based, $name,
   the trailer, escapes) implemented and tested against a recorded trace;
   waiting on the tool-schema seam (D17).
+- S10 agents — one tool per agent, description byte for byte, body as the
+  first block of the child user message; `fixtures/claude-agents` matches and
+  model/tools/limits stay `planned` with reasons (ARCHITECTURE §10 S10).
 - S8: hooks ride the tool waterfalls (`tools/pre-execute` deny →
   `Error: <reason>`, `tools/post-execute` value + `additionalContexts`); the
   guard list is denial-only and is not used (D19).
