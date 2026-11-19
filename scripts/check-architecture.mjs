@@ -31,6 +31,7 @@ const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
 const ALLOWED = {
   'dsh-anyplugin-ir': [],
   'dsh-anyplugin-intercept': [],
+  'dsh-anyplugin-mod-scan': [],
   'dsh-anyplugin-hook-runner': [],
   'dsh-anyplugin-skill-template': [],
   'dsh-anyplugin-command-template': [],

@@ -593,3 +593,48 @@ back carrying the hook's text.
   would run a hook its author never addressed to that tool.
 - Handler types other than `command` (`http`, `mcp_tool`, `prompt`, `agent`)
   stay `planned`; each needs its own decision about where it executes.
+
+## D21 — The mod scan is lexical, and what it cannot prove is a `dynamic` site
+
+**Status:** ratified 2026-11-19, with the scanner (v0.5 prep).
+
+`dsh-anyplugin-mod-scan` reads a mod's source as text and returns literal
+`on('event', matcher?)` sites, literal `$.namespace.method` call sites, and a
+`dynamic` list for every capability-shaped construct it cannot prove. It never
+imports or evaluates the module, and it does not know Claude's event vocabulary:
+event names are whatever the source says. `capabilityList(scan)` returns the
+sorted, deduplicated `hooks:` and `calls:` lines Claude prints before install;
+the trust prompt must show `scan.dynamic` alongside them.
+
+**Why:** a mod body is arbitrary JavaScript, and the pre-install review is only
+worth anything if the reviewer sees both the capabilities that were found and
+the ones the scanner could not find. A scanner that silently skipped computed
+access would make a computed namespace look like no capability at all, which is
+worse than no scan. A scanner that transpiled or imported the mod to inspect it
+would violate §3.7 and execute untrusted code before install. So: extract the
+literal sites faithfully, report the rest with reasons, and keep the limits
+written down.
+
+**Consequences:**
+
+- The scanner is lexical, not a parser. It skips comments, strings, regex
+  literals and template bodies; it recognizes direct identifiers only. A call
+  through an alias (`const fs = $.fs; fs.read(...)`), a call through an imported
+  helper, or a call of a `$` returned from another function is a known blind
+  spot: the scan sees a binding, not the later call. Computed access and
+  template interpolations are reported as `dynamic` because they are visible at
+  the site. None is silently counted. A local function named `on`, or a local
+  `$` shadowing the mod API, is indistinguishable without type information; the
+  scan reports the literal site rather than guessing, so it can over-report but
+  never silently under-report.
+- Event names are source-derived, never checked against `CLASSIC_HOOK_EVENTS`.
+  The two vocabularies are different surfaces (mod events vs settings hooks),
+  and a scanner that normalized one into the other would invent a mapping the
+  spec has not ratified.
+- `line` points at the `on`/`$` token, so a reviewer can open the exact call
+  site; for a multi-line call the arguments may be on later lines.
+- The test fetches the pinned upstream `mods/diff/hooks/register.ts` at run
+  time. Offline it skips with the URL in the reason. Upstream is all rights
+  reserved, so the file is never vendored (D14); `fixtures/mods/PROVENANCE.md`
+  records the pin and the real path.
+- This is the scanner only. The mod host is v0.5 (D3); nothing here runs a mod.

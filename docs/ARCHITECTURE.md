@@ -353,8 +353,10 @@ ABI. Reasons:
 
 What a faithful host needs, in dependency order:
 
-1. **static scanner** — recognize literal `on('event')` / `$.ns.method()` and
-   emit the capability list (this is also the trust UI's data source);
+1. **static scanner** — *landed* in `dsh-anyplugin-mod-scan`: recognize literal
+   `on('event')` / `$.ns.method()` and emit the capability list, with every
+   unprovable site in `dynamic` (D21). This is also the trust UI's data source,
+   and it does not run a mod;
 2. **chain engine** — `next(e)` re-entry, tiers (`prepend|user|append|builtin`),
    `next.to`, `next.budget`, `next.signal`, `.catch`, per-event timeouts;
 3. **element runtime** — ~17 elements with validated prop schemas, render sites,
@@ -394,6 +396,9 @@ safe than the thing it emulates. The mitigation that comes for free: the static
 scan produces the exact capability list *before* install. That list feeds §6's
 grant UI directly — we show `hooks: tool.call, prompt.submit` and
 `calls: fs.write, process.run, env.get` and pin the grant to the artifact hash.
+The scanner has landed in `dsh-anyplugin-mod-scan`; it is literal-only and
+reports what it cannot prove (D21), so the grant prompt must show that report
+too.
 
 ### 7.6 Known portability limits (declare them, do not discover them)
 

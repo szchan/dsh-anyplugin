@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-mod-scan",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Static, non-executing scan of a Claude mod: literal on('event') and $.namespace.method call sites, plus every site the scanner cannot prove. Feeds the pre-install capability list (ARCHITECTURE §7.3).",
+  "exports": { ".": "./src/index.ts" }
+}
