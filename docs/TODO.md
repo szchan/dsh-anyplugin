@@ -13,7 +13,12 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-_(empty — the next item is chosen from Next.)_
+- [ ] `#11` **Trust grants** (review). Exec-class artifacts stay inert until a
+      `{capability, target, artifactHash, grantedAt, scope}` grant matches the
+      current hash; changing the script voids the grant (AGENTS §3.5).
+- [ ] `#13` **Host events behind the un-run hook events (S9)** (in progress).
+      Only `PreToolUse`/`PostToolUse` run today; the spike maps the other 30
+      onto host points, or records why none exists.
 
 ## Next
 
@@ -82,6 +87,25 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Behavior oracle: `claude plugin eval` runs upstream suites and yields
   per-run traces; the skill envelope and its missing argument substitution were
   found there (D16).
+- Fidelity report from a live emit run (`rig report <plugin-dir>`): every
+  component prints `carry=emitted|skipped|refused` beside its face annotations,
+  and `carried` is computed from what emit actually *considered*, not from what
+  the IR happened to contain (`EmitResult.considered`).
+- The harness comes from npm, and CI fails when it cannot (D22):
+  `resolveHarness()` prefers `DSH_HARNESS_DIR`, then the Desktop install, then
+  `.harness/<version>`; `scripts/fetch-harness.mjs` is the explicit, idempotent
+  fetch; the `verify` job runs both `0.2.2-rc.5` and `0.2.2-rc.2`, and a skip
+  is a failed job.
+- Install + reconcile (D23): `installs.yml` is the lock, three scope layers
+  decide enablement (narrower wins), and `reconcile` converges loader entries
+  by stable id — created, updated, removed, kept, failed — without writing
+  profile config.
+- The upstream oracle runs in CI (D24): `@anthropic-ai/claude-code@2.1.322` is
+  fetched, resolved through `CLAUDE_BIN`/PATH, version-guarded; a decoy in the
+  fixtures test proves the probe uses the binary it was handed.
+- Mod capability scanner (`dsh-anyplugin-mod-scan`): a lexical read of a mod's
+  `register.ts` yields the event sites and `$.` calls an install grant would
+  display, without vendoring or executing the mod (D21).
 - Hook payload fixtures: 32 doc-derived payloads plus 6 live captures from
   2.1.322 (DeepSeek backend), run through `runChain`; the event table and
   matcher subject are derived from them (D15).
