@@ -13,13 +13,10 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-- [ ] `#11` **Trust grants** (review). Exec-class artifacts stay inert until a
-      `{capability, target, artifactHash, grantedAt, scope}` grant matches the
-      current hash; changing the script voids the grant (AGENTS §3.5).
-- [ ] `#13` **Host events behind the un-run hook events (S9)** (in progress).
-      Only `PreToolUse`/`PostToolUse` run today; the spike maps the other 30
-      onto host points, or records why none exists.
-
+- [ ] `#17` **Grant and revoke from the CLI** (in progress). A boundary a
+      human cannot see and cannot revoke is not a boundary; `rig grant`
+      prints the manifest and the command line, `rig revoke` names the
+      broader scope that still allows the plugin.
 ## Next
 
 - [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
