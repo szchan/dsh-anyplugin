@@ -8,7 +8,7 @@
  * re-materialization an update instead of a remove+create.
  */
 import type { ClaudePluginIr, IrSkill } from '../../dsh-anyplugin-ir/src/index.ts'
-import { hashHook } from '../../dsh-anyplugin-trust/src/index.ts'
+import { classify } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const GROUP_PLUGIN = '@deepseek-ai/cordis-plugin-group'
 
@@ -183,12 +183,17 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   // Hooks are mounted on the tool waterfalls (D19). Only command handlers that
   // land on PreToolUse/PostToolUse are `equivalent` today; everything else is
   // `planned` and stays out of the entry — the report keeps it visible.
-  const hooks = ir.hooks.filter(
-    (hook) =>
+  const rows = new Map(classify(ir).map((row) => [row.target, row] as const))
+  const hooks = ir.hooks.filter((hook) => {
+    const row = rows.get(`hook:${hook.event}#${hook.index}`)
+    return (
       carried(hook.annotation) &&
       hook.command !== undefined &&
-      trusted.has(`hook:${hook.event}#${hook.index}`),
-  )
+      row !== undefined &&
+      row.unsupported === undefined &&
+      trusted.has(`hook:${hook.event}#${hook.index}`)
+    )
+  })
   const hooksMaterializer = options.materializers.hooks
   if (hooks.length > 0 && hooksMaterializer !== undefined) {
     children.push({
@@ -197,7 +202,8 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       config: {
         pluginRoot: ir.plugin.root,
         hooks: hooks.map((hook) => {
-          const artifact = hashHook(ir.plugin.root, hook)
+          const row = rows.get(`hook:${hook.event}#${hook.index}`)
+          if (row === undefined) throw new Error(`emit: no artifact row for hook ${hook.event}#${hook.index}`)
           return {
             event: hook.event,
             index: hook.index,
@@ -205,10 +211,12 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
             command: hook.command,
             ...(hook.args === undefined ? {} : { args: hook.args }),
             ...(hook.timeout === undefined ? {} : { timeout: hook.timeout }),
-            // D25: the materializer re-checks these bytes before every spawn.
-            artifactHash: artifact.artifactHash,
-            artifactMode: artifact.mode,
+            // D25: the manifest is resolved once here; the materializer re-reads
+            // exactly these paths before every spawn and refuses on a mismatch.
+            artifactHash: row.artifactHash,
+            artifactMode: row.mode,
             artifactRoot: ir.plugin.root,
+            artifact: row.manifest,
           }
         }),
       },
@@ -217,10 +225,11 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   }
   for (const hook of ir.hooks) {
     const name = `hooks/${hook.event}#${hook.index}`
+    const row = rows.get(`hook:${hook.event}#${hook.index}`)
     // Without a hook materializer no hook can be placed, carried or not.
     if (!carried(hook.annotation) || hook.command === undefined || hooksMaterializer === undefined) {
       skipped.push(name)
-    } else if (!hooks.includes(hook)) {
+    } else if (!hooks.includes(hook) || row === undefined || row.unsupported !== undefined) {
       refused.push(name)
     }
   }

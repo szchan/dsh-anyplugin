@@ -75,6 +75,13 @@ export interface ReconcileResult {
   kept: string[]
   /** Entries that are not live after the loop. Never duplicated in the lists above. */
   failed: ReconcileFailure[]
+  /**
+   * Exec artifacts the trust gate refused. They never became loader entries,
+   * so they are reported here rather than invented as disabled groups. Filled
+   * after removals/updates so a UI cannot show "refused" while the old child
+   * is still loaded.
+   */
+  refused: RefusedExec[]
 }
 
 /** A refused exec artifact, tagged with the plugin whose compile decision produced it. */
@@ -265,14 +272,6 @@ export async function reconcile(
   desired: readonly EntryOptions[],
   options: ReconcileOptions = {},
 ): Promise<ReconcileResult> {
-  if (options.onRefused !== undefined) {
-    options.onRefused(
-      (options.decisions ?? []).flatMap((decision) =>
-        decision.refused.map((refusal) => ({ plugin: decision.plugin, ...refusal })),
-      ),
-    )
-  }
-
   const desiredById = new Map<string, EntryOptions>()
   for (const entry of desired) {
     if (!entry || typeof entry.id !== 'string' || entry.id.length === 0) {
@@ -298,7 +297,7 @@ export async function reconcile(
     }
   }
 
-  const result: ReconcileResult = { created: [], updated: [], removed: [], kept: [], failed: [] }
+  const result: ReconcileResult = { created: [], updated: [], removed: [], kept: [], failed: [], refused: [] }
   const desiredIds = [...desiredById.keys()].sort()
   const timeoutMs = options.disposeTimeoutMs ?? 2000
 
@@ -404,5 +403,9 @@ export async function reconcile(
   result.created = result.created.filter((id) => !failedIds.has(id))
   result.updated = result.updated.filter((id) => !failedIds.has(id))
   result.kept = result.kept.filter((id) => !failedIds.has(id))
+  result.refused = (options.decisions ?? []).flatMap((decision) =>
+    decision.refused.map((refusal) => ({ plugin: decision.plugin, ...refusal })),
+  )
+  options.onRefused?.(result.refused)
   return result
 }

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -31,13 +32,13 @@ import {
   emptyGrants,
   gate,
   grant,
-  hashBytes,
-  hashFile,
-  hashHook,
+  grantFor,
+  hashManifest,
   pluginIdentity,
   parseGrants,
   readGrants,
   revoke,
+  revokeFor,
   serializeGrants,
   updateGrants,
   writeGrants,
@@ -258,9 +259,11 @@ test('inline command hashing is over the command text, and changing the text inv
   const { dir, ir } = makePlugin({ command: 'echo hello' })
   try {
     const [row] = classify(ir)
-    assert.equal(row.mode, 'inline')
+    assert.equal(row.mode, 'text')
     assert.equal(row.sourcePath, 'hooks/hooks.json')
-    assert.equal(row.artifactHash, hashBytes('echo hello'))
+    assert.equal(row.artifactHash, hashManifest(row.manifest))
+    assert.equal(row.manifest.command.length, 2)
+    assert.deepEqual(row.manifest.command, ['echo', 'hello'])
     const store = userGrant(ir, row)
     assert.deepEqual(authorize(ir, store).allowed, [row.target])
 
@@ -268,8 +271,9 @@ test('inline command hashing is over the command text, and changing the text inv
     const changed = readClaudePlugin(dir)
     const decision = authorize(changed, store)
     assert.equal(decision.refused[0].code, 'hash-mismatch')
-    assert.equal(decision.refused[0].grantedHash, hashBytes('echo hello'))
-    assert.equal(decision.refused[0].artifactHash, hashBytes('echo hello!'))
+    assert.equal(decision.refused[0].grantedHash, row.artifactHash)
+    const [current] = classify(changed)
+    assert.equal(decision.refused[0].artifactHash, current.artifactHash)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -280,7 +284,9 @@ test('a file-plus-args command pins the file, not the argv that points at it', (
   try {
     const [row] = classify(ir)
     assert.equal(row.mode, 'file')
-    assert.equal(row.artifactHash, hashFile(join(dir, 'scripts', 'hook.sh')))
+    assert.equal(row.manifest.files.length, 1)
+    assert.equal(row.manifest.files[0].path, join(dir, 'scripts', 'hook.sh'))
+    assert.equal(row.artifactHash, hashManifest(row.manifest))
     const store = userGrant(ir, row)
 
     // Changing only the argv leaves the artifact bytes alone: the grant holds.
@@ -304,7 +310,7 @@ test('a compound shell command pins the text and every file it names', () => {
   try {
     writeFileSync(join(dir, 'data.txt'), 'some data\n', 'utf8')
     const [row] = classify(ir)
-    assert.equal(row.mode, 'inline')
+    assert.equal(row.mode, 'composite')
     const store = userGrant(ir, row)
 
     // Editing the pipeline text invalidates.
@@ -455,9 +461,9 @@ test('exec-form args: the script the argv names is pinned, a flag change is not'
     rewriteCommand(dir, { command: 'node', args: [script, '--verbose'] })
     const execIr = readClaudePlugin(dir)
     const [row] = classify(execIr)
-    assert.equal(row.mode, 'file')
-    assert.equal(row.artifactHash, hashFile(script), 'the argv text alone must not be the artifact')
-    assert.equal(row.sourcePath, 'scripts/hook.sh')
+    assert.equal(row.mode, 'composite')
+    assert.equal(row.manifest.files[0].path, script, 'the script the argv names must be pinned')
+    assert.equal(row.artifactHash, hashManifest(row.manifest))
 
     // A pure flag change is not a new artifact.
     rewriteCommand(dir, { command: 'node', args: [script, '--quiet'] })
@@ -473,23 +479,185 @@ test('exec-form args: the script the argv names is pinned, a flag change is not'
   }
 })
 
-test('cd-relative shell script is a file operand; changing the script invalidates, changing a flag does not', () => {
-  const { dir, script } = makePlugin({ command: 'cd "${CLAUDE_PLUGIN_ROOT}" && ./scripts/hook.sh --verbose' })
+test('relative file operands are refused because hooks run in the project directory', () => {
+  const { dir, ir: initial } = makePlugin()
   try {
-    const ir = readClaudePlugin(dir)
-    const [row] = classify(ir)
-    assert.equal(row.mode, 'inline', 'the cd skeleton is pinned with the one file operand')
-    assert.notEqual(row.artifactHash, hashFile(script))
-
-    rewriteCommand(dir, { command: 'cd "${CLAUDE_PLUGIN_ROOT}" && ./scripts/hook.sh --quiet' })
-    assert.deepEqual(authorize(readClaudePlugin(dir), userGrant(ir, row)).allowed, [row.target])
-
-    writeFileSync(script, '#!/bin/sh\necho changed\n', 'utf8')
-    assert.equal(authorize(readClaudePlugin(dir), userGrant(ir, row)).refused[0].code, 'hash-mismatch')
+    for (const command of [
+      'cd "${CLAUDE_PLUGIN_ROOT}" && ./scripts/hook.sh',
+      'sh scripts/hook.sh',
+    ]) {
+      rewriteCommand(dir, { command })
+      const ir = readClaudePlugin(dir)
+      const [row] = classify(ir)
+      assert.match(row.unsupported, /relative operand "\.?\/?scripts\/hook\.sh"/)
+      assert.match(row.unsupported, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/hook\.sh/)
+      const decision = authorize(ir, userGrant(ir, row))
+      assert.deepEqual(decision.allowed, [])
+      assert.equal(decision.refused[0].code, 'unsupported')
+      assert.throws(() => grantFor(ir, emptyGrants(), row.target, { scope: 'user' }), /cannot be pinned/)
+    }
+    assert.equal(initial.hooks.length, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a script outside the plugin root is refused, not hashed as path text', () => {
+  const { dir } = makePlugin()
+  const outsideDir = mkdtempSync(join(tmpdir(), 'anyplugin-outside-'))
+  try {
+    const outside = join(outsideDir, 'outside.sh')
+    writeFileSync(outside, '#!/bin/sh\necho outside\n', 'utf8')
+    rewriteCommand(dir, { command: outside })
+    const ir = readClaudePlugin(dir)
+    const [row] = classify(ir)
+    assert.match(row.unsupported, /outside the plugin root/)
+    assert.equal(row.manifest.files.length, 0)
+    const decision = authorize(ir, userGrant(ir, row))
+    assert.equal(decision.refused[0].code, 'unsupported')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(outsideDir, { recursive: true, force: true })
+  }
+})
+
+test('operand order and duplicates are part of the manifest hash', () => {
+  const { dir, ir: initial } = makePlugin()
+  try {
+    const a = join(dir, 'a.txt')
+    const b = join(dir, 'b.txt')
+    writeFileSync(a, 'a\n')
+    writeFileSync(b, 'b\n')
+
+    rewriteCommand(dir, { command: `cp ${a} ${b}` })
+    const [forward] = classify(readClaudePlugin(dir))
+    assert.deepEqual(forward.manifest.files.map((file) => file.path), [a, b])
+
+    rewriteCommand(dir, { command: `cp ${b} ${a}` })
+    const [backward] = classify(readClaudePlugin(dir))
+    assert.deepEqual(backward.manifest.files.map((file) => file.path), [b, a])
+    assert.notEqual(backward.artifactHash, forward.artifactHash)
+
+    // The same file twice is two entries, not a Set.
+    rewriteCommand(dir, { command: `cat ${a} ${a}` })
+    const [twice] = classify(readClaudePlugin(dir))
+    assert.deepEqual(twice.manifest.files.map((file) => file.path), [a, a])
+
+    // A relative operand is refused even when the files exist.
+    rewriteCommand(dir, { command: 'cat a.txt b.txt' })
+    const [relative] = classify(readClaudePlugin(dir))
+    assert.match(relative.unsupported, /relative operand "a\.txt"/)
+    assert.equal(initial.hooks.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('interpreter eval payloads are code: editing the payload refuses the grant', () => {
+  const { dir, ir: initial } = makePlugin()
+  try {
+    const cases = [
+      { first: 'sh -c \'printf one\'', second: 'sh -c \'printf two\'' },
+      { first: 'node -e \'console.log(1)\'', second: 'node -e \'console.log(2)\'' },
+      { first: 'node', args: ['-e', 'console.log(1)'], second: 'node', secondArgs: ['-e', 'console.log(2)'] },
+    ]
+    for (const item of cases) {
+      rewriteCommand(dir, item.args === undefined ? { command: item.first } : { command: item.first, args: item.args })
+      const ir = readClaudePlugin(dir)
+      const [row] = classify(ir)
+      assert.equal(row.mode, 'text')
+      const store = userGrant(ir, row)
+
+      const next = item.secondArgs === undefined
+        ? { command: item.second }
+        : { command: item.second, args: item.secondArgs }
+      rewriteCommand(dir, next)
+      const decision = authorize(readClaudePlugin(dir), store)
+      assert.equal(decision.refused[0].code, 'hash-mismatch', `${item.first} must pin its payload`)
+    }
+    assert.equal(initial.hooks.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a hook writing --out under the root still runs twice: outputs are not artifacts', async () => {
+  const { dir, script, ir } = makePlugin({ event: 'PreToolUse' })
+  try {
+    writeFileSync(script, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "${CLAUDE_PLUGIN_ROOT}/out.txt"\n', 'utf8')
+    rewriteCommand(dir, {
+      event: 'PreToolUse',
+      command: '${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh --out ${CLAUDE_PLUGIN_ROOT}/out.txt',
+    })
+    const current = readClaudePlugin(dir)
+    const [row] = classify(current)
+    assert.deepEqual(row.manifest.files.map((file) => file.path), [script], 'the output flag value is not an operand')
+
+    const report = compileReport(installsFor(current), compileOptions(userGrant(current, row)))
+    const child = report.entries[0].config.find((entry) => entry.name === materializers.hooks)
+    const handlers = new Map()
+    const ctx = { logger: { warn() {} }, effect: (register) => register(), on: (event, handler) => handlers.set(event, handler) }
+    applyHooks(ctx, child.config)
+    let calls = 0
+    const invoke = () => handlers.get('tools/pre-execute')(
+      { callId: 1, name: 'Write', arguments: {} },
+      async () => { calls += 1; return { kind: 'accept' } },
+    )
+    assert.deepEqual(await invoke(), { kind: 'accept' })
+    assert.deepEqual(await invoke(), { kind: 'accept' })
+    assert.equal(calls, 2)
+    assert.equal(readFileSync(join(dir, 'out.txt'), 'utf8').trim().split('\n').length, 2)
+    assert.equal(ir.hooks.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('grantFor and revokeFor reject a target that the plugin does not declare', () => {
+  const { dir, ir } = makePlugin()
+  try {
+    assert.throws(
+      () => grantFor(ir, emptyGrants(), 'hook:BogusEvent#9', { scope: 'user' }),
+      (error) => error.name === 'GrantTargetError' && /known targets: hook:PostToolUse#0/.test(error.message),
+    )
+    assert.throws(
+      () => revokeFor(ir, emptyGrants(), 'bin:missing', { scope: 'local' }),
+      (error) => error.name === 'GrantTargetError' && /no exec artifact/.test(error.message),
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('classify covers bin, monitor and mod files with file manifests', () => {
+  const { dir, ir: initial } = makePlugin()
+  try {
+    for (const [directory, name] of [['bin', 'tool.js'], ['monitors', 'watch.mjs'], ['mods', 'index.js']]) {
+      mkdirSync(join(dir, directory, 'nested'), { recursive: true })
+      writeFileSync(join(dir, directory, 'nested', name), `// ${name}\n`)
+    }
+    const ir = readClaudePlugin(dir)
+    const rows = classify(ir)
+    const byTarget = new Map(rows.map((row) => [row.target, row]))
+    for (const [directory, prefix, name] of [['bin', 'bin', 'tool.js'], ['monitors', 'monitor', 'watch.mjs'], ['mods', 'mod', 'index.js']]) {
+      const row = byTarget.get(`${prefix}:nested/${name}`)
+      assert.ok(row, `${prefix}:nested/${name} must be classified`)
+      assert.equal(row.mode, 'file')
+      assert.equal(row.manifest.files[0].path, join(dir, directory, 'nested', name))
+      assert.equal(row.artifactHash, hashManifest(row.manifest))
+      assert.ok(grantFor(ir, emptyGrants(), row.target, { scope: 'user' }))
+    }
+
+    const before = byTarget.get('bin:nested/tool.js').artifactHash
+    writeFileSync(join(dir, 'bin', 'nested', 'tool.js'), '// changed\n')
+    const after = classify(readClaudePlugin(dir)).find((row) => row.target === 'bin:nested/tool.js')
+    assert.notEqual(after.artifactHash, before)
+    assert.equal(initial.hooks.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 
 test('a grant and a revoke at the same scope refuse: revoke wins', () => {
   const { dir, ir } = makePlugin()
@@ -577,26 +745,31 @@ test('two matcher groups under one event keep distinct per-event indexes and bot
 test('editing the artifact after load refuses the next call; a re-pin lets the new bytes run', async () => {
   const { dir, script, ir } = makePlugin({ event: 'PreToolUse' })
   try {
-    const hook = ir.hooks[0]
-    const config = {
-      pluginRoot: dir,
-      hooks: [{
-        event: 'PreToolUse',
-        index: hook.index,
-        matcher: hook.matcher,
-        command: hook.command,
-        artifactHash: hashHook(dir, hook).artifactHash,
-        artifactRoot: dir,
-      }],
+    const [row] = classify(ir)
+    const configFor = (store) => {
+      const report = compileReport(installsFor(ir), compileOptions(store))
+      const child = report.entries[0].config.find((entry) => entry.name === materializers.hooks)
+      return child.config
     }
-    const handlers = new Map()
-    const ctx = { logger: { warn() {} }, effect: (register) => register(), on: (event, handler) => handlers.set(event, handler) }
-    applyHooks(ctx, config)
+    const mount = (config) => {
+      const handlers = new Map()
+      const ctx = { logger: { warn() {} }, effect: (register) => register(), on: (event, handler) => handlers.set(event, handler) }
+      applyHooks(ctx, config)
+      return handlers
+    }
+    let handlers = mount(configFor(userGrant(ir, row)))
     let calls = 0
     const invoke = () => handlers.get('tools/pre-execute')(
       { callId: 1, name: 'Write', arguments: {} },
       async () => { calls += 1; return { kind: 'accept' } },
     )
+
+    const emitted = handlers.size === 1 ? configFor(userGrant(ir, row)) : undefined
+    assert.equal(emitted.hooks[0].index, row.target.slice('hook:PostToolUse#'.length) | 0)
+    assert.equal(emitted.hooks[0].artifactHash, row.artifactHash)
+    assert.equal(emitted.hooks[0].artifactMode, 'file')
+    assert.equal(emitted.hooks[0].artifactRoot, dir)
+    assert.deepEqual(emitted.hooks[0].artifact, row.manifest)
 
     assert.deepEqual(await invoke(), { kind: 'accept' })
     assert.equal(calls, 1)
@@ -608,9 +781,10 @@ test('editing the artifact after load refuses the next call; a re-pin lets the n
     assert.match(refused.reason, /command: .*scripts\/hook\.sh/)
     assert.equal(calls, 1, 'the changed bytes must not run')
 
-    // What a re-grant followed by reconcile does: the child config carries the
-    // new pin, so the same edited bytes now run.
-    config.hooks[0].artifactHash = hashFile(script)
+    // What a re-grant followed by reconcile does: classify the edited bytes,
+    // grant the new manifest, compile again and mount that child config.
+    const [changedRow] = classify(readClaudePlugin(dir))
+    handlers = mount(configFor(userGrant(ir, changedRow)))
     assert.deepEqual(await invoke(), { kind: 'accept' })
     assert.equal(calls, 2)
 
@@ -618,12 +792,62 @@ test('editing the artifact after load refuses the next call; a re-pin lets the n
     rmSync(script)
     const missing = await invoke()
     assert.equal(missing.kind, 'deny')
-    assert.match(missing.reason, /artifact is no longer a file|artifact changed since the grant|artifact cannot be re-hashed/)
+    assert.match(missing.reason, /artifact cannot be re-hashed/)
     assert.equal(calls, 2)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('PostToolUse warns and skips an edited artifact; a re-grant and recompile lets it run', async () => {
+  const { dir, script, ir } = makePlugin({ event: 'PostToolUse' })
+  const marker = join(dir, 'ran.log')
+  const runs = () => (existsSync(marker) ? readFileSync(marker, 'utf8').split('\n').filter(Boolean).length : 0)
+  try {
+    writeFileSync(script, `#!/bin/sh\nprintf 'run\\n' >> ${JSON.stringify(marker)}\n`, 'utf8')
+    const [row] = classify(readClaudePlugin(dir))
+    const configFor = (store) => {
+      const report = compileReport(installsFor(ir), compileOptions(store))
+      return report.entries[0].config.find((entry) => entry.name === materializers.hooks).config
+    }
+    const mount = (config) => {
+      const handlers = new Map()
+      const warnings = []
+      const ctx = {
+        logger: { warn: (message) => warnings.push(message) },
+        effect: (register) => register(),
+        on: (event, handler) => handlers.set(event, handler),
+      }
+      applyHooks(ctx, config)
+      return { handlers, warnings }
+    }
+    let mounted = mount(configFor(userGrant(ir, row)))
+    const invoke = () => mounted.handlers.get('tools/post-execute')(
+      { callId: 1, name: 'Write', arguments: {} },
+      {},
+      async () => ({ kind: 'accept', additionalContexts: [] }),
+    )
+
+    assert.deepEqual(await invoke(), { kind: 'accept', additionalContexts: [] })
+    assert.equal(runs(), 1)
+
+    writeFileSync(script, `#!/bin/sh\n# changed\nprintf 'run\\n' >> ${JSON.stringify(marker)}\n`, 'utf8')
+    const warned = await invoke()
+    assert.equal(warned.kind, 'accept')
+    assert.equal(runs(), 1, 'the changed bytes must not run')
+    assert.equal(warned.additionalContexts.length, 1)
+    assert.match(warned.additionalContexts[0].content[0].text, /artifact changed since the grant/)
+    assert.match(mounted.warnings.join('\n'), /artifact changed since the grant/)
+
+    const [changedRow] = classify(readClaudePlugin(dir))
+    mounted = mount(configFor(userGrant(ir, changedRow)))
+    assert.deepEqual(await invoke(), { kind: 'accept', additionalContexts: [] })
+    assert.equal(runs(), 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 
 test('compileReport keeps trusted and refused decisions; reconcile surfaces refusals without an entry', async () => {
   const trusted = makePlugin({ name: 'trusted' })
@@ -653,7 +877,7 @@ test('compileReport keeps trusted and refused decisions; reconcile surfaces refu
     assert.equal(refusedDecision.refused[0].code, 'no-grant')
 
     const seen = []
-    await reconcile(
+    const result = await reconcile(
       {
         root: {},
         entries: () => [],
@@ -669,8 +893,9 @@ test('compileReport keeps trusted and refused decisions; reconcile surfaces refu
     assert.equal(seen.length, 1)
     assert.equal(seen[0].plugin, 'claude-code:refused')
     assert.equal(seen[0].target, 'hook:PostToolUse#0')
+    assert.deepEqual(result.refused, seen)
 
-    // An unknown dialect is still an error, not a silent skip.
+    // An unknown dialect is a per-record problem, not a whole-lock abort.
     const unknown = {
       ...installs,
       plugins: [...installs.plugins, { ...installs.plugins[0], name: 'unknown', dialect: 'codex' }],
@@ -678,7 +903,14 @@ test('compileReport keeps trusted and refused decisions; reconcile surfaces refu
     const withUnknown = {
       user: { plugins: { ...enablements.user.plugins, 'codex:unknown': { enabled: true, grants: [] } } },
     }
-    assert.throws(() => compileReport(unknown, { materializers, enablements: withUnknown }), /unsupported dialect "codex"/)
+    const withProblems = compileReport(unknown, {
+      materializers,
+      enablements: withUnknown,
+      grants: userGrant(trusted.ir, row),
+    })
+    assert.equal(withProblems.entries.length, 1)
+    assert.equal(withProblems.problems.length, 1)
+    assert.match(withProblems.problems[0].reason, /unsupported dialect "codex"/)
   } finally {
     rmSync(trusted.dir, { recursive: true, force: true })
     rmSync(refused.dir, { recursive: true, force: true })

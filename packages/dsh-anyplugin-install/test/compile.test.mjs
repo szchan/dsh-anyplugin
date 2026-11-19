@@ -10,7 +10,7 @@ import test from 'node:test'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin, GROUP_PLUGIN, mangleId } from '../../dsh-anyplugin-emit/src/index.ts'
-import { compileEntries } from '../src/index.ts'
+import { compileEntries, compileReport } from '../src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const workspace = mkdtempSync(join(tmpdir(), 'anyplugin-compile-'))
@@ -145,26 +145,23 @@ test('entries are sorted by identity, independent of lock order', () => {
 
 test('the lock pin must be the pin this build reads against', () => {
   const installs = lock(record('skills-only', 'claude-skills-only', { pin: 'claude-code@2.1.321' }))
-  assert.throws(
-    () => compileEntries(installs, { materializers, enablements: enabled('claude-code:skills-only') }),
-    /installed against pin "claude-code@2\.1\.321"/,
-  )
+  const report = compileReport(installs, { materializers, enablements: enabled('claude-code:skills-only') })
+  assert.equal(report.entries.length, 0)
+  assert.match(report.problems[0].reason, /installed against pin "claude-code@2\.1\.321"/)
 })
 
 test('the artifact must declare the name the lock recorded', () => {
   const installs = lock(record('other', 'claude-skills-only'))
-  assert.throws(
-    () => compileEntries(installs, { materializers, enablements: enabled('claude-code:other') }),
-    /declares "skills-only"/,
-  )
+  const report = compileReport(installs, { materializers, enablements: enabled('claude-code:other') })
+  assert.equal(report.entries.length, 0)
+  assert.match(report.problems[0].reason, /declares "skills-only"/)
 })
 
 test('an unknown dialect is rejected, not guessed', () => {
   const installs = lock(record('x', 'claude-skills-only', { dialect: 'codex' }))
-  assert.throws(
-    () => compileEntries(installs, { materializers, enablements: enabled('codex:x') }),
-    /unsupported dialect "codex"/,
-  )
+  const report = compileReport(installs, { materializers, enablements: enabled('codex:x') })
+  assert.equal(report.entries.length, 0)
+  assert.match(report.problems[0].reason, /unsupported dialect "codex"/)
 })
 
 test('projectDir reads the three scope files when enablements is omitted', () => {

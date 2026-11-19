@@ -116,12 +116,12 @@ test('the first reconcile creates, the second keeps and writes nothing', async (
   const loader = new FakeLoader()
   const desired = desiredEntries()
   const first = await reconcile(loader, desired)
-  assert.deepEqual(first, { created: [GROUP_ID], updated: [], removed: [], kept: [], failed: [] })
+  assert.deepEqual(first, { created: [GROUP_ID], updated: [], removed: [], kept: [], failed: [], refused: [] })
 
   const second = await reconcile(loader, desired)
   // "all-empty" means no change happened: created/updated/removed are empty and
   // the entries are accounted for as kept. The loader got exactly one write.
-  assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [GROUP_ID], failed: [] })
+  assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [GROUP_ID], failed: [], refused: [] })
   assert.deepEqual(loader.calls, [['create', GROUP_ID]])
 })
 
@@ -129,7 +129,7 @@ test('a changed desired config updates the entry in place', async () => {
   const loader = new FakeLoader()
   await reconcile(loader, desiredEntries(materializer('one')))
   const result = await reconcile(loader, desiredEntries(materializer('two')))
-  assert.deepEqual(result, { created: [], updated: [GROUP_ID], removed: [], kept: [], failed: [] })
+  assert.deepEqual(result, { created: [], updated: [GROUP_ID], removed: [], kept: [], failed: [], refused: [] })
   assert.deepEqual(loader.calls, [['create', GROUP_ID], ['update', GROUP_ID]])
   assert.equal(loader.resolve(GROUP_ID).options.config[0].name, materializer('two'))
 })
@@ -149,7 +149,7 @@ test('removal waits for the subtree to settle disposed, and leaves foreign entri
   }
   const result = await reconcile(loader, [])
 
-  assert.deepEqual(result, { created: [], updated: [], removed: [GROUP_ID], kept: [], failed: [] })
+  assert.deepEqual(result, { created: [], updated: [], removed: [GROUP_ID], kept: [], failed: [], refused: [] })
   assert.deepEqual(unloading, [5, 5], 'teardown was observed at state 5 (unloading)')
   assert.equal(groupFiber.state, 4, 'group settled disposed')
   assert.equal(childFiber.state, 4, 'child settled disposed')
@@ -241,7 +241,7 @@ test('an update waits for children it drops, even with a slow disposer', async (
     updated: ['anyplugin.slow'],
     removed: [],
     kept: [],
-    failed: [],
+    failed: [], refused: [],
   })
   assert.equal(droppedFiber.state, 4, 'the dropped child settled before reconcile returned')
   assert.ok(elapsed >= 100, `waited for the 120ms disposer (took ${elapsed.toFixed(1)}ms)`)

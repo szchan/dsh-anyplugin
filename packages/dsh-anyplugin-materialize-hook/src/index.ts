@@ -18,7 +18,7 @@ import {
   matcherMatches,
   runCommandHook,
 } from '../../dsh-anyplugin-hook-runner/src/index.ts'
-import { hashHook } from '../../dsh-anyplugin-trust/src/index.ts'
+import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const name = 'anyplugin-materialize-hook'
 export const inject = ['tools']
@@ -33,9 +33,11 @@ export interface MaterialHook {
   timeout?: number
   /** D25 pin carried by the emitter; absent on a hand-written config. */
   artifactHash?: string
-  /** How the pin was taken: bytes on disk, or the command text/structure. */
-  artifactMode?: 'file' | 'inline'
+  /** How the pin was taken: a pure file, command text, or a composite. */
+  artifactMode?: ArtifactMode
   artifactRoot?: string
+  /** The resolved manifest: exact invocation plus ordered files and hashes. */
+  artifact?: ArtifactManifest
 }
 
 export interface Config {
@@ -77,42 +79,53 @@ export function apply(ctx: any, config: Config = {}): void {
   env.CLAUDE_PROJECT_DIR = process.cwd()
 
   /**
-   * Re-check the bytes immediately before every spawn (D25). A grant is
-   * checked at reconcile time, but the file can change between reconcile and
-   * the next tool call; pinning the hash in the child config and re-reading
-   * here is what makes "any change invalidates" true at the only moment it
-   * matters. One file read per matched hook call is acceptable: a hook that
-   * runs is already spawning a process.
+   * Re-read exactly the manifest's files immediately before every spawn (D25).
+   * The command is never re-scanned: a grant pins one resolution, so an output
+   * a hook writes (`--out ./out.txt`) or a later-created relative file can
+   * neither change the artifact nor trigger a false refusal. A mismatch means
+   * the bytes that would run are not the granted bytes, and the invocation is
+   * refused.
    */
+  const sameInvocation = (hook: MaterialHook, manifest: ArtifactManifest): boolean => {
+    if (typeof manifest.invocation === 'string') {
+      return hook.args === undefined && manifest.invocation === hook.command
+    }
+    if (hook.args === undefined) return false
+    return (
+      manifest.invocation.length === hook.args.length + 1 &&
+      manifest.invocation[0] === hook.command &&
+      hook.args.every((arg, index) => manifest.invocation[index + 1] === arg)
+    )
+  }
+
   const artifactChange = (hook: MaterialHook): string | undefined => {
     if (hook.artifactHash === undefined) return undefined
-    const root = hook.artifactRoot ?? config.pluginRoot
-    if (root === undefined) {
-      return `refused ${hook.event}#${hook.index ?? 0}: no plugin root to re-hash the artifact; pinned ${hook.artifactHash}`
-    }
+    const label = `${hook.event}#${hook.index ?? 0}`
     const invocation = hook.args === undefined
       ? hook.command
       : [hook.command, ...hook.args].map((part) => JSON.stringify(part)).join(' ')
-    let current
+    const manifest = hook.artifact
+    if (manifest === undefined) {
+      return `refused ${label}: no artifact manifest was carried with the grant; pinned ${hook.artifactHash}; command: ${invocation}`
+    }
+    const pinnedManifest = hashManifest(manifest)
+    if (pinnedManifest !== hook.artifactHash) {
+      return `refused ${label}: the carried manifest does not match the grant (granted ${hook.artifactHash}, manifest ${pinnedManifest}); command: ${invocation}`
+    }
+    if (hook.artifactMode !== undefined && manifest.mode !== hook.artifactMode) {
+      return `refused ${label}: artifact mode changed since the grant (pinned ${hook.artifactMode}, now ${manifest.mode}); command: ${invocation}`
+    }
+    if (!sameInvocation(hook, manifest)) {
+      return `refused ${label}: the config no longer names the pinned invocation; command: ${invocation}`
+    }
+    let current: string
     try {
-      current = hashHook(root, {
-        kind: 'hook',
-        event: hook.event,
-        index: hook.index ?? 0,
-        handler: 'command',
-        command: hook.command,
-        ...(hook.args === undefined ? {} : { args: hook.args }),
-        sourcePath: 'hooks/hooks.json',
-        annotation: { fidelity: 'exact', reason: 'materializer re-hash adapter' },
-      })
+      current = hashManifestAtSpawn(manifest)
     } catch (error) {
-      return `refused ${hook.event}#${hook.index ?? 0}: artifact cannot be re-hashed (${(error as Error).message}); pinned ${hook.artifactHash}; command: ${invocation}`
+      return `refused ${label}: artifact cannot be re-hashed (${(error as Error).message}); pinned ${hook.artifactHash}; command: ${invocation}`
     }
-    if (hook.artifactMode !== undefined && current.mode !== hook.artifactMode) {
-      return `refused ${hook.event}#${hook.index ?? 0}: artifact is no longer a ${hook.artifactMode} (pinned ${hook.artifactHash}, now ${current.mode} ${current.artifactHash}); command: ${invocation}`
-    }
-    if (current.artifactHash === hook.artifactHash) return undefined
-    return `refused ${hook.event}#${hook.index ?? 0}: artifact changed since the grant (pinned ${hook.artifactHash}, now ${current.artifactHash}); command: ${invocation}`
+    if (current === hook.artifactHash) return undefined
+    return `refused ${label}: artifact changed since the grant (pinned ${hook.artifactHash}, now ${current}); command: ${invocation}`
   }
 
   const warn = (message: string): void => {

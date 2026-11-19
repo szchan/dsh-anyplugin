@@ -18,7 +18,7 @@ import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { classify, pluginIdentity, type ArtifactRow } from './classify.ts'
 import { SCOPES, type GrantRecord, type Grants, type RevokeRecord, type Scope } from './grants.ts'
 
-export type RefusalCode = 'no-grant' | 'revoked' | 'hash-mismatch'
+export type RefusalCode = 'no-grant' | 'revoked' | 'hash-mismatch' | 'unsupported'
 
 export interface Refusal {
   capability: string
@@ -102,6 +102,17 @@ export function authorize(plugin: ClaudePluginIr, grants: Grants): TrustDecision
         ? {}
         : { command: hook.command, ...(hook.args === undefined ? {} : { args: hook.args }) }
     const suffix = shown === undefined ? '' : `; command: ${shown}`
+    if (row.unsupported !== undefined) {
+      refused.push(
+        refusal(
+          row,
+          'unsupported',
+          `cannot pin ${row.target} of ${id}: ${row.unsupported}${suffix}`,
+          commandFields,
+        ),
+      )
+      continue
+    }
     const rowGrants = grants.grants.filter((record) => matches(record, id, row))
     const rowRevokes = grants.revokes.filter((record) => matches(record, id, row))
     const ranks = [...rowGrants, ...rowRevokes].map((record) => scopeRank(record.scope))

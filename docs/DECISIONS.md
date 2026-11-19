@@ -877,29 +877,63 @@ This supersedes the sentence in D23 that grants live in the enablement scope
 layers (D2). An existing enablement line carrying `grants: […]` still parses
 and the field is ignored; it cannot pin bytes, so it cannot authorize.
 
-**Hash, not path or mtime.** `artifactHash` is `sha256:<64 lowercase hex>`
-over the bytes that run. mtime is forgeable and changes on checkout without a
-content change; a path can be edited in place, so neither is identity. The
-rules for a hook command:
+**A grant pins a manifest, not a promise to re-discover operands later.** The
+manifest is resolved once, at classify/grant time:
 
-- every file operand inside the plugin root is pinned: an absolute
-  `${CLAUDE_PLUGIN_ROOT}/…` path, a relative `./scripts/hook.sh` after
-  `cd "${CLAUDE_PLUGIN_ROOT}"`, or the file named by an exec-form `args` entry
-  (`command: "node", args: ["…/scripts/hook.js"]`). The argv that points at a
-  file is not hashed — changing `--flag` changes the invocation, not the
-  artifact, and must not require a new grant. A byte-identical copy at another
-  path still matches;
-- a command with no resolvable file operand pins its text exactly as handed to
-  `sh -c` / `spawn`; a compound command that names files pins its structure
-  (the pipeline, without flags) and every file operand's bytes, so neither a
-  pipeline edit nor a script edit can ride an unchanged grant;
-- files under `bin/`, `monitors/`, and `mods/` pin their bytes.
+```
+artifact = { mode: "file" | "text" | "composite",
+             invocation,                        // exact text or argv; shown, not hashed
+             command,                           // code-bearing structure; hashed
+             files: [{ path, sha256, bytes }] } // ordered, duplicates kept; hashed
+hash     = sha256(mode, command, then each file's path + sha256, in order)
+```
+
+`artifactHash` is `sha256:<64 lowercase hex>`. There is no sorting and no
+`Set`: `cp a b` and `cp b a` are different artifacts, and `cat a a` hashes `a`
+twice. At spawn the materializer re-reads exactly `files[].path`; it never
+re-parses the command, so an output file (`--out …/out.txt`) cannot turn into a
+false artifact on the second run.
+
+- File operands inside the plugin root are pinned: an absolute
+  `${CLAUDE_PLUGIN_ROOT}/…` path, the file named by an exec-form `args` entry
+  (`command: "node", args: ["…/scripts/hook.js"]`), and a file named by shell
+  words. A relative operand is **refused** (`relative operand … is ambiguous
+  because hooks run with the project directory as cwd; use
+  ${CLAUDE_PLUGIN_ROOT}/…`), because hashing it against the plugin root while
+  executing it in the project would pin one file and run another. The fidelity
+  cost is deliberate: a plugin using `cd "${CLAUDE_PLUGIN_ROOT}" && ./hook.sh`
+  must change the command to `${CLAUDE_PLUGIN_ROOT}/hook.sh`.
+- An absolute operand outside the root is **refused**, not hashed as path text:
+  `file "…" is outside the plugin root; copy it in or use an absolute path
+  inside ${CLAUDE_PLUGIN_ROOT}`. Refused artifacts are `unsupported`: they
+  cannot be granted at all.
+- Flags and their values are not artifacts: changing `--verbose` does not
+  require a new grant. Output flags (`--out`, `--log`, …) are not operands.
+  A flag's value that is itself a file is pinned; a flag value that is not
+  path-like is not.
+- A command with no file operand (`echo …`) is `mode: "text"`. Interpreter eval
+  payloads (`sh -c '…'`, `node -e '…'`, `node --eval`, `python -c`, `perl -e`,
+  `php -r`, combined shell `-ec`) are code: the exact command/argv is the
+  artifact, never a flag to ignore. A form that cannot be modeled is refused.
+- A command naming files and carrying structure is `mode: "composite"`: the
+  structure (word boundaries, order, operators) plus every file. Neither a
+  pipeline edit nor a script edit can ride an old grant.
+- Files under `bin/`, `monitors/`, and `mods/` are `mode: "file"` and pin their
+  bytes.
+
+Path is not identity by itself, but it is part of the manifest hash: a
+byte-identical copy at another path does **not** match when the command names
+the new path. mtime is never used. A symlink inside the root that points
+outside pins the outside file's bytes — conservative, because those are the
+bytes that run.
 
 A hook target is `hook:<event>#<index>`, where `index` is flat per event
 across matcher groups (two `PostToolUse` groups are `#0` and `#1`); a
-directory artifact is `bin:<path>`, `monitor:<path>`, or `mod:<path>`. Renaming a directory
-artifact changes its target (and therefore needs a grant for the new target);
-renaming a hook's script does not change the target, and the hash decides.
+directory artifact is `bin:<path>`, `monitor:<path>`, or `mod:<path>`.
+Renaming a directory artifact changes its target (and therefore needs a grant
+for the new target). Renaming a hook's script keeps the target but changes the
+manifest path, so the grant refuses with the new hash; it is a re-prompt, not a
+silent re-grant.
 
 **Default-off, and refused is not skipped.** `authorize(plugin, grants)`
 returns allowed targets and refusals. A missing grant is `no-grant`, a matching
@@ -908,23 +942,27 @@ revoke is `revoked`, and a matching grant with different bytes is
 never silently re-grants. Every refusal also carries the exact `command` (and
 `args`, when the exec form has them). `gate` moves refused hooks out of the emittable
 `hooks` list into `pending` as `planned` with a reason. `emitPlugin` takes a
-`trusted` list (default empty) and reports a refused hook in `refused`, not
-`skipped`; the report prints `carry=refused:exec`, and the totals line counts
-it separately. A plugin whose only surface was refused contributes no group
-entry, so the hook does not reach the loader as a disabled child or "not run";
-it does not reach the loader. `compileReport` returns the same per-plugin
-decisions for the install path (a refused hook has no entry, so `reconcile`
-takes `onRefused` and reports it without inventing one), and the report totals
-count `refused` separately from `skipped`.
+`trusted` list (default empty); for a caller that skips the gate it reports a
+carried-but-untrusted hook in `refused`, not `skipped`. The conformance report
+marks `carry=refused:<capability>` from the gate decision, not by inferring it
+from the emitter, and its totals line counts it separately. A plugin whose only
+surface was refused contributes no group entry, so the hook does not reach the
+loader as a disabled child or "not run"; it does not reach the loader.
+`compileReport` returns the same per-plugin decisions for the install path, and
+`reconcile` returns `refused` after removals/updates settle, without inventing
+an entry.
 
-**The pin is checked again at spawn.** The emitted hook child carries
-`artifactHash`, its hash `mode`, `artifactRoot`, and its flat `index`. The materializer
-re-hashes immediately before every spawn; a mismatch does not run. `PreToolUse`
-denies with both hashes and the command line, `PostToolUse` warns and skips the
-spawn. A re-grant plus reconcile re-emits the new pin, after which the new
-bytes run. Without this, a grant checked only at reconcile time would claim
-more than it delivers: the loader keeps the child config while the script can
-change underneath it.
+**The pin is checked again at spawn.** The emitted hook child carries the full
+`artifact` manifest plus `artifactHash`, `artifactMode`, `artifactRoot`, and its
+flat `index`. The materializer re-reads exactly the manifest's files and
+re-hashes the same mode/command/files order immediately before every spawn; a
+mismatch or a missing file does not run. `PreToolUse` denies with both hashes
+and the command line, `PostToolUse` warns and skips the spawn. A re-grant plus
+reconcile re-emits the new manifest, after which the new bytes run. Without
+this, a grant checked only at reconcile time would claim more than it delivers:
+the loader keeps the child config while the script can change underneath it.
+There remains an unavoidable window between the re-read and `exec`; the claim is
+about the manifest boundary, not about making the filesystem immutable.
 
 **Consequences:**
 
@@ -936,9 +974,12 @@ change underneath it.
   materializer emits them and nothing runs. When the mod host lands (§7) it
   must consume `authorize`, not invent a second gate.
 - An exec grant is not install authority, enablement, a network decision, or a
-  blanket `--yes`. It does not cover MCP or content-class artifacts, argv,
-  matcher, timeout, or files a script reads at run time. It is one artifact's
-  bytes at one scope.
+  blanket `--yes`. It does not cover MCP or content-class artifacts, `matcher`,
+  `timeout`, environment, flags or their values, exec-form non-file argv, the
+  interpreter binary found on `PATH`, or files a script reads at run time. It is
+  one artifact's manifest at one scope. Relative and outside-root operands are
+  refused rather than pinned, so a plugin that relies on them loses fidelity
+  until it uses `${CLAUDE_PLUGIN_ROOT}`.
 - The claim is against claude-code `2.1.322` and the DSH pins in D22; a pin
   bump that changes hook semantics must revisit the hash rules, not just the
   goldens.

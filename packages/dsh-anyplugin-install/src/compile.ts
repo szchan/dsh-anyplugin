@@ -62,6 +62,12 @@ function layersFor(options: CompileOptions): Enablements {
   return readEnablements({ projectDir, home: options.home })
 }
 
+export interface CompileProblem {
+  plugin: string
+  /** Readable reason, without the internal `compileEntries:` prefix. */
+  reason: string
+}
+
 export interface CompileReport {
   /** One group per enabled plugin with at least one carried surface. */
   entries: EntryOptions[]
@@ -72,6 +78,12 @@ export interface CompileReport {
    * claim a surface exists.
    */
   decisions: TrustDecision[]
+  /**
+   * A per-record failure: unsupported dialect, pin/name mismatch, unreadable
+   * plugin. One bad lock row must not abort every other installed plugin; the
+   * row is reported here and the rest still compile.
+   */
+  problems: CompileProblem[]
 }
 
 /**
@@ -88,6 +100,7 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
   const layers = layersFor(options)
   const entries: EntryOptions[] = []
   const decisions: TrustDecision[] = []
+  const problems: CompileProblem[] = []
   const records = [...installs.plugins].sort((a, b) => {
     const left = `${a.dialect}:${a.name}`
     const right = `${b.dialect}:${b.name}`
@@ -97,11 +110,18 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
   for (const record of records) {
     const enablement = resolveEnablement(`${record.dialect}:${record.name}`, layers)
     if (!enablement.enabled) continue
-    const compiled = compileRecord(record, options)
-    decisions.push(compiled.decision)
-    if (compiled.entry) entries.push(compiled.entry)
+    try {
+      const compiled = compileRecord(record, options)
+      decisions.push(compiled.decision)
+      if (compiled.entry) entries.push(compiled.entry)
+    } catch (error) {
+      problems.push({
+        plugin: `${record.dialect}:${record.name}`,
+        reason: (error as Error).message.replace(/^compileEntries:\s*/, ''),
+      })
+    }
   }
-  return { entries, decisions }
+  return { entries, decisions, problems }
 }
 
 /**

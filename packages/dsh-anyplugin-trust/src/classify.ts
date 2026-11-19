@@ -9,27 +9,30 @@
  *   hook:<event>#<index>   monitor:<path inside monitors/>
  *   bin:<path inside bin/>  mod:<path inside mods/>
  *
- * A target names the artifact, not the bytes. For a hook it is the event and
- * its flat index, so renaming a byte-identical script keeps the grant; for
- * bin/monitor/mod the relative path is part of the target, so a move is a new
- * target and needs a new grant. The hash, never the path or mtime, is what the
- * grant actually pins.
+ * A target names the slot, not the bytes. The manifest includes every file's
+ * absolute path, so moving a hook script to another path invalidates the grant
+ * even when the bytes are identical; for bin/monitor/mod the relative path is
+ * also the target, so a move is a new target. The hash, never the path or mtime,
+ * is what the grant actually pins.
  */
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
-import { hashFile, hashHook, type HookArtifact } from './hash.ts'
+import { fileArtifact, hashHook, type ArtifactManifest, type ArtifactMode, type HookArtifact } from './hash.ts'
 import { EXEC_CAPABILITY } from './grants.ts'
 
 export interface ArtifactRow {
   capability: typeof EXEC_CAPABILITY
   target: string
   artifactHash: string
+  /** Exact invocation, mode and ordered files; what the emitter carries. */
+  manifest: ArtifactManifest
   /** Plugin-relative file that was hashed, or `hooks/hooks.json` for inline text. */
   sourcePath: string
-  /** `file` when bytes on disk were hashed, `inline` for command text. */
-  mode: 'file' | 'inline'
+  mode: ArtifactMode
+  /** Present when the artifact cannot be honestly pinned (relative/outside/missing). */
+  unsupported?: string
 }
 
 /** `<dialect>:<plugin>` — the identity grants are keyed by. */
@@ -82,18 +85,22 @@ export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
       capability: EXEC_CAPABILITY,
       target: `hook:${hook.event}#${hook.index}`,
       artifactHash: artifact.artifactHash,
+      manifest: artifact.manifest,
       sourcePath: artifact.sourcePath,
       mode: artifact.mode,
+      ...(artifact.unsupported === undefined ? {} : { unsupported: artifact.unsupported }),
     })
   }
 
   for (const { dir, prefix } of EXEC_DIRS) {
     for (const file of listFiles(root, join(root, dir))) {
       const inside = file.slice(dir.length + 1)
+      const artifact = fileArtifact(join(root, file))
       rows.push({
         capability: EXEC_CAPABILITY,
         target: `${prefix}:${inside}`,
-        artifactHash: hashFile(join(root, file)),
+        artifactHash: artifact.artifactHash,
+        manifest: artifact.manifest,
         sourcePath: file,
         mode: 'file',
       })
