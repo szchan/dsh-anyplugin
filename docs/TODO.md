@@ -43,8 +43,13 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - [ ] `dsh-mcp-client:51` — derived namespace budget instead of a flat 32.
       Optional since D12; no longer on the critical path.
 - [ ] `dsh-subagent` — a named, described agent catalog.
-- [ ] Hook events with no host today: `Notification`, `TaskCompleted`,
-      `TeammateIdle`, `Interrupt`, `PostCompact`.
+- [ ] Hook events with no host today (S9): `PreModelSwitch`, `InstructionsLoaded`,
+      `DirectoryAdded`, `Setup`, `UserPromptExpansion`, `MessageDisplay`,
+      `PostToolBatch`, `Notification`, `Elicitation`, `ElicitationResult` are
+      refuted; `TaskCreated`, `TaskCompleted`, `TeammateIdle`,
+      `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. The 14
+      confirmed S9 events (9 listener seams and 5 notification-only) are wired
+      next.
 - [ ] `dsh-shell-env` — `PATH` contribution for plugin `bin/`.
 - [ ] Monitor notifications: a background process's stdout reaching the model.
 - [ ] Terminal ANSI palette (F2).

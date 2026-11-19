@@ -458,7 +458,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | waterfall listens (or probe review) | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 already wires `tools/pre-execute` and `tools/post-execute`. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | catalog API present | agent → prompt template, `derived` |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
@@ -873,3 +873,144 @@ kernel would have to be rewritten — and would make mods structurally impossibl
     contract exactly (`next()` = continue), and the missing-event list shrinks
     to the events that are not tool-scoped (`SessionStart`, `UserPromptSubmit`,
     `Stop`, `Notification`, …). See D19.
+
+- **S9 — do the other 30 hook events have a host?** ✅ **Answered 2026-11-19** by
+  `spikes/s9-host-events/run.mjs` against the pinned `0.2.2-rc.5` harness
+  (66/66 checks). The sweep covers
+  `emit`/`waterfall`/`serial`/`parallel`/`bail` and the carrier-first
+  `ctx.waterfall(carrier, "name", …)` shape. In the rc.5 tree it found 97
+  dispatch sites and 57 host event names; the full 338-package `0.2.2-rc.2`
+  Desktop tree was swept separately as a cross-check. A name in a bundle is not
+  evidence: every confirmed row booted the harness and a listener received the
+  event. **Fourteen seams are confirmed, six events are unprobed, and ten are
+  refuted with the reason recorded here.**
+
+  **Rule used below.** A classic event is *confirmed* when a listener on the
+  existing host bus runs at the classic lifecycle point — a cordis
+  `waterfall`/`serial`/`emit`, or a `session/event` observer for the durable
+  record appended at that point. A record row is **notification-only**: the
+  hook can log or relay, but the record is already committed and the hook
+  cannot veto. *Unprobed* means a durable record or emit plausibly exists but no
+  probe established that it corresponds to the classic lifecycle; the entry
+  says what would settle it. *Refuted* means neither a dispatch nor a record
+  exists at that point, or the only candidate fires at a different lifecycle.
+  Influence cells are tagged `[observed]` or `[source]`; `[source]` was read
+  from the implementation and has not been exercised by the spike. The last
+  column also names the filter the *wiring ticket* must apply. The filters the
+  spike exercises are asserted; prompt identity, `apply_patch` and the
+  permission correlation are explicitly marked as wiring work.
+
+  **No coverage row and no `planned` annotation moves in this ticket** — a hook
+  counts only when it runs (D20), and wiring the confirmed events is a separate
+  change. Nothing here adds a second event path: every row is a listener on the
+  existing host bus.
+
+  | classic event | host seam (site) | dispatch | observed at runtime | payload keys | influence [observed]/[source]; filter the wiring ticket must apply |
+  | --- | --- | --- | --- | --- | --- |
+  | UserPromptSubmit | `agent/pre-step` (`@deepseek-ai/dsh-agent-loop/lib/index.js:698`) | waterfall | yes — injected text reached the model | `messages, turn, step, signal, modelSelection, agent` | return `{kind:'enter', messages}` injects text [observed]; `{kind:'reject'}` aborts the step [source]. Fires once per **model step**: a 3-request turn produced 3 pre-steps (asserted), so filter `step === 1`. Prompt identity is **not** asserted: the claimed messages also contain runtime-context/system-reminder user messages, so the wiring ticket must establish the user-prompt test. |
+  | SessionStart | `agent/created` (`@deepseek-ai/dsh-agent/lib/index.js:705`) | serial, scoped | yes — source `startup` (the only source the probe produced) | `agent, source, signal`; `source: startup \| resume \| clear \| compact` | none [observed]; a throwing listener rejects creation [source]. Asserted filter: `agent.session.header.parentSession === undefined` (without it the probe sees 2 creations, the parent and the child). |
+  | SessionEnd | `agent/disposed` (`@deepseek-ai/dsh-agent/lib/index.js`, dynamic dispatch) | emit, agent-scoped | yes — on registry detach (`ctx.agents.detachEntered`), and the subagent dispose path also fired it | `agent` | none [observed]. Same `parentSession` filter; the probe disposes a child activation, so the child event is non-vacuous. Fiber-level disposal is not proven. |
+  | Stop | `agent/turn-stopping` (`@deepseek-ai/dsh-agent-loop/lib/index.js:804`) | serial | yes | `turn, signal, agent` | none at dispatch [observed]; steering the turn open is documented only [source]. |
+  | PermissionRequest | `approval/request` (`@deepseek-ai/dsh-user-approval/lib/index.js:201`) | waterfall | yes — the listener verdict became `rejected`; the audit pair was recorded | `agent, toolName, callId, signal` (no `tool_input`) | deny by returning `rejected` [observed]; `allowed-once` allows [source]. A hook that inspects `tool_input` must correlate `callId` with the already-presented call (`dsh-user-approval/lib/types/index.d.ts:65-66`). The probe entered at the service; a real demand begins at `dsh-tools/lib/pipeline.js:628`. |
+  | PostToolUseFailure | `tools/post-execute` (`@deepseek-ai/dsh-tools/lib/pipeline.js:668`) | waterfall | yes — success **and** failure | exec `token, callId, rootCallId, name, signal, agent, toolSet, deferContext, concludeTurn, arguments`; result `isError, error, content` | inject `additionalContexts` [observed; complete messages with `source` required]; replacing a failed value is forbidden [source]. Asserted filter: `result.isError === true` (without it the probe counts 2 calls, one success and one failure). |
+  | SubagentStart | `subagent/start` (`@deepseek-ai/dsh-subagent/lib/index.js:2015`) | emit, scoped | yes — provider `fork` | `runId, provider, parentSessionId, id, local` | none [observed]. |
+  | SubagentStop | `subagent/end` (`@deepseek-ai/dsh-subagent/lib/index.js:2172`) | emit, scoped | yes — `stopReason: completed` | `runId, provider, parentSessionId, id, local, stopReason, lastAssistantMessage` | none [observed]. |
+  | PreCompact | `session/event` `compaction/start` (`@deepseek-ai/dsh-compaction-basic/lib/index.js:469-474`, appended before summarization) | durable record | yes — observed before `compaction/summary` | `compactionId, turn` | notification-only [observed]; there is no pre-compaction waterfall, so a hook cannot veto. |
+  | PostCompact | `session/event` `compaction/end` (`@deepseek-ai/dsh-compaction-basic/lib/index.js:484,495`, appended after summary) | durable record | yes — observed after `compaction/summary` | `compactionId, turn` (+ `error` on failure) | notification-only [observed]. |
+  | PermissionDenied | `session/event` `approval/decided` | durable record | yes — `{id, outcome}` observed | `id, outcome` | notification-only [observed]. The record carries no tool name or input; a hook can only correlate `id` with an `approval/asked` it kept (`{id, toolName, callId}`). |
+  | CwdChanged | `session/event` `working-directory/change` | durable record | yes — `{cwd}` observed | `cwd` | notification-only [observed]. Do **not** use `working-directory/access`: it is a pre-access check that also fires with `path:null` (probe) and carries no old/new cwd. The record carries only the new cwd, and only service-driven `set()`/`ensure()` produce it. |
+  | FileChanged | `fs/observed` (`@deepseek-ai/dsh-tool-fs/lib/index.js:199,354,495,822,841,860,887,892,1869`) | emit | yes — `write`, `read` and `edit` observations | `(target {displayPath}, {kind, version?}, exec)` | none [observed]. Asserted filter: `tool ∈ {write, edit}` and `kind === 'present'` (without it the probe counts 3 observations, including `read`). `apply_patch` was not exercised; the wiring ticket must confirm it. There is no content delta. |
+  | ConfigChange | `settings/document-updated` (`@deepseek-ai/dsh-settings/lib/index.js:419-436`) | emit | yes — first read `revision 0`, unchanged second read emits nothing, changed document `revision 1` | `(ns, revision)` | notification-only [observed]; it is a settings-document revision, not the profile config replay, and carries no changed values. It **also fires on first read**, so a hook must not treat every event as a change. |
+
+  **Unprobed (6).** Each has a plausible durable record or emit, but the spike
+  did not establish that it runs at the classic lifecycle point. Marking these
+  confirmed without a probe would repeat the error that made `TaskCreated` look
+  refuted.
+
+  - `TaskCreated` — `team/task` is appended at
+    `@deepseek-ai/dsh-agent-team/lib/index.js:93`. To settle: mount
+    `TeamService` with an agent loop, create a task through the team service or
+    its tool, and assert the record type/payload and whether a create-specific
+    point exists. Not probed here.
+  - `TaskCompleted` — same record family; to settle, drive a task to completion
+    and assert the terminal record (and whether it is distinguishable from a
+    creation record). Not probed here.
+  - `TeammateIdle` — `team/member` records exist; to settle, transition a
+    teammate to idle and assert a record at that transition. Not probed here.
+  - `WorktreeCreate` — `plugin:worktree/created` is appended at
+    `@deepseek-ai/dsh-experimental-worktree/lib/index.js:898`. To settle: mount
+    the worktree service, create a session worktree, and assert the record and
+    its payload. Not probed here.
+  - `WorktreeRemove` — `worktree/cleanup` is emitted at
+    `@deepseek-ai/dsh-experimental-worktree/lib/index.js:112,127`. To settle:
+    remove a worktree and assert whether cleanup fires per removal and what it
+    carries. Not probed here.
+  - `StopFailure` — `turn/end` with an error reason is appended at
+    `@deepseek-ai/dsh-agent-loop/lib/index.js:832`. To settle: drive a turn to an
+    error ending and assert the reason and whether any failure-specific
+    dispatch exists. Not probed here.
+
+  **Refuted (10), with the reason.** A refuted row is a lifecycle the host does
+  not expose as a listener seam, not a claim that the corresponding data is
+  absent from the session log.
+
+  - `Notification` — no host event carries a notification `message`, `title` or
+    `notification_type`. `approval/asked` is a permission-prompt record with
+    `{id, toolName, callId}` — a different lifecycle and payload; mapping it to
+    Notification would let a hook see only permission prompts, never the
+    informational classes. Refuted for the hook as a notification seam.
+  - `PreModelSwitch` — `agent/request` (`dsh-agent-loop/lib/index.js:1007`)
+    fires per request, not on a model switch. Returning a different model after
+    step preparation throws `agent/request proposed "…" after step preparation
+    fixed "…"; use agent.model.select() before step preparation` (probe), and
+    reasoning effort is guarded the same way. The waterfall is deprecated; only
+    non-model controls remain rewritable, which is not a switch signal.
+  - `InstructionsLoaded` — no dispatch. `dsh-agent-instructions` is itself a
+    listener on `agent/pre-step` and `session/event`; there is no load-time
+    event.
+  - `DirectoryAdded` — no dispatch site anywhere in the swept tree.
+  - `Setup` — no dispatch. `agent/created` with source `startup` is the closest
+    lifecycle point, but it is not setup.
+  - `UserPromptExpansion` — no dispatch. Expansion happens in the command layer
+    before the prompt; `agent/pre-step` sees only the expanded messages.
+  - `MessageDisplay` — no dispatch. `assistant/message` is a generation record;
+    display is a client concern, so there is no display-time listener.
+  - `PostToolBatch` — no after-batch point. `tools/execute`
+    (`dsh-tools/lib/pipeline.js:501`) is per-call pre-execution
+    (`token, callId, rootCallId, name, arguments, …`), not a batch.
+  - `Elicitation` / `ElicitationResult` — MCP JSON-RPC protocol notifications,
+    not cordis host events.
+
+  Two sweep caveats for the next prober: `agent/disposed` is dispatched by a
+  helper with a computed name, so a literal `.emit("…")` scan misses it (the
+  runtime probe catches it); and only `startup` was observed for
+  `agent/created` — `resume`, `clear` and `compact` are read from the type.
+
+  Reproduce:
+
+  ```bash
+  node scripts/fetch-harness.mjs 0.2.2-rc.5
+  npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
+    --cache "$PWD/.npm-cache" @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
+    @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
+    @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
+    @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
+    @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
+    @deepseek-ai/dsh-agent-team@0.2.2-rc.5 \
+    @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
+    @deepseek-ai/dsh-tool-fs@0.2.2-rc.5 \
+    @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
+    @deepseek-ai/dsh-fs-observation-policy@0.2.2-rc.5 \
+    @deepseek-ai/dsh-user-questions@0.2.2-rc.5 \
+    @deepseek-ai/dsh-settings@0.2.2-rc.5 \
+    @deepseek-ai/dsh-experimental-worktree@0.2.2-rc.5 \
+    @deepseek-ai/dsh-agent-instructions@0.2.2-rc.5 \
+    @deepseek-ai/dsh-tool-fs-search@0.2.2-rc.5
+  DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+    npm run spike:s9
+  ```
+
+  A bare fetched harness prints `0/0 checks passed` and exits non-zero; a
+  skipped required probe is a failed run. `spikes/s9-host-events/out/` (including
+  `out/settings-profile/`) is report output only and gitignored. CI runs the
+  spike after installing the same pins (`.github/workflows/verify.yml`).

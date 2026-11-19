@@ -129,6 +129,36 @@ jobs:
           verify_pin 0.2.2-rc.2 "$DIR_RC2"
           exit "$status"
 
+      # S9 is a spike, not a test: a 0/0 run is a failure. Install the extra
+      # pinned packages the turn/lifecycle probes need, then run the script.
+      - name: S9 host-event spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S9 spike would skip"
+            exit 1
+          fi
+          npm install --prefix "$DSH_HARNESS_DIR" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
+            @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
+            @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
+            @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
+            @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
+            @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
+            @deepseek-ai/dsh-agent-team@0.2.2-rc.5 \
+            @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
+            @deepseek-ai/dsh-tool-fs@0.2.2-rc.5 \
+            @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
+            @deepseek-ai/dsh-fs-observation-policy@0.2.2-rc.5 \
+            @deepseek-ai/dsh-user-questions@0.2.2-rc.5 \
+            @deepseek-ai/dsh-settings@0.2.2-rc.5 \
+            @deepseek-ai/dsh-experimental-worktree@0.2.2-rc.5 \
+            @deepseek-ai/dsh-agent-instructions@0.2.2-rc.5 \
+            @deepseek-ai/dsh-tool-fs-search@0.2.2-rc.5
+          npm run spike:s9
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed
