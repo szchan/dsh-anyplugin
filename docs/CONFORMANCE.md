@@ -35,7 +35,7 @@ drifted from behavior — which it already has (§ARCHITECTURE 10.3).
 {
   "$schema": "dsh-anyplugin/inventory@1",
   "plugin": { "name": "hooks-mcp", "version": "0.0.1" },
-  "pin": { "tool": "claude-code", "version": "2.1.322" },
+  "pin": { "tool": "claude-code", "version": "2.1.329" },
   "components": [
     { "surface": "hooks", "name": "PostToolUse", "details": { "note": "harness-only — no model context cost" } },
     { "surface": "mcpServers", "name": "probe", "details": { "note": "tool schemas resolved at runtime; not counted" } }
@@ -72,7 +72,7 @@ golden.
 ```bash
 npm run rig -- capture --plugin fixtures/claude-skills-only   # write a golden
 npm run rig -- verify  --plugin fixtures/claude-skills-only \
-                        --golden fixtures/claude-skills-only/.inventory/claude-code@2.1.322.json
+                        --golden fixtures/claude-skills-only/.inventory/claude-code@2.1.329.json
 npm run rig -- diff    --expected <file> --actual <file> --verbose
 npm run rig -- report  fixtures/claude-commands-flat           # what the transplant would do, compile-side
 npm run rig -- report  fixtures/claude-commands-flat --json    # the same report for tooling

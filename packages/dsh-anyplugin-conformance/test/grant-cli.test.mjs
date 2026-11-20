@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { runGrant, runRevoke } from '../src/rig.ts'
 import { compileEntries } from '../../dsh-anyplugin-install/src/index.ts'
 import { buildTransplantReport, formatTransplantReport } from '../src/report.ts'
@@ -115,7 +115,7 @@ function installsFor(ir) {
         version: ir.plugin.version ?? '0.0.1',
         root: ir.plugin.root,
         dataDir: join(ir.plugin.root, '.data'),
-        pin: 'claude-code@2.1.322',
+        pin: `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`,
       },
     ],
   }

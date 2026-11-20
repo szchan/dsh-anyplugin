@@ -658,8 +658,10 @@ const isCI = process.env.CI === 'true' || process.env.CI === '1'
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
 
 // The static capability ledger: every site the scanner sees in the pinned
-// graph, in source order. `served` means the bridged namespace has the method;
-// `refused:<code>` means the call was made and the typed refusal came back.
+// graph, in source order. `ran` means the bridged namespace served the call;
+// `refused:<code>` means the call was made and the typed refusal came back;
+// `missing` means this host serves no such namespace at all (2.1.329's new
+// `vcs`), recorded rather than papered over.
 const DIFF_LEDGER = [
   { site: 'clock.now', result: 'ran', argument: 'session.start fallback', evidence: 'diff session.start' },
   { site: 'clock.after', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
@@ -668,6 +670,8 @@ const DIFF_LEDGER = [
   { site: 'fs.stat', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads the git dir HEAD from hook code' },
   { site: 'fs.list', result: 'ran', argument: '.', evidence: 'method availability; the fetched call reads entry kinds from hook code' },
   { site: 'fs.read', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads registration.ts from hook code' },
+  { site: 'vcs.detect', result: 'missing', argument: '—', evidence: '2.1.329 adds a vcs namespace; createModBridge does not serve it (recorded gap, not a typed refusal)' },
+  { site: 'vcs.diff', result: 'missing', argument: '—', evidence: '2.1.329 adds a vcs namespace; createModBridge does not serve it (recorded gap, not a typed refusal)' },
   { site: 'store.get', result: 'ran', argument: 'ledger', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'store.set', result: 'ran', argument: 'ledger = {from: diff}', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'settings.read', result: 'refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE', argument: 'no argument', evidence: 'no merged settings reader on this host; refused rather than served from plugin data' },
@@ -688,7 +692,7 @@ const DIFF_LEDGER = [
 
 // What the pinned `session.start` actually does through `$`: bind() asks
 // session.usage, falls back to clock.now, registers /diff, then opens the
-// restore view with the (empty) message list. None of the other 19 sites is
+// restore view with the (empty) message list. None of the other 21 sites is
 // reached at load; they remain declared capabilities, not load-time calls.
 const DIFF_SESSION_START_RELOAD = [
   'session.usage:ran',
@@ -861,7 +865,7 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     assert.deepEqual(
       capability.map((row) => ({ site: row.site, result: row.result })),
       DIFF_LEDGER.map((row) => ({ site: row.site, result: row.result })),
-      'every scanned site ran or refused with a typed code',
+      'every scanned site ran, refused with a typed code, or is a recorded missing surface',
     )
 
     const calls = []

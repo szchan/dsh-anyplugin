@@ -10,7 +10,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const PIN = '2.1.322'
+const PIN = '2.1.329'
 const DOCS_URL = 'https://code.claude.com/docs/en/hooks'
 const outDir = new URL('../fixtures/hooks/payloads/', import.meta.url)
 

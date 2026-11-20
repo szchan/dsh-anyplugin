@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { readClaudePlugin, CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories } from '../src/inventory.ts'
@@ -67,7 +67,7 @@ test(
     for (const name of tools) assert.ok(name.length <= 64, `${name} is over the shared limit`)
     // And the server still counts: one usable tool is a usable server.
     const golden = JSON.parse(
-      readFileSync(join(toolDir, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
+      readFileSync(join(toolDir, '.inventory', `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}.json`), 'utf8'),
     )
     const report = diffInventories(golden, inventory, { allowPinMismatch: true })
     assert.equal(report.rows.find((row) => row.surface === 'mcpServers')?.status, 'match')

@@ -2,12 +2,12 @@
 /**
  * Fetch the pinned upstream mods under test into `.mods/<commit>/`.
  *
- * The conformance suite loads real authored mods from Claude Code 2.1.322 at
- * commit 6e1e44f. They are fetched here, explicitly, exactly like the harness
+ * The conformance suite loads real authored mods from Claude Code 2.1.329 at
+ * commit f9e4d1e. They are fetched here, explicitly, exactly like the harness
  * and CLI pins (D22, D24): tests never touch the network (AGENTS §6).
  *
  * The checkout is sparse: git fetches one commit and materializes only `mods/`.
- * That keeps the five mods, their tests, and `mods/types/claude-code.d.ts` (the
+ * That keeps the seven mods, their tests, and `mods/types/claude-code.d.ts` (the
  * specification the pin is measured against) together. The script prints
  * `.mods/<commit>`; a mod root is `.mods/<commit>/mods/<name>/hooks`, and the
  * diff test is pointed at `.mods/<commit>/mods/diff/hooks`.

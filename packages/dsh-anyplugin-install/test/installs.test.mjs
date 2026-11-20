@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
+import { CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import {
   INSTALLS_SCHEMA,
   InstallsFileError,
@@ -18,13 +19,14 @@ import {
 } from '../src/index.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'anyplugin-installs-'))
+const PIN = `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`
 const sample = (overrides = {}) => ({
   dialect: 'claude-code',
   name: 'skills-only',
   version: '0.0.1',
   root: join(dir, 'artifact'),
   dataDir: join(dir, 'data'),
-  pin: 'claude-code@2.1.322',
+  pin: PIN,
   ...overrides,
 })
 const lock = (...plugins) => ({ schema: INSTALLS_SCHEMA, plugins })
@@ -60,7 +62,7 @@ test('the canonical form is schema, then one record per field, all quoted', () =
       '    version: "0.0.1"',
       `    root: ${JSON.stringify(join(dir, 'artifact'))}`,
       `    dataDir: ${JSON.stringify(join(dir, 'data'))}`,
-      '    pin: "claude-code@2.1.322"',
+      `    pin: "${PIN}"`,
       '',
     ].join('\n'),
   )

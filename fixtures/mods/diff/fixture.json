@@ -6,13 +6,13 @@
   "entry": "register.ts",
   "pin": {
     "repo": "anthropics/claude-code",
-    "version": "2.1.322",
-    "commit": "6e1e44f6433bfa17d198e932bff53373aa229eea"
+    "version": "2.1.329",
+    "commit": "f9e4d1e5753ccffcffdd832f047d72be000396a6"
   },
   "scan": {
-    "events": 10,
-    "uniqueEvents": 8,
-    "calls": 23,
+    "events": 11,
+    "uniqueEvents": 9,
+    "calls": 25,
     "dynamic": 0
   },
   "registrations": [
@@ -25,10 +25,11 @@
     "ui.scroll",
     "command.run",
     "tool.call",
+    "turn.complete",
     "prompt.submit"
   ],
   "kernel": {
     "routed": 1,
-    "unmapped": 9
+    "unmapped": 10
   }
 }

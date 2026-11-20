@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { buildTransplantReport, formatTransplantReport } from '../src/report.ts'
 import { classify, emptyGrants, grant, pluginIdentity } from '../../dsh-anyplugin-trust/src/index.ts'
@@ -45,7 +45,7 @@ test('the flat command fixture reports planned components on two D10 faces', () 
 
   assert.equal(report.ok, true)
   assert.equal(report.plugin, 'commands-flat')
-  assert.deepEqual(report.pin, { tool: 'claude-code', version: '2.1.322' })
+  assert.deepEqual(report.pin, { tool: CLAUDE_CODE_PIN.tool, version: CLAUDE_CODE_PIN.version })
   assert.deepEqual(report.totals, { declared: 2, emitted: 2, refused: 0, skipped: 0 })
   assert.deepEqual(
     report.components.map((component) => [component.surface, component.name, component.class, component.carried]),
@@ -73,7 +73,7 @@ test('the flat command fixture reports planned components on two D10 faces', () 
 test('the text report prints each face and the totals aggregated from its rows', () => {
   const text = formatTransplantReport(buildTransplantReport(readClaudePlugin(fixture), { materializers }))
 
-  assert.match(text, /^plugin: commands-flat {2}pin: claude-code@2\.1\.322$/m)
+  assert.ok(text.includes(`plugin: commands-flat  pin: ${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`))
   assert.match(text, /^skills\/migrate {2}class=planned {2}carry=emitted$/m)
   assert.match(text, /^skills\/review {2}class=planned {2}carry=emitted$/m)
   assert.match(text, /^ {2}face model=equivalent {2}reason: \S/m)
@@ -111,7 +111,7 @@ test('rig report prints the compile-side report as JSON', () => {
   assert.equal(result.status, 0, result.stderr)
   const report = JSON.parse(result.stdout)
   assert.equal(report.ok, true)
-  assert.equal(report.pin.version, '2.1.322')
+  assert.equal(report.pin.version, CLAUDE_CODE_PIN.version)
   assert.deepEqual(report.totals, { declared: 2, emitted: 2, refused: 0, skipped: 0 })
   assert.deepEqual(
     report.components.map((component) => [component.name, component.class, component.carried]),

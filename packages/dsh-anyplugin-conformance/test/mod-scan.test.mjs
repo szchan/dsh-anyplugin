@@ -9,9 +9,9 @@ import test from 'node:test'
 
 import { capabilityList, scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
 
-// Pin: claude-code 2.1.322, tag v2.1.322. The mod's register file is under
+// Pin: claude-code 2.1.329, tag v2.1.329. The mod's register file is under
 // hooks/, not at mods/diff/register.ts.
-const PIN = '6e1e44f6433bfa17d198e932bff53373aa229eea'
+const PIN = 'f9e4d1e5753ccffcffdd832f047d72be000396a6'
 const URL = `https://raw.githubusercontent.com/anthropics/claude-code/${PIN}/mods/diff/hooks/register.ts`
 
 test('the pinned upstream diff mod scans deterministically and every line exists', async (t) => {
@@ -46,15 +46,15 @@ test('the pinned upstream diff mod scans deterministically and every line exists
   assert.deepEqual(capabilityList(second), capabilityList(first), 'the capability list must be byte-identical across runs')
 
   // Pinned facts. A drift here is a real change in the mod, not test noise.
-  assert.equal(first.events.length, 10)
-  assert.equal(new Set(first.events.map((event) => event.name)).size, 8)
-  assert.equal(first.calls.length, 23)
+  assert.equal(first.events.length, 11)
+  assert.equal(new Set(first.events.map((event) => event.name)).size, 9)
+  assert.equal(first.calls.length, 25)
   assert.deepEqual(first.dynamic, [], 'this file has no capability the scanner cannot prove')
   assert.deepEqual(capabilityList(first), [
-    'hooks: command.run, prompt.submit, session.start, tool.call, ui.close, ui.focus, ui.render, ui.scroll',
+    'hooks: command.run, prompt.submit, session.start, tool.call, turn.complete, ui.close, ui.focus, ui.render, ui.scroll',
     'calls: clock.after, clock.every, clock.now, command.register, env.get, fs.list, fs.read, fs.stat, process.run, ' +
       'session.id, session.messages, session.usage, settings.read, store.get, store.set, telemetry.log, telemetry.mark, ' +
-      'ui.close, ui.invalidate, ui.log, ui.open, ui.resolve, ui.status',
+      'ui.close, ui.invalidate, ui.log, ui.open, ui.resolve, ui.status, vcs.detect, vcs.diff',
   ])
 
   // A line number that does not point at the construct would still pass a
@@ -75,7 +75,7 @@ test('the pinned upstream diff mod scans deterministically and every line exists
 
   const usage = first.calls.find((call) => call.namespace === 'session' && call.method === 'usage')
   assert.ok(usage, 'the scanner found $.session.usage')
-  assert.equal(usage.line, 964)
-  assert.match(lines[usage.line - 1], /\$\.session\s*$/, 'line 964 is the namespace half')
-  assert.match(lines[usage.line], /^\s*\.usage\(\)/, 'line 965 is the method half')
+  assert.equal(usage.line, 980)
+  assert.match(lines[usage.line - 1], /\$\.session\s*$/, 'line 980 is the namespace half')
+  assert.match(lines[usage.line], /^\s*\.usage\(\)/, 'line 981 is the method half')
 })

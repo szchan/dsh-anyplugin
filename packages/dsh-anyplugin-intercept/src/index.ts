@@ -13,7 +13,14 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-import { MOD_EVENT_ROUTES, MOD_PINNED_EVENTS, modUnmappedReason, type ModEventRoute } from './mod-events.ts'
+import {
+  MOD_EVENT_ROUTES,
+  MOD_PINNED_EVENTS,
+  modUnmappedCategory,
+  modUnmappedReason,
+  type ModEventRoute,
+  type ModUnmappedCategory,
+} from './mod-events.ts'
 
 export * from './mod-events.ts'
 
@@ -26,8 +33,8 @@ export type Tier = 'prepend' | 'user' | 'append' | 'builtin'
  * other tier wraps it and can decline before it happens.
  *
  * The pinned `claude-code.d.ts` names five tiers: these four plus `core`, the
- * engine's own innermost link (`TIERS`, d.ts:10022-10039), and a plugin is
- * never seated at `core` (`PluginRegisterInput.tier`, d.ts:6253-6265). The
+ * engine's own innermost link (`TIERS`, d.ts:17636-17645 at the 2.1.329 pin), and a plugin is
+ * never seated at `core` (`PluginRegisterInput.tier`, d.ts:9899 at the 2.1.329 pin). The
  * four here are therefore exact, not an assumption. Every consumer reads this
  * table; none re-implements the order.
  */
@@ -274,7 +281,7 @@ export interface TraceStep {
   /**
    * Set for `error` and `timeout`. For `skipped` it is the reason the link was
    * not run: `bypassed by <plugin>`, the pinned wording for a `next.to` that
-   * went beneath this tier (claude-code.d.ts:10555-10574).
+   * went beneath this tier (claude-code.d.ts:18566 at the 2.1.329 pin).
    */
   detail?: string
   /** The owning plugin, when the registration named one. */
@@ -406,7 +413,7 @@ export interface ModKernelOptions {
   plugin: string
   /**
    * The host's seating of the plugin (`PluginRegisterInput.tier`,
-   * d.ts:6253-6265; never `core`). `user` is only a fallback for a caller with
+   * d.ts:9899 (2.1.329 pin); never `core`). `user` is only a fallback for a caller with
    * no seating to pass, not a tier derived from the mod or the event name.
    */
   tier?: Tier
@@ -425,6 +432,8 @@ export interface ModKernelUnmapped {
   source: string
   /** Why it was not adapted; never an empty string. */
   reason: string
+  /** What kind of gap this is: bridge, host event, or not in the pin. */
+  category?: ModUnmappedCategory
 }
 
 export interface ModKernelRoute {
@@ -483,7 +492,7 @@ function adaptMatcher(value: unknown): AdaptedMatcher | { reason: string } {
 /**
  * Classic events hand the mod the host's payload as `data`. `classic.PreToolUse`
  * is the exception: its mod `e` is `ToolCallEnvelope` (`tool`, `tool_use_id`,
- * and the tool's arguments spread beside them, d.ts:10081-10093), while the
+ * and the tool's arguments spread beside them, d.ts:17689 at the 2.1.329 pin), while the
  * kernel event carries the classic payload (`tool_name`, `tool_use_id`,
  * `tool_input`).
  */
@@ -500,7 +509,7 @@ function toModEvent(route: ModEventRoute, event: ChainEvent): unknown {
 
 /**
  * Translate a mod's `next(e)` rewrite back to the seam's shape. The two
- * reserved envelope fields (d.ts:1049-1057: a rewrite of `tool` or
+ * reserved envelope fields (d.ts:17689 (2.1.329 pin): a rewrite of `tool` or
  * `tool_use_id` is ignored by core) stay the originals; only the arguments can
  * change. A classic rewrite goes through `classicEvent` so the subject the
  * next matcher sees is recomputed from the rewritten payload.
@@ -561,7 +570,7 @@ function kernelDecisionToMod(decision: Decision, route: ModEventRoute): unknown 
 /**
  * The classic fields the adapter knows how to classify. A field absent from
  * this set is reported as unsupported rather than treated as continue: a
- * classic result is `ClassicResultOf`, not the engine's verbs (d.ts:1086-1087),
+ * classic result is `ClassicResultOf`, not the engine's verbs (d.ts:1793 at the 2.1.329 pin),
  * and dropping one of its fields silently would change the hook's meaning.
  */
 const CLASSIC_RESULT_FIELDS = new Set([
@@ -621,7 +630,7 @@ interface ModResultTranslation {
  * `{ block }`, `{ drop }`) or a classic event's `ClassicResultOf`. The two are
  * not the same type: classic events carry `block`, `preventContinuation`,
  * `stopReason`, `additionalContext`, `updatedInput` and their event fields
- * (d.ts:976-1087). Those that the kernel can carry are translated:
+ * (d.ts:1793 at the 2.1.329 pin). Those that the kernel can carry are translated:
  *
  * - `additionalContext` becomes `text` (the kernel's context channel),
  * - `updatedInput` becomes an event rewrite for the chain beneath,
@@ -761,7 +770,7 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
 }
 
 /**
- * The pinned `Next` surface, as the mod sees it (claude-code.d.ts:5271-5366).
+ * The pinned `Next` surface, as the mod sees it (claude-code.d.ts:8289-8367 at the 2.1.329 pin).
  *
  * The continuation is the kernel's own `Next`: `to(e, tier)` calls the same
  * function with the tier argument the kernel already understands, so tier
@@ -769,7 +778,7 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
  * one place (AGENTS.md §3.6, D13). The members around it are a projection, not
  * a second dispatcher.
  *
- * Subset notes (the pinned `TraceEntry`, d.ts:10555-10574):
+ * Subset notes (the pinned `TraceEntry`, d.ts:18566 at the 2.1.329 pin):
  * - `index`, `plugin`, `tier`, `event`, `outcome`, `reason` are served;
  * - `ms`, `chunks`, `received` and `returned` are **not**: the kernel does not
  *   meter a handler's own wall time while `next` is in flight, does not count
@@ -785,7 +794,7 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
  *
  * `origin` is the dispatch's raiser, which is the host for every route served
  * today (the classic arm and `session.start`), so it is the pin's engine origin
- * (`{ plugin: "engine", tier: "core" }`, d.ts:5311-5321) and is constant for
+ * (`{ plugin: "engine", tier: "core" }`, d.ts:8289-8367 at the 2.1.329 pin) and is constant for
  * the whole dispatch. It is not the mod's seat: the pin says "who raised this
  * dispatch", and every hook of one dispatch sees the same origin.
  */
@@ -833,7 +842,7 @@ export interface ModNext {
 
 const HOST_ORIGIN: ModOrigin = Object.freeze({ plugin: 'engine', tier: 'core' })
 
-/** Map the kernel's step vocabulary onto the pinned `TraceOutcome` (d.ts:10608). */
+/** Map the kernel's step vocabulary onto the pinned `TraceOutcome` (d.ts:18618 at the 2.1.329 pin). */
 function modTraceOutcome(step: TraceStep): ModTraceOutcome {
   switch (step.status) {
     case 'timeout':
@@ -865,32 +874,34 @@ function toModTraceEntry(route: ModEventRoute, step: TraceStep): ModTraceEntry {
 }
 
 /**
- * `TargetTier = Exclude<Tier, 'prepend' | 'user'>` (d.ts:9938). The kernel
- * serves `append` and `builtin`; `core` is legal at the pin but there is no
+ * `TargetTier = Exclude<Tier, 'prepend'>` (d.ts:16473 at the 2.1.329 pin): `user` is
+ * legal, for a prepend hook that skips its prepend peers. The kernel serves
+ * `user`, `append` and `builtin`; `core` is legal at the pin but there is no
  * core link in this chain, so naming it would skip the builtin tier and
  * resolve `continue` without ever consulting it. Refusing it is the honest
  * degradation (D36).
  */
-function assertTargetTier(tier: unknown, callerTier: Tier): asserts tier is 'append' | 'builtin' {
+function assertTargetTier(tier: unknown, callerTier: Tier): asserts tier is 'user' | 'append' | 'builtin' {
   if (tier === 'core') {
     throw new TypeError(
-      'next.to(e, "core") is not served: the kernel\'s innermost tier is "builtin" and there is no core link (TargetTier, claude-code.d.ts:9938)',
+      'next.to(e, "core") is not served: the kernel\'s innermost tier is "builtin" and there is no core link (TargetTier, claude-code.d.ts:16473 at the 2.1.329 pin)',
     )
   }
-  if (tier !== 'append' && tier !== 'builtin') {
+  if (tier !== 'user' && tier !== 'append' && tier !== 'builtin') {
     throw new TypeError(
-      `next.to(e, tier) takes "append" or "builtin" (TargetTier, claude-code.d.ts:9938); received ${JSON.stringify(tier)}`,
+      `next.to(e, tier) takes "user", "append" or "builtin" (TargetTier, claude-code.d.ts:16473 at the 2.1.329 pin); received ${JSON.stringify(tier)}`,
     )
   }
   const targetRank = TIER_ORDER.indexOf(tier)
   const callerRank = TIER_ORDER.indexOf(callerTier)
   if (targetRank <= callerRank) {
-    // The pin's `to` only moves outward: prepend may name append/builtin/core,
-    // append may name core (claude-code.d.ts:5281-5289). A backward jump would
+    // The pin's `to` only moves outward: prepend may name user, append,
+    // builtin or core; append may name core
+    // (claude-code.d.ts:8289-8367 at the 2.1.329 pin). A backward jump would
     // re-enter a tier that already ran, so it is refused instead of resolving
     // and doing nothing.
     throw new TypeError(
-      `next.to(e, "${tier}") from the "${callerTier}" tier would move backwards; the pin only moves outward (prepend -> append/builtin/core, append -> core; claude-code.d.ts:5281-5289)`,
+      `next.to(e, "${tier}") from the "${callerTier}" tier would move backwards; the pin only moves outward (prepend -> user/append/builtin/core, append -> core; claude-code.d.ts:8289-8367 at the 2.1.329 pin)`,
     )
   }
 }
@@ -905,7 +916,7 @@ async function runModHandler(
   const modEvent = toModEvent(route, event)
 
   // `budget` is read fresh on each access and stands still while `next` is in
-  // flight (d.ts:5335-5341). The kernel's meter already pauses across `next`,
+  // flight (d.ts:8289-8367 at the 2.1.329 pin). The kernel's meter already pauses across `next`,
   // and the host pauses it across `$` through `pauseWhilePending`, so this
   // projection must not add a second accounting layer: it forwards the one
   // clock the kernel owns.
@@ -915,7 +926,7 @@ async function runModHandler(
   })
 
   // Where the latest trip starts in the kernel trace. The pin says `trace`
-  // describes "its latest next() call, the one started last" (d.ts:5331), so
+  // describes "its latest next() call, the one started last" (d.ts:8289-8367 at the 2.1.329 pin), so
   // a hook that calls `next` twice sees the second trip's entries only.
   let tripStart = 0
   let inFlight: Promise<unknown> | undefined
@@ -941,7 +952,7 @@ async function runModHandler(
     resolved.catch(() => {})
     try {
       const decision = await resolved
-      // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
+      // `session.start`'s `next(e)` is `{ cwd }` (d.ts:5766 at the 2.1.329 pin), not a decision.
       if (route.modEvent === 'session.start') {
         return { cwd: (nextEvent ?? event).data.cwd }
       }
@@ -1002,8 +1013,8 @@ async function runModHandler(
 }
 
 /**
- * A Pattern selects event names (d.ts:6101): an exact name, `*`, a
- * `<namespace>.*` glob, or a `!` complement of one of those (d.ts:4211,
+ * A Pattern selects event names (d.ts:9447 at the 2.1.329 pin): an exact name, `*`, a
+ * `<namespace>.*` glob, or a `!` complement of one of those (d.ts:6323 (2.1.329 pin),
  * 5256). Expansion happens before routing so a single `on('classic.*', ...)`
  * becomes the classic routes it selects, and every selected name that is not
  * routed is reported with the reason the pin gives for it.
@@ -1016,7 +1027,7 @@ interface ModPatternExpansion {
 const PINNED_EVENT_SET = new Set(MOD_PINNED_EVENTS)
 const GLOB_NAMESPACE = /^[a-z][a-z0-9-]*$/
 const NOT_A_PATTERN =
-  'not a Pattern at the pin (EventName | Glob | Negation, d.ts:6101, 4211, 5256); expected an event name, `*`, `<namespace>.*`, or `!<one of those>`'
+  'not a Pattern at the pin (EventName | Glob | Negation, d.ts:9447, 4211, 5256); expected an event name, `*`, `<namespace>.*`, or `!<one of those>`'
 
 function selectPattern(pattern: string, strict: boolean): readonly string[] | string {
   if (pattern === '*') return MOD_PINNED_EVENTS
@@ -1061,9 +1072,9 @@ function expandModPattern(pattern: string): ModPatternExpansion {
  * - `tier` is the host's seating, not the mod's declaration and not derived
  *   from the event name. `user` is only a fallback for a caller that has no
  *   seating to pass. The pinned d.ts allows every tier except `core`
- *   (`PluginRegisterInput.tier`, d.ts:6253-6265); the adapter never invents a
+ *   (`PluginRegisterInput.tier`, d.ts:9899 at the 2.1.329 pin); the adapter never invents a
  *   per-mod table.
- * - A `Pattern` (d.ts:6101) expands to the routed names it selects: `classic.*`
+ * - A `Pattern` (d.ts:9447 at the 2.1.329 pin) expands to the routed names it selects: `classic.*`
  *   selects the sixteen classic routes, `*` selects all seventeen, and a
  *   negation selects the complement. Selected names that are not routed are
  *   reported with their pinned reason; a pattern that cannot be expanded gets
@@ -1111,7 +1122,13 @@ export function modRegistrationsToKernel(
       const source = selectedEvent === authoredEvent ? baseSource : `${baseSource}[${selectedEvent}]`
       const route = ROUTES_BY_MOD_EVENT.get(selectedEvent)
       if (route === undefined) {
-        unmapped.push({ event: selectedEvent, index, source, reason: modUnmappedReason(selectedEvent) })
+        unmapped.push({
+          event: selectedEvent,
+          index,
+          source,
+          reason: modUnmappedReason(selectedEvent),
+          category: modUnmappedCategory(selectedEvent),
+        })
         continue
       }
       if ('reason' in matcher) {
@@ -1165,7 +1182,7 @@ const TIMED_OUT_NOT = Symbol('error')
 /**
  * One handler's budget clock. Time spent inside the links beneath the handler
  * does not count: the pin says `budget` stands still while a `next` (or `$`)
- * call is in flight, so the hook is metered on its own work (d.ts:5335-5341).
+ * call is in flight, so the hook is metered on its own work (d.ts:8289-8367 at the 2.1.329 pin).
  *
  * The clock is refcounted because a paused call can contain another paused
  * call from the same handler; the outer resume re-arms with what is left
@@ -1352,7 +1369,7 @@ export async function runChain(
   // (or a deeper one) sits at or after `at`, otherwise the next tier with a
   // link. Inclusive of a link exactly at `at`, the common case for a direct
   // target; a missing tier falls forward rather than dropping the rest of the
-  // chain (the pin never skips a tier with more authority, d.ts:5281-5289).
+  // chain (the pin never skips a tier with more authority, d.ts:8289-8367).
   const jumpStart = (tier: Tier, at: number): number => {
     const targetRank = tierRank(tier)
     for (let index = at; index < ordered.length; index += 1) {
@@ -1383,12 +1400,12 @@ export async function runChain(
   /**
    * Record the links a `next.to(e, tier)` did not run. They are skipped, not
    * absent: the pin's trace lists every link beneath the call and says why a
-   * link did not run (claude-code.d.ts:10555-10574). A skipped link still
+   * link did not run (claude-code.d.ts:18566 at the 2.1.329 pin). A skipped link still
    * consults its matcher, exactly as it would have on the way through.
    *
    * "Beneath" is a tier rank, not an array index: only links strictly between
    * the caller's tier and the target tier are bypassed. A same-tier sibling
-   * stays in the dispatch (d.ts:5286-5289: "every link between this hook's own
+   * stays in the dispatch (d.ts:8289-8367 (2.1.329 pin): "every link between this hook's own
    * tier and that one", and `TraceEntry.reason` names "beneath this tier").
    */
   const recordBypassed = (
@@ -1529,7 +1546,7 @@ export async function runChain(
         // `next` is the continuation, not a deferred slot: every call runs the
         // remainder immediately from this link, with this call's `to` target.
         // A hook that calls it twice asks the chain to run twice; the latest
-        // trip is the one it decides with (claude-code.d.ts:5325-5338), and a
+        // trip is the one it decides with (claude-code.d.ts:8289-8367 at the 2.1.329 pin), and a
         // sibling's later call can never be attributed to this jump.
         if (nextEvent !== undefined) {
           deepest = nextEvent

@@ -2,7 +2,7 @@
   "__provenance": {
     "source": "docs",
     "url": "https://code.claude.com/docs/en/hooks",
-    "pin": "claude-code@2.1.322"
+    "pin": "claude-code@2.1.329"
   },
   "payload": {
     "session_id": "abc123",

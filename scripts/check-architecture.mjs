@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { pinLabelViolations } from './architecture-pin-labels.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const json = process.argv.includes('--json')
@@ -165,6 +166,19 @@ if (!existsSync(lockPath)) {
       fail('R10 lockfile', lockPath, `${key} has no workspace entry in package-lock.json; run npm install`)
     }
   }
+}
+
+// R12. A `claude-code.d.ts:<line>` citation is only verifiable against the pin
+//      it was read at; line numbers move when the pin moves. Current citations
+//      name 2.1.329, historical ones name 2.1.322, and either word "pin" is
+//      accepted. DECISIONS.md is exempt because it is the historical record and
+//      must not be rewritten.
+const docFiles = readdirSync(join(root, 'docs'))
+  .filter((name) => name.endsWith('.md') && name !== 'DECISIONS.md')
+  .map((name) => join(root, 'docs', name))
+const sourceFiles = packages.flatMap((pkg) => walk(join(root, 'packages', pkg, 'src')))
+for (const violation of pinLabelViolations([...docFiles, ...sourceFiles])) {
+  fail('R12 pinned-citation', violation.file, violation.message, violation.line)
 }
 
 // R9. The ratchet lives in one place. Two files claiming the coverage totals

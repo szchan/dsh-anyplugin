@@ -1,6 +1,6 @@
 /**
  * The F1 fixture: an output style is prompt text, and the pinned host cannot
- * observe it — `claude plugin details` at 2.1.322 prints no output-style line
+ * observe it — `claude plugin details` at the 2.1.322 pin prints no output-style line
  * (D29), so there is no golden to diff. What can be asserted is the carry
  * itself: each `output-styles/*.md` body reaches the IR byte for byte and the
  * report still calls the row `planned` with every activation gap named.
@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { isCarried, validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -111,7 +111,7 @@ test('each carried body equals the file byte for byte and hashes the same', () =
 test('rig report shows the rows, and --json carries the planned annotation', () => {
   const text = runRig(['report', 'fixtures/claude-output-styles'])
   assert.equal(text.status, 0, text.stderr)
-  assert.match(text.stdout, /^plugin: output-styles-fixture {2}pin: claude-code@2\.1\.322$/m)
+  assert.ok(text.stdout.includes(`plugin: output-styles-fixture  pin: ${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`))
   assert.match(text.stdout, /^outputStyles\/concise-review {2}class=planned {2}carry=skipped$/m)
   assert.match(text.stdout, /^outputStyles\/plain {2}class=planned {2}carry=skipped$/m)
   assert.match(text.stdout, /^totals: 2 declared, 0 emitted, 0 refused, 2 skipped$/m)

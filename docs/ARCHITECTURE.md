@@ -210,7 +210,7 @@ Two rules that make the contract enforceable:
         config: { serverName: plugin_my-plugin_srv, transport: stdio, command: npx }
 ```
 
-Commands and skills collapse at the current pin: at Claude Code 2.1.322 a
+Commands and skills collapse at the current pin: at Claude Code 2.1.329 a
 `commands/*.md` file is reported under **Skills**, and a nested
 `commands/<dir>/*.md` is not loaded at all (§10.3). The dialect therefore
 resolves this mapping through a **pin profile** (D8) rather than the prose
@@ -253,6 +253,9 @@ plugins:
     dataDir: "/…/data/claude-code/skills-only"
     pin: "claude-code@2.1.322"
 ```
+
+The example above is an illustrative lock written at the 2.1.322 pin; the
+live pin is `CLAUDE_CODE_PIN` in the conformance package.
 
 `root` is versioned, `dataDir` is not. `pin` is the host version the artifact
 was read against (AGENTS.md §3.8), so a build that reads a different version
@@ -586,7 +589,7 @@ seam and the pinned `claude-code.d.ts` line as evidence — claude-code
 header still says 2.1.277; the commit is the pin). It is **16 live `classic.*` routes
 plus the live `session.start` loader event**, 17 live routes.
 
-`on()`'s `Pattern` is first-class (d.ts:6101): `classic.*` expands to the 16
+`on()`'s `Pattern` is first-class (d.ts:9447 at the 2.1.329 pin): `classic.*` expands to the 16
 classic routes, `*` to all 17, and a negation (`!tool.*`) to the complement.
 Selected names without a route keep their own reason (a classic event S9 leaves
 unprobed or refutes, or an engine event with no shared protocol); a pattern
@@ -594,7 +597,7 @@ that cannot be expanded gets a pattern-shaped reason of its own.
 
 The 16 `classic.*` names map one-to-one onto their classic kernel points and S9
 seams; `classic.PreToolUse` is special-cased because the mod API hands it
-`ToolCallEnvelope` (d.ts:10081-10093), not the classic stdin payload, so the
+`ToolCallEnvelope` (d.ts:17689 at the 2.1.329 pin), not the classic stdin payload, so the
 adapter rebuilds the envelope and carries a rewrite back.
 `classic.PermissionRequest` and `classic.PermissionDenied` record their partial
 payloads at the S9 seam (no `tool_input`; no tool name or input).
@@ -603,7 +606,7 @@ to the kernel's `session.start`, not to `agent/created` (that is classic
 `SessionStart`). The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`
-(d.ts:6253-6265). Unmapped engine-native events (39) and classic events S9
+(d.ts:9899 at the 2.1.329 pin). Unmapped engine-native events (39) and classic events S9
 leaves unprobed or refutes (17) stay on the adapter's `unmapped` list with that
 reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
 reported as absent from the pin and point at their real spelling rather than
@@ -625,7 +628,7 @@ not collapsed: `additionalContext` becomes the kernel's `text` channel,
 `unsupported` with a reason.
 
 The mod-visible `next` is that same continuation with the pinned members
-projected onto it (`claude-code.d.ts:5271-5352`, issue #68): `to(e, tier)` calls
+projected onto it (`claude-code.d.ts:8289-8367 (2.1.329 pin)`, issue #68): `to(e, tier)` calls
 the kernel `Next` with the tier argument the kernel already understands, so
 tier order, matcher skipping and trace recording stay in one place. `next` is
 eager and call-scoped: each call immediately continues the chain from the
@@ -656,7 +659,7 @@ once by the innermost call. The landing is
 inclusive of the named target, including a direct jump with no link in
 between; a named tier with no link left falls forward to the next tier that
 has one rather than dropping the rest of the chain. `to` refuses a target tier
-that has already run (the pin only moves outward, `claude-code.d.ts:5281-5289`).
+that has already run (the pin only moves outward, `claude-code.d.ts:8289-8367`).
 `core` is a declared fidelity gap: the pin's `TargetTier` allows it, but this
 chain has no core link, and naming it would skip the `builtin` tier without
 running it, so the member refuses with a reason naming the gap instead of
@@ -680,8 +683,9 @@ pass-over entries a `to` recorded when it was called; a second `next` starts a
 new slice, so the earlier trip's steps leave. A matcher skip never ran and is
 not projected (it stays in the kernel trace as `skipped-matcher`); a throwing
 link is `rejected` with the throw message as the reason. `TargetTier` is
-enforced: `prepend`/`user` are refused because the pin's type excludes them,
-and `core` refuses as the declared gap above.
+enforced: `prepend` is refused because the pin's type excludes it; `user`,
+`append` and `builtin` are served when they move outward from the caller, and
+`core` refuses as the declared gap above.
 Covered by `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (`to` skip and
 forward-only, direct-target and missing-tier landings, first-decision
 `next`/`to` single-run, fan-out same-tier sibling, two same-tier jumps,
@@ -718,9 +722,9 @@ Both flows share: a matcher miss is skipped, a throwing handler is skipped and
 recorded, an over-budget handler is aborted and recorded, one trace step per
 handler run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single
 table with `builtin` innermost. D13 recorded its values as a prose-derived
-assumption; the pinned `claude-code.d.ts` (d.ts:10022-10039) now confirms them
+assumption; the pinned `claude-code.d.ts` (d.ts:17636-17645 at the 2.1.329 pin) now confirms them
 as the first four of five tiers — the fifth, `core`, is the engine's own seat
-and never a plugin's (`PluginRegisterInput.tier` excludes it, d.ts:6253-6265).
+and never a plugin's (`PluginRegisterInput.tier` excludes it, d.ts:9899 at the 2.1.329 pin).
 
 A classic hook has no `next`, so `classicHookRegistration` always produces
 `observe` mode and declares `continuation: 'fan-out'`; a caller that passes no
@@ -731,8 +735,9 @@ budgets, so a slow handler is cut off at its own budget instead of truncating a
 healthy one or stretching the turn past the declared timeouts.
 
 **Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds the
-doc-extracted payloads plus the live captures from a 2.1.322 turn; the set and
-its provenance are `fixtures/hooks/PROVENANCE.md` (`payloads/` and `observed/`).
+doc-extracted payloads at 2.1.329 plus the live captures from a 2.1.322 turn;
+the set and its provenance are `fixtures/hooks/PROVENANCE.md` (`payloads/` and
+`observed/`).
 Two corrections came out of running them through the kernel:
 
 - The event vocabulary is **32 events, not the 10 we had guessed**. The table is
@@ -826,7 +831,7 @@ that report and that caveat, not the list alone.
 | Terminal-only elements (`Raster`, `Image`, `AbovePrompt` band on terminal) | `derived` — DSH renders web; terminal panel only |
 | `Client` second file (animation / pointer half) — bundling and props are undocumented | `planned`, needs hands-on probing |
 | `.tsx` / JSX mods | **host landed** (D34): a `.tsx` module declaring the classic pragma (`@jsxRuntime classic`, `@jsx h`, `@jsxFrag Fragment`) loads through one narrow in-memory transform with `h`/`Fragment` as realm globals; all 21 pinned `.tsx` load (S14, 122/122). No pragma, a foreign pragma/runtime, direct `.tsx` specifiers and rendering stay unsupported/`planned` |
-| Authored specifier conventions (`'./ask'`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33) — three behaviors only, no candidate fallbacks; our host obligation, not an upstream specification; stock Node ESM refuses the four shapes; resolution changes no bytes (S13, D30, §7.7) |
+| Authored specifier conventions (`'./ask'`, `'./reads-as-org-tool'` for the sibling `.ts`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33/#58) — extensionless imports try the file form (`<spec>.ts`, `<spec>.tsx`) before the directory form (`<spec>/index.ts`, `<spec>/index.tsx`), preserving `.js`→`.ts`, `.jsx`→`.tsx` and bare/dot→`index.ts`; our host obligation, not an upstream specification; stock Node ESM refuses these shapes; resolution changes no bytes (S13, D30, D39, §7.7) |
 | Cross-mod pane ownership (`$.ui.open({id})` collisions) | must be reproduced, bug reports already exist upstream |
 | Version drift (`$.ui.backdrop` removed in 2.1.319; `AbovePromptList` needs 2.1.323) | pin the release; regenerate the symbol table per pin |
 
@@ -857,9 +862,11 @@ graph exercises 737 directory-index resolutions, 246 `.js`→`.ts` and 21
 `.jsx`→`.tsx` against S13's `.tsx` stubs; S14, loading the real `.tsx`
 modules, counts 795 directory-index resolutions, 246 and 21 (the extra 58 are
 imports inside the `.tsx` modules the stubs did not have, not new modules). No
-exact-file fallback is used, and the resolver carries no other candidate
-branches. These are **our host obligation**, not an upstream
-specification. `module.stripTypeScriptTypes(source, { mode: 'strip' })` is the
+exact-file fallback is used at this pin, and the resolver carries no other
+candidate branches. The 2.1.329 pin adds a fifth shape — extensionless sibling
+file imports such as `./reads-as-org-tool` — that this graph does not contain;
+D39 adds it with the same file-before-directory order. These are **our host
+obligation**, not an upstream specification. `module.stripTypeScriptTypes(source, { mode: 'strip' })` is the
 only transform applied to `.ts`; it replaces type syntax with whitespace, so
 byte length and line numbers are preserved for `.ts` (the scanner's line
 numbers remain the authored ones). A `.tsx` module goes through D34's classic
@@ -1480,11 +1487,14 @@ agents + bin + theme.
 
 ### 10.5 S15 result: what the five pinned mods demand on one real turn
 
-**Question.** Which events and which `$` members do the five upstream mods at
-`6e1e44f6433bfa17d198e932bff53373aa229eea` (claude-code `2.1.322`) actually
-use, and which of those does the host serve? The S9 turn is the vehicle: the
-stub `LlmAdapter` (no network, no key), one real `Bash` call, one real fork
-subagent, one `session.start` per plugin load.
+**Question.** Which events and which `$` members do the five upstream mods
+actually use, and which of those does the host serve? Measured first at
+`6e1e44f6433bfa17d198e932bff53373aa229eea` (claude-code `2.1.322`) and re-run
+at `f9e4d1e5753ccffcffdd832f047d72be000396a6` (claude-code `2.1.329`; the seven-mod table in
+`fixtures/mods/upstream.json` adds two mods at that pin, but S15 keeps the
+original five so the comparison is like for like). The S9 turn is the vehicle: the stub `LlmAdapter` (no network,
+no key), one real `Bash` call, one real fork subagent, one `session.start` per
+plugin load.
 
 **Method.** Five materializer children (one plugin root each), the real
 `loadMod`, the real `createModBridge` table, the real materializer and kernel.
@@ -1497,7 +1507,7 @@ dispatcher is added (AGENTS §3.6). Argument and payload **key names** are
 recorded; values are not. `spikes/s15-mod-demand/REPORT.md` carries the tables,
 the sites and the command.
 
-**Outcome (measured, not projected).** 11 handler invocations and 5 `$` calls
+**Outcome at 2.1.322 (baseline).** 11 handler invocations and 5 `$` calls
 on the turn. The `$` surface authored by all five mods is 50 call sites across
 27 `namespace.method` pairs in 10 namespaces: **16 served**, **8 typed
 refusals** (all six `ui.*` methods, `process.run`, `settings.read`) and **3
@@ -1509,9 +1519,12 @@ the 16 classic events were not exercised by this turn. The load-time
 `session.start` has no session: `usage()`/`messages()` return empty shapes and
 `session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
 
+**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations**, **16 `$` calls**, and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: **16 served**, **8 typed refusals**, **6 absent** — the original three plus `ui.ask`, `vcs.detect` and `vcs.diff`. `ui.ask` and `vcs.*` are absent members, not refusals: `createModBridge` never defines them, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
+
 **Host bug found, now fixed (#68).** `next.to`, declared by the pin
-(`claude-code.d.ts:5271-5352`; the same seven members appear as `GlobNext` at
-`:4236`) and claimed by the host's `copyNextSurface`
+(2.1.322 pin: `Next` at `claude-code.d.ts:5271-5352`, `GlobNext` at `:4236`; 2.1.329 pin: `Next` at `8289-8367` with `to` at
+`8306`, `GlobNext` at `6660-6685` with `to` at `6666`) and claimed by the
+host's `copyNextSurface`
 (`dsh-anyplugin-mod-host/src/index.ts:214`), was absent from the mod-visible
 continuation: the kernel's `Next` had no `to`; `runModHandler` built a fresh
 bare function. `sec-default`'s `classic.*` handler therefore threw
@@ -1567,8 +1580,10 @@ the pass-over after `next.to` — the tests named above pin that shape.
 events (failure, permission, compaction, cwd, file, config) are unexercised;
 only literal scanner sites are counted; no values or return shapes are claimed;
 the real-install caveat is the five-plugin/five-materializer shape (one
-`pluginRoot` per `apply`). It does not settle the other 22 `$` methods or the
-unmapped engine events beyond the sites measured here.
+`pluginRoot` per `apply`), and at 2.1.329 all five seat after the D39 resolver fallback. S15
+does not measure `easel` or `hipaa-default`; their registrations are recorded
+in `fixtures/mods/upstream.json`. It does not settle the other `$` methods or
+the unmapped engine events beyond the sites measured here.
 
 ## 11. Non-goals
 
@@ -2118,8 +2133,8 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   **Load.** All 579 `.ts` files strip with 0 failures; the stripped entry stays
   33,891 bytes / 1342 lines and `on('session.start')` stays line 938. Stock ESM
-  refuses four specifier shapes that exercise three host resolution behaviors
-  — extensionless/`'.'` to `index.ts`, `.js`→`.ts`, `.jsx`→`.tsx` — so a host
+  refuses four specifier shapes that exercised three host resolution behaviors
+  at the 2.1.322 pin — extensionless/`'.'` to `index.ts`, `.js`→`.ts`, `.jsx`→`.tsx` — so a host
   resolver is required; with it both realms load 505 `.ts` modules plus 21
   `.tsx` stubs. The reachable graph exercises 737 directory-index, 246
   `.js`→`.ts` and 21 `.jsx`→`.tsx` resolutions; no other fallback is used. The

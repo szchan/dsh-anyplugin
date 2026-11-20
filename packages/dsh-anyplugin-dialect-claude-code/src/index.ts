@@ -26,7 +26,7 @@ import type {
 } from '../../dsh-anyplugin-ir/src/index.ts'
 import { IR_SCHEMA, weakestAnnotation } from '../../dsh-anyplugin-ir/src/index.ts'
 
-export const CLAUDE_CODE_PIN: IrPin = { tool: 'claude-code', version: '2.1.322' }
+export const CLAUDE_CODE_PIN: IrPin = { tool: 'claude-code', version: '2.1.329' }
 
 export interface ReadOptions {
   pin?: IrPin

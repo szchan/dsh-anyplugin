@@ -2,7 +2,7 @@
 // inventory in DSH as it does in Claude Code itself.
 //
 // Expected side: the golden captured from `claude --plugin-dir … plugin details`
-// (pin 2.1.322). Actual side: our dialect → IR → emit → the *installed* DSH
+// (pin 2.1.329). Actual side: our dialect → IR → emit → the *installed* DSH
 // registry. A pass means the observable component list transplants byte for
 // byte; pins differ by design and are asserted explicitly instead of waived.
 
@@ -26,7 +26,7 @@ const materializerUrl = pathToFileURL(
   join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts'),
 ).href
 const golden = JSON.parse(
-  readFileSync(join(fixtureDir, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
+  readFileSync(join(fixtureDir, '.inventory', `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}.json`), 'utf8'),
 )
 
 test('the dialect reads the fixture the way the host reports it', () => {

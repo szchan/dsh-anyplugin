@@ -1,13 +1,63 @@
 # S15 — what the five pinned mods demand on one real turn
 
-**Pins.** DSH `0.2.2-rc.5` (`DSH_HARNESS_DIR`), upstream mods
-`6e1e44f6433bfa17d198e932bff53373aa229eea` / claude-code `2.1.322`
-(`UPSTREAM_MODS_PIN`). **Question.** Which events and which `$` members do the
-five pinned mods actually use, and which of those does the host serve?
+**Pins.** Current: DSH `0.2.2-rc.5` (`DSH_HARNESS_DIR`), upstream
+mods `f9e4d1e5753ccffcffdd832f047d72be000396a6` / claude-code `2.1.329`
+(`UPSTREAM_MODS_PIN`). Sections 4–8 below are the original `6e1e44f` /
+`2.1.322` baseline and keep their numbers; §0 records the 2.1.329 re-run and
+says exactly which numbers moved. **Question.** Which events and which `$`
+members do the five pinned mods actually use, and which of those does the host
+serve?
 
 This is a measurement spike, not a fix. It changes no refusal, annotation,
 materializer, kernel or host behavior. The one host defect it found is reported
 in §6 and left in place (measure, do not fix).
+
+## 0. Re-run at 2.1.329 (current pin)
+
+At claude-code 2.1.329 (mods commit `f9e4d1e`), the five-mod set is
+agents-md, diff, privacy, sec-default, telemetry (the pin's seven minus
+`easel` and `hipaa-default`). The turn recipe is unchanged. One upstream
+change moved the load surface, and the host resolver caught up with it:
+
+- **sec-default seats.** `mods/sec-default/hooks/policy/names-org-tool.ts`
+  imports `./reads-as-org-tool` — a sibling `.ts` file — without an
+  extension. D30's resolver served only the directory form, so the mod refused
+  at load until the host adopted Node's file-then-directory order
+  (`<spec>.ts`, `<spec>.tsx`, `<spec>/index.ts`, `<spec>/index.tsx`;
+  D39 proposal). It now loads with **45 registrations**, including one
+  `classic.*` wildcard.
+- The turn is back to **11 handler invocations** and 16 `$` calls, with
+  **0 handler errors**. The eight routed classic events (`SessionStart`,
+  `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
+  `SubagentStop`, `SessionEnd`) invoke sec-default's handler, and its
+  `next.to(e, 'append')` is served by the kernel's own continuation (#68):
+  the guard runs and bypasses the `user` tier. The host bug in §6 is fixed at
+  this pin, not latent.
+- Authored demand over the same five mods: **69 call sites / 30
+  `namespace.method` pairs / 11 namespaces**. The 30 pairs partition exactly:
+  **16 served + 8 typed refusals + 6 absent = 30**.
+  - served (16): `env.get`, `fs.list`, `fs.read`, `fs.stat`, `store.get`,
+    `store.set`, `telemetry.log`, `telemetry.mark`, `clock.after`,
+    `clock.every`, `clock.now`, `command.register`, `session.cwd`,
+    `session.id`, `session.messages`, `session.usage`;
+  - typed refusals (8): `ui.log`, `ui.close`, `ui.invalidate`, `ui.open`,
+    `ui.resolve`, `ui.status`, `process.run`, `settings.read`;
+  - absent (6): `session.identity`, `session.root`, `fs.ancestors`,
+    `ui.ask`, `vcs.detect`, `vcs.diff`.
+
+  `ui.ask` and `vcs.*` are *absent*, not typed refusals:
+  `createModBridge` has no `ui.ask` member and no `vcs` namespace, so they
+  throw `TypeError` at the call site. `vcs.detect`/`vcs.diff` are cited at
+  the pin (`mods/diff/hooks/register.ts:962-963`). The old status heuristic
+  labelled every unknown name "served"; the spike now classifies against the
+  bridge's exact member table.
+- `$` calls on the executed path: 16 across 11 invocation groups (sec-default's
+  eight classic calls add `session.cwd` on each event), all resolved; 0 typed
+  refusals reached.
+- Output tail: `tool: 1 Bash call; child agent: started; SubagentStart chain:
+  observed`; `session.start: 3 handler invocation(s)`; `trace: 105 lines;
+  invocations: 11; $ groups: 11; $ calls: 16`; `handler errors: 0`;
+  `result: OK (turn assertions passed; handler errors are recorded above)`.
 
 ## 1. Run it
 
@@ -17,7 +67,7 @@ touches the network or a model key:
 ```bash
 export DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5
 export DSH_HARNESS_VERSION=0.2.2-rc.5
-export CLAUDE_BIN=$PWD/.claude-code/2.1.322/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+export CLAUDE_BIN=$PWD/.claude-code/2.1.329/node_modules/@anthropic-ai/claude-code-linux-x64/claude
 node scripts/fetch-harness.mjs 0.2.2-rc.5
 node scripts/fetch-claude.mjs
 export ANYPLUGIN_MODS_TREE=$(node scripts/fetch-mod.mjs)
@@ -90,7 +140,7 @@ route, payload **key names**, status, `$` groups and calls. A call records
 event value and no return value is written. `trace.jsonl` is the materializer's
 own trace, so it contains the real payloads; it stays in `out/`.
 
-## 4. Per mod, per handler
+## 4. (2.1.322 baseline) Per mod, per handler
 
 The authored sites are the scanner's literal `on()`/`$.ns.method` sites
 (`packages/dsh-anyplugin-mod-scan/src/index.ts`), with exact
@@ -172,7 +222,7 @@ the sixteen routed classic events were **not** exercised by this turn:
 `command`). The stub adapter then returned its final text, `Stop` fired, the
 child was disposed and the root detached.
 
-## 5. Typed refusals and missing members on this turn
+## 5. (2.1.322 baseline) Typed refusals and missing members on this turn
 
 - Typed refusals returned on the executed path: **0**. The paths that would
   refuse were not reached because their handlers never ran.
@@ -192,7 +242,7 @@ child was disposed and the root detached.
   `$.command.register` used the real `dsh-commands` registry (the `commands`
   child was loaded); a later duplicate name would name the mod that collided.
 
-## 6. Host bug found: `next.to` was absent from the mod continuation (fixed by #68)
+## 6. Host bug found: `next.to` was absent from the mod continuation (fixed by #68; 2.1.322 baseline)
 
 **Severity: the only routed handler in this turn that gets a continuation
 throws, and the kernel fails open.** This was the most valuable finding of the
@@ -288,7 +338,7 @@ its chain. It does not deny a tool call; its deny paths ride unmapped engine
 events. So the turn proves the bypass, and the direct deny/unloaded contrast
 uses the synthetic guard fixture rather than sec-default.
 
-## 7. Demand we do not serve, ranked by how many of the five mods hit it
+## 7. (2.1.322 baseline) Demand we do not serve, ranked by how many of the five mods hit it
 
 Ranking is the number of the five mods that author the demand, then severity.
 "Status" is what the host would do *if the handler ran*; "observed" is what this
@@ -327,7 +377,7 @@ site is in `out/observed.json`, and the run prints it with its surface status.
 session (3/5), `tool.check` (2/5), `tool.call` (2/5), `prompt.context` (2/5).
 `agent.spawn` and `settings.read` tie at 2/5 immediately after them.
 
-## 8. The exact command and its output tail
+## 8. (2.1.322 baseline) The exact command and its output tail
 
 ```console
 $ cd /tmp/anyplugin-wt/ticket-62

@@ -234,9 +234,9 @@ const inputOf = (raw: unknown): Record<string, unknown> => {
 
 /**
  * Adapt a raw DSH session to the pinned `SessionMessage` shape. The tool
- * result turn is a **user** message carrying `toolResults` (d.ts:9260); the
+ * result turn is a **user** message carrying `toolResults` (d.ts:14943 at the 2.1.329 pin); the
  * assistant's `toolUses` entry also gains the observed `text`/`isError`
- * (d.ts:10515). A test view that already has `messages` passes through.
+ * (d.ts:14938 at the 2.1.329 pin). A test view that already has `messages` passes through.
  */
 export function sessionViewOf(value: unknown): ModBridgeSession | undefined {
   const session = isRecord(value) ? value : undefined

@@ -180,7 +180,7 @@ test('falls back to clock.now when usage() returns undefined', async () => {
   )
 })
 
-test('resolveModSpecifier implements D30s three behaviors and no fallbacks', () => {
+test('resolveModSpecifier implements the D30/D39 behaviors in candidate order', () => {
   assert.deepEqual(resolveModSpecifier({ specifier: '.', parent: ASK_INDEX, root: ROOT }), {
     file: ASK_INDEX,
     behavior: 'directory-index',
@@ -196,6 +196,33 @@ test('resolveModSpecifier implements D30s three behaviors and no fallbacks', () 
   assert.deepEqual(
     resolveModSpecifier({ specifier: './view.jsx', parent: join(ROOT, 'jsx-reach.ts'), root: ROOT }),
     { file: join(ROOT, 'view.tsx'), behavior: 'jsx-to-tsx' },
+  )
+})
+
+test('an extensionless import tries the file form before the directory form', () => {
+  // Both exist under order-choice/; Node's order says the file wins. The
+  // directory form is not shadowed today only because the pinned
+  // `mods/diff/hooks/views/` has no sibling `views.ts(x)`; this fixture pins
+  // the order before such a file can appear.
+  assert.deepEqual(
+    resolveModSpecifier({
+      specifier: './order-choice/thing',
+      parent: REGISTER,
+      root: ROOT,
+    }),
+    { file: join(ROOT, 'order-choice', 'thing.ts'), behavior: 'extensionless-file' },
+  )
+  assert.deepEqual(
+    resolveModSpecifier({ specifier: './order-tsx/only', parent: REGISTER, root: ROOT }),
+    { file: join(ROOT, 'order-tsx', 'only.tsx'), behavior: 'extensionless-file' },
+  )
+  assert.deepEqual(
+    resolveModSpecifier({
+      specifier: './order-index-tsx/only',
+      parent: REGISTER,
+      root: ROOT,
+    }),
+    { file: join(ROOT, 'order-index-tsx', 'only', 'index.tsx'), behavior: 'directory-index' },
   )
 })
 

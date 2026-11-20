@@ -55,6 +55,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import {
   CONTINUE,
+  MOD_SPEC_LABEL,
   classicEvent,
   classicHookRegistration,
   modRegistrationsToKernel,
@@ -228,7 +229,7 @@ export function applyToolInputRewrite(
 
 /**
  * A `$` call is work the handler spends its own budget on, and the pin's clock
- * stands still while one is in flight (`claude-code.d.ts:5339-5352`). The
+ * stands still while one is in flight (`claude-code.d.ts:8289-8367 (2.1.329 pin)`). The
  * kernel's meter is only reachable through the scope `invoke` enters, so the
  * host wraps the dollar namespace: each call reports itself as paused time.
  * The wrapper is transparent to the caller (sync stays sync, promises pass
@@ -1188,7 +1189,8 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         else bucket.push(registration)
       }
       for (const row of adapted.unmapped) {
-        warn(`anyplugin mod ${row.source}: ${row.reason}`)
+        const where = row.category === undefined ? '' : `${row.category} at ${MOD_SPEC_LABEL}: `
+        warn(`anyplugin mod ${row.source}: ${where}${row.reason}`)
       }
     }
 
