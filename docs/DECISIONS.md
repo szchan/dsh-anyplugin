@@ -1386,15 +1386,20 @@ fidelity claim, so it is data with evidence, not code with comments.
    the same process does not fire it. On a late enable or reload a root may
    already be live, so "before any agent exists" is false for that path; the
    claim is "once per load, before the first prompt of the process". At the fire
-   there may be no session: `$.session.id` is absent, `messages()` is `[]`, and
-   `command.register`/`tool.register` throw. The pin's payload is
+   there may be no session: `$.session.id` is absent and `messages()` is `[]`;
+   `$.command.register` reaches the host's command registry when one is mounted
+   (without one it is `ERR_MOD_HOST_COMMAND_UNAVAILABLE`, not a silent
+   `undefined`), while `$.tool.register` still throws — it is not bridged.
+   Command registrations are visible for the load's lifetime and disposed with
+   it. The pin's payload is
    `{cwd, surface, isInteractive}`; `cwd` is the live root's cwd when one
    exists, otherwise the process working directory, never
    `CLAUDE_PLUGIN_ROOT`; `surface` and `isInteractive` are host/session facts
    `apply` cannot observe, so they are omitted and reported as an unbridged
    field gap with a reason — never filled with invented values. The first-load
    guarantee that a `$.tool.register` is visible to turn one is not claimed
-   until `$` registration is bridged.
+   until `$` registration is bridged. **(Amended 2026-11-19 by #51:**
+   `command.register` is bridged; the original sentence said both threw.)**
 
    A seat is per agent, on `payload.agent.ctx`: created for every agent already
    live when `apply` runs (`ctx.agents.list()`) and for every
@@ -1461,15 +1466,20 @@ fidelity claim, so it is data with evidence, not code with comments.
    validation of `updatedInput`; if the host cannot validate, that is a typed
    unsupported too. No second dispatcher or parallel event path is added.
 
-**Remaining.** `$` breadth (only `session`/`clock` partially;
-`command.register`/`tool.register` throw; ~21 namespaces and the element/UI
-runtime), the unmapped engine and classic events, `.tsx` refusal,
-`session.start` surface facts, and classic command-hook `updatedInput`. The
-fixture matrix stays 16 declared / 15 matched / 0 missing / 1 refused while
-`mods` is planned for those gaps — not because the mod is unseated.
+**Remaining (amended 2026-11-19 by #51).** `$` breadth: the 23 measured sites
+across 10 namespaces are bridged (fs resolves in the session working directory
+and accepts absolute paths, store confines to plugin data, settings serves only
+a host merged snapshot), while `tool.register`, `ui.*`, `process.run` and
+`settings.read` without a merged host snapshot remain typed refusals. Also
+remaining: the unmapped engine and classic events, the element/UI runtime,
+`session.start` surface facts, and classic command-hook `updatedInput`. `.tsx`
+loads under D34, not a refusal. The fixture matrix stays 16 declared / 15
+matched / 0 missing / 1 refused while `mods` is planned for those gaps — not
+because the mod is unseated.
 
-**Evidence.** 375 tests pass on both pins (`0.2.2-rc.5`, `0.2.2-rc.2`);
-`check:arch` clean (17 packages / 42 files). Mutations: dropping the
+**Evidence.** 375 tests passed on both pins when this decision was ratified;
+the amended scope is covered by 391 on both pins (#51: `0.2.2-rc.5`,
+`0.2.2-rc.2`), `check:arch` clean (18 packages / 45 files). Mutations: dropping the
 `session.start` fire reddens both mod tests; removing the live-agent sweep
 leaves a pre-existing root and a reloaded root unrevised (`ls`, not
 `ls-first`); routing a second agent's call through the first seat's `$` reds
