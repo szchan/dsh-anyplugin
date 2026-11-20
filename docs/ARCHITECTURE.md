@@ -586,11 +586,15 @@ hook's own `updatedInput` is carried by its verdict into that same rewrite.
 The mapping is data in `mod-events.ts`, one row per mod event with the host
 seam and the pinned `claude-code.d.ts` line as evidence — claude-code
 2.1.322, commit `6e1e44f6433bfa17d198e932bff53373aa229eea` (the d.ts file's own
-header still says 2.1.277; the commit is the pin). It is **16 live `classic.*` routes
-plus the live `session.start` loader event**, 17 live routes.
+header still says 2.1.277; the commit is the pin). It is **16 live `classic.*` routes,
+the live `session.start` loader event, and the `tool.call` and `prompt.context`
+engine routes**, 19 live routes. `tool.check` is a measured refusal: it is the
+engine's permission verdict after `PreToolUse`, with `next.origin`, `trace`,
+`settings.read`, `op`/`ceiling`/`approver` in its question, none of which the
+pre-execute gate carries (D41 proposal in the #69 PR).
 
 `on()`'s `Pattern` is first-class (d.ts:9447 at the 2.1.329 pin): `classic.*` expands to the 16
-classic routes, `*` to all 17, and a negation (`!tool.*`) to the complement.
+classic routes, `*` to all 19, and a negation (`!tool.*`) to the complement.
 Selected names without a route keep their own reason (a classic event S9 leaves
 unprobed or refutes, or an engine event with no shared protocol); a pattern
 that cannot be expanded gets a pattern-shaped reason of its own.
@@ -603,12 +607,27 @@ adapter rebuilds the envelope and carries a rewrite back.
 payloads at the S9 seam (no `tool_input`; no tool name or input).
 `session.start` is the loader's per-plugin event, fired from `apply`, and maps
 to the kernel's `session.start`, not to `agent/created` (that is classic
-`SessionStart`). The
+`SessionStart`). `tool.call` translates at the edge rather than widening the
+classic PreToolUse result channel: the mod event is the `ToolCallEnvelope`
+(d.ts:17689 at the 2.1.329 pin), so its structural matcher is evaluated against
+that envelope, and its result is the engine's `ToolCallResult` (d.ts:17729 at the 2.1.329 pin).
+`{ deny }` (and the internal `next()` projection `{ allow: true }`) become the
+gate decision; `{ result }` and `{ isError }` are typed `unsupported` with
+`hard: true`, and the pre-execute mount turns that into a real deny plus a
+trace record, because the seam has no value channel and executing the call
+would silently drop the mod's answer. `prompt.context` maps to the agent-scoped
+`system-prompt/assemble` waterfall: the route sees only the pin-named blocks
+(`claudeMd`, `userEmail`, `attachedProject`, `currentDate`) plus blocks it owns,
+so a mod cannot drop DSH's operational contexts; it runs once per conversation
+and reads back a `{ blocks }` answer, while `instructionFiles` is typed
+`unsupported` (the host projects instruction files into a user-role message,
+not into the assembly contexts, and `$.ui.invalidate` is refused by the bridge).
+The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`
-(d.ts:9899 at the 2.1.329 pin). Unmapped engine-native events (39) and classic events S9
-leaves unprobed or refutes (17) stay on the adapter's `unmapped` list with that
-reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
+(d.ts:9899 at the 2.1.329 pin). Unmapped engine-native events (56, including the refused
+`tool.check`) and classic events S9 leaves unprobed or refutes (17) stay on the
+adapter's `unmapped` list with that reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
 reported as absent from the pin and point at their real spelling rather than
 being aliased.
 
@@ -1512,7 +1531,7 @@ on the turn. The `$` surface authored by all five mods is 50 call sites across
 27 `namespace.method` pairs in 10 namespaces: **16 served**, **8 typed
 refusals** (all six `ui.*` methods, `process.run`, `settings.read`) and **3
 absent** (`session.identity`, `session.root`, `fs.ancestors`). The event surface
-is the larger gap: only `session.start` and the 16 classic routes are live, so
+is the larger gap: only `session.start` and the 16 classic routes are live at this baseline, so
 four events authored by **two of the five mods each** — `tool.check`,
 `tool.call`, `prompt.context`, `agent.spawn` — never reach a handler; eight of
 the 16 classic events were not exercised by this turn. The load-time

@@ -194,6 +194,23 @@ names the handler saw.
 | telemetry | `session.end` | 47 | — | never called | — | unmapped |
 | telemetry | `engine.create` | 53 | — | never called | — | unmapped |
 
+### Status at 2.1.329
+
+The table above is the 2.1.322 baseline and stays historical. This column is
+the status after issue #69; the d.ts citations are at the 2.1.329 pin
+(`f9e4d1e`). A routed event is not a claim that the handler's whole body runs:
+the reason column records what the route can and cannot carry.
+
+| mod | event | authored line (2.1.329) | status at 2.1.329 | evidence / reason |
+| --- | --- | ---: | --- | --- |
+| agents-md | `tool.call {tool:'Read'}` | 184 | **routed** to `tools/pre-execute` | gate-only `ToolCallEnvelope`; `{ deny }` is the host deny; `{ result }`/`{ isError }` are typed `unsupported` (no result channel). `next()` sees the internal gate projection, not a native `ToolCallResult`; the handler then reaches `$.session.root()`/`$.fs.ancestors()`, absent from the bridge, so it errors and the chain fails open (the call still runs, augmentation absent). |
+| diff | `tool.call {editing,shell}` | 1336 | **routed** to `tools/pre-execute` | same gate; `afterTool` reads `result.result` through `next()`, which the gate cannot supply, so the post-edit pane refresh is degraded. |
+| privacy | `tool.check {tool}` | 20 | **refused** (measured) | the engine's permission verdict after `tool.call`/PreToolUse, not the pre-execute gate; its question carries `next.origin`, `trace`, `settings.read`, and engine-set `op`/`ceiling`/`approver` (d.ts:17854-18010, 4961-4977). The bridge refuses `$.session.identity` too. |
+| sec-default | `tool.check` | 318 | **refused** (measured) | same verdict; the handler awaits `next(e)` and reads `next.origin`/`HeldVerdict.rewrittenByUsers(next.trace)`, none representable at pre-execute. |
+| agents-md | `prompt.context` (matcher) | 76 | **routed, no-op on this host** | `{ instructionFiles: { kind } }` is a structural matcher over a field the host never projects; `instructionFiles` is typed `unsupported`. |
+| agents-md | `prompt.context` | 99 | **routed, no-op on this host** | the handler returns early when `e.instructionFiles === undefined`; `$.session.root` and `$.fs.ancestors` are also absent from the bridge. |
+| sec-default | `prompt.context` | 60 | **routed** | `next.to(e,'append')` is a pass-through over the once-per-conversation block list; block append/drop/reorder is carried. |
+
 **Events actually received, with payload key names.** The eight classic events
 reach sec-default's handler; all eight then throw in the handler (see §6). The
 `session.start` payload is only `cwd`; the `$` for those three invocations has
@@ -350,9 +367,9 @@ would fail.
 | ---: | --- | :---: | --- | --- | --- |
 | 1 | `$.ui.*` (6 methods, all refused) | **3/5** | `mods/agents-md/hooks/register.ts:57,151`; `mods/diff/hooks/register.ts:956,957,958,959,960,1008`; `mods/sec-default/hooks/register.ts:140,218` | `ERR_MOD_HOST_UI_UNSUPPORTED` (declared) | 0 calls; no routed handler reached a `ui.*` site |
 | 2 | `session.start` has no session: `$.session.*` degraded/refused | **3/5** | `mods/agents-md/hooks/register.ts:50`; `mods/diff/hooks/register.ts:938`; `mods/telemetry/hooks/register.ts:41` | event served; `session.id` refuses `ERR_MOD_HOST_SESSION_UNAVAILABLE`; `usage`/`messages` empty | `usage`, `messages` resolved; 4 omitted-field warnings |
-| 3 | `tool.check` event never routed | **2/5** | `mods/privacy/hooks/register.ts:14`; `mods/sec-default/hooks/register.ts:113` | unmapped by D32 | privacy: 0 invocations; sec-default: registration unmapped |
-| 4 | `tool.call` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:181`; `mods/diff/hooks/register.ts:1276` | unmapped | 0 invocations |
-| 5 | `prompt.context` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:75,99`; `mods/sec-default/hooks/register.ts:35` | unmapped | 0 invocations |
+| 3 | `tool.check` event never routed | **2/5** | `mods/privacy/hooks/register.ts:14`; `mods/sec-default/hooks/register.ts:113` | **refused** (#69): engine permission verdict, not the pre-execute gate; reason names `next.origin`/`trace`/`settings.read`/`op` | privacy: 0 invocations; sec-default: registration refused |
+| 4 | `tool.call` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:181`; `mods/diff/hooks/register.ts:1276` | **routed** (#69) to `tools/pre-execute`; `{deny}` live, `{result}`/`{isError}` typed unsupported | 0 invocations on the turn; route tests exercise both mods' matchers |
+| 5 | `prompt.context` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:75,99`; `mods/sec-default/hooks/register.ts:35` | **routed** (#69) to `system-prompt/assemble`; `instructionFiles` typed unsupported | 0 invocations on the turn; the composed-prompt test observes the block |
 | 6 | `agent.spawn` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:169`; `mods/sec-default/hooks/register.ts:74` | unmapped | 0 invocations |
 | 7 | `$.settings.read` | **2/5** | `mods/diff/hooks/register.ts:952`; `mods/sec-default/hooks/register.ts:86,103,120,155,186,214` | `ERR_MOD_HOST_SETTINGS_SOURCE` / `_UNAVAILABLE` (declared) | 0 calls |
 | 8 | `next.to` on the mod continuation | 1/5 | `mods/sec-default/hooks/register.ts:30` (one handler, all classic events) | **`TypeError`**; kernel fails open (fixed by #68) | **8 errors**; no `$` calls (pre-fix measurement) |

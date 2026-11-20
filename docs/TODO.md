@@ -81,10 +81,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
   session.messages`); the static, dynamic and transcript ledgers live in
   `packages/dsh-anyplugin-conformance/test/mods.test.mjs`. On the S15 turn only
   five calls are reached, all served; `session.usage()` returns empty shapes
-  because the load-time event has no session. The event side is the larger
-  measured gap: `tool.check`, `tool.call`, `prompt.context` and `agent.spawn`
-  are authored by two of the five mods each and routed by none, and `next.to`
-  was absent from the mod continuation (fixed by #68; ARCHITECTURE §10.5).
+  because the load-time event has no session. `tool.call` and `prompt.context`
+  are routed (#69); the remaining measured gap is `tool.check` (refused: it is
+  the engine's post-`PreToolUse` permission verdict, not the pre-execute gate)
+  and `agent.spawn`, each authored by two of the five mods. `next.to` was absent
+  from the mod continuation (fixed by #68; ARCHITECTURE §10.5).
 
 - Mod `next` surface (ticket #68; pins DSH 0.2.2-rc.5 and mods commit
   `6e1e44f` / claude-code 2.1.322): the mod-visible continuation now serves the
@@ -125,8 +126,8 @@ own work while `next`/`$` still pause.
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
   caller-supplied seating, source order preserved) so mods and classic hooks
-  share one chain. `mod-events.ts` pins the mapping as data (17 live routes:
-  16 classic plus `session.start`, 150 unmapped names with reasons and
+  share one chain. `mod-events.ts` pins the mapping as data (19 live routes:
+  16 classic, `session.start`, `tool.call` and `prompt.context`; 148 unmapped names with reasons and
   categories (`missing bridge` / `no host event` / `not in spec`; the table
   also enumerates `EngineEventOf`, `ClassicEventOf`, and `OpEventOf`)
   from S9), `on()` patterns (`classic.*`, `*`, negations) expand instead of

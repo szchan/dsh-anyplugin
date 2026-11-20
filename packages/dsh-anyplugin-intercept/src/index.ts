@@ -156,7 +156,19 @@ export type Decision =
   | { kind: 'result'; result: unknown }
   | { kind: 'block'; reason?: string }
   | { kind: 'approve'; reason?: string }
-  | { kind: 'unsupported'; field: string; reason: string }
+  | {
+      kind: 'unsupported'
+      field: string
+      reason: string
+      /**
+       * The seam has no carrier and continuing would silently drop the
+       * handler's meaning, so the host must not proceed. Used by a routed
+       * `tool.call` `{ result }`/`{ isError }`: tools/pre-execute has no value
+       * channel, and treating either as allow would execute a call whose
+       * result the mod tried to replace.
+       */
+      hard?: boolean
+    }
 
 export const CONTINUE: Decision = { kind: 'continue' }
 
@@ -306,6 +318,14 @@ export interface ChainResult {
 
 export interface CompiledMatcher {
   pattern: string | undefined
+  /**
+   * A structural matcher is not a regex over a subject string: it tests the
+   * mod-shaped event at the route (the pinned Matcher grammar,
+   * d.ts:7460-7530 at the 2.1.329 pin). When present, the kernel must use it instead of
+   * `test`; `test` is then a never-match guard so a caller that forgets the
+   * field cannot silently match everything.
+   */
+  testEvent?: (event: ChainEvent) => boolean
   /**
    * True when the declaration named a matcher. This is deliberately about the
    * authored text, not the compiled pattern: `*` compiles to match-all but is
@@ -465,12 +485,35 @@ interface AdaptedMatcher {
 }
 
 /**
+ * The pinned Matcher grammar (d.ts:7460-7530 at the 2.1.329 pin): a partial of
+ * the event at any depth. A leaf scalar is equality; a RegExp tests the value
+ * as a string; a pattern array is any-of; an object is a partial of an object;
+ * and an array value matches when *some* element matches. This is structural,
+ * not a regex over one subject string, so it is evaluated against the
+ * mod-shaped event the route hands the handler.
+ */
+function matchesStructuralPattern(pattern: unknown, value: unknown): boolean {
+  if (Object.prototype.toString.call(pattern) === '[object RegExp]') {
+    return typeof value === 'string' && (pattern as RegExp).test(value)
+  }
+  if (Array.isArray(value)) return value.some((item) => matchesStructuralPattern(pattern, item))
+  if (Array.isArray(pattern)) return pattern.some((item) => matchesStructuralPattern(item, value))
+  if (isRecord(pattern)) {
+    if (!isRecord(value)) return false
+    return Object.keys(pattern).every((key) => matchesStructuralPattern(pattern[key], value[key]))
+  }
+  return pattern === value
+}
+
+/**
  * The kernel's matcher grammar is a regex over the event subject (the tool
  * name, the agent type). A mod's string is that regex; a cross-realm `RegExp`
- * is its own source; a structural matcher has no kernel spelling yet, so the
- * registration is reported instead of quietly matching everything.
+ * is its own source; a structural matcher is compiled against the mod-shaped
+ * event for the route that supports it (tool.call, prompt.context). A route
+ * with no event projection still reports the structural matcher rather than
+ * quietly matching everything.
  */
-function adaptMatcher(value: unknown): AdaptedMatcher | { reason: string } {
+function adaptMatcher(value: unknown, route?: ModEventRoute): AdaptedMatcher | { reason: string } {
   if (value === undefined) return {}
   if (typeof value === 'string') {
     return { matcher: value, compiledMatcher: compileMatcher(value) }
@@ -484,8 +527,29 @@ function adaptMatcher(value: unknown): AdaptedMatcher | { reason: string } {
     }
     return { matcher: expression.source, compiledMatcher: compileMatcher(expression.source) }
   }
+  if (route !== undefined && (route.modEvent === 'tool.call' || route.payload === 'prompt-context')) {
+    if (!isRecord(value) && !Array.isArray(value)) {
+      return { reason: `matcher is ${describeMatcher(value)}; expected a partial object or an any-of array at the pin (d.ts:7460-7530 at the 2.1.329 pin).` }
+    }
+    return {
+      compiledMatcher: {
+        pattern: undefined,
+        specified: true,
+        test: () => false,
+        testEvent: (event) => {
+          let modEvent: unknown
+          try {
+            modEvent = toModEvent(route, event)
+          } catch {
+            return false
+          }
+          return matchesStructuralPattern(value, modEvent)
+        },
+      },
+    }
+  }
   return {
-    reason: `matcher is ${describeMatcher(value)}; the kernel matches a flagless regex against the event subject, so a structural matcher needs a bridge this adapter does not provide (D32).`,
+    reason: `matcher is ${describeMatcher(value)}; the kernel matches a flagless regex against the event subject, so a structural matcher needs a bridge this adapter does not provide for this event (D32).`,
   }
 }
 
@@ -497,6 +561,13 @@ function adaptMatcher(value: unknown): AdaptedMatcher | { reason: string } {
  * `tool_input`).
  */
 function toModEvent(route: ModEventRoute, event: ChainEvent): unknown {
+  if (route.payload === 'prompt-context') {
+    const blocks = Array.isArray(event.data.blocks) ? event.data.blocks : []
+    return {
+      blocks,
+      ...(event.data.instructionFiles === undefined ? {} : { instructionFiles: event.data.instructionFiles }),
+    }
+  }
   if (route.payload !== 'tool-call-envelope') return event.data
   const tool = event.data.tool_name
   const toolUseId = event.data.tool_use_id
@@ -531,6 +602,26 @@ function fromModEvent(route: ModEventRoute, event: ChainEvent, rewritten: unknow
       subject: tool,
     }
   }
+  if (route.payload === 'prompt-context') {
+    const blocks = rewritten.blocks
+    if (!Array.isArray(blocks)) {
+      throw new TypeError('prompt.context: a rewrite must carry a blocks array (PromptContextResult, d.ts:11379 at the 2.1.329 pin)')
+    }
+    for (const block of blocks) {
+      if (!isRecord(block) || typeof block.name !== 'string' || typeof block.text !== 'string') {
+        throw new TypeError('prompt.context: every block is { name: string; text: string } (PromptContextBlock, d.ts:11332 at the 2.1.329 pin)')
+      }
+    }
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        blocks,
+        ...(rewritten.instructionFiles === undefined ? {} : { instructionFiles: rewritten.instructionFiles }),
+      },
+      subject: null,
+    }
+  }
   if (route.payload === 'classic') {
     return classicEvent(event.name, rewritten)
   }
@@ -539,6 +630,19 @@ function fromModEvent(route: ModEventRoute, event: ChainEvent, rewritten: unknow
 
 /** What a kernel decision means to a mod's `next()`. */
 function kernelDecisionToMod(decision: Decision, route: ModEventRoute): unknown {
+  if (route.payload === 'prompt-context') {
+    // PromptContextResult is { blocks, instructionFiles? }; there is no
+    // deny/block/allow verb at this point, so only a result has a mod shape.
+    if (decision.kind === 'result' && isRecord(decision.result) && Array.isArray(decision.result.blocks)) {
+      return {
+        blocks: decision.result.blocks,
+        ...(decision.result.instructionFiles === undefined ? {} : { instructionFiles: decision.result.instructionFiles }),
+      }
+    }
+    // continue and unsupported both resolve to the blocks as they stand; the
+    // outer mount reads the kernel trace for the unsupported reason.
+    return undefined
+  }
   switch (decision.kind) {
     case 'continue':
       return undefined
@@ -617,6 +721,16 @@ function unsupported(field: string, reason: string): ModResultTranslation {
   return { decision: { kind: 'unsupported', field, reason } }
 }
 
+/**
+ * A result the seam cannot carry and that must not be turned into allow: the
+ * host has to refuse the call rather than execute something the mod tried to
+ * replace. The decision stays `unsupported` (typed, traced); `hard` tells the
+ * tools/pre-execute mount to materialize it as a deny.
+ */
+function hardUnsupported(field: string, reason: string): ModResultTranslation {
+  return { decision: { kind: 'unsupported', field, reason, hard: true } }
+}
+
 interface ModResultTranslation {
   decision: Decision
   /** A PreToolUse `updatedInput` the handler wants the chain beneath to see. */
@@ -645,6 +759,36 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
   if (!isRecord(value)) {
     return { decision: { kind: 'block', reason: `a mod handler returned ${typeof value}; expected an object or undefined` } }
   }
+  if (route.payload === 'prompt-context') {
+    // The pin's result is PromptContextResult: { blocks, instructionFiles? }.
+    // The engine verbs ({ deny }, { result }, ...) are not this event's
+    // protocol; reporting them is the honest degradation.
+    if (!('blocks' in value)) {
+      const field = Object.keys(value)[0] ?? 'blocks'
+      return unsupported(field, `prompt.context returns PromptContextResult { blocks }, not ${field} (d.ts:11379-11410 at the 2.1.329 pin)`)
+    }
+    const combination = Object.keys(value).find((key) => key !== 'blocks' && key !== 'instructionFiles')
+    if (combination !== undefined) {
+      return unsupported(combination, 'prompt.context returns { blocks, instructionFiles? } only (d.ts:11379 at the 2.1.329 pin)')
+    }
+    if (!Array.isArray(value.blocks)) {
+      return unsupported('blocks', 'prompt.context blocks must be a readonly array of PromptContextBlock')
+    }
+    for (const block of value.blocks) {
+      if (!isRecord(block) || typeof block.name !== 'string' || typeof block.text !== 'string') {
+        return unsupported('blocks', 'every prompt.context block is { name: string; text: string } (d.ts:11332 at the 2.1.329 pin)')
+      }
+    }
+    return {
+      decision: {
+        kind: 'result',
+        result: {
+          blocks: value.blocks,
+          ...(value.instructionFiles === undefined ? {} : { instructionFiles: value.instructionFiles }),
+        },
+      },
+    }
+  }
   if (typeof value.kind === 'string') {
     switch (value.kind) {
       case 'continue':
@@ -670,6 +814,29 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
   }
 
   const present = Object.keys(value).filter((key) => value[key] !== undefined)
+  if (route.modEvent === 'tool.call') {
+    // ToolCallResult is { deny } | { result, ... } | { isError: true, result }.
+    // { deny } and { allow: true } have kernel carriers; the result-bearing
+    // verbs do not: tools/pre-execute hands the chain a PreToolDecision, not
+    // the tool's output (d.ts:17729-17831 at the 2.1.329 pin). A { result }
+    // turned into allow would run a call whose output the mod tried to
+    // replace, so it is a hard unsupported and the mount denies.
+    if (present.length === 1 && 'allow' in value && value.allow === true) {
+      return { decision: CONTINUE }
+    }
+    if ('isError' in value) {
+      return hardUnsupported(
+        'isError',
+        'tool.call { isError, result } has no tools/pre-execute carrier: the seam decides before execution and has no tool-result channel (d.ts:17729-17831 at the 2.1.329 pin)',
+      )
+    }
+    if ('result' in value) {
+      return hardUnsupported(
+        'result',
+        'tool.call { result } replaces the tool output after next() and has no tools/pre-execute carrier: the seam decides before execution and has no tool-result channel (d.ts:17729-17831, 4940-4959 at the 2.1.329 pin)',
+      )
+    }
+  }
   // The engine verbs are the mod-facing protocol on every event, not only the
   // classic ones; a bare { result }, { text } or { drop } is not a classic field.
   if ('result' in value) {
@@ -956,6 +1123,15 @@ async function runModHandler(
       if (route.modEvent === 'session.start') {
         return { cwd: (nextEvent ?? event).data.cwd }
       }
+      // `prompt.context`'s `next(e)` is the PromptContextInput the remaining
+      // links see and `{ blocks }` is the ordinary observe result
+      // (d.ts:11359, 5282-5288 at the 2.1.329 pin), not a kernel decision.
+      if (route.payload === 'prompt-context') {
+        if (decision.kind === 'result' && isRecord(decision.result) && Array.isArray(decision.result.blocks)) {
+          return decision.result
+        }
+        return toModEvent(route, nextEvent ?? event)
+      }
       return kernelDecisionToMod(decision, route)
     } finally {
       if (inFlight === resolved) inFlight = undefined
@@ -1117,7 +1293,6 @@ export function modRegistrationsToKernel(
       index += 1
       continue
     }
-    const matcher = adaptMatcher(registration.matcher)
     for (const selectedEvent of expansion.selected) {
       const source = selectedEvent === authoredEvent ? baseSource : `${baseSource}[${selectedEvent}]`
       const route = ROUTES_BY_MOD_EVENT.get(selectedEvent)
@@ -1131,6 +1306,7 @@ export function modRegistrationsToKernel(
         })
         continue
       }
+      const matcher = adaptMatcher(registration.matcher, route)
       if ('reason' in matcher) {
         unmapped.push({ event: selectedEvent, index, source, reason: matcher.reason })
         continue
@@ -1394,6 +1570,18 @@ export async function runChain(
   const pluginOf = (registration: HandlerRegistration): string => registration.plugin ?? registration.source
   const tierRank = (tier: Tier): number => TIER_ORDER.indexOf(tier)
 
+  /**
+   * A structural matcher tests the mod-shaped event at its route; a classic
+   * matcher tests the subject string. Both live behind `CompiledMatcher`, so
+   * the kernel has one matcher decision, not a second dispatcher (D32).
+   */
+  const matchesRegistration = (registration: HandlerRegistration, current: ChainEvent): boolean => {
+    const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
+    if (matcher.testEvent !== undefined) return matcher.testEvent(current)
+    const subject = current.subject === undefined ? classicSubject(current) : current.subject
+    return subject === null ? !matcher.specified : matcher.test(subject)
+  }
+
   /** A `next.to` continuation, kept until the loop leaves the caller's tier. */
   type TierJump = { readonly target: Tier; readonly callerRank: number; readonly by: string }
 
@@ -1421,8 +1609,7 @@ export async function runChain(
       const rank = tierRank(registration.tier)
       if (rank <= callerRank || rank >= targetRank) continue
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
-      const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
-      const matched = subject === null ? !matcher.specified : matcher.test(subject)
+      const matched = matchesRegistration(registration, current)
       if (matched) {
         record(registration, at, 'skipped', { detail: `bypassed by ${by}` })
       } else {
@@ -1528,10 +1715,10 @@ export async function runChain(
       }
 
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
-      const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
-      // No subject means the matcher cannot be evaluated. Running it would
-      // match everything; the classic front-end reports this as a skip.
-      const matched = subject === null ? !matcher.specified : matcher.test(subject)
+      // No subject means a classic matcher cannot be evaluated. Running it
+      // would match everything; the classic front-end reports this as a skip.
+      // A structural matcher has its own event projection and is unaffected.
+      const matched = matchesRegistration(registration, current)
       if (!matched) {
         record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
         at += 1
@@ -1636,8 +1823,7 @@ export async function runChain(
       }
 
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
-      const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
-      const matched = subject === null ? !matcher.specified : matcher.test(subject)
+      const matched = matchesRegistration(registration, current)
       if (!matched) {
         record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
         at += 1

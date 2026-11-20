@@ -890,8 +890,9 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
       entry: diffFixture.entry,
     })
     assert.equal(kernel.routes.length, diffFixture.kernel.routed)
-    assert.equal(kernel.routes[0].route.modEvent, 'session.start')
-    assert.equal(kernel.routes[0].registration.event, 'session.start')
+    assert.deepEqual(kernel.routes.map(({ route }) => route.modEvent).sort(), ['session.start', 'tool.call'])
+    const sessionStartRoute = kernel.routes.find(({ route }) => route.modEvent === 'session.start')
+    assert.equal(sessionStartRoute.registration.event, 'session.start')
     assert.equal(kernel.unmapped.length, diffFixture.kernel.unmapped)
     for (const unmapped of kernel.unmapped) {
       assert.ok(unmapped.reason.length > 0, `${unmapped.event} has an empty unmapped reason`)
@@ -1067,4 +1068,128 @@ test('a loaded guard mod denies the tool call; unloaded, the same turn proceeds'
   assert.equal(allowedPre.length, 1)
   assert.deepEqual(allowedPre[0].decision, { kind: 'continue' })
   assert.deepEqual(allowed.calls, [{ command: 'ls' }], 'without the mod the same call runs')
+})
+
+// Issue #69, end to end: an engine tool.call mod's { deny } stops the native
+// call, and the same turn without the mod runs it. The trace proves the
+// decision came from the mod route, not from the classic hook that keeps the
+// chain non-empty.
+test('a loaded tool.call mod denies the call; unloaded, the same turn proceeds', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'tool-call-guard')
+  const turn = async (mods) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-call-'))
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    try {
+      await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        entry: modsEntry(dataDir, traceFile, { plugin: 'tool-call-guard', pluginRoot: modRoot, mods, hooks: [pinned(commandHook)] }),
+        expected: [],
+        tool: bashTool(calls),
+        toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+        timeoutMs: 20_000,
+      })
+      return { calls, trace: readTrace(traceFile) }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  }
+
+  const denied = await turn([{ entry: 'register.ts' }])
+  assert.deepEqual(denied.calls, [], 'the denied call never executes')
+  const deniedPre = denied.trace.filter((record) => record.event === 'PreToolUse')
+  assert.equal(deniedPre.length, 1)
+  assert.deepEqual(deniedPre[0].decision, { kind: 'deny', reason: 'the tool.call guard does not allow Bash' })
+
+  const allowed = await turn([])
+  assert.deepEqual(allowed.calls, [{ command: 'ls' }], 'without the mod the same call runs')
+  const allowedPre = allowed.trace.filter((record) => record.event === 'PreToolUse')
+  assert.deepEqual(allowedPre[0].decision, { kind: 'continue' })
+})
+
+// The pin's { result } answers in place of the tool; this seam has no value
+// channel, so the route must refuse the call and record the typed field rather
+// than execute it with the replacement silently dropped.
+test('a tool.call { result } is refused and traced as unsupported in a real turn', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'tool-call-result')
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-result-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { plugin: 'tool-call-result', pluginRoot: modRoot, mods: [{ entry: 'register.ts' }] }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 20_000,
+    })
+    assert.deepEqual(calls, [], 'the call is denied rather than run with a dropped result')
+    const records = readTrace(traceFile)
+    const unsupported = records.filter((record) => record.event === 'tool.call')
+    assert.equal(unsupported.length, 1)
+    assert.equal(unsupported[0].unsupported.field, 'result')
+    assert.match(unsupported[0].unsupported.reason, /tools\/pre-execute/)
+    const pre = records.filter((record) => record.event === 'PreToolUse')
+    assert.equal(pre[0].decision.kind, 'unsupported')
+    assert.equal(pre[0].decision.field, 'result')
+    assert.equal(pre[0].decision.hard, true)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// Issue #69, end to end: the block a prompt.context mod appends is asserted on
+// the composed messages the model receives, not on a trace or log line. The
+// same turn without the mod must not contain it.
+test('a loaded prompt.context mod appends a block to the composed model messages', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'prompt-context')
+  const messageText = (message) =>
+    Array.isArray(message.content)
+      ? message.content.map((block) => (typeof block.text === 'string' ? block.text : '')).join('')
+      : String(message.content ?? '')
+  const turn = async (mods) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-prompt-context-'))
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    const seen = []
+    try {
+      await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        entry: modsEntry(dataDir, traceFile, { plugin: 'prompt-context', pluginRoot: modRoot, mods }),
+        expected: [],
+        tool: bashTool(calls),
+        toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+        onAgent: (root) => {
+          root.ctx.on('llm/stream', (options, next) => {
+            seen.push(options.messages)
+            return next()
+          })
+        },
+        timeoutMs: 20_000,
+      })
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+    return seen
+  }
+
+  const loaded = await turn([{ entry: 'register.ts' }])
+  assert.ok(loaded.length > 0, 'the model received at least one call')
+  assert.ok(
+    loaded[0].some((message) => messageText(message).includes('PROMPT-CONTEXT-FIXTURE')),
+    'the appended block is in the first composed prompt bytes',
+  )
+  const loadedText = loaded[0].map(messageText).join('\n')
+  assert.equal(loadedText.split('PROMPT-CONTEXT-FIXTURE').length - 1, 1, 'the block appears once in the prompt')
+
+  const unloaded = await turn([])
+  assert.ok(unloaded.length > 0)
+  assert.ok(
+    !unloaded[0].some((message) => messageText(message).includes('PROMPT-CONTEXT-FIXTURE')),
+    'without the mod the block is absent',
+  )
 })

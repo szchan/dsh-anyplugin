@@ -95,8 +95,8 @@ const ENGINE_AT_2_1_329 = [
 test('every pinned mod event is routed or unmapped with a reason', () => {
   assert.equal(MOD_CLASSIC_EVENTS.length, 33)
   assert.deepEqual(MOD_ENGINE_EVENTS, ENGINE_AT_2_1_329)
-  assert.equal(MOD_EVENT_ROUTES.length, 17)
-  assert.equal(Object.keys(MOD_UNMAPPED_REASONS).length, 150)
+  assert.equal(MOD_EVENT_ROUTES.length, 19)
+  assert.equal(Object.keys(MOD_UNMAPPED_REASONS).length, 148)
 
   const routed = new Set(MOD_EVENT_ROUTES.map((route) => route.modEvent))
   for (const event of MOD_CLASSIC_EVENTS) {
@@ -117,8 +117,8 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
       assert.ok(CLASSIC_HOOK_EVENTS.includes(route.kernelEvent), `${route.modEvent} has no shared classic point`)
     }
   }
-  // 16 live classic routes plus the live session.start loader event.
-  assert.equal(MOD_EVENT_ROUTES.filter((route) => route.status === 'live').length, 17)
+  // 16 live classic routes plus session.start, tool.call and prompt.context.
+  assert.equal(MOD_EVENT_ROUTES.filter((route) => route.status === 'live').length, 19)
   const start = MOD_EVENT_ROUTES.find((route) => route.modEvent === 'session.start')
   assert.equal(start.kernelEvent, 'session.start')
   assert.equal(start.hostSeam, 'mod-host/load')
@@ -131,9 +131,21 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
   const permissionDenied = MOD_EVENT_ROUTES.find((route) => route.kernelEvent === 'PermissionDenied')
   assert.match(permissionRequest.caveat, /no tool_input/)
   assert.match(permissionDenied.caveat, /no tool name/)
-  // MF5: tool.call's reason is a protocol mismatch, not a double-fire.
-  assert.match(MOD_UNMAPPED_REASONS['tool.call'], /Protocol mismatch/)
-  assert.doesNotMatch(MOD_UNMAPPED_REASONS['tool.call'], /double-fire/)
+  // #69 routes tool.call and prompt.context; tool.check stays a measured
+  // refusal because it is the engine's later permission verdict, not the
+  // pre-execution gate.
+  const toolCall = MOD_EVENT_ROUTES.find((route) => route.modEvent === 'tool.call')
+  assert.equal(toolCall.kernelEvent, 'PreToolUse')
+  assert.equal(toolCall.hostSeam, 'tools/pre-execute')
+  assert.equal(toolCall.payload, 'tool-call-envelope')
+  const promptContext = MOD_EVENT_ROUTES.find((route) => route.modEvent === 'prompt.context')
+  assert.equal(promptContext.kernelEvent, 'PromptContext')
+  assert.equal(promptContext.hostSeam, 'system-prompt/assemble')
+  assert.equal(promptContext.payload, 'prompt-context')
+  assert.equal(MOD_UNMAPPED_REASONS['tool.call'], undefined)
+  assert.equal(MOD_UNMAPPED_REASONS['prompt.context'], undefined)
+  assert.match(MOD_UNMAPPED_REASONS['tool.check'], /permission verdict/)
+  assert.match(MOD_UNMAPPED_REASONS['tool.check'], /next\.origin/)
 })
 
 test('the 19 engine events added at 2.1.329 carry an explicit category', () => {
@@ -177,7 +189,7 @@ test('the 19 engine events added at 2.1.329 carry an explicit category', () => {
   for (const event of Object.keys(MOD_UNMAPPED_REASONS)) {
     assert.notEqual(modUnmappedCategory(event), 'not in spec', event)
   }
-  assert.equal(Object.keys(MOD_UNMAPPED_CATEGORIES).length, 150)
+  assert.equal(Object.keys(MOD_UNMAPPED_CATEGORIES).length, 148)
   assert.equal(modUnmappedCategory('made.up'), 'not in spec')
   assert.equal(modUnmappedCategory('post.tool.use'), 'not in spec')
 })
@@ -382,6 +394,79 @@ test('the session.start route hands the mod the engine payload and next(e) is { 
   assert.deepEqual(result.decision, { kind: 'continue' })
 })
 
+test('tool.call hands the mod a ToolCallEnvelope and turns { deny } into a kernel deny', async () => {
+  let payload
+  const { registrations, unmapped } = adapt([
+    mod('tool.call', async (event) => {
+      payload = event
+      return { deny: 'the mod says no' }
+    }, { tool: 'Bash' }),
+  ])
+  assert.equal(unmapped.length, 0)
+  assert.equal(registrations.length, 1)
+  const event = {
+    name: 'PreToolUse',
+    subject: 'Bash',
+    data: { tool_name: 'Bash', tool_use_id: 'toolu_1', tool_input: { command: 'ls' }, cwd: '/work' },
+  }
+  const result = await runChain(event, registrations)
+  assert.deepEqual(payload, { command: 'ls', tool: 'Bash', tool_use_id: 'toolu_1' })
+  assert.deepEqual(result.decision, { kind: 'deny', reason: 'the mod says no' })
+  assert.deepEqual(result.trace.map((entry) => entry.decision), ['deny'])
+})
+
+test('tool.call { result } is a typed hard unsupported, never a silent kernel result', async () => {
+  const { registrations } = adapt([mod('tool.call', async () => ({ result: { stdout: 'replaced' } }))])
+  const result = await runChain(
+    { name: 'PreToolUse', subject: 'Bash', data: { tool_name: 'Bash', tool_use_id: 'toolu_1', tool_input: { command: 'ls' } } },
+    registrations,
+  )
+  assert.equal(result.decision.kind, 'unsupported')
+  assert.equal(result.decision.field, 'result')
+  assert.equal(result.decision.hard, true)
+  assert.match(result.decision.reason, /tools\/pre-execute/)
+})
+
+test('tool.check is refused as the engine permission verdict, not the pre-execute gate', () => {
+  const { registrations, unmapped } = adapt([mod('tool.check', () => ({ decision: 'deny' }))])
+  assert.equal(registrations.length, 0)
+  assert.equal(unmapped.length, 1)
+  assert.equal(unmapped[0].event, 'tool.check')
+  assert.equal(unmapped[0].category, 'no host event')
+  assert.match(unmapped[0].reason, /permission verdict/)
+  assert.match(unmapped[0].reason, /next\.origin/)
+  assert.match(unmapped[0].reason, /tools\/pre-execute/)
+})
+
+test('prompt.context hands the mod { blocks, instructionFiles } and carries an appended block back', async () => {
+  let payload
+  let resolved
+  const { registrations, unmapped } = adapt([
+    mod('prompt.context', async (event, next) => {
+      payload = event
+      resolved = await next(event)
+      return { blocks: [...payload.blocks, { name: 'fixture-context', text: 'PROMPT-CONTEXT-FIXTURE' }] }
+    }, { instructionFiles: { kind: 'project' } }),
+  ])
+  assert.equal(unmapped.length, 0)
+  const event = {
+    name: 'PromptContext',
+    subject: null,
+    data: {
+      blocks: [{ name: 'claudeMd', text: 'baseline' }],
+      instructionFiles: [{ path: '/work/AGENTS.md', kind: 'project', content: 'rules' }],
+    },
+  }
+  const result = await runChain(event, registrations)
+  assert.deepEqual(payload, event.data)
+  assert.deepEqual(resolved, event.data)
+  assert.equal(result.decision.kind, 'result')
+  assert.deepEqual(result.decision.result.blocks, [
+    { name: 'claudeMd', text: 'baseline' },
+    { name: 'fixture-context', text: 'PROMPT-CONTEXT-FIXTURE' },
+  ])
+})
+
 test('a classic.* pattern expands to the 16 live classic routes and reports the other 17', () => {
   const { registrations, routes, unmapped } = adapt([mod('classic.*', () => undefined)])
   assert.equal(registrations.length, 16)
@@ -395,19 +480,19 @@ test('a classic.* pattern expands to the 16 live classic routes and reports the 
   assert.ok(!registrations.some((registration) => registration.event === 'session.start'))
 })
 
-test('a * pattern expands to every routed name and reports the 150 without a route', () => {
+test('a * pattern expands to every routed name and reports the 148 without a route', () => {
   const { registrations, unmapped } = adapt([mod('*', () => undefined)])
-  assert.equal(registrations.length, 17)
-  assert.equal(unmapped.length, 150)
+  assert.equal(registrations.length, 19)
+  assert.equal(unmapped.length, 148)
   assert.ok(registrations.some((registration) => registration.event === 'session.start'))
   assert.ok(unmapped.some((entry) => entry.event === 'ui.render'))
 })
 
-test('tool.* reaches the eight tool events, each with its pinned reason', () => {
+test('tool.* reaches the routed tool.call and reports the seven other tool events', () => {
   const { registrations, unmapped } = adapt([mod('tool.*', () => undefined)])
-  assert.equal(registrations.length, 0)
+  assert.equal(registrations.length, 1)
+  assert.equal(registrations[0].event, 'PreToolUse')
   assert.deepEqual(unmapped.map((entry) => entry.event), [
-    'tool.call',
     'tool.check',
     'tool.judge',
     'tool.run',
@@ -421,14 +506,14 @@ test('tool.* reaches the eight tool events, each with its pinned reason', () => 
 
 test('a negation selects the complement: !tool.* excludes every tool route', () => {
   const { registrations, unmapped } = adapt([mod('!tool.*', () => undefined)])
-  assert.equal(registrations.length, 17)
-  assert.equal(unmapped.length, 142)
+  assert.equal(registrations.length, 18)
+  assert.equal(unmapped.length, 141)
   assert.ok(registrations.every((registration) => !registration.event.startsWith('tool.')))
   assert.ok(!unmapped.some((entry) => entry.event.startsWith('tool.')))
   const engineOnly = adapt([mod('!classic.*', () => undefined)])
-  assert.equal(engineOnly.registrations.length, 1)
-  assert.equal(engineOnly.registrations[0].event, 'session.start')
-  assert.equal(engineOnly.unmapped.length, 133)
+  assert.equal(engineOnly.registrations.length, 3)
+  assert.deepEqual(engineOnly.registrations.map((registration) => registration.event).sort(), ['PreToolUse', 'PromptContext', 'session.start'])
+  assert.equal(engineOnly.unmapped.length, 131)
 })
 
 test('a pattern that cannot be expanded gets its own reason, not "not an event"', () => {
