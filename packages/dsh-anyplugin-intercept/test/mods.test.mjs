@@ -1275,6 +1275,41 @@ test('fan-out: an unawaited next runs the remainder exactly once', async () => {
   }
 })
 
+test('mixed unawaited then awaited: the second next.trace is only its own trip', async () => {
+  for (const continuation of ['first-decision', 'fan-out']) {
+    const order = []
+    let beneath
+    const guard = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        void next(event)
+        await next(event)
+        beneath = next.trace
+      }),
+    )
+    const user = observeAt('user', () => {
+      order.push('user')
+    })
+    const append = observeAt('append', () => {
+      order.push('append')
+    })
+    const result = await runChain(guardedCall(), [guard, user, append], { continuation })
+    // The unawaited first call settles before the second trip starts, so each
+    // link runs once per trip, in order.
+    assert.equal(beneath.length, 2, continuation)
+    assert.deepEqual(order, ['user', 'append', 'user', 'append'], continuation)
+    assert.deepEqual(
+      beneath.map((entry) => [entry.index, entry.tier, entry.outcome]),
+      [
+        [1, 'user', 'passed'],
+        [2, 'append', 'passed'],
+      ],
+      continuation,
+    )
+    assert.equal(result.decision.kind, 'continue')
+  }
+})
+
 test('a second trip can name a different target tier', async () => {
   for (const continuation of ['first-decision', 'fan-out']) {
     const runs = { append: 0, builtin: 0 }
