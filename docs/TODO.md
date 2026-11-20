@@ -13,7 +13,12 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-Nothing claimed.
+- [ ] **Mod host: resolver + linker (S13 follow-up).** Load the authored
+      `.ts` graph into a per-mod `node:vm` context (D30): three resolution
+      behaviors, position-preserving type strip, `$` per handler, one real
+      mod (`diff`) firing `session.start`. Done when a host package loads the
+      fetched `diff` mod and its `session.start` reaches the same three calls
+      the spike observed, with no source rewrite.
 
 ## Next
 
