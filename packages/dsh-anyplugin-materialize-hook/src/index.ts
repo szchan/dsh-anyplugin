@@ -70,7 +70,12 @@ import {
   runCommandHook,
   type HookVerdict,
 } from '../../dsh-anyplugin-hook-runner/src/index.ts'
-import { loadMod, type LoadedMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
+import {
+  createModBridge,
+  loadMod,
+  type LoadedMod,
+  type ModBridgeSession,
+} from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const name = 'anyplugin-materialize-hook'
@@ -360,50 +365,6 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
    * that called it, not to the load.
    */
   const invocation = new AsyncLocalStorage<{ agent?: unknown }>()
-
-  /**
-   * The `$` handed to a mod handler. D31 pins the shape to "whatever the host
-   * supplies"; this host can answer the clock, the session header and the
-   * message list without a session log, while command/tool registration are
-   * host seams that do not exist yet. Those throw a typed bridge error instead
-   * of silently succeeding (D32 §7: an unsupported result is recorded, never
-   * dropped).
-   */
-  const dollarFor = (agent: any): Record<string, unknown> => {
-    const header = agent?.session?.header
-    const cwd = typeof header?.cwd === 'string' ? header.cwd : (config.pluginRoot ?? process.cwd())
-    const notBridged = (surface: string) => async (): Promise<never> => {
-      throw new Error(`anyplugin mod: ${surface} is not bridged on this host yet`)
-    }
-    return {
-      session: {
-        ...(header?.id === undefined ? {} : { id: header.id }),
-        cwd,
-        // Claude reads `$.session.messages()` as the session's messages. The
-        // host reads them from the agent's own log; a chain with no agent (a
-        // load-time session.start) sees no session and therefore no messages.
-        messages: async () => {
-          const log = agent?.session?.log
-          if (!Array.isArray(log)) return []
-          const messages: unknown[] = []
-          for (const entry of log) {
-            if (entry?.type === 'user/message' || entry?.type === 'assistant/message') {
-              messages.push(entry.data)
-            }
-          }
-          return messages
-        },
-        usage: async () => undefined,
-      },
-      clock: { now: async () => Date.now() },
-      command: { register: notBridged('command.register') },
-      tool: { register: notBridged('tool.register') },
-    }
-  }
-
-  const modHost = {
-    dollar: async (): Promise<Record<string, unknown>> => dollarFor(invocation.getStore()?.agent),
-  }
 
   const env: NodeJS.ProcessEnv = { ...process.env }
   // Claude's spelling is what existing hooks read; Codex-compatible hooks read
@@ -1141,18 +1102,166 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     const pluginName = config.plugin ?? 'mod'
     const modRoot = config.pluginRoot ?? process.cwd()
 
+    /**
+     * The agent's session as the pinned `SessionMessage`/`SessionUsage` shapes.
+     * The messages are the surface's derived history, not the raw log: the
+     * pinned contract joins text blocks and pairs an assistant's tool calls
+     * with the tool results that followed. `usage` carries only figures this
+     * host actually observed; absent ones stay absent so the bridge can report
+     * them once per load, never zero them.
+     */
+    const sessionView = (agent: any): ModBridgeSession | undefined => {
+      const session = agent?.session
+      const header = session?.header
+      if (session === null || session === undefined || header === null || header === undefined) return undefined
+      const textOf = (message: any): string => {
+        if (!Array.isArray(message?.content)) return ''
+        return message.content
+          .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+          .map((block: any) => block.text)
+          .join('')
+      }
+      const inputOf = (raw: unknown): Record<string, unknown> => {
+        if (typeof raw !== 'string') return {}
+        try {
+          const parsed = JSON.parse(raw)
+          return isRecord(parsed) ? parsed : {}
+        } catch {
+          return {}
+        }
+      }
+      const messages: Array<Record<string, unknown>> = []
+      const toolUses = new Map<string, Record<string, unknown>>()
+      let derived: any[] = []
+      if (typeof session.deriveMessages === 'function') {
+        try {
+          derived = session.deriveMessages()
+        } catch {
+          derived = []
+        }
+      }
+      for (const message of derived) {
+        if (message?.role === 'user') {
+          messages.push({ role: 'user', text: textOf(message), toolUses: [] })
+        } else if (message?.role === 'assistant') {
+          const uses: Array<Record<string, unknown>> = []
+          if (Array.isArray(message.content)) {
+            for (const block of message.content) {
+              if (block?.type !== 'tool-call') continue
+              const use: Record<string, unknown> = {
+                tool_use_id: String(block.id),
+                tool: String(block.name),
+                input: inputOf(block.arguments),
+              }
+              uses.push(use)
+              toolUses.set(String(block.id), use)
+            }
+          }
+          messages.push({ role: 'assistant', text: textOf(message), toolUses: uses })
+        } else if (message?.role === 'tool') {
+          const use = toolUses.get(String(message.toolCallId))
+          if (use === undefined) continue
+          const text = textOf(message)
+          if (text !== '') use.text = text
+          if (message.isError === true) use.isError = true
+        }
+      }
+
+      const usage: Record<string, unknown> = {}
+      if (typeof header.createdAt === 'number' && Number.isFinite(header.createdAt)) {
+        usage.startedAt = header.createdAt
+      }
+      let events: any[] = []
+      if (typeof session.snapshotEvents === 'function') {
+        try {
+          events = session.snapshotEvents()
+        } catch {
+          events = []
+        }
+      }
+      let contextWindow: number | undefined
+      let lastUsage: any
+      for (const event of events) {
+        if (event?.type === 'request/context') {
+          const window = event.data?.contextWindow
+          if (typeof window === 'number' && Number.isFinite(window) && window > 0) contextWindow = window
+        } else if (event?.type === 'assistant/message' && event.data?.usage !== undefined) {
+          lastUsage = event.data.usage
+        }
+      }
+      let tokens: number | undefined
+      if (lastUsage !== undefined) {
+        const input = lastUsage.inputTokens ?? 0
+        const cacheRead = lastUsage.cacheReadTokens ?? 0
+        const cacheWrite = lastUsage.cacheWriteTokens ?? 0
+        const sum = input + cacheRead + cacheWrite
+        if (Number.isFinite(sum) && sum >= 0) tokens = sum
+      }
+      if (tokens !== undefined || contextWindow !== undefined) {
+        const context: Record<string, unknown> = {}
+        if (tokens !== undefined) context.tokens = tokens
+        if (contextWindow !== undefined) {
+          context.window = contextWindow
+          if (tokens !== undefined) context.percent = Math.round((tokens / contextWindow) * 100)
+        }
+        usage.context = context
+      }
+
+      return {
+        ...(typeof header.id === 'string' ? { id: header.id } : {}),
+        cwd: typeof header.cwd === 'string' ? header.cwd : (config.pluginRoot ?? process.cwd()),
+        messages,
+        usage,
+      }
+    }
+
+    // `ctx.get` is the unscoped read: this plugin does not declare `commands`
+    // in `inject`, and a context without the service must refuse
+    // `command.register` with a typed code, not fail the whole plugin. The
+    // resolver is read again at each registration: an optional service owned by
+    // a sibling entry can finish mounting after this apply has started.
+    const commandRegistry = (): any => {
+      try {
+        return typeof ctx.get === 'function' ? ctx.get('commands') : undefined
+      } catch {
+        return undefined
+      }
+    }
+
     for (const mod of mods) {
+      // One bridge (and therefore one command registry slice, timer set and
+      // telemetry attribution) per mod: a duplicate command names the mod that
+      // collided, and unloading one mod never disposes another's command. The
+      // `$` itself is still rebuilt per invocation.
+      const bridge = createModBridge({
+        plugin: `${pluginName}/${mod.entry}`,
+        ...(config.pluginData === undefined ? {} : { dataDir: config.pluginData }),
+        commands: commandRegistry,
+        session: sessionView,
+        env,
+        warn,
+        telemetry: (record) => {
+          warn(`anyplugin mod ${record.plugin}: telemetry.${record.kind} ${textify(record.entry)}`)
+        },
+      })
+      const modHost = {
+        dollar: async (): Promise<Record<string, unknown>> => bridge.dollar(invocation.getStore()?.agent),
+      }
       let handle: LoadedMod
       try {
         handle = await loadMod({ root: modRoot, entry: mod.entry, host: modHost })
       } catch (error) {
+        bridge.dispose()
         warn(`anyplugin mod ${pluginName}/${mod.entry}: load refused (${(error as Error).message})`)
         continue
       }
       // One realm per mod, owned by the plugin entry (D31): unloading the
       // plugin disposes the realm; the entries' own ctx effects remove every
       // seat listener in the same step.
-      ctx.effect(() => () => handle.dispose())
+      ctx.effect(() => () => {
+        handle.dispose()
+        bridge.dispose()
+      })
       const adapted = modRegistrationsToKernel(handle.registrations, {
         plugin: pluginName,
         entry: mod.entry,
@@ -1319,6 +1428,17 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     // thus a new fire with exactly this load's registrations.
     const sessionStart = modByEvent.get('session.start') ?? []
     if (sessionStart.length > 0) {
+      // `commands` is optional here. When the host mounts it as a sibling
+      // entry, its service can become visible just after this apply starts;
+      // give it a short settle window so a load-time `command.register` is
+      // either served or refused against the real registry. A host that
+      // genuinely has no commands service keeps the typed refusal.
+      if (commandRegistry() === undefined) {
+        const deadline = Date.now() + 500
+        while (commandRegistry() === undefined && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+      }
       // The pin's cwd is the session/process working directory, never
       // CLAUDE_PLUGIN_ROOT. surface and isInteractive are host facts apply
       // cannot observe, so they are omitted and reported as a field gap.
@@ -1326,7 +1446,10 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       const gaps = ['surface', 'isInteractive'] as const
       warn(`anyplugin mod ${pluginName}: session.start surface and isInteractive are host facts apply cannot observe; omitted (unbridged)`)
       const event: ChainEvent = { name: 'session.start', subject: null, data: { cwd } }
-      await runKernel(event, sessionStart, undefined, gaps)
+      // A reload can find a live root; pass it so the invocation's `$` sees
+      // that session rather than pretending none exists. A fresh load still
+      // has no session, which is the documented D32 §4 case.
+      await runKernel(event, sessionStart, liveRoot, gaps)
     }
 
     for (const agent of liveAgents) createSeat(agent)

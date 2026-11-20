@@ -40,6 +40,17 @@ import { isWithin, resolveModSpecifier } from './resolve.ts'
 
 export { ModHostError, type ModHostErrorCode } from './errors.ts'
 export {
+  createModBridge,
+  ModBridgeError,
+  type ModBridge,
+  type ModBridgeCommandDefinition,
+  type ModBridgeCommandRegistry,
+  type ModBridgeErrorCode,
+  type ModBridgeOptions,
+  type ModBridgeSession,
+  type ModBridgeTelemetryRecord,
+} from './bridge.ts'
+export {
   resolveModSpecifier,
   type ModResolutionBehavior,
   type ResolveModSpecifierOptions,

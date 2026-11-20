@@ -682,8 +682,11 @@ What a faithful host needs, in dependency order:
    `next.to`, `next.budget`, `next.signal`, `.catch`, per-event timeouts;
 3. **element runtime** — ~17 elements with validated prop schemas, render sites,
    host-owned layout, focus routing, `invalidate` throttling;
-4. **~21 bridges** — fs / process / http / store / env / settings / session /
-   mcp / model / clock / agent / telemetry / audio / theme …;
+4. **namespace bridges** — the measured `$` surface of a real mod first:
+   clock / fs / store / settings / env / session / command / telemetry (10
+   namespaces, 23 call sites, #46), with `ui.*` and `process.run` as typed
+   refusals; then http / mcp / model / agent / audio / theme … from the pinned
+   `claude-code.d.ts`;
 5. **type generation** — a per-install `claude-code.d.ts`, because real mods
    typecheck against it.
 
@@ -872,6 +875,47 @@ is the `$` proof: `session.start` calls
 `usage()` returns `undefined`, then returns `next(e)`. Rendering the returned
 descriptors is still `planned`; D34 is a load-time transform, not an element
 runtime.
+
+**`$` bridged (#46).** The pinned `diff` graph now loads *and* its
+`session.start` completes through the real bridge. The measured surface is 23
+`$.` call sites across 10 namespaces: clock (`now`, `after`, `every`), fs
+(`stat`, `list`, `read`), store (`get`, `set`), settings (`read`), env (`get`),
+session (`messages`, `id`, `usage`), command (`register`), telemetry (`mark`,
+`log`), plus `process.run` and the six `ui.*` methods as **typed refusals**.
+The static conformance ledger invokes the scanner's 23 sites in source order:
+every served site completes, and the seven refusal sites answer
+`ERR_MOD_HOST_EXEC_UNSUPPORTED` (D25's pinned-artifact / dynamic-exec rule) or
+`ERR_MOD_HOST_UI_UNSUPPORTED` (the element runtime is planned), never
+`undefined`.
+
+The bridge is built once per loaded mod and its `$` once per handler
+invocation (D31/D32), so a mod cannot observe another mod's timers, command
+registrations or report-once flags. `fs`, `store`, `settings` and `env` root at
+`config.pluginData`; a lexical `..` or absolute path outside the root, and a
+symlink whose real path leaves it, are `ERR_MOD_HOST_PATH_OUTSIDE` — confinement
+is checked on `realpath`, not on the spelling. `store` is a JSON file in that
+data dir written atomically, so it survives a reload. `session.messages()` is
+the agent's derived message list at that moment (`[]` before the first turn is
+correct, and asserted); `session.usage()` carries only observed fields
+(`startedAt` from the header, `context.tokens/window/percent` only when the
+session logged them) and each missing field is reported once per load, never
+zeroed. `command.register` reaches the host's real `ctx.commands` registry when
+the host context has one, is disposed with the mod, and a duplicate names the
+colliding mod as `ERR_MOD_HOST_COMMAND_DUPLICATE`.
+
+On a **fresh** load diff's `session.start` asks `$` for exactly four sites, in
+this order: `session.usage` (there is no session yet, so the view is empty and
+`startedAt` is absent), `clock.now` (the authored fallback), `command.register`
+(`/diff`), and `session.messages` (the restore view, empty). It then returns
+`next(e)`. A reload with a live root supplies `startedAt` from that session's
+header, so the authored clock fallback is skipped: three calls,
+`session.usage → command.register → session.messages`, against the live view.
+The other 19 scanned sites are declared capabilities that load does not reach —
+`ui.render` is where `ui.*` and the `.tsx` descriptors would be used, and
+rendering remains `planned`. The conformance test asserts both the static
+23-row ledger and the four-call dynamic sequence against the fetched graph, and
+the synthetic fixture asserts the ordered `ran` / `refused:<code>` ledger for
+all 23.
 
 ## 8. Seam capability matrix (P4)
 
