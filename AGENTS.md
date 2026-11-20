@@ -22,10 +22,10 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D32. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D34. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
-| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S10) and what a spike must prove. |
+| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S14) and what a spike must prove. |
 | `docs/ARCHITECTURE.md` §13 | Open questions. If your work answers one, move it to a decision. |
 
 ## 3. Non-negotiables
@@ -59,8 +59,11 @@ even if it makes the feature work.
 7. **Mods are loaded as authored.** Claude's static scanner and its
    "capability list before install" behaviour depend on literal
    `on('event')` / `$.ns.method` call sites. Never transpile, bundle, minify or
-   rewrite a mod. `.ts` may be loaded via type stripping; `.tsx` handling is an
-   open question (§13), not a licence to transform.
+   rewrite a mod. `.ts` may be loaded via type stripping. `.tsx` is the single
+   declared exception: one classic-pragma JSX transform plus an in-memory type
+   strip (D34), never a bundler, preset or second transform. Babel reprints a
+   `.tsx` module, so byte and source-position preservation are not claimed for
+   it; the scanner always reads the authored file, which is the trust surface.
 8. **Version pins are part of the claim.** "100 %" means 100 % against a pinned
    upstream version. Any fidelity number in a report or commit must name the
    pin. Upstream drifts without notice — CI re-runs the diff against the pin.
@@ -79,7 +82,7 @@ docs/                  design and decisions (all prose docs live here)
   CONFORMANCE.md       the differential rig
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
   dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
-spikes/                throwaway experiments; each answers one question (S1–S10)
+spikes/                throwaway experiments; each answers one question (S1–S14)
 fixtures/              foreign-plugin fixtures used by the conformance rig
 scripts/               repo tooling that is not a package
 ```
