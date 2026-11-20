@@ -101,7 +101,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `ms`/`chunks`/`received`/`returned`, excludes matcher skips, and reports a
   throwing link as `rejected`. Review corrections pinned by tests: first-decision
   continuations return instead of re-entering, pass-over is tier-ranked, and the
-  fan-out subset is empty after `await next(e)`.
+  fan-out subset is empty after `await next(e)`. A second review round pinned
+  the landing rules too: a direct target runs (inclusive jump), a missing tier
+  falls forward instead of dropping the chain, a second `next`/backwards
+  `next.to` is refused by name, and the meter counts the hook's own work
+  while `next`/`$` still pause.
   Pre-fix S15 reproduction: `TypeError: next.to is not a function` ×8, kernel
   `error` then `continue`. Post-fix sec-default end-to-end: seated at
   `prepend`, its guard skips a user-tier deny hook (tool runs, skip traced);

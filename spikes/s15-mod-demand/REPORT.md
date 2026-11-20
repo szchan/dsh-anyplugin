@@ -245,8 +245,11 @@ the trace is read.
 continuation with the pinned seven members projected onto it: `to` reuses the
 kernel's tier order and records every passed-over link as `skipped` with
 `bypassed by <plugin>`; a jump is computed by tier rank, so a same-tier sibling
-still runs, and a first-decision continuation is returned rather than
-re-entered. `signal` is the handler's controller, fired by its timeout and
+still runs, the landing is inclusive of the named target (a direct jump runs
+it), a named tier with no link left falls forward, and a first-decision
+continuation is returned rather than re-entered. A second `next` or a
+backwards `next.to` is refused by name instead of silently reusing the first
+result or resolving without running. `signal` is the handler's controller, fired by its timeout and
 linked to `ChainOptions.signal` (the materializer passes `ToolExecution.signal`
 for PreToolUse/PostToolUse); `origin` is the host raiser `{plugin:"engine",
 tier:"core"}`; `budget` is live and pauses during `next` and `$` (via
@@ -261,10 +264,12 @@ contract is enforced: `prepend`/`user` refuse, and `core` refuses with a reason
 because this chain's innermost link is `builtin`.
 
 Tests: `packages/dsh-anyplugin-intercept/test/mods.test.mjs` pins the member
-semantics (skip + forward-only, first-decision `next`/`to` single-run, fan-out
-same-tier sibling, matcher-skip exclusion, `rejected`, budget pause across
-`next` and `$`, classic budget snapshot, timeout abort, empty fan-out subset,
-signal, `is`/`event`/`origin`/`budget`, tier refusal);
+semantics (skip + forward-only, direct-target and missing-tier landings,
+first-decision `next`/`to` single-run, fan-out same-tier sibling,
+repeated-`next` refusal, backward-`to` refusal, matcher-skip exclusion,
+`rejected`, budget arithmetic and pause across `next` and `$`, classic budget
+snapshot, timeout abort, empty fan-out subset, signal,
+`is`/`event`/`origin`/`budget`, tier refusal);
 `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` pins the
 deny-only guard/unloaded contrast with `fixtures/mods/guard/`; and
 `packages/dsh-anyplugin-conformance/test/mods.test.mjs` reproduces this turn

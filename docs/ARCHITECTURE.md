@@ -629,18 +629,26 @@ the kernel `Next` with the tier argument the kernel already understands, so
 tier order, matcher skipping and trace recording stay in one place. A jump is
 computed by tier rank, not by index: only links strictly between the caller's
 tier and the target tier are passed over and recorded as `skipped` with
-`bypassed by <plugin>`, while a same-tier sibling still runs. In first-decision
-the remainder is owned by the recursive continuation and the caller's loop
-returns it, so no link runs twice; in fan-out the jump waits until the caller's
-tier is left, so peers are not skipped. `signal` is the handler's own
+`bypassed by <plugin>`, while a same-tier sibling still runs. The landing is
+inclusive of the named target, including a direct jump with no link in
+between; a named tier with no link left falls forward to the next tier that
+has one rather than dropping the rest of the chain. In first-decision the
+remainder is owned by the recursive continuation and the caller's loop returns
+it, so no link runs twice; in fan-out the jump waits until the caller's tier is
+left, so peers are not skipped. `to` refuses a target tier that has already
+run (the pin only moves outward, `claude-code.d.ts:5281-5289`), and a second
+`next`/`next.to` is refused by name instead of silently reusing the first
+result: this host serves one continuation per handler, and the pin's "latest
+call" wording (`:5325-5338`) does not license running the remainder twice. `signal` is the handler's own
 `AbortController`, fired by the handler's timeout and linked to
 `ChainOptions.signal`; the materializer passes `ToolExecution.signal` for
 PreToolUse/PostToolUse, so a host-abandoned call aborts the mod's signal too.
 `event` and `is(pattern)` report the route the adapter selected; `origin` is
 `{ plugin: "engine", tier: "core" }` because every route served today is
-host-raised, not mod-raised; `budget` is live and stands still while `next` or
-a `$` call is in flight (the host wraps the dollar namespace with
-`pauseWhilePending`), and classic hooks keep their entry snapshot so T3 holds.
+host-raised, not mod-raised; `budget` is live, counts the hook's own work and
+stands still while `next` or a `$` call is in flight (the host wraps the dollar
+namespace with `pauseWhilePending`, and the kernel meter is the single
+accounting path), and classic hooks keep their entry snapshot so T3 holds.
 `trace` maps the kernel's own steps beneath this link onto the pinned
 `TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`, `reason`;
 `ms`, `chunks`, `received` and `returned` are not invented). `plugin` is a host
@@ -655,9 +663,11 @@ throw message as the reason. `TargetTier` is enforced: `prepend`/`user` are
 refused because the pin's type excludes them, and `core` refuses with a reason
 because this chain's innermost link is `builtin`.
 Covered by `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (`to` skip and
-forward-only, first-decision `next`/`to` single-run, fan-out same-tier sibling,
-matcher-skip exclusion, `rejected`, budget pause across `next` and `$`, classic
-budget snapshot, timeout abort, empty fan-out subset, `signal`, tier refusal),
+forward-only, direct-target and missing-tier landings, first-decision
+`next`/`to` single-run, fan-out same-tier sibling, repeated-`next` refusal,
+backward-`to` refusal, matcher-skip exclusion, `rejected`, budget arithmetic
+and pause across `next` and `$`, classic budget snapshot, timeout abort, empty
+fan-out subset, `signal`, tier refusal),
 `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (deny-only guard
 denies; unloaded, the same call continues) and the sec-default turn in
 `packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
@@ -1517,15 +1527,23 @@ first-decision continuation was re-entered after `next`/`next.to` (links ran
 twice), the pass-over was computed by index rather than tier rank (a same-tier
 sibling was labelled skipped), a matcher skip was projected without a reason, a
 throwing link was reported as `skipped` instead of `rejected`, and the per-hook
-timer kept running while `next` was in flight. `next.budget` now pauses during
-`next` and `$` (the host wraps the dollar namespace with `pauseWhilePending`),
-while classic hooks keep their entry snapshot so T3 holds; `next.signal` is
-linked to `ChainOptions.signal`, and the materializer passes
-`ToolExecution.signal` for PreToolUse/PostToolUse, so a host-abandoned call
-aborts the mod's signal too. The `next.trace` subset is continuation-specific:
-first-decision sees the settled links beneath the call, fan-out is empty after
-`await next(e)` and holds the pass-over after `next.to` — the tests named above
-pin that shape.
+timer kept running while `next` was in flight. A second review round found four
+more, all now fixed and named in the unit tests: a deferred jump to a direct
+target returned the following link instead of the target (and a named tier with
+no link left dropped the rest of the chain — it now falls forward), a second
+`next` silently returned the first result instead of starting the latest call
+(it is now refused by name), the budget reported the entry snapshot after the
+hook's own work (the kernel meter is now the single accounting path, so own
+work counts and `next`/`$` still pause), and `next.to` accepted a target tier
+that had already run (a backwards jump is now refused with the direction and
+the pin's line). `next.budget` now pauses during `next` and `$` (the host wraps
+the dollar namespace with `pauseWhilePending`), while classic hooks keep their
+entry snapshot so T3 holds; `next.signal` is linked to `ChainOptions.signal`,
+and the materializer passes `ToolExecution.signal` for
+PreToolUse/PostToolUse, so a host-abandoned call aborts the mod's signal too.
+The `next.trace` subset is continuation-specific: first-decision sees the
+settled links beneath the call, fan-out is empty after `await next(e)` and holds
+the pass-over after `next.to` — the tests named above pin that shape.
 
 **What it does not prove.** One turn, one stub model: eight routed classic
 events (failure, permission, compaction, cwd, file, config) are unexercised;
