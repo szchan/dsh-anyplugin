@@ -1,0 +1,58 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "hooks-seams",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-hooks-seams"
+  },
+  "components": [
+    {
+      "surface": "hooks",
+      "name": "ConfigChange",
+      "details": {
+        "note": "harness-only — no model context cost"
+      }
+    },
+    {
+      "surface": "hooks",
+      "name": "CwdChanged"
+    },
+    {
+      "surface": "hooks",
+      "name": "FileChanged"
+    },
+    {
+      "surface": "hooks",
+      "name": "PermissionDenied"
+    },
+    {
+      "surface": "hooks",
+      "name": "PermissionRequest"
+    },
+    {
+      "surface": "hooks",
+      "name": "PostCompact"
+    },
+    {
+      "surface": "hooks",
+      "name": "PostToolUseFailure"
+    },
+    {
+      "surface": "hooks",
+      "name": "PreCompact"
+    },
+    {
+      "surface": "hooks",
+      "name": "UserPromptSubmit"
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.322"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 0
+    }
+  }
+}

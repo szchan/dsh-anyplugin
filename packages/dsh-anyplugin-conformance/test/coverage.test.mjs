@@ -26,6 +26,7 @@ import {
 } from '../../dsh-anyplugin-trust/src/index.ts'
 import { diffInventories, emptyInventory } from '../src/inventory.ts'
 import { probeLifecycleWithDsh, probeWithDsh } from '../src/oracles/dsh.ts'
+import { probeSeams } from './lifecycle.test.mjs'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -49,6 +50,17 @@ const EXPECTED_ROWS = {
     'hooks:SubagentStop:match',
   ],
   'claude-hooks-mcp': ['hooks:PostToolUse:match', 'mcpServers:probe:match'],
+  'claude-hooks-seams': [
+    'hooks:ConfigChange:match',
+    'hooks:CwdChanged:match',
+    'hooks:FileChanged:match',
+    'hooks:PermissionDenied:match',
+    'hooks:PermissionRequest:match',
+    'hooks:PostCompact:match',
+    'hooks:PostToolUseFailure:match',
+    'hooks:PreCompact:match',
+    'hooks:UserPromptSubmit:match',
+  ],
   'claude-mcp-budget': ['mcpServers:a-server-name-that-is-long-enough:refused'],
   'claude-mcp-http': ['mcpServers:http-probe:match'],
   'claude-mcp-tool-budget': ['mcpServers:probe:match'],
@@ -82,6 +94,29 @@ const LIFECYCLE_PROBES = {
 }
 
 /**
+ * The four listener seams and the five notification records have no registry
+ * face: their rows are the lines the handlers wrote on one real turn. The probe
+ * lives in `lifecycle.test.mjs` because the oracle's fixed composition has no
+ * approval, filesystem or compaction service; importing it here keeps the
+ * matrix measured rather than guessed.
+ */
+const SEAMS_PROBES = {
+  'claude-hooks-seams': {
+    events: [
+      'UserPromptSubmit',
+      'PermissionRequest',
+      'PostToolUseFailure',
+      'FileChanged',
+      'PreCompact',
+      'PostCompact',
+      'PermissionDenied',
+      'CwdChanged',
+      'ConfigChange',
+    ],
+  },
+}
+
+/**
  * Fixtures that cannot answer without a live process. Keeping them in the same
  * ratchet matters: "declared" is what the golden says, and excluding the HTTP
  * arm would quietly shrink the denominator.
@@ -111,9 +146,10 @@ async function inventoryFor(fixture) {
   }
   const gated = gate(ir, grants)
   const lifecycle = LIFECYCLE_PROBES[fixture]
+  const seams = SEAMS_PROBES[fixture]
   let dataDir
   try {
-    if (lifecycle !== undefined) dataDir = mkdtempSync(join(tmpdir(), `anyplugin-${fixture}-`))
+    if (lifecycle !== undefined || seams !== undefined) dataDir = mkdtempSync(join(tmpdir(), `anyplugin-${fixture}-`))
     const { entry } = emitPlugin(gated.ir, {
       materializers,
       sdkRoot: harness?.modulesDir,
@@ -190,6 +226,33 @@ async function inventoryFor(fixture) {
       inventory.components = observed.events.map((name) => ({ surface: 'hooks', name }))
       return { inventory, refused }
     }
+    if (seams !== undefined) {
+      const observed = await probeSeams({ harnessDir: harness.harnessDir, entry, dataDir })
+      // A single line is not enough: the notification records must appear once
+      // per operation, and the settings first read (revision 0) is an event.
+      assert.deepEqual(
+        [...new Set(observed.lines)].sort(),
+        [...seams.events].sort(),
+        `${fixture}: every seam fired: ${observed.lines.join(', ')}`,
+      )
+      const compactions = observed.lines.filter((line) => line === 'PreCompact' || line === 'PostCompact')
+      for (let index = 0; index < compactions.length; index += 2) {
+        assert.equal(compactions[index], 'PreCompact', 'each compaction opens with start')
+        assert.equal(compactions[index + 1], 'PostCompact', 'and closes with end')
+      }
+      assert.equal(observed.count('PermissionDenied'), 1, 'the allowed demand is not a denial')
+      assert.equal(observed.count('CwdChanged'), 1, 'one working-directory change, one record')
+      assert.equal(observed.count('ConfigChange'), 2, 'first read (0) and one change (1)')
+      assert.equal(observed.payload('ConfigChange').revision, 1, 'the read-before-change order held')
+
+      const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })
+      inventory.pin = { tool: 'dsh', version: harness.version }
+      // One row per declared component: a seam that fired twice still matches
+      // the one hook the golden declares, but a seam that never fired leaves
+      // the row missing.
+      inventory.components = [...new Set(observed.lines)].map((name) => ({ surface: 'hooks', name }))
+      return { inventory, refused }
+    }
     const hookProbe = HOOK_PROBES[fixture]
     const probe = await probeWithDsh({
       harnessDir: harness.harnessDir,
@@ -245,7 +308,7 @@ test(
     // hook components and the fixture's handlers wrote all five lines on a real
     // headless turn, so declared grows by five and every new row matches. The
     // S10 comment below still applies to the pre-existing eleven.
-    assert.deepEqual(totals, { declared: 16, matched: 15, missing: 0, refused: 1 })
+    assert.deepEqual(totals, { declared: 25, matched: 24, missing: 0, refused: 1 })
   },
 )
 
