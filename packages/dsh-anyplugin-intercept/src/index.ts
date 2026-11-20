@@ -1627,12 +1627,18 @@ export async function runChain(
           // tiers are named, so a same-tier sibling is not mislabelled.
           recordBypassed(at + 1, jumpStart(tier, at + 1), callJump.by, current, rank, tierRank(tier))
         }
-        sub = await fanFrom(at + 1, current, callJump)
+        // Assign before awaiting: a handler may call next without awaiting it.
+        // The outer loop must observe the trip when the handler returns, or it
+        // would run the remainder while the eager trip runs it too.
+        const pending = fanFrom(at + 1, current, callJump)
+        sub = pending
+        await pending
         return CONTINUE
       }
 
       const run = await invoke(registration, at, current, next, ms)
-      const trip = sub
+      // Join an unawaited trip exactly once before deciding about the loop.
+      const trip = sub === undefined ? undefined : await sub
 
       if (run.status === 'timeout') {
         record(registration, at, 'timeout', { detail: `exceeded ${run.ms}ms` })
