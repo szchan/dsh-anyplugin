@@ -1411,6 +1411,56 @@ oracle.
 Fixtures: skills-only; hook-heavy (blocking + injection); MCP + commands;
 agents + bin + theme.
 
+### 10.5 S15 result: what the five pinned mods demand on one real turn
+
+**Question.** Which events and which `$` members do the five upstream mods at
+`6e1e44f6433bfa17d198e932bff53373aa229eea` (claude-code `2.1.322`) actually
+use, and which of those does the host serve? The S9 turn is the vehicle: the
+stub `LlmAdapter` (no network, no key), one real `Bash` call, one real fork
+subagent, one `session.start` per plugin load.
+
+**Method.** Five materializer children (one plugin root each), the real
+`loadMod`, the real `createModBridge` table, the real materializer and kernel.
+The recording `$` is a `Proxy` over the table the real `dollar()` returns,
+installed once around the real factory; a second wrapper attributes each call
+to the authored handler through `AsyncLocalStorage`. Only the materializer's two
+package imports are redirected, to shims that re-export the real modules. No
+namespace is reimplemented, no event or decision is altered, and no second
+dispatcher is added (AGENTS §3.6). Argument and payload **key names** are
+recorded; values are not. `spikes/s15-mod-demand/REPORT.md` carries the tables,
+the sites and the command.
+
+**Outcome (measured, not projected).** 11 handler invocations and 5 `$` calls
+on the turn. The `$` surface authored by all five mods is 50 call sites across
+27 `namespace.method` pairs in 10 namespaces: **16 served**, **8 typed
+refusals** (all six `ui.*` methods, `process.run`, `settings.read`) and **3
+absent** (`session.identity`, `session.root`, `fs.ancestors`). The event surface
+is the larger gap: only `session.start` and the 16 classic routes are live, so
+four events authored by **two of the five mods each** — `tool.check`,
+`tool.call`, `prompt.context`, `agent.spawn` — never reach a handler; eight of
+the 16 classic events were not exercised by this turn. The load-time
+`session.start` has no session: `usage()`/`messages()` return empty shapes and
+`session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
+
+**Host bug found (reported, not fixed).** `next.to`, declared by the pin
+(`claude-code.d.ts:4236`) and claimed by the host's `copyNextSurface`
+(`dsh-anyplugin-mod-host/src/index.ts:214`), is absent from the mod-visible
+continuation: the kernel's `Next` has no `to`; `runModHandler`
+(`dsh-anyplugin-intercept/src/index.ts:732`) builds a fresh bare function at
+`:739`.
+`sec-default`'s `classic.*` handler therefore throws
+`TypeError: next.to is not a function` on all eight routed classic events, and
+the kernel records `error` and continues — a security mod that is meant to
+append its policy silently enforces nothing. This is not a declared refusal; it
+is the `undefined` D36's principle forbids.
+
+**What it does not prove.** One turn, one stub model: eight routed classic
+events (failure, permission, compaction, cwd, file, config) are unexercised;
+only literal scanner sites are counted; no values or return shapes are claimed;
+the real-install caveat is the five-plugin/five-materializer shape (one
+`pluginRoot` per `apply`). It does not settle the other 22 `$` methods or the
+unmapped engine events beyond the sites measured here.
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the

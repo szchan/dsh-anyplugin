@@ -58,6 +58,14 @@ with the exact anchor so the proposal is reviewable without a checkout.
       chain engine → element runtime → the remaining namespace bridges → type
       generation from the pinned `claude-code.d.ts`. Coverage is
       `covered / total` against that file, and it only moves up.
+- [ ] **Mod continuation `next.to`** (D36): the pin declares
+      `next.to(e, tier)` (`claude-code.d.ts:4236`) and `sec-default` uses it in
+      its `classic.*` guard, but the mod-visible continuation is a bare
+      `(event?) => unknown`. Every classic event makes that handler throw
+      `TypeError: next.to is not a function`; the kernel records `error` and
+      continues, so the guard enforces nothing (S15, ARCHITECTURE §10.5).
+      Serve the member or refuse it at load, naming it; do not ship an
+      `undefined` that explodes at the first call.
 - [ ] **Upstream mods at a newer pin** (D14). The `2.1.322` pin predates
       `hipaa-default` (first commit `ec4d337`) and `easel` (`9cf919a`).
       Unblocked by bumping the Claude Code pin to a release that contains
@@ -68,19 +76,26 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
-- `$` bridge (ticket #46): the 23 sites the pinned `diff` mod calls across 10
-  namespaces are covered — clock, fs, store, settings, env, session, command,
-  telemetry. `fs` resolves against the invocation session's cwd (absolute as
-  written), `store` is rooted at the plugin data dir and confined on
-  `realpath`, and `settings.read` serves only a host merged snapshot. Fifteen
-  sites are served; `ui.*`, `process.run` and `settings.read` (no merged reader
-  on this host) are typed refusals. `session.messages()` carries the tool-result
-  turn in the pinned `toolResults` shape and `session.usage()` omits incomplete
-  token context; `command.register` uses the real registry when present and
-  refuses immediately when absent. `session.start` on a fresh `diff` load
-  completes through four recorded calls (`session.usage → clock.now →
-  command.register → session.messages`); the static, dynamic and transcript
-  ledgers live in `packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
+- `$` bridge (ticket #46; measured by S15): across the five pinned mods the
+  bridge is asked for 50 call sites / 27 `namespace.method` pairs in 10
+  namespaces. Sixteen methods are served; the six `ui.*` methods,
+  `process.run` and `settings.read` are typed refusals; `session.identity`,
+  `session.root` and `fs.ancestors` are absent. `fs` resolves against the
+  invocation session's cwd (absolute as written), `store` is rooted at the
+  plugin data dir and confined on `realpath`, and `settings.read` serves only a
+  host merged snapshot. `session.messages()` carries the tool-result turn in
+  the pinned `toolResults` shape and `session.usage()` omits incomplete token
+  context; `command.register` uses the real registry when present and refuses
+  immediately when absent. `session.start` on a fresh `diff` load completes
+  through four recorded calls (`session.usage → clock.now → command.register →
+  session.messages`); the static, dynamic and transcript ledgers live in
+  `packages/dsh-anyplugin-conformance/test/mods.test.mjs`. On the S15 turn only
+  five calls are reached, all served; `session.usage()` returns empty shapes
+  because the load-time event has no session. The event side is the larger
+  measured gap: `tool.check`, `tool.call`, `prompt.context` and `agent.spawn`
+  are authored by two of the five mods each and routed by none, and `next.to`
+  is absent from the mod continuation (the host defect recorded in
+  ARCHITECTURE §10.5).
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
