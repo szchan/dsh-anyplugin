@@ -58,14 +58,6 @@ with the exact anchor so the proposal is reviewable without a checkout.
       chain engine → element runtime → the remaining namespace bridges → type
       generation from the pinned `claude-code.d.ts`. Coverage is
       `covered / total` against that file, and it only moves up.
-- [ ] **Mod continuation `next.to`** (D36): the pin declares
-      `next.to(e, tier)` (`claude-code.d.ts:4236`) and `sec-default` uses it in
-      its `classic.*` guard, but the mod-visible continuation is a bare
-      `(event?) => unknown`. Every classic event makes that handler throw
-      `TypeError: next.to is not a function`; the kernel records `error` and
-      continues, so the guard enforces nothing (S15, ARCHITECTURE §10.5).
-      Serve the member or refuse it at load, naming it; do not ship an
-      `undefined` that explodes at the first call.
 - [ ] **Upstream mods at a newer pin** (D14). The `2.1.322` pin predates
       `hipaa-default` (first commit `ec4d337`) and `easel` (`9cf919a`).
       Unblocked by bumping the Claude Code pin to a release that contains
@@ -94,8 +86,26 @@ with the exact anchor so the proposal is reviewable without a checkout.
   because the load-time event has no session. The event side is the larger
   measured gap: `tool.check`, `tool.call`, `prompt.context` and `agent.spawn`
   are authored by two of the five mods each and routed by none, and `next.to`
-  is absent from the mod continuation (the host defect recorded in
-  ARCHITECTURE §10.5).
+  was absent from the mod continuation (fixed by #68; ARCHITECTURE §10.5).
+
+- Mod `next` surface (ticket #68; pins DSH 0.2.2-rc.5 and mods commit
+  `6e1e44f` / claude-code 2.1.322): the mod-visible continuation now serves the
+  pinned seven members (`to`, `signal`, `is`, `event`, `origin`, `trace`,
+  `budget`) as a projection over the kernel's own `Next`. `to(e, tier)` reuses
+  the kernel's tier arithmetic and records every passed link as `skipped` with
+  `bypassed by <plugin>`; `ChainOptions.signal` aborts running handlers;
+  `trace` serves the pinned subset (`index`, `plugin`, `tier`, `event`,
+  `outcome`, `reason`) without inventing `ms`/`chunks`/`received`/`returned`.
+  Pre-fix S15 reproduction: `TypeError: next.to is not a function` ×8, kernel
+  `error` then `continue`. Post-fix sec-default end-to-end: seated at
+  `prepend`, its guard skips a user-tier deny hook (tool runs, skip traced);
+  unloaded, the same hook denies the call. Tests:
+  `packages/dsh-anyplugin-intercept/test/mods.test.mjs`,
+  `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (synthetic
+  guard `fixtures/mods/guard/`), and
+  `packages/dsh-anyplugin-conformance/test/mods.test.mjs`. Pin correction:
+  sec-default's `classic.*` guard bypasses user hooks; it does not deny a
+  tool call.
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,

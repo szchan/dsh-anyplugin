@@ -192,16 +192,19 @@ child was disposed and the root detached.
   `$.command.register` used the real `dsh-commands` registry (the `commands`
   child was loaded); a later duplicate name would name the mod that collided.
 
-## 6. Suspected host bug: `next.to` is absent from the mod continuation
+## 6. Host bug found: `next.to` was absent from the mod continuation (fixed by #68)
 
 **Severity: the only routed handler in this turn that gets a continuation
-throws, and the kernel fails open.** This is the most valuable finding of the
-spike, and it is left unfixed.
+throws, and the kernel fails open.** This was the most valuable finding of the
+spike. The measurement below is what the turn recorded before the fix; #68 now
+serves the member from the kernel's own continuation, and the tests named at the
+end of this section assert the semantics.
 
-What the pin declares:
+What the pin declares (canonical `Next`, `.mods/<commit>/mods/types/claude-code.d.ts:5271-5352`;
+the same seven members appear as `GlobNext` at `:4236`):
 
-- `.mods/<commit>/mods/types/claude-code.d.ts:4236`:
-  `readonly to: (e: Args<N>, tier: TargetTier) => Promise<GlobNextResult<N>>`.
+- `readonly to: { <T>(e: Args<N> & ToolNamed<T>, tier: TargetTier): Promise<NextResultFor<N, O, T>>; (e: Args<N>, tier: TargetTier): Promise<O> }`
+  (`TargetTier` is `append | builtin | core`, `claude-code.d.ts:9938`).
 
 What the host gives a mod:
 
@@ -238,7 +241,31 @@ member at load); the kernel's error path also needs a decision — "fail open"
 is a deliberate behavior for some events, but it makes this bug invisible unless
 the trace is read.
 
-**Reported, not fixed.** No package behavior was changed.
+**Fixed after the spike (#68).** The mod-visible `next` is now the kernel's own
+continuation with the pinned seven members projected onto it: `to` reuses the
+kernel's tier order and records every passed link as `skipped` with
+`bypassed by <plugin>`; `signal` is the handler's controller, also fired by
+`ChainOptions.signal`; `origin` is the host raiser `{plugin:"engine",
+tier:"core"}`; `budget` is live and freezes during `next`; `trace` serves the
+pinned `TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`,
+`reason` — `ms`/`chunks`/`received`/`returned` are not invented). The
+`TargetTier` contract is enforced: `prepend`/`user` refuse, and `core` refuses
+with a reason because this chain's innermost link is `builtin`.
+
+Tests: `packages/dsh-anyplugin-intercept/test/mods.test.mjs` pins the member
+semantics (skip + forward-only, signal, `is`/`event`/`origin`/`budget`, tier
+refusal); `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` pins
+deny/unloaded contrast with `fixtures/mods/guard/`; and
+`packages/dsh-anyplugin-conformance/test/mods.test.mjs` reproduces this turn
+with sec-default seated at `prepend` — the user-tier deny hook is skipped
+(`PreToolUse#0`, `bypassed by sec-default`), the tool call executes, and with
+the mod unloaded the same hook denies.
+
+Pin correction recorded by the fix: sec-default's guard is
+`next.to(e, 'append')` — org policy keeps user-installed classic hooks out of
+its chain. It does not deny a tool call; its deny paths ride unmapped engine
+events. So the turn proves the bypass, and the direct deny/unloaded contrast
+uses the synthetic guard fixture rather than sec-default.
 
 ## 7. Demand we do not serve, ranked by how many of the five mods hit it
 
@@ -257,7 +284,7 @@ would fail.
 | 5 | `prompt.context` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:75,99`; `mods/sec-default/hooks/register.ts:35` | unmapped | 0 invocations |
 | 6 | `agent.spawn` event never routed | **2/5** | `mods/agents-md/hooks/register.ts:169`; `mods/sec-default/hooks/register.ts:74` | unmapped | 0 invocations |
 | 7 | `$.settings.read` | **2/5** | `mods/diff/hooks/register.ts:952`; `mods/sec-default/hooks/register.ts:86,103,120,155,186,214` | `ERR_MOD_HOST_SETTINGS_SOURCE` / `_UNAVAILABLE` (declared) | 0 calls |
-| 8 | `next.to` on the mod continuation | 1/5 | `mods/sec-default/hooks/register.ts:30` (one handler, all classic events) | **`TypeError`**; kernel fails open | **8 errors**; no `$` calls |
+| 8 | `next.to` on the mod continuation | 1/5 | `mods/sec-default/hooks/register.ts:30` (one handler, all classic events) | **`TypeError`**; kernel fails open (fixed by #68) | **8 errors**; no `$` calls (pre-fix measurement) |
 | 9 | `$.session.root` | 1/5 | `mods/agents-md/hooks/register.ts:108,194` | missing member | unobservable (host not routed) |
 | 10 | `$.fs.ancestors` | 1/5 | `mods/agents-md/hooks/register.ts:116,126,206,214,215` | missing member | unobservable |
 | 11 | `$.session.identity` | 1/5 | `mods/privacy/hooks/register.ts:27` | missing member | unobservable |

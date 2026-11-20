@@ -623,6 +623,28 @@ not collapsed: `additionalContext` becomes the kernel's `text` channel,
 `preventContinuation`, `stopReason`, `updatedToolOutput`, …) are a typed
 `unsupported` with a reason.
 
+The mod-visible `next` is that same continuation with the pinned members
+projected onto it (`claude-code.d.ts:5271-5352`, issue #68): `to(e, tier)` calls
+the kernel `Next` with the tier argument the kernel already understands, so
+tier order, matcher skipping and trace recording stay in one place; `signal` is
+the handler's own `AbortController`, also fired by `ChainOptions.signal`;
+`event` and `is(pattern)` report the route the adapter selected; `origin` is
+`{ plugin: "engine", tier: "core" }` because every route served today is
+host-raised, not mod-raised; `budget` is live and stands still while `next` is
+in flight; `trace` maps the kernel's own steps beneath this link onto the
+pinned `TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`,
+`reason`; `ms`, `chunks`, `received` and `returned` are not invented). A
+`next.to` that passes over a link records it as `skipped` with
+`bypassed by <plugin>` — in both continuations, so the skip is in the same
+trace the guard's policy is read from. `TargetTier` is enforced:
+`prepend`/`user` are refused because the pin's type excludes them, and `core`
+refuses with a reason because this chain's innermost link is `builtin`.
+Covered by `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (`to` skip and
+forward-only, `signal`, `is`/`event`/`origin`/`budget`, tier refusal),
+`packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (guard denies;
+unloaded, the same call continues) and the sec-default turn in
+`packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
+
 The skeleton had to add two orthogonal choices beyond the plan. The first is a
 **mode**: the two front-ends need opposite continuation rules, and encoding only
 one would have forced the other to bypass the kernel (exactly what §7.2
@@ -1442,17 +1464,35 @@ the 16 classic events were not exercised by this turn. The load-time
 `session.start` has no session: `usage()`/`messages()` return empty shapes and
 `session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
 
-**Host bug found (reported, not fixed).** `next.to`, declared by the pin
-(`claude-code.d.ts:4236`) and claimed by the host's `copyNextSurface`
-(`dsh-anyplugin-mod-host/src/index.ts:214`), is absent from the mod-visible
-continuation: the kernel's `Next` has no `to`; `runModHandler`
-(`dsh-anyplugin-intercept/src/index.ts:732`) builds a fresh bare function at
-`:739`.
-`sec-default`'s `classic.*` handler therefore throws
+**Host bug found, now fixed (#68).** `next.to`, declared by the pin
+(`claude-code.d.ts:5271-5352`; the same seven members appear as `GlobNext` at
+`:4236`) and claimed by the host's `copyNextSurface`
+(`dsh-anyplugin-mod-host/src/index.ts:214`), was absent from the mod-visible
+continuation: the kernel's `Next` had no `to`; `runModHandler` built a fresh
+bare function. `sec-default`'s `classic.*` handler therefore threw
 `TypeError: next.to is not a function` on all eight routed classic events, and
-the kernel records `error` and continues — a security mod that is meant to
-append its policy silently enforces nothing. This is not a declared refusal; it
-is the `undefined` D36's principle forbids.
+the kernel recorded `error` and continued — the `undefined` D36 forbids.
+
+The member is now served by the kernel's own continuation (tier order, matcher
+skipping and trace stay in one place), and a tier jump records every link it
+passes as `skipped` with `bypassed by <plugin>`. The measured turn is
+reproduced in `packages/dsh-anyplugin-conformance/test/mods.test.mjs`: with
+sec-default seated at `prepend`, a user-tier classic deny hook is skipped
+(`PreToolUse#0`, `bypassed by sec-default`), the chain decision is
+`continue`, and the tool call executes; with the mod unloaded, that hook runs
+and denies the call. The member semantics are pinned in
+`packages/dsh-anyplugin-intercept/test/mods.test.mjs`, and the deny/unloaded
+contrast for a mod that actually denies a tool is
+`packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (fixture
+`fixtures/mods/guard/`).
+
+Pin correction carried by the fix: sec-default's `classic.*` guard
+(`mods/sec-default/hooks/register.ts:30`) is `next.to(e, 'append')` — it
+bypasses the `user` tier so org policy keeps user-installed hooks out. It does
+not deny a tool call; its deny paths ride unmapped engine events. The
+issue's "a tool call it should block is blocked" is therefore the wrong
+direction for this mod; the guard assertion is the bypass above, and the direct
+deny/unloaded contrast uses the synthetic guard fixture.
 
 **What it does not prove.** One turn, one stub model: eight routed classic
 events (failure, permission, compaction, cwd, file, config) are unexercised;
