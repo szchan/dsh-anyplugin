@@ -13,15 +13,6 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-- [ ] **Mod host: route a mod's `on()` registrations through the kernel.**
-      `loadMod` (D31) returns registrations; the shared kernel
-      (`dsh-anyplugin-intercept`, D13/D28) must be the only event path for
-      them (AGENTS §3.6), so a mod handler and a classic hook handler sit on
-      the same tiers and decision protocol. Done when a synthetic mod's
-      `session.start` fires through `runChain` with the same fan-out and
-      decision semantics a classic hook gets, and the D31 contract is
-      unchanged.
-
 ## Next
 
 - [ ] **Output styles** (S11). Carry `output-styles/*.md` as

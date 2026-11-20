@@ -506,7 +506,56 @@ with fan-out continuation, so tier order, matcher skips, fan-out and the trace
 belong to the kernel. The materializer keeps only the host wiring, the artifact
 re-hash, the spawn and the D20 verdict translation; an optional `onTrace` sink
 exposes the kernel trace to a caller (a diagnostic hook; nothing in the rig
-depends on it yet). The mod front-end is the second consumer (v0.5+).
+depends on it yet). The mod front-end's adapter has landed (#36); the loader
+wiring that would call it remains v0.5+.
+
+**Landed (#36):** `modRegistrationsToKernel` converts `loadMod`'s frozen
+registrations into kernel registrations (`wrap` mode, source
+`${plugin}/${entry}#index`, `continuation` left unset so a channel's classic
+arm keeps fan-out) and reports every event it cannot seat instead of dropping
+it. It has no production caller yet: the loader front-end that would call it is
+the follow-up ticket, and `session.start` is that loader point, not a live host
+event. The mapping is data in `mod-events.ts`, one row per mod event with the
+host seam and the pinned `claude-code.d.ts` line as evidence — claude-code
+2.1.322, commit `6e1e44f6433bfa17d198e932bff53373aa229eea` (the d.ts file's own
+header still says 2.1.277; the commit is the pin). It is **16 live `classic.*`
+routes plus one loader point**, not 17 live routes.
+
+`on()`'s `Pattern` is first-class (d.ts:6101): `classic.*` expands to the 16
+classic routes, `*` to all 17, and a negation (`!tool.*`) to the complement.
+Selected names without a route keep their own reason (a classic event S9 leaves
+unprobed or refutes, or an engine event with no shared protocol); a pattern
+that cannot be expanded gets a pattern-shaped reason of its own.
+
+The 16 `classic.*` names map one-to-one onto their classic kernel points and S9
+seams; `classic.PreToolUse` is special-cased because the mod API hands it
+`ToolCallEnvelope` (d.ts:10081-10093), not the classic stdin payload, so the
+adapter rebuilds the envelope and carries a rewrite back.
+`classic.PermissionRequest` and `classic.PermissionDenied` record their partial
+payloads at the S9 seam (no `tool_input`; no tool name or input).
+`session.start` is the loader's per-plugin event and maps to the kernel's
+`session.start`, not to `agent/created` (that is classic `SessionStart`). The
+adapter does not derive a tier from the event name: the host seats a plugin,
+and `user` is only the fallback when a caller has no seating, never `core`
+(d.ts:6253-6265). Unmapped engine-native events (39) and classic events S9
+leaves unprobed or refutes (17) stay on the adapter's `unmapped` list with that
+reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
+reported as absent from the pin and point at their real spelling rather than
+being aliased.
+
+A mixed chain still runs one `runChain`: the classic registration declares
+fan-out, so a `[mod, classic, mod]` chain with no explicit continuation runs
+all three. In **fan-out** a mod's `next(e)` only rewrites the event for later
+registrations; it does not run the classic arm itself, and it resolves the
+kernel's continue, not `ClassicResultOf`. A **mod-only** chain is
+`first-decision`: `next(e)` runs the chain beneath and resolves that event's
+`ClassicResultOf` (`{cwd}` for `session.start`). D13's "a mod that declines
+`next()` owns the rest of the chain" is therefore a `first-decision` statement;
+in fan-out the channel owns continuation. Classic return fields are translated,
+not collapsed: `additionalContext` becomes the kernel's `text` channel,
+`updatedInput` becomes an event rewrite, and fields with no carrier (`ask`,
+`preventContinuation`, `stopReason`, `updatedToolOutput`, …) are a typed
+`unsupported` with a reason.
 
 The skeleton had to add two orthogonal choices beyond the plan. The first is a
 **mode**: the two front-ends need opposite continuation rules, and encoding only
@@ -535,8 +584,10 @@ turn and asserts both markers and both contexts.
 Both flows share: a matcher miss is skipped, a throwing handler is skipped and
 recorded, an over-budget handler is aborted and recorded, one trace step per
 handler run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single
-table with `builtin` innermost; D13 records that its values are still a
-prose-derived assumption until the pinned `claude-code.d.ts` lands in v0.5.
+table with `builtin` innermost. D13 recorded its values as a prose-derived
+assumption; the pinned `claude-code.d.ts` (d.ts:10022-10039) now confirms them
+as the first four of five tiers — the fifth, `core`, is the engine's own seat
+and never a plugin's (`PluginRegisterInput.tier` excludes it, d.ts:6253-6265).
 
 A classic hook has no `next`, so `classicHookRegistration` always produces
 `observe` mode and declares `continuation: 'fan-out'`; a caller that passes no

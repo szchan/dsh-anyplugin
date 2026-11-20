@@ -11,6 +11,10 @@
  * through `runChain`, not around it.
  */
 
+import { MOD_EVENT_ROUTES, MOD_PINNED_EVENTS, modUnmappedReason, type ModEventRoute } from './mod-events.ts'
+
+export * from './mod-events.ts'
+
 /** Where a handler sits relative to the others. Outermost first. */
 export type Tier = 'prepend' | 'user' | 'append' | 'builtin'
 
@@ -19,10 +23,11 @@ export type Tier = 'prepend' | 'user' | 'append' | 'builtin'
  * behaviour being intercepted (the tool runs, the prompt is sent), so every
  * other tier wraps it and can decline before it happens.
  *
- * ASSUMPTION (D13): the tier names and their order come from the Claude mod
- * documentation, not from the pinned `claude-code.d.ts` (mods land in v0.5).
- * Every consumer reads this table; none re-implements the order, so verifying
- * it against the declaration file is one edit here.
+ * The pinned `claude-code.d.ts` names five tiers: these four plus `core`, the
+ * engine's own innermost link (`TIERS`, d.ts:10022-10039), and a plugin is
+ * never seated at `core` (`PluginRegisterInput.tier`, d.ts:6253-6265). The
+ * four here are therefore exact, not an assumption. Every consumer reads this
+ * table; none re-implements the order.
  */
 export const TIER_ORDER = ['prepend', 'user', 'append', 'builtin'] as const
 
@@ -142,6 +147,7 @@ export type Decision =
   | { kind: 'result'; result: unknown }
   | { kind: 'block'; reason?: string }
   | { kind: 'approve'; reason?: string }
+  | { kind: 'unsupported'; field: string; reason: string }
 
 export const CONTINUE: Decision = { kind: 'continue' }
 
@@ -350,6 +356,532 @@ export function classicHookRegistration(spec: ClassicHookSpec): HandlerRegistrat
     source: spec.source,
     run: spec.run,
   }
+}
+
+/**
+ * The subset of a mod registration the adapter needs. Structural on purpose:
+ * the kernel package is a leaf, so it cannot import the mod host, and D31's
+ * `ModRegistration` is exactly this shape.
+ */
+export interface ModRegistrationLike {
+  readonly event: string
+  /** The authored matcher, unchanged (`undefined` for a bare `on`). */
+  readonly matcher: unknown
+  readonly handler: (event: unknown, next: (event?: unknown) => unknown) => unknown
+}
+
+export interface ModKernelOptions {
+  /** The plugin's name, for the trace source. Required: a trace needs an owner. */
+  plugin: string
+  /**
+   * The host's seating of the plugin (`PluginRegisterInput.tier`,
+   * d.ts:6253-6265; never `core`). `user` is only a fallback for a caller with
+   * no seating to pass, not a tier derived from the mod or the event name.
+   */
+  tier?: Tier
+  /** The entry module, for the trace source. */
+  entry?: string
+  /** Budget for one run, forwarded to the kernel. */
+  timeoutMs?: number
+}
+
+export interface ModKernelUnmapped {
+  /** The mod's event name, verbatim. */
+  event: string
+  /** Its position in the authored source order. */
+  index: number
+  /** The kernel source it would have had, whether or not the event routed. */
+  source: string
+  /** Why it was not adapted; never an empty string. */
+  reason: string
+}
+
+export interface ModKernelRoute {
+  registration: HandlerRegistration
+  route: ModEventRoute
+}
+
+export interface ModKernelResult {
+  registrations: HandlerRegistration[]
+  routes: ModKernelRoute[]
+  unmapped: ModKernelUnmapped[]
+}
+
+const ROUTES_BY_MOD_EVENT = new Map(MOD_EVENT_ROUTES.map((route) => [route.modEvent, route]))
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function describeMatcher(value: unknown): string {
+  if (Array.isArray(value)) return 'an array'
+  if (value === null) return 'null'
+  return typeof value === 'object' ? 'an object' : `a ${typeof value}`
+}
+
+interface AdaptedMatcher {
+  matcher?: string
+  compiledMatcher?: CompiledMatcher
+}
+
+/**
+ * The kernel's matcher grammar is a regex over the event subject (the tool
+ * name, the agent type). A mod's string is that regex; a cross-realm `RegExp`
+ * is its own source; a structural matcher has no kernel spelling yet, so the
+ * registration is reported instead of quietly matching everything.
+ */
+function adaptMatcher(value: unknown): AdaptedMatcher | { reason: string } {
+  if (value === undefined) return {}
+  if (typeof value === 'string') {
+    return { matcher: value, compiledMatcher: compileMatcher(value) }
+  }
+  if (Object.prototype.toString.call(value) === '[object RegExp]') {
+    const expression = value as RegExp
+    if (expression.flags !== '') {
+      return {
+        reason: `matcher /${expression.source}/${expression.flags} uses RegExp flags; the kernel matcher grammar is a flagless regex over the event subject (D13/D32).`,
+      }
+    }
+    return { matcher: expression.source, compiledMatcher: compileMatcher(expression.source) }
+  }
+  return {
+    reason: `matcher is ${describeMatcher(value)}; the kernel matches a flagless regex against the event subject, so a structural matcher needs a bridge this adapter does not provide (D32).`,
+  }
+}
+
+/**
+ * Classic events hand the mod the host's payload as `data`. `classic.PreToolUse`
+ * is the exception: its mod `e` is `ToolCallEnvelope` (`tool`, `tool_use_id`,
+ * and the tool's arguments spread beside them, d.ts:10081-10093), while the
+ * kernel event carries the classic payload (`tool_name`, `tool_use_id`,
+ * `tool_input`).
+ */
+function toModEvent(route: ModEventRoute, event: ChainEvent): unknown {
+  if (route.payload !== 'tool-call-envelope') return event.data
+  const tool = event.data.tool_name
+  const toolUseId = event.data.tool_use_id
+  if (typeof tool !== 'string' || typeof toolUseId !== 'string') {
+    throw new Error('PreToolUse host event lacks tool_name/tool_use_id; cannot build ToolCallEnvelope')
+  }
+  const input = isRecord(event.data.tool_input) ? event.data.tool_input : {}
+  return { ...input, tool, tool_use_id: toolUseId }
+}
+
+/**
+ * Translate a mod's `next(e)` rewrite back to the seam's shape. The two
+ * reserved envelope fields (d.ts:1049-1057: a rewrite of `tool` or
+ * `tool_use_id` is ignored by core) stay the originals; only the arguments can
+ * change. A classic rewrite goes through `classicEvent` so the subject the
+ * next matcher sees is recomputed from the rewritten payload.
+ */
+function fromModEvent(route: ModEventRoute, event: ChainEvent, rewritten: unknown): ChainEvent {
+  if (!isRecord(rewritten)) {
+    throw new TypeError('a mod rewrite must be an object')
+  }
+  if (route.payload === 'tool-call-envelope') {
+    const tool = event.data.tool_name
+    const toolUseId = event.data.tool_use_id
+    if (typeof tool !== 'string' || typeof toolUseId !== 'string') {
+      throw new Error('PreToolUse event lacks tool_name/tool_use_id; cannot accept a rewrite')
+    }
+    const { tool: _tool, tool_use_id: _toolUseId, ...input } = rewritten
+    return {
+      ...event,
+      data: { ...event.data, tool_name: tool, tool_use_id: toolUseId, tool_input: input },
+      subject: tool,
+    }
+  }
+  if (route.payload === 'classic') {
+    return classicEvent(event.name, rewritten)
+  }
+  return { ...event, data: rewritten }
+}
+
+/** What a kernel decision means to a mod's `next()`. */
+function kernelDecisionToMod(decision: Decision, route: ModEventRoute): unknown {
+  switch (decision.kind) {
+    case 'continue':
+      return undefined
+    case 'deny':
+      return route.kernelEvent === 'PreToolUse' ? { deny: decision.reason } : { block: decision.reason }
+    case 'result':
+      return route.kernelEvent === 'PostToolUse'
+        ? { updatedToolOutput: decision.result }
+        : { block: 'a kernel result cannot be expressed as a classic result on this event' }
+    case 'text':
+      return { additionalContext: [decision.text] }
+    case 'block':
+      return route.kernelEvent === 'PreToolUse'
+        ? { deny: decision.reason ?? 'blocked' }
+        : decision.reason === undefined
+          ? { block: true }
+          : { block: decision.reason }
+    case 'approve':
+      return route.kernelEvent === 'PreToolUse'
+        ? { allow: true }
+        : { block: 'a kernel approve cannot be expressed as a classic result on this event' }
+    case 'unsupported':
+      return route.kernelEvent === 'PreToolUse'
+        ? { deny: `unsupported classic result field ${decision.field}: ${decision.reason}` }
+        : { block: `unsupported classic result field ${decision.field}: ${decision.reason}` }
+  }
+}
+
+/**
+ * The classic fields the adapter knows how to classify. A field absent from
+ * this set is reported as unsupported rather than treated as continue: a
+ * classic result is `ClassicResultOf`, not the engine's verbs (d.ts:1086-1087),
+ * and dropping one of its fields silently would change the hook's meaning.
+ */
+const CLASSIC_RESULT_FIELDS = new Set([
+  'allow',
+  'ask',
+  'block',
+  'additionalContext',
+  'decision',
+  'deny',
+  'displayContent',
+  'initialUserMessage',
+  'permissionDecision',
+  'permissionDecisionReason',
+  'preventContinuation',
+  'reloadSkills',
+  'retry',
+  'sessionTitle',
+  'stopReason',
+  'suppressOriginalPrompt',
+  'updatedInput',
+  'updatedMCPToolOutput',
+  'updatedToolOutput',
+  'watchPaths',
+  'worktreePath',
+])
+
+/** The classic events whose `ClassicResultFields` include `additionalContext`. */
+const CLASSIC_CONTEXT_EVENTS = new Set([
+  'PreToolUse',
+  'UserPromptSubmit',
+  'UserPromptExpansion',
+  'SessionStart',
+  'Setup',
+  'PostModelSwitch',
+  'SubagentStart',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PostToolBatch',
+  'Stop',
+  'SubagentStop',
+])
+
+function unsupported(field: string, reason: string): ModResultTranslation {
+  return { decision: { kind: 'unsupported', field, reason } }
+}
+
+interface ModResultTranslation {
+  decision: Decision
+  /** A PreToolUse `updatedInput` the handler wants the chain beneath to see. */
+  rewrite?: ChainEvent
+}
+
+/**
+ * A mod's return value, as a kernel decision plus an optional rewrite.
+ *
+ * A mod uses the engine's verbs (`{ deny }`, `{ result }`, `{ text }`,
+ * `{ block }`, `{ drop }`) or a classic event's `ClassicResultOf`. The two are
+ * not the same type: classic events carry `block`, `preventContinuation`,
+ * `stopReason`, `additionalContext`, `updatedInput` and their event fields
+ * (d.ts:976-1087). Those that the kernel can carry are translated:
+ *
+ * - `additionalContext` becomes `text` (the kernel's context channel),
+ * - `updatedInput` becomes an event rewrite for the chain beneath,
+ * - `block` becomes `block`;
+ *
+ * the rest are a typed `unsupported` with the field and a reason, never a
+ * silent `continue`. A tagged kernel `Decision` is accepted too so a front-end
+ * can share the helper.
+ */
+function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unknown): ModResultTranslation {
+  if (value === undefined || value === null) return { decision: CONTINUE }
+  if (!isRecord(value)) {
+    return { decision: { kind: 'block', reason: `a mod handler returned ${typeof value}; expected an object or undefined` } }
+  }
+  if (typeof value.kind === 'string') {
+    switch (value.kind) {
+      case 'continue':
+        return { decision: CONTINUE }
+      case 'deny':
+        return { decision: { kind: 'deny', reason: typeof value.reason === 'string' ? value.reason : 'denied by a mod' } }
+      case 'result':
+        return { decision: { kind: 'result', result: value.result } }
+      case 'text':
+        return { decision: { kind: 'text', text: typeof value.text === 'string' ? value.text : '' } }
+      case 'block':
+        return { decision: typeof value.reason === 'string' ? { kind: 'block', reason: value.reason } : { kind: 'block' } }
+      case 'approve':
+        return { decision: typeof value.reason === 'string' ? { kind: 'approve', reason: value.reason } : { kind: 'approve' } }
+      case 'unsupported':
+        return unsupported(
+          typeof value.field === 'string' ? value.field : 'unknown',
+          typeof value.reason === 'string' ? value.reason : 'a mod reported an unsupported result',
+        )
+      default:
+        return unsupported('kind', `unknown decision kind ${JSON.stringify(value.kind)}`)
+    }
+  }
+
+  const present = Object.keys(value).filter((key) => value[key] !== undefined)
+  // The engine verbs are the mod-facing protocol on every event, not only the
+  // classic ones; a bare { result }, { text } or { drop } is not a classic field.
+  if ('result' in value) {
+    return present.length === 1
+      ? { decision: { kind: 'result', result: value.result } }
+      : unsupported('result', 'result cannot be combined with another field in one mod return')
+  }
+  if ('text' in value && !('additionalContext' in value)) {
+    return present.length === 1 && typeof value.text === 'string'
+      ? { decision: { kind: 'text', text: value.text } }
+      : unsupported('text', 'text must be a string and cannot be combined with another field in one mod return')
+  }
+  if ('drop' in value) {
+    if (present.length !== 1) return unsupported('drop', 'drop cannot be combined with another field in one mod return')
+    if (value.drop === true) return { decision: { kind: 'block' } }
+    if (typeof value.drop === 'string') return { decision: { kind: 'block', reason: value.drop } }
+    return unsupported('drop', 'drop must be true or a string')
+  }
+  if (route.payload === 'engine') {
+    // session.start's next(e) is { cwd }; returning it is the ordinary
+    // observe result, not a classic field to translate.
+    if (present.length === 1 && present[0] === 'cwd' && typeof value.cwd === 'string') return { decision: CONTINUE }
+    const field = present[0] ?? 'result'
+    return unsupported(field, `${route.modEvent} is an observe engine point; a classic result field cannot be applied`)
+  }
+
+  // Fields with no kernel carrier are reported before any translation, so a
+  // result that mixes one with a translatable field is not half-applied.
+  const unsupportedField = [
+    'ask',
+    'preventContinuation',
+    'stopReason',
+    'decision',
+    'updatedToolOutput',
+    'updatedMCPToolOutput',
+    'sessionTitle',
+    'suppressOriginalPrompt',
+    'initialUserMessage',
+    'watchPaths',
+    'reloadSkills',
+    'permissionDecision',
+    'permissionDecisionReason',
+    'retry',
+    'displayContent',
+    'worktreePath',
+  ].find((field) => field in value)
+  if (unsupportedField !== undefined) {
+    const detail = unsupportedField === 'ask'
+      ? 'classic.PreToolUse ask needs the host approval flow; the kernel has no ask decision'
+      : unsupportedField === 'preventContinuation' || unsupportedField === 'stopReason'
+        ? 'stopping the session after the event has no kernel decision; it would be a host-level stop'
+        : unsupportedField === 'decision'
+          ? 'the PermissionRequest decision cannot cross the partial approval/request seam (S9: no tool_input)'
+          : `the kernel has no carrier for classic result field ${unsupportedField}`
+    return unsupported(unsupportedField, detail)
+  }
+
+  const unknown = present.find((field) => !CLASSIC_RESULT_FIELDS.has(field))
+  if (unknown !== undefined) {
+    return unsupported(unknown, `unknown classic result field ${unknown}; a classic event returns ClassicResultOf, not the engine verbs`)
+  }
+
+  const effects = ['deny', 'block', 'allow', 'additionalContext'].filter((field) => field in value)
+  if (effects.length > 1) {
+    return unsupported(effects.join('+'), 'the kernel decision carries one effect; this classic result combines several')
+  }
+
+  let decision: Decision = CONTINUE
+  if ('deny' in value) {
+    // deny is both the engine verb and the classic.PreToolUse result; a mod may
+    // use it on any event, as the engine verbs are the mod-facing protocol.
+    if (typeof value.deny !== 'string') return unsupported('deny', 'deny must be a string')
+    decision = { kind: 'deny', reason: value.deny }
+  } else if ('block' in value) {
+    if (typeof value.block !== 'string') return unsupported('block', 'block must be a string')
+    decision = { kind: 'block', reason: value.block }
+  } else if ('allow' in value) {
+    if (route.kernelEvent !== 'PreToolUse' || value.allow !== true) {
+      return unsupported('allow', 'only classic.PreToolUse returns allow: true')
+    }
+    decision = { kind: 'approve' }
+  } else if ('additionalContext' in value) {
+    if (!CLASSIC_CONTEXT_EVENTS.has(route.kernelEvent) || !Array.isArray(value.additionalContext) || !value.additionalContext.every((item) => typeof item === 'string')) {
+      return unsupported('additionalContext', 'this classic event does not read additionalContext, or the value is not an array of strings')
+    }
+    const contexts = value.additionalContext as string[]
+    if (contexts.length > 0) decision = { kind: 'text', text: contexts.join('\n') }
+  }
+
+  let rewrite: ChainEvent | undefined
+  if ('updatedInput' in value) {
+    if (route.kernelEvent !== 'PreToolUse' || !isRecord(value.updatedInput)) {
+      return unsupported('updatedInput', 'only classic.PreToolUse rewrites tool arguments, and updatedInput must be an object')
+    }
+    rewrite = fromModEvent(route, event, value.updatedInput)
+  }
+  return rewrite === undefined ? { decision } : { decision, rewrite }
+}
+
+async function runModHandler(
+  route: ModEventRoute,
+  handler: ModRegistrationLike['handler'],
+  event: ChainEvent,
+  next: Next,
+): Promise<Decision> {
+  const modEvent = toModEvent(route, event)
+  const modNext = async (rewritten?: unknown): Promise<unknown> => {
+    const nextEvent = rewritten === undefined ? undefined : fromModEvent(route, event, rewritten)
+    const resolved = await next(nextEvent)
+    // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
+    if (route.modEvent === 'session.start') {
+      return { cwd: (nextEvent ?? event).data.cwd }
+    }
+    return kernelDecisionToMod(resolved, route)
+  }
+  const translation = modResultToKernel(route, event, await handler(modEvent, modNext))
+  if (translation.rewrite === undefined) return translation.decision
+  const resolved = await next(translation.rewrite)
+  return translation.decision.kind === 'continue' ? resolved : translation.decision
+}
+
+/**
+ * A Pattern selects event names (d.ts:6101): an exact name, `*`, a
+ * `<namespace>.*` glob, or a `!` complement of one of those (d.ts:4211,
+ * 5256). Expansion happens before routing so a single `on('classic.*', ...)`
+ * becomes the classic routes it selects, and every selected name that is not
+ * routed is reported with the reason the pin gives for it.
+ */
+interface ModPatternExpansion {
+  selected: readonly string[]
+  reason?: string
+}
+
+const PINNED_EVENT_SET = new Set(MOD_PINNED_EVENTS)
+const GLOB_NAMESPACE = /^[a-z][a-z0-9-]*$/
+const NOT_A_PATTERN =
+  'not a Pattern at the pin (EventName | Glob | Negation, d.ts:6101, 4211, 5256); expected an event name, `*`, `<namespace>.*`, or `!<one of those>`'
+
+function selectPattern(pattern: string, strict: boolean): readonly string[] | string {
+  if (pattern === '*') return MOD_PINNED_EVENTS
+  if (pattern.endsWith('.*')) {
+    const namespace = pattern.slice(0, -2)
+    if (!GLOB_NAMESPACE.test(namespace)) return NOT_A_PATTERN
+    const selected = MOD_PINNED_EVENTS.filter((event) => event.startsWith(`${namespace}.`))
+    return selected.length === 0 ? `pattern ${pattern} matches no event at the pin` : selected
+  }
+  if (pattern.includes('*')) return NOT_A_PATTERN
+  if (PINNED_EVENT_SET.has(pattern)) return [pattern]
+  if (strict) return `pattern ${pattern} is not an event at the pin`
+  // An exact name that is not in the pin is still one name, not a pattern: the
+  // ordinary "not an event" reason is more useful than "not a Pattern".
+  return pattern.includes('.') ? [pattern] : NOT_A_PATTERN
+}
+
+function expandModPattern(pattern: string): ModPatternExpansion {
+  if (typeof pattern !== 'string' || pattern === '') {
+    return { selected: [], reason: NOT_A_PATTERN }
+  }
+  if (pattern.startsWith('!')) {
+    const inner = pattern.slice(1)
+    if (inner === '' || inner === '*') return { selected: [], reason: NOT_A_PATTERN }
+    const excluded = selectPattern(inner, true)
+    if (typeof excluded === 'string') return { selected: [], reason: excluded }
+    const excludedSet = new Set(excluded)
+    return { selected: MOD_PINNED_EVENTS.filter((event) => !excludedSet.has(event)) }
+  }
+  const selected = selectPattern(pattern, false)
+  return typeof selected === 'string' ? { selected: [], reason: selected } : { selected }
+}
+
+/**
+ * Translate a mod's `on()` registrations into kernel registrations — the mod
+ * front-end of the one interception kernel (AGENTS.md §3.6, D13).
+ *
+ * - `mode` is `wrap` (D13): a mod owns the rest of its chain only by calling
+ *   `next`, and the kernel records a mod that does not as `not-called`.
+ * - `continuation` is left unset. A chain that also holds classic hooks takes
+ *   the classic `fan-out` (D28); a mod-only chain keeps `first-decision`.
+ * - `tier` is the host's seating, not the mod's declaration and not derived
+ *   from the event name. `user` is only a fallback for a caller that has no
+ *   seating to pass. The pinned d.ts allows every tier except `core`
+ *   (`PluginRegisterInput.tier`, d.ts:6253-6265); the adapter never invents a
+ *   per-mod table.
+ * - A `Pattern` (d.ts:6101) expands to the routed names it selects: `classic.*`
+ *   selects the sixteen classic routes, `*` selects all seventeen, and a
+ *   negation selects the complement. Selected names that are not routed are
+ *   reported with their pinned reason; a pattern that cannot be expanded gets
+ *   its own reason.
+ * - Source order is preserved; the kernel does the ordering.
+ * - An event with no route, or a structural matcher, is returned in `unmapped`
+ *   with a non-empty reason. Nothing is dropped silently.
+ *
+ * There is no production caller yet: this adapter and its tests are the shell.
+ * The loader front-end that calls it is the follow-up (the `session.start` row
+ * is that loader point, not a live host event).
+ *
+ * `$` is not here on purpose: the mod host calls `host.dollar()` once
+ * immediately before each invocation (D31), one layer below the adapter, so
+ * there is nothing here to cache.
+ */
+export function modRegistrationsToKernel(
+  registrations: Iterable<ModRegistrationLike>,
+  options: ModKernelOptions,
+): ModKernelResult {
+  if (typeof options !== 'object' || options === null || typeof options.plugin !== 'string' || options.plugin === '') {
+    throw new TypeError('modRegistrationsToKernel: options.plugin must be a non-empty string')
+  }
+  const tier = options.tier ?? 'user'
+  if (!TIER_ORDER.includes(tier)) {
+    throw new TypeError(`modRegistrationsToKernel: unknown tier ${String(tier)}`)
+  }
+  const adapted: HandlerRegistration[] = []
+  const routes: ModKernelRoute[] = []
+  const unmapped: ModKernelUnmapped[] = []
+  let index = 0
+  for (const registration of registrations) {
+    const authoredEvent = registration.event
+    const baseSource = `${options.plugin}/${options.entry ?? 'mod'}#${index}`
+    const expansion = expandModPattern(authoredEvent)
+    if (expansion.reason !== undefined) {
+      unmapped.push({ event: authoredEvent, index, source: baseSource, reason: expansion.reason })
+      index += 1
+      continue
+    }
+    const matcher = adaptMatcher(registration.matcher)
+    for (const selectedEvent of expansion.selected) {
+      const source = selectedEvent === authoredEvent ? baseSource : `${baseSource}[${selectedEvent}]`
+      const route = ROUTES_BY_MOD_EVENT.get(selectedEvent)
+      if (route === undefined) {
+        unmapped.push({ event: selectedEvent, index, source, reason: modUnmappedReason(selectedEvent) })
+        continue
+      }
+      if ('reason' in matcher) {
+        unmapped.push({ event: selectedEvent, index, source, reason: matcher.reason })
+        continue
+      }
+      const kernelRegistration: HandlerRegistration = {
+        event: route.kernelEvent,
+        tier,
+        mode: 'wrap',
+        matcher: matcher.matcher,
+        compiledMatcher: matcher.compiledMatcher,
+        timeoutMs: options.timeoutMs,
+        source,
+        run: (_context, kernelEvent, next) => runModHandler(route, registration.handler, kernelEvent, next),
+      }
+      adapted.push(kernelRegistration)
+      routes.push({ registration: kernelRegistration, route })
+    }
+    index += 1
+  }
+  return { registrations: adapted, routes, unmapped }
 }
 
 export interface ResolvedHandler {
