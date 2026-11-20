@@ -13,12 +13,7 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-- [ ] **Mod host: resolver + linker (S13 follow-up).** Load the authored
-      `.ts` graph into a per-mod `node:vm` context (D30): three resolution
-      behaviors, position-preserving type strip, `$` per handler, one real
-      mod (`diff`) firing `session.start`. Done when a host package loads the
-      fetched `diff` mod and its `session.start` reaches the same three calls
-      the spike observed, with no source rewrite.
+Nothing claimed.
 
 ## Next
 
@@ -81,6 +76,16 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- Mod host skeleton (ticket #33): `dsh-anyplugin-mod-host` loads an authored
+  mod's `.ts` graph into a per-mod `node:vm` context under D30 (three
+  resolution behaviors, in-memory type strip, no source rewrite), hands every
+  registration a fresh `$` as the handler's first argument, and returns
+  `register(on)`'s registrations. The synthetic fixture fires `session.start`
+  with both measured sequences (`usage → command.register → session.messages`,
+  and `clock.now` inserted when `usage()` returns `undefined`). The fetched
+  `diff` mod is refused at `views/pane-view.tsx` with `ERR_MOD_HOST_TSX`: ESM
+  links the whole graph, so the JSX decision — not resolution — gates loading a
+  real mod at this pin.
 - CLI consent surface (D27): grant/revoke with all-or-nothing writes,
   re-consent on changed bytes, explicit `--replace-revoke`, and revocation that
   reads the record rather than the artifact.

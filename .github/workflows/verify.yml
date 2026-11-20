@@ -33,6 +33,40 @@ jobs:
       # The shape of the tree is a gate, not a review comment.
       - run: npm run check:arch
 
+      # The mod host's upstream acceptance is a refusal: the fetched `diff`
+      # graph reaches a `.tsx`, which D30 keeps planned. Fetching is explicit,
+      # like the harness and CLI pins; the diff test never touches the network
+      # and fails on CI when ANYPLUGIN_MOD_TREE is unset. The cache follows the
+      # file that owns the pin, so a bump is one edit and one cold cache.
+      - name: Cache pinned diff mod
+        uses: actions/cache@v4
+        with:
+          path: .mods
+          key: mods-${{ hashFiles('packages/dsh-anyplugin-mod-host/src/pin.ts', 'scripts/fetch-mod.mjs') }}
+
+      - name: Install pinned diff mod
+        id: mod
+        run: |
+          tree=$(node scripts/fetch-mod.mjs)
+          echo "ANYPLUGIN_MOD_TREE=$tree" >> "$GITHUB_ENV"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+
+      # Refuse to let the acceptance test skip: an unset tree or a different
+      # checkout is a failed job, not a green run with one test missing.
+      - name: Guard the pinned diff mod
+        env:
+          ANYPLUGIN_MOD_TREE: ${{ steps.mod.outputs.tree }}
+        run: |
+          if [ -z "${ANYPLUGIN_MOD_TREE:-}" ]; then
+            echo "::error::ANYPLUGIN_MOD_TREE is unset; the diff refusal test would skip and a skipped acceptance test on CI is a bug"
+            exit 1
+          fi
+          verified=$(node scripts/fetch-mod.mjs --verify)
+          if [ "$verified" != "$ANYPLUGIN_MOD_TREE" ]; then
+            echo "::error::ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MOD_TREE does not match the pinned tree $verified"
+            exit 1
+          fi
+
       # The upstream oracle needs the pinned Claude Code CLI, and CI has no
       # Desktop installation to borrow one from. Like the DSH harness, fetching
       # is an explicit step here: the tests themselves never touch the network.

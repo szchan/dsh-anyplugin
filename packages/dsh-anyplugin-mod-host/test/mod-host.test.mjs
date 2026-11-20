@@ -1,0 +1,321 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+import { loadMod, resolveModSpecifier } from '../src/index.ts'
+
+const ROOT = fileURLToPath(new URL('../../../fixtures/mods/synthetic/', import.meta.url))
+const REGISTER = join(ROOT, 'register.ts')
+const ASK_INDEX = join(ROOT, 'ask', 'index.ts')
+
+const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+
+/**
+ * A host whose `$` records the authored call order. `usage` defaults to the
+ * upstream shape; pass `{ usage: undefined }` to exercise the clock.now path.
+ */
+function recorder(options = {}) {
+  const usage = Object.hasOwn(options, 'usage') ? options.usage : { startedAt: 1700000000000 }
+  const calls = []
+  const commands = []
+  const dollar = {
+    session: {
+      usage: async () => {
+        calls.push('session.usage')
+        return usage
+      },
+      messages: async () => {
+        calls.push('session.messages')
+        return []
+      },
+      flush: async () => {
+        calls.push('flush')
+      },
+    },
+    clock: {
+      now: async () => {
+        calls.push('clock.now')
+        return 1700000000001
+      },
+    },
+    command: {
+      register: async (spec) => {
+        calls.push('command.register')
+        commands.push(spec)
+      },
+    },
+  }
+  let built = 0
+  return {
+    calls,
+    commands,
+    built: () => built,
+    host: {
+      dollar: () => {
+        built += 1
+        return dollar
+      },
+    },
+  }
+}
+
+/** Assert a rejection is a ModHostError with `code`, and optionally substrings. */
+async function rejectsWith(promise, code, ...needles) {
+  await assert.rejects(promise, (error) => {
+    assert.equal(error.name, 'ModHostError', `expected ModHostError, got ${error.name}: ${error.message}`)
+    assert.equal(error.code, code, `expected ${code}, got ${error.code}: ${error.message}`)
+    const message = String(error.message)
+    for (const needle of needles) {
+      assert.ok(message.includes(needle), `expected message to include ${JSON.stringify(needle)}: ${message}`)
+    }
+    return true
+  })
+}
+
+async function loadFixture(entry, host = recorder().host) {
+  return loadMod({ root: ROOT, entry, host })
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic mod: authored graph, controlled on(), per-handler $, no rewriting.
+// ---------------------------------------------------------------------------
+
+test('fires session.start as usage → command.register → session.messages', async () => {
+  const before = new Map(
+    [REGISTER, ASK_INDEX, join(ROOT, 'value.ts')].map((file) => [file, sha256(file)]),
+  )
+  const recorderHost = recorder()
+  const mod = await loadFixture('register.ts', recorderHost.host)
+
+  assert.equal(mod.registrations.length, 1)
+  const registration = mod.registrations[0]
+  assert.equal(registration.event, 'session.start')
+  assert.equal(registration.matcher, undefined)
+  assert.equal(typeof registration.handler, 'function')
+  assert.ok(Object.isFrozen(mod.registrations))
+  assert.ok(Object.isFrozen(registration))
+
+  // D30: $ exists only as the handler's first argument, built per invocation.
+  assert.equal(recorderHost.built(), 0, 'host.dollar must not run at load time')
+  assert.deepEqual(recorderHost.calls, [])
+
+  const event = { kind: 'start', sessionId: 'abc' }
+  const nextResult = { kind: 'continued' }
+  const result = await registration.handler(event, (seen) => {
+    assert.equal(seen, event)
+    return nextResult
+  })
+  assert.equal(result, nextResult, 'the handler must return next(e) unchanged')
+  assert.equal(recorderHost.built(), 1)
+  assert.deepEqual(recorderHost.calls, ['session.usage', 'command.register', 'session.messages'])
+
+  // The three imports (directory-index, '.' self, .js→.ts) reached register().
+  assert.equal(recorderHost.commands.length, 1)
+  assert.equal(recorderHost.commands[0].name, 'diff')
+  assert.equal(
+    recorderHost.commands[0].description,
+    'value-from-js-specifier:42:42:1700000000000',
+  )
+
+  await registration.handler(event, () => nextResult)
+  assert.equal(recorderHost.built(), 2, 'each invocation gets a fresh $')
+
+  // The host reads the authored bytes; it never writes them.
+  for (const [file, digest] of before) {
+    assert.equal(sha256(file), digest, `${file} must keep its authored bytes`)
+  }
+
+  const evaluation = mod.evaluate()
+  assert.equal(await evaluation, undefined)
+  assert.equal(await mod.evaluate(), undefined, 'evaluate() never re-runs the mod')
+
+  mod.dispose()
+  mod.dispose()
+  await assert.rejects(mod.evaluate(), (error) => error.code === 'ERR_MOD_HOST_LINK')
+  await assert.rejects(registration.handler(event, () => nextResult), (error) => {
+    return error.code === 'ERR_MOD_HOST_LINK'
+  })
+})
+
+test('falls back to clock.now when usage() returns undefined', async () => {
+  const recorderHost = recorder({ usage: undefined })
+  const mod = await loadFixture('register.ts', recorderHost.host)
+  const event = { kind: 'start' }
+  const nextResult = { kind: 'continued' }
+
+  assert.equal(await mod.registrations[0].handler(event, () => nextResult), nextResult)
+  assert.deepEqual(recorderHost.calls, [
+    'session.usage',
+    'clock.now',
+    'command.register',
+    'session.messages',
+  ])
+  assert.equal(
+    recorderHost.commands[0].description,
+    'value-from-js-specifier:42:42:1700000000001',
+  )
+})
+
+test('resolveModSpecifier implements D30s three behaviors and no fallbacks', () => {
+  assert.deepEqual(resolveModSpecifier({ specifier: '.', parent: ASK_INDEX, root: ROOT }), {
+    file: ASK_INDEX,
+    behavior: 'directory-index',
+  })
+  assert.deepEqual(resolveModSpecifier({ specifier: './ask', parent: REGISTER, root: ROOT }), {
+    file: ASK_INDEX,
+    behavior: 'directory-index',
+  })
+  assert.deepEqual(resolveModSpecifier({ specifier: './value.js', parent: REGISTER, root: ROOT }), {
+    file: join(ROOT, 'value.ts'),
+    behavior: 'js-to-ts',
+  })
+  assert.deepEqual(
+    resolveModSpecifier({ specifier: './view.jsx', parent: join(ROOT, 'jsx-reach.ts'), root: ROOT }),
+    { file: join(ROOT, 'view.tsx'), behavior: 'jsx-to-tsx' },
+  )
+})
+
+test('resolveModSpecifier fails loudly for every specifier outside the three rules', () => {
+  const cases = [
+    ['node:fs', 'ERR_MOD_HOST_LINK', 'Node builtin'],
+    ['claude-code', 'ERR_MOD_HOST_LINK', 'bare'],
+    ['https://example.com/mod.ts', 'ERR_MOD_HOST_LINK', 'URL'],
+    ['./nowhere.js', 'ERR_MOD_HOST_MISSING', 'does not exist'],
+    ['./data.json', 'ERR_MOD_HOST_UNSUPPORTED_EXT', '.json'],
+    ['../outside', 'ERR_MOD_HOST_LINK', 'outside the mod root'],
+    ['', 'ERR_MOD_HOST_LINK', 'empty'],
+    ['./view.tsx', 'ERR_MOD_HOST_TSX', '.tsx'],
+  ]
+  for (const [specifier, code, needle] of cases) {
+    assert.throws(
+      () => resolveModSpecifier({ specifier, parent: REGISTER, root: ROOT }),
+      (error) => {
+        assert.equal(error.code, code, `${specifier}: ${error.message}`)
+        assert.ok(error.message.includes(needle), `${specifier}: ${error.message}`)
+        return true
+      },
+    )
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Loud failures: each surface names its reason (no silent skips).
+// ---------------------------------------------------------------------------
+
+test('a missing relative module fails at link time with the specifier and expected file', async () => {
+  await rejectsWith(
+    loadFixture('missing-module.ts'),
+    'ERR_MOD_HOST_MISSING',
+    './nowhere.js',
+    'does not exist',
+  )
+})
+
+test('.tsx reach is refused as planned, whether imported or used as the entry', async () => {
+  await rejectsWith(loadFixture('jsx-reach.ts'), 'ERR_MOD_HOST_TSX', '.tsx', 'planned')
+  await rejectsWith(loadFixture('view.tsx'), 'ERR_MOD_HOST_TSX', '.tsx', 'planned')
+})
+
+test('an unknown extension is a typed error naming the extension', async () => {
+  await rejectsWith(loadFixture('unknown-ext.txt'), 'ERR_MOD_HOST_UNSUPPORTED_EXT', '.txt')
+})
+
+test('an entry without register(on) is a typed error', async () => {
+  await rejectsWith(loadFixture('no-register.ts'), 'ERR_MOD_HOST_LINK', "'register'")
+})
+
+test('misused on() is a typed error naming the argument', async () => {
+  await rejectsWith(loadFixture('bad-on.ts'), 'ERR_MOD_HOST_LINK', 'non-empty string')
+})
+
+test('an authored throw is not wrapped: the mod keeps its own error', async () => {
+  await assert.rejects(loadFixture('register-throws.ts'), (error) => {
+    assert.equal(error.message, 'authored register boom')
+    assert.equal(error.name, 'Error')
+    assert.equal(error.code, undefined, 'the host must not rebrand authored errors')
+    return true
+  })
+})
+
+test('a module-level $ read is a ReferenceError, not a host error', async () => {
+  await assert.rejects(loadFixture('dollar-at-load.ts'), (error) => {
+    assert.equal(error.name, 'ReferenceError')
+    assert.match(String(error.message), /\$/)
+    assert.equal(error.code, undefined)
+    return true
+  })
+})
+
+test('the vm realm has no process, URL or $ global', async () => {
+  const mod = await loadFixture('globals.ts')
+  const seen = await mod.registrations[0].handler(null, () => {
+    throw new Error('this handler does not call next')
+  })
+  assert.equal(seen.process, 'undefined')
+  assert.equal(seen.url, 'undefined')
+  assert.equal(seen.dollar, 'undefined')
+})
+
+test('register(on) preserves event order and matcher values', async () => {
+  const mod = await loadFixture('order.ts')
+  assert.deepEqual(
+    mod.registrations.map((registration) => [registration.event, registration.matcher]),
+    [
+      ['first', undefined],
+      ['second', 'matcher-value'],
+    ],
+  )
+})
+
+test('.js and .mjs entries load as authored and receive $', async () => {
+  const nextResult = { kind: 'continued' }
+  const js = await loadFixture('plain.js')
+  assert.equal(await js.registrations[0].handler(null, () => nextResult), nextResult)
+
+  const recorderHost = recorder()
+  const mjs = await loadFixture('plain.mjs', recorderHost.host)
+  assert.equal(await mjs.registrations[0].handler(null, () => nextResult), nextResult)
+  assert.deepEqual(recorderHost.calls, ['flush'])
+})
+
+test('evaluate() is an idempotent accessor, not a second evaluation', async () => {
+  const mod = await loadFixture('evaluates-once.ts')
+  const [registration] = mod.registrations
+  const seen = await registration.handler(null, () => null)
+  assert.equal(seen, 1, 'the module evaluated exactly once')
+  await mod.evaluate()
+  await mod.evaluate()
+  assert.equal(await registration.handler(null, () => null), 1)
+})
+
+// ---------------------------------------------------------------------------
+// Load-surface validation.
+// ---------------------------------------------------------------------------
+
+test('bad load surfaces are typed errors with reasons', async () => {
+  await rejectsWith(
+    loadMod({ root: join(ROOT, 'does-not-exist'), entry: 'register.ts', host: recorder().host }),
+    'ERR_MOD_HOST_MISSING',
+  )
+  await rejectsWith(loadFixture('no-such-entry.ts'), 'ERR_MOD_HOST_MISSING', 'does not exist')
+  await rejectsWith(loadFixture('../outside.ts'), 'ERR_MOD_HOST_MISSING', 'outside')
+  await rejectsWith(loadFixture(REGISTER), 'ERR_MOD_HOST_MISSING', 'relative')
+  await rejectsWith(loadMod({ root: ROOT, entry: 'register.ts', host: {} }), 'ERR_MOD_HOST_LINK')
+})
+
+test('without --experimental-vm-modules the host refuses before touching the mod', async () => {
+  const index = new URL('../src/index.ts', import.meta.url).href
+  const script = [
+    `import { loadMod } from ${JSON.stringify(index)}`,
+    'try { await loadMod({}) } catch (error) { console.log(error.code) }',
+  ].join('\n')
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+  })
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(child.stdout.trim(), 'ERR_MOD_HOST_LINK')
+})
