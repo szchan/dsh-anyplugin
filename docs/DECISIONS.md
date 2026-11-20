@@ -1668,3 +1668,58 @@ and one read of the same path, two compactions, one settings change. Marker
 order asserted; mutation counts with and without each filter (3 vs 8 steps for
 the prompt seam, 1 vs 2 approval demands, 1 vs 2 failed results, 1 vs 2 present
 observations). Coverage: 25 declared / 24 matched / 0 missing / 1 refused.
+
+---
+
+## D36 — Serve the pinned mod call contract: `register(on, options)`, `Registration.catch`, six host codes
+
+**Date:** 2026-11-20. **Status:** ratified. **Amends D31's `$`-count sentence.**
+
+**Decision.** The host calls the authored entry point the way the pinned type
+declares it, not the way that was convenient before three real mods needed it:
+
+1. **`register(on, options)` takes two arguments.** `options` is the pinned
+   `PluginOptions`, built from the manifest's `userConfig` plus the values the
+   activation stored, validated **before** the realm is created. The host adds
+   no plugin-root or data-dir member the pin does not declare; those stay
+   `loadMod` and bridge facts.
+2. **`on()` returns the pinned frozen `Registration`,** whose `.catch` is
+   available during `register` only — not on `engine.create`. A caught throw
+   reaches the handler as a frozen `HookFailure` (`kind: 'throw'`, message,
+   budget) with a replay-safe `next` and a second `$`.
+3. **`ModHostErrorCode` has six members,** adding `ERR_MOD_HOST_REGISTRATION`
+   and `ERR_MOD_HOST_OPTIONS`. A member the host cannot serve refuses at
+   registration time, naming the member — never an `undefined` that explodes at
+   the mod's first call.
+4. **D31's `$`-count sentence is amended** from "exactly once per authored
+   invocation" to "once per authored handler invocation, **plus once for a
+   catch handler**". Nothing else about `$` changes.
+
+**Why.** PR #56 put every pin-era mod through the host and three of five died
+in the host's own gaps: `agents-md` read `options.instructionFiles` from an
+`undefined` second argument, and `sec-default`/`telemetry` called
+`on(...).catch`, which `void` does not have. A patched-host experiment loaded
+all five, so this was never an authored refusal. A host that claims "loaded as
+authored" (D30) must serve the authored call shape.
+
+**What is still not claimed.** The host has no per-handler timeout budget, so a
+caught failure is only ever `kind: 'throw'`; routing a kernel timeout through
+`.catch` is a follow-up, not a silent deduction. `catchMs` is carried as
+`HookFailure.budget` but not enforced.
+
+**Consequences:**
+
+- All five mods at the pin are `loaded` in `fixtures/mods/upstream.json`, with
+  measured registration counts (4/10/1/25/6), and the table stays
+  bidirectionally asserted: a mod that stops loading, or one added without a
+  row, fails the suite.
+- `ERR_MOD_HOST_REGISTRATION` and `ERR_MOD_HOST_OPTIONS` are part of the
+  observable surface, so a mod author can distinguish "the host will not serve
+  this" from "the mod is broken".
+- `PluginOptions` is frozen and validated before the realm exists, which keeps
+  the "no fabrication" rule of D30 checkable: every served field traces to the
+  manifest or the pin.
+
+**Evidence.** Both pins (`0.2.2-rc.5`, `0.2.2-rc.2`) 402/402 with zero skips;
+`check:arch` 18 packages / 46 files. Mutations: returning `void` from `on()`
+reddens four contract tests; omitting `options.instructionFiles` reddens three.
