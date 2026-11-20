@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
+import { CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { childEntryId, pluginEntryId, pluginScope } from '../src/identity.ts'
 import { compileEntries, reconcile } from '../src/index.ts'
 
@@ -94,7 +95,7 @@ test('two plugins whose names differ only by a dot both install', async () => {
       version: '0.0.1',
       root: roots[name],
       dataDir: join(dir, 'data', name),
-      pin: 'claude-code@2.1.322',
+      pin: `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`,
     })),
   }
   const enablements = {

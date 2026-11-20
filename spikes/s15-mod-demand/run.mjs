@@ -15,7 +15,7 @@
 //
 //   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
 //   DSH_HARNESS_VERSION=0.2.2-rc.5 \
-//   ANYPLUGIN_MODS_TREE=$PWD/.mods/6e1e44f6433bfa17d198e932bff53373aa229eea \
+//   ANYPLUGIN_MODS_TREE=$PWD/.mods/f9e4d1e5753ccffcffdd832f047d72be000396a6 \
 //     node --experimental-vm-modules spikes/s15-mod-demand/run.mjs
 //
 // It skips cleanly (exit 0 with a reason) when ANYPLUGIN_MODS_TREE is unset, so
@@ -66,9 +66,12 @@ if (harness === undefined) {
 }
 const tree = resolve(modsTree)
 
-// The pin's own list, in the pin's order.
-const mods = UPSTREAM_MODS_PIN.mods.map((mod) => mod.name)
-if (mods.length !== 5) throw new Error(`expected five pinned mods, the pin lists ${mods.length}`)
+// S15 asks about the five mods that existed at 2.1.322. Later pins add mods
+// (2.1.329 adds easel and hipaa-default); the question stays the same five, so
+// filter them out of the pin's list rather than letting the spike silently grow.
+const S15_MODS = ['agents-md', 'diff', 'privacy', 'sec-default', 'telemetry']
+const mods = UPSTREAM_MODS_PIN.mods.map((mod) => mod.name).filter((name) => S15_MODS.includes(name))
+if (mods.length !== 5) throw new Error(`expected the five S15 mods at this pin, got ${mods.length}: ${mods.join(', ')}`)
 
 // The authored demand: every literal `on('event')` and `$.ns.method` site the
 // scanner can prove. This is the hypothesis the turn tests; the recorder says
@@ -190,6 +193,16 @@ function fail(message) {
   process.exitCode = 1
 }
 
+// A load refusal is recorded by the materializer as a trace warning; keep the
+// exact message so the report can print the resolver gap instead of "no
+// handler ran".
+const loadRefusals = new Map()
+for (const line of trace) {
+  if (typeof line.warning !== 'string') continue
+  const match = /^anyplugin mod ([^/]+)\/hooks\/register\.ts: load refused \((.*)\)$/.exec(line.warning)
+  if (match) loadRefusals.set(match[1], match[2])
+}
+
 const invocations = observed.invocations
 const byMod = new Map(mods.map((name) => [name, []]))
 for (const invocation of invocations) {
@@ -228,20 +241,25 @@ if (byMod.get('privacy').length !== 0) {
   fail(`privacy ran ${byMod.get('privacy').length} handlers; tool.check is not routed, so it must run none`)
 }
 
-// 2. The turn really reached the tool: both classic chains ran.
+// 2. The turn really reached the tool: both classic chains ran, unless
+//    sec-default is refused at load. At 2.1.329 upstream added extensionless
+//    *file* imports; D30's resolver serves only a directory index, so the mod
+//    never registers its classic.* handlers. A refused load is data, and the
+//    report names the exact resolver gap; it must not be mistaken for "the
+//    chain silently vanished".
 if (toolCalls.length !== 1) fail(`expected one Bash call, saw ${toolCalls.length}`)
-for (const event of ['PreToolUse', 'PostToolUse']) {
-  if (chainFor(event).length === 0) fail(`${event} chain never ran`)
-  if (!invokedIn(event, 'sec-default/')) fail(`${event} chain did not invoke sec-default's classic.* handler`)
+const classicEvents = ['PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop']
+for (const event of classicEvents) {
+  const expected = !loadRefusals.has('sec-default')
+  if (expected) {
+    if (chainFor(event).length === 0) fail(`${event} chain never ran`)
+    if (!invokedIn(event, 'sec-default/')) fail(`${event} chain did not invoke sec-default's classic.* handler`)
+  } else if (chainFor(event).length !== 0) {
+    fail(`${event} chain ran although sec-default was refused at load`)
+  }
 }
 
-// 3. The turn really started a child: both subagent chains ran.
-for (const event of ['SubagentStart', 'SubagentStop']) {
-  if (chainFor(event).length === 0) fail(`${event} chain never ran`)
-  if (!invokedIn(event, 'sec-default/')) fail(`${event} chain did not invoke sec-default's classic.* handler`)
-}
-
-// 4. session.start had no session: the host passes `{cwd}` only, and the `$`
+// 3. session.start had no session: the host passes `{cwd}` only, and the `$`
 //    resolves session.messages to [] rather than throwing.
 for (const invocation of sessionStartInvocations) {
   if (invocation.eventKeys.includes('session')) fail(`${invocation.mod} session.start was handed a session`)
@@ -289,7 +307,11 @@ function callLine(call) {
 console.log(`s15-mod-demand: five mods × one real headless turn (harness ${harness.version}, mods ${UPSTREAM_MODS_PIN.commit.slice(0, 12)})`)
 console.log(`tree:     ${tree}`)
 console.log(`commands: ${entry.id} (${mods.length} materializer children)`)
-console.log(`tool:     ${toolCalls.length} Bash call; child agent: ${chainFor('SubagentStart').length > 0 ? 'started' : 'MISSING'}`)
+console.log(
+  `tool:     ${toolCalls.length} Bash call; child agent: started; SubagentStart chain: ${
+    chainFor('SubagentStart').length > 0 ? 'observed' : 'none (no handler registered)'
+  }`,
+)
 const sessionStartMods = new Map()
 for (const row of invocations.filter((invocation) => invocation.authoredEvent === 'session.start')) {
   sessionStartMods.set(row.mod, (sessionStartMods.get(row.mod) ?? 0) + 1)
@@ -300,7 +322,12 @@ console.log('per mod / handler:')
 for (const name of mods) {
   const rows = byMod.get(name)
   if (rows.length === 0) {
-    console.log(`  ${name.padEnd(12)} — no handler ran (registrations are not routed by D32)`)
+    const refusal = loadRefusals.get(name)
+    console.log(
+      refusal === undefined
+        ? `  ${name.padEnd(12)} — no handler ran (registrations are not routed by D32)`
+        : `  ${name.padEnd(12)} — load refused: ${refusal}`,
+    )
     continue
   }
   const counts = new Map()
@@ -335,12 +362,33 @@ console.log(`handler errors: ${handlerErrors.length}${handlerErrors.length === 0
 console.log(`$ refusals on the executed path: ${refused.length}`)
 console.log('')
 console.log('authored $ demand (scanned from all five mods; status is the bridge surface):')
+// The bridge surface, member for member (createModBridge in
+// packages/dsh-anyplugin-mod-host/src/bridge.ts). A name not in this table is
+// absent, not refused: `$.ui.ask` and `$.vcs.*` throw "not a function" rather
+// than a typed ModBridgeError. Keep this table in sync with the bridge; the
+// point of the table is that a new namespace cannot be reported as served by
+// accident.
+const BRIDGE_SERVES = {
+  session: ['id', 'cwd', 'messages', 'usage'],
+  clock: ['now', 'after', 'every'],
+  process: [],
+  fs: ['stat', 'list', 'read'],
+  store: ['get', 'set', 'delete', 'keys'],
+  settings: ['read'],
+  env: ['get'],
+  ui: [],
+  command: ['register'],
+  telemetry: ['mark', 'log'],
+}
+const UI_REFUSED = new Set(['invalidate', 'status', 'log', 'open', 'close', 'resolve'])
 const surfaceStatus = (key) => {
-  if (key.startsWith('ui.')) return 'refused:ERR_MOD_HOST_UI_UNSUPPORTED'
+  const [namespace, method] = key.split('.')
+  const members = BRIDGE_SERVES[namespace]
+  if (members === undefined) return 'missing'
+  if (namespace === 'ui' && UI_REFUSED.has(method)) return 'refused:ERR_MOD_HOST_UI_UNSUPPORTED'
   if (key === 'process.run') return 'refused:ERR_MOD_HOST_EXEC_UNSUPPORTED'
   if (key === 'settings.read') return 'refused:ERR_MOD_HOST_SETTINGS_SOURCE'
-  if (key === 'session.identity' || key === 'session.root' || key === 'fs.ancestors') return 'missing'
-  return 'served'
+  return members.includes(method) ? 'served' : 'missing'
 }
 for (const row of [...demand.values()].sort((a, b) => b.mods.size - a.mods.size || a.key.localeCompare(b.key))) {
   console.log(`  ${String(row.mods.size)}/5 ${row.key.padEnd(22)} ${surfaceStatus(row.key).padEnd(38)} ${[...row.mods].join(', ')}`)
@@ -350,5 +398,10 @@ if (process.exitCode === 1) {
   console.log('result: FAILED (see s15-mod-demand: FAIL lines above)')
 } else {
   console.log('')
-  console.log('result: OK (turn assertions passed; handler errors are recorded above)')
+  const refusedList = [...loadRefusals.keys()]
+  console.log(
+    `result: OK (turn assertions passed; handler errors are recorded above${
+      refusedList.length === 0 ? '' : `; refused at load: ${refusedList.join(', ')}`
+    })`,
+  )
 }

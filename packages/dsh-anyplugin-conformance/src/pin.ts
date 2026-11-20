@@ -12,4 +12,4 @@
 export const CLAUDE_CODE_PACKAGE = '@anthropic-ai/claude-code'
 
 /** The Claude Code release every `.inventory/claude-code@<version>.json` was captured at. */
-export const CLAUDE_CODE_PIN = { tool: 'claude-code', version: '2.1.322' } as const
+export const CLAUDE_CODE_PIN = { tool: 'claude-code', version: '2.1.329' } as const

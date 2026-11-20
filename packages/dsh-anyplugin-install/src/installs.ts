@@ -28,7 +28,7 @@ export interface InstallRecord {
   root: string
   /** Stable per-plugin data directory; survives version updates (D2). */
   dataDir: string
-  /** Host pin the artifact was read against, e.g. `claude-code@2.1.322`. */
+  /** Host pin the artifact was read against, e.g. `claude-code@2.1.329`. */
   pin: string
   /** Provenance, e.g. `plugin-dir:fixtures/claude-skills-only` (optional). */
   source?: string

@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { readClaudePlugin, CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories } from '../src/inventory.ts'
@@ -28,7 +28,7 @@ const materializers = {
   hooks: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-hook', 'src', 'index.ts')).href,
 }
 const golden = JSON.parse(
-  readFileSync(join(fixtureDir, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
+  readFileSync(join(fixtureDir, '.inventory', `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}.json`), 'utf8'),
 )
 
 test('the dialect resolves ${CLAUDE_PLUGIN_ROOT} into a runnable stdio server', () => {

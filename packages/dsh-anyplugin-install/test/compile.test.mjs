@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin, GROUP_PLUGIN, mangleId } from '../../dsh-anyplugin-emit/src/index.ts'
 import { compileEntries, compileReport } from '../src/index.ts'
 
@@ -18,7 +18,7 @@ const fixture = (name) => join(repoRoot, 'fixtures', name)
 const materializers = {
   skill: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-skill', 'src', 'index.ts')).href,
 }
-const PIN = 'claude-code@2.1.322'
+const PIN = `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`
 const record = (name, directory = name, overrides = {}) => ({
   dialect: 'claude-code',
   name,

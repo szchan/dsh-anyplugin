@@ -11,7 +11,7 @@
  * the declared `type` before the module loads"; a required field with no
  * value fails the load, naming the field; a string field with an `options`
  * list treats a stored value outside it as unset, so the default applies
- * (`claude-code.d.ts` 2.1.322, lines 6231–6243).
+ * (`claude-code.d.ts` 2.1.329, lines 9786–9796).
  *
  * There is no `plugin`/root or data-dir member in that type. The host keeps
  * those as host facts (the root bounds resolution; the bridge owns the data

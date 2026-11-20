@@ -156,7 +156,7 @@ instead of borrowing a laptop install:
    `scripts/fetch-claude.mjs`; in CI that is a failed job.
 
 `node scripts/fetch-claude.mjs` installs the pinned
-`@anthropic-ai/claude-code@2.1.322` into `.claude-code/2.1.322/` with
+`@anthropic-ai/claude-code@2.1.329` into `.claude-code/2.1.329/` with
 `--ignore-scripts` and prints the native binary. The version is
 `CLAUDE_CODE_PIN` in the conformance package; it is asserted before the suite.
 

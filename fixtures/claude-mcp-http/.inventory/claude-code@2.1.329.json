@@ -15,7 +15,7 @@
   ],
   "pin": {
     "tool": "claude-code",
-    "version": "2.1.322"
+    "version": "2.1.329"
   },
   "tokens": {
     "alwaysOn": {

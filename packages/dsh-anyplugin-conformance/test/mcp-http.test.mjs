@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import { startHttpServer } from '../../../fixtures/claude-mcp-http/http-server.mjs'
-import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { readClaudePlugin, CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { expandEnv } from '../../dsh-anyplugin-materialize-mcp/src/index.ts'
@@ -30,7 +30,7 @@ const materializers = {
   mcp: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-mcp', 'src', 'index.ts')).href,
 }
 const golden = JSON.parse(
-  readFileSync(join(fixtureDir, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
+  readFileSync(join(fixtureDir, '.inventory', `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}.json`), 'utf8'),
 )
 
 test('the dialect keeps a ${VAR} url for the materializer to resolve', () => {

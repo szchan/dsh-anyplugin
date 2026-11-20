@@ -9,7 +9,7 @@ The design lives in `docs/ARCHITECTURE.md`; the reasons live in
 with those two, they win and this file is wrong.
 
 Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
-`0.2.2-rc.5` / `0.2.2-rc.2` (npm-fetched harnesses, D22), claude-code `2.1.322`.
+`0.2.2-rc.5` / `0.2.2-rc.2` (npm-fetched harnesses, D22), claude-code `2.1.329`.
 
 ## Now
 
@@ -58,10 +58,6 @@ with the exact anchor so the proposal is reviewable without a checkout.
       chain engine → element runtime → the remaining namespace bridges → type
       generation from the pinned `claude-code.d.ts`. Coverage is
       `covered / total` against that file, and it only moves up.
-- [ ] **Upstream mods at a newer pin** (D14). The `2.1.322` pin predates
-      `hipaa-default` (first commit `ec4d337`) and `easel` (`9cf919a`).
-      Unblocked by bumping the Claude Code pin to a release that contains
-      both, then adding their rows to `fixtures/mods/upstream.json`.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; delegate to the real host or
       annotate `unsupported`.
@@ -69,10 +65,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
 ## Done
 
 - `$` bridge (ticket #46; measured by S15): across the five pinned mods the
-  bridge is asked for 50 call sites / 27 `namespace.method` pairs in 10
+  bridge is asked for 69 call sites / 30 `namespace.method` pairs in 11
   namespaces. Sixteen methods are served; the six `ui.*` methods,
   `process.run` and `settings.read` are typed refusals; `session.identity`,
-  `session.root` and `fs.ancestors` are absent. `fs` resolves against the
+  `session.root`, `fs.ancestors`, `ui.ask`, `vcs.detect` and `vcs.diff` are
+  absent (`ui.ask` and `vcs.*` have no member at all, so they throw
+  `TypeError` rather than a typed refusal). `fs` resolves against the
   invocation session's cwd (absolute as written), `store` is rooted at the
   plugin data dir and confined on `realpath`, and `settings.read` serves only a
   host merged snapshot. `session.messages()` carries the tool-result turn in
@@ -119,13 +117,15 @@ own work while `next`/`$` still pause.
   guard `fixtures/mods/guard/`), and
   `packages/dsh-anyplugin-conformance/test/mods.test.mjs`. Pin correction:
   sec-default's `classic.*` guard bypasses user hooks; it does not deny a
-  tool call.
+  tool call. At 2.1.329 the D39 resolver fallback seats the same mod (45
+  registrations), and the guard behavior above is the measured behavior at
+  that pin too.
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
   caller-supplied seating, source order preserved) so mods and classic hooks
   share one chain. `mod-events.ts` pins the mapping as data (17 live routes:
-  16 classic plus `session.start`, 56 unmapped names with reasons
+  16 classic plus `session.start`, 147 unmapped names with reasons
   from S9), `on()` patterns (`classic.*`, `*`, negations) expand instead of
   being dropped, classic results are translated (`additionalContext`,
   `updatedInput`) or typed `unsupported`, and the fan-out `next()` divergence
@@ -148,7 +148,7 @@ own work while `next`/`$` still pause.
 - S1 loader substrate — five findings written into ARCHITECTURE §10.1.
 - S3 conformance rig, both halves: upstream oracle (`claude plugin details`)
   and the installed DSH oracle.
-- Upstream oracle in CI: the pinned `claude-code@2.1.322` is fetched from npm
+- Upstream oracle in CI: the pinned `claude-code@2.1.329` is fetched from npm
   (D24), resolved through `CLAUDE_BIN`/`PATH`, and version-guarded, so both
   halves of the rig run on every `verify` job.
 - Exec trust gate: `grants.yml` with hash-pinned grants, scope precedence
@@ -209,15 +209,20 @@ own work while `next`/`$` still pause.
   decide enablement (narrower wins), and `reconcile` converges loader entries
   by stable id — created, updated, removed, kept, failed — without writing
   profile config.
-- The upstream oracle runs in CI (D24): `@anthropic-ai/claude-code@2.1.322` is
+- The upstream oracle runs in CI (D24): `@anthropic-ai/claude-code@2.1.329` is
   fetched, resolved through `CLAUDE_BIN`/PATH, version-guarded; a decoy in the
   fixtures test proves the probe uses the binary it was handed.
+- Upstream mods at 2.1.329 (D14; closes the 2.1.322-pin item): the table now
+  carries all seven mods, with `easel` and `hipaa-default` measured. At this
+  pin `sec-default` becomes a typed `ERR_MOD_HOST_MISSING` refusal because its
+  author added extensionless *file* imports; D30's three resolver behaviors do
+  not serve them, and the table records the refusal instead of faking a load.
 - Mod capability scanner (`dsh-anyplugin-mod-scan`): a lexical read of a mod's
   `register.ts` yields the event sites and `$.` calls an install grant would
   display, without vendoring or executing the mod (D21).
-- Hook payload fixtures: 32 doc-derived payloads plus 6 live captures from
-  2.1.322 (DeepSeek backend), run through `runChain`; the event table and
-  matcher subject are derived from them (D15).
+- Hook payload fixtures: 32 doc-derived payloads at 2.1.329 plus 6 live
+  captures from 2.1.322 (DeepSeek backend), run through `runChain`; the event
+  table and matcher subject are derived from them (D15).
 - MCP name budget, enforced at both moments: an over-budget prefix refuses the
   server at plan time (`claude-mcp-budget`) and an over-budget tool is skipped
   while its sibling registers (`claude-mcp-tool-budget`). The rig counts a

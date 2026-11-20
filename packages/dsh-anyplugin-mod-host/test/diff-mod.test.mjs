@@ -85,9 +85,10 @@ test('the fetched diff mod loads through the classic JSX transform', async (t) =
     'ui.scroll',
     'command.run',
     'tool.call',
+    'turn.complete',
     'prompt.submit',
   ])
-  assert.equal(new Set(events).size, 8)
+  assert.equal(new Set(events).size, 9)
 
   // D31's handler contract, on the real mod's session.start handler.
   const sessionStart = mod.registrations[0]

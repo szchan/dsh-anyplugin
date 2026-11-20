@@ -210,7 +210,7 @@ Two rules that make the contract enforceable:
         config: { serverName: plugin_my-plugin_srv, transport: stdio, command: npx }
 ```
 
-Commands and skills collapse at the current pin: at Claude Code 2.1.322 a
+Commands and skills collapse at the current pin: at Claude Code 2.1.329 a
 `commands/*.md` file is reported under **Skills**, and a nested
 `commands/<dir>/*.md` is not loaded at all (§10.3). The dialect therefore
 resolves this mapping through a **pin profile** (D8) rather than the prose
@@ -253,6 +253,9 @@ plugins:
     dataDir: "/…/data/claude-code/skills-only"
     pin: "claude-code@2.1.322"
 ```
+
+The example above is an illustrative lock written at the 2.1.322 pin; the
+live pin is `CLAUDE_CODE_PIN` in the conformance package.
 
 `root` is versioned, `dataDir` is not. `pin` is the host version the artifact
 was read against (AGENTS.md §3.8), so a build that reads a different version
@@ -731,8 +734,9 @@ budgets, so a slow handler is cut off at its own budget instead of truncating a
 healthy one or stretching the turn past the declared timeouts.
 
 **Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds the
-doc-extracted payloads plus the live captures from a 2.1.322 turn; the set and
-its provenance are `fixtures/hooks/PROVENANCE.md` (`payloads/` and `observed/`).
+doc-extracted payloads at 2.1.329 plus the live captures from a 2.1.322 turn;
+the set and its provenance are `fixtures/hooks/PROVENANCE.md` (`payloads/` and
+`observed/`).
 Two corrections came out of running them through the kernel:
 
 - The event vocabulary is **32 events, not the 10 we had guessed**. The table is
@@ -1480,11 +1484,14 @@ agents + bin + theme.
 
 ### 10.5 S15 result: what the five pinned mods demand on one real turn
 
-**Question.** Which events and which `$` members do the five upstream mods at
-`6e1e44f6433bfa17d198e932bff53373aa229eea` (claude-code `2.1.322`) actually
-use, and which of those does the host serve? The S9 turn is the vehicle: the
-stub `LlmAdapter` (no network, no key), one real `Bash` call, one real fork
-subagent, one `session.start` per plugin load.
+**Question.** Which events and which `$` members do the five upstream mods
+actually use, and which of those does the host serve? Measured first at
+`6e1e44f6433bfa17d198e932bff53373aa229eea` (claude-code `2.1.322`) and re-run
+at `f9e4d1e5753ccffcffdd832f047d72be000396a6` (claude-code `2.1.329`; the seven-mod table in
+`fixtures/mods/upstream.json` adds two mods at that pin, but S15 keeps the
+original five so the comparison is like for like). The S9 turn is the vehicle: the stub `LlmAdapter` (no network,
+no key), one real `Bash` call, one real fork subagent, one `session.start` per
+plugin load.
 
 **Method.** Five materializer children (one plugin root each), the real
 `loadMod`, the real `createModBridge` table, the real materializer and kernel.
@@ -1497,7 +1504,7 @@ dispatcher is added (AGENTS §3.6). Argument and payload **key names** are
 recorded; values are not. `spikes/s15-mod-demand/REPORT.md` carries the tables,
 the sites and the command.
 
-**Outcome (measured, not projected).** 11 handler invocations and 5 `$` calls
+**Outcome at 2.1.322 (baseline).** 11 handler invocations and 5 `$` calls
 on the turn. The `$` surface authored by all five mods is 50 call sites across
 27 `namespace.method` pairs in 10 namespaces: **16 served**, **8 typed
 refusals** (all six `ui.*` methods, `process.run`, `settings.read`) and **3
@@ -1508,6 +1515,8 @@ four events authored by **two of the five mods each** — `tool.check`,
 the 16 classic events were not exercised by this turn. The load-time
 `session.start` has no session: `usage()`/`messages()` return empty shapes and
 `session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
+
+**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations** and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: **16 served**, **8 typed refusals**, **6 absent** — the original three plus `ui.ask`, `vcs.detect` and `vcs.diff`. `ui.ask` and `vcs.*` are absent members, not refusals: `createModBridge` never defines them, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
 
 **Host bug found, now fixed (#68).** `next.to`, declared by the pin
 (`claude-code.d.ts:5271-5352`; the same seven members appear as `GlobNext` at
@@ -1567,8 +1576,10 @@ the pass-over after `next.to` — the tests named above pin that shape.
 events (failure, permission, compaction, cwd, file, config) are unexercised;
 only literal scanner sites are counted; no values or return shapes are claimed;
 the real-install caveat is the five-plugin/five-materializer shape (one
-`pluginRoot` per `apply`). It does not settle the other 22 `$` methods or the
-unmapped engine events beyond the sites measured here.
+`pluginRoot` per `apply`), and at 2.1.329 all five seat after the D39 resolver fallback. S15
+does not measure `easel` or `hipaa-default`; their registrations are recorded
+in `fixtures/mods/upstream.json`. It does not settle the other `$` methods or
+the unmapped engine events beyond the sites measured here.
 
 ## 11. Non-goals
 

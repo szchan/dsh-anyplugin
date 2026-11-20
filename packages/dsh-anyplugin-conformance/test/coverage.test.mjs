@@ -25,6 +25,7 @@ import {
   pluginIdentity,
 } from '../../dsh-anyplugin-trust/src/index.ts'
 import { diffInventories, emptyInventory } from '../src/inventory.ts'
+import { CLAUDE_CODE_PIN } from '../src/pin.ts'
 import { probeLifecycleWithDsh, probeWithDsh } from '../src/oracles/dsh.ts'
 import { probeSeams } from './lifecycle.test.mjs'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
@@ -278,7 +279,7 @@ test(
     for (const fixture of Object.keys(EXPECTED_ROWS).sort()) {
       assert.ok(existsSync(join(repoRoot, 'fixtures', fixture)), `${fixture} exists`)
       const golden = JSON.parse(
-        readFileSync(join(repoRoot, 'fixtures', fixture, '.inventory', 'claude-code@2.1.322.json'), 'utf8'),
+        readFileSync(join(repoRoot, 'fixtures', fixture, '.inventory', `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}.json`), 'utf8'),
       )
       const cleanup = await PREPARE[fixture]?.()
       try {

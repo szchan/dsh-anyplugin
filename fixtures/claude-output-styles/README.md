@@ -1,7 +1,7 @@
 # claude-output-styles
 
 Hand-authored, not observed. There is no `claude plugin details` output to copy
-here: at the pinned Claude Code 2.1.322, the component inventory prints no
+here: at the 2.1.322 pin, the component inventory printed no
 output-style line (D29), so a captured golden would be empty and could not
 anchor a single row. This fixture therefore has **no `.inventory` golden** and
 is excluded from the oracle loop in `fixtures.test.mjs`. Its assertion lives in

@@ -5,11 +5,15 @@ Two kinds of fixture live here, and they do not have the same authority.
 | Directory | Source | Authority |
 | --- | --- | --- |
 | `payloads/` | The canonical examples on the pinned docs page, extracted by `scripts/extract-hook-payloads.mjs` | Illustrative. The harness sends more fields than the examples show, and shows optional ones as present. |
-| `observed/` | Six real `claude` 2.1.322 payloads recorded by `spikes/s6-hook-payloads` on a DeepSeek backend | Verbatim, minus `session_id` and `transcript_path`. |
+| `observed/` | Six real `claude` 2.1.322 payloads recorded by `spikes/s6-hook-payloads` on a DeepSeek backend (at the 2.1.322 pin; not re-recorded) | Verbatim, minus `session_id` and `transcript_path`. |
 
-Pin: **claude-code 2.1.322**. Re-run `node scripts/extract-hook-payloads.mjs`
-when the pin moves, then review the diff — a removed event or a renamed field is
-a compatibility break, not a doc cleanup.
+Pin: **claude-code 2.1.329** for `payloads/` (commit
+`f9e4d1e5753ccffcffdd832f047d72be000396a6`); `observed/` stays at 2.1.322 because
+those are recordings, not a re-extraction. Re-run
+`node scripts/extract-hook-payloads.mjs` when the pin moves, then review the
+diff — a removed event or a renamed field is a compatibility break, not a doc
+cleanup. At the 2.1.329 move all 32 payloads changed only their `__provenance.pin`
+line; no event or field moved.
 
 ## Why `payloads/` is not a schema
 

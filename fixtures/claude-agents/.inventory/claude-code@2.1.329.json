@@ -1,25 +1,26 @@
 {
   "$schema": "dsh-anyplugin/inventory@1",
   "plugin": {
-    "name": "claude-root-skill",
-    "source": "plugin-dir:fixtures/claude-root-skill"
+    "name": "agents-fixture",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-agents"
   },
   "components": [
     {
-      "surface": "skills",
-      "name": "rooty"
+      "surface": "agents",
+      "name": "reviewer"
     }
   ],
   "pin": {
     "tool": "claude-code",
-    "version": "2.1.322"
+    "version": "2.1.329"
   },
   "tokens": {
     "alwaysOn": {
-      "value": 15
+      "value": 9
     },
     "perComponent": {
-      "rooty": {
+      "reviewer": {
         "value": 20,
         "atMost": true
       }

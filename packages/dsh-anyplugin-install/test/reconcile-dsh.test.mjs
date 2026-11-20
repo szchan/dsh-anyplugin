@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import { harnessSkipReason, resolveHarness } from '../../dsh-anyplugin-conformance/src/harness.ts'
+import { CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { compileEntries, reconcile } from '../src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -30,7 +31,7 @@ const installs = {
       version: '0.0.1',
       root: join(repoRoot, 'fixtures', 'claude-skills-only'),
       dataDir: join(workspace, 'data', 'skills-only'),
-      pin: 'claude-code@2.1.322',
+      pin: `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`,
     },
   ],
 }
