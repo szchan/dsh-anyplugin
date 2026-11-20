@@ -626,23 +626,40 @@ not collapsed: `additionalContext` becomes the kernel's `text` channel,
 The mod-visible `next` is that same continuation with the pinned members
 projected onto it (`claude-code.d.ts:5271-5352`, issue #68): `to(e, tier)` calls
 the kernel `Next` with the tier argument the kernel already understands, so
-tier order, matcher skipping and trace recording stay in one place; `signal` is
-the handler's own `AbortController`, also fired by `ChainOptions.signal`;
+tier order, matcher skipping and trace recording stay in one place. A jump is
+computed by tier rank, not by index: only links strictly between the caller's
+tier and the target tier are passed over and recorded as `skipped` with
+`bypassed by <plugin>`, while a same-tier sibling still runs. In first-decision
+the remainder is owned by the recursive continuation and the caller's loop
+returns it, so no link runs twice; in fan-out the jump waits until the caller's
+tier is left, so peers are not skipped. `signal` is the handler's own
+`AbortController`, fired by the handler's timeout and linked to
+`ChainOptions.signal`; the materializer passes `ToolExecution.signal` for
+PreToolUse/PostToolUse, so a host-abandoned call aborts the mod's signal too.
 `event` and `is(pattern)` report the route the adapter selected; `origin` is
 `{ plugin: "engine", tier: "core" }` because every route served today is
-host-raised, not mod-raised; `budget` is live and stands still while `next` is
-in flight; `trace` maps the kernel's own steps beneath this link onto the
-pinned `TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`,
-`reason`; `ms`, `chunks`, `received` and `returned` are not invented). A
-`next.to` that passes over a link records it as `skipped` with
-`bypassed by <plugin>` — in both continuations, so the skip is in the same
-trace the guard's policy is read from. `TargetTier` is enforced:
-`prepend`/`user` are refused because the pin's type excludes them, and `core`
-refuses with a reason because this chain's innermost link is `builtin`.
+host-raised, not mod-raised; `budget` is live and stands still while `next` or
+a `$` call is in flight (the host wraps the dollar namespace with
+`pauseWhilePending`), and classic hooks keep their entry snapshot so T3 holds.
+`trace` maps the kernel's own steps beneath this link onto the pinned
+`TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`, `reason`;
+`ms`, `chunks`, `received` and `returned` are not invented). `plugin` is a host
+label: the owning plugin when the registration carries one, else the
+registration source. The subset is continuation-specific: first-decision sees
+the settled links beneath the call (`passed`, `returned`, `expired`,
+`rejected`, or `skipped` with the reason); fan-out sees only what the caller
+itself recorded, so it is empty after `await next(e)` and holds the pass-over
+after `next.to`. A matcher skip never ran and is not projected (it stays in the
+kernel trace as `skipped-matcher`); a throwing link is `rejected` with the
+throw message as the reason. `TargetTier` is enforced: `prepend`/`user` are
+refused because the pin's type excludes them, and `core` refuses with a reason
+because this chain's innermost link is `builtin`.
 Covered by `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (`to` skip and
-forward-only, `signal`, `is`/`event`/`origin`/`budget`, tier refusal),
-`packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (guard denies;
-unloaded, the same call continues) and the sec-default turn in
+forward-only, first-decision `next`/`to` single-run, fan-out same-tier sibling,
+matcher-skip exclusion, `rejected`, budget pause across `next` and `$`, classic
+budget snapshot, timeout abort, empty fan-out subset, `signal`, tier refusal),
+`packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (deny-only guard
+denies; unloaded, the same call continues) and the sec-default turn in
 `packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
 
 The skeleton had to add two orthogonal choices beyond the plan. The first is a
@@ -1493,6 +1510,22 @@ not deny a tool call; its deny paths ride unmapped engine events. The
 issue's "a tool call it should block is blocked" is therefore the wrong
 direction for this mod; the guard assertion is the bypass above, and the direct
 deny/unloaded contrast uses the synthetic guard fixture.
+
+The first implementation of the member had the projection right but five
+continuation rules wrong, found in review and now pinned by tests: a
+first-decision continuation was re-entered after `next`/`next.to` (links ran
+twice), the pass-over was computed by index rather than tier rank (a same-tier
+sibling was labelled skipped), a matcher skip was projected without a reason, a
+throwing link was reported as `skipped` instead of `rejected`, and the per-hook
+timer kept running while `next` was in flight. `next.budget` now pauses during
+`next` and `$` (the host wraps the dollar namespace with `pauseWhilePending`),
+while classic hooks keep their entry snapshot so T3 holds; `next.signal` is
+linked to `ChainOptions.signal`, and the materializer passes
+`ToolExecution.signal` for PreToolUse/PostToolUse, so a host-abandoned call
+aborts the mod's signal too. The `next.trace` subset is continuation-specific:
+first-decision sees the settled links beneath the call, fan-out is empty after
+`await next(e)` and holds the pass-over after `next.to` — the tests named above
+pin that shape.
 
 **What it does not prove.** One turn, one stub model: eight routed classic
 events (failure, permission, compaction, cwd, file, config) are unexercised;

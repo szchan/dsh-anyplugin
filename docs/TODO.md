@@ -93,9 +93,15 @@ with the exact anchor so the proposal is reviewable without a checkout.
   pinned seven members (`to`, `signal`, `is`, `event`, `origin`, `trace`,
   `budget`) as a projection over the kernel's own `Next`. `to(e, tier)` reuses
   the kernel's tier arithmetic and records every passed link as `skipped` with
-  `bypassed by <plugin>`; `ChainOptions.signal` aborts running handlers;
-  `trace` serves the pinned subset (`index`, `plugin`, `tier`, `event`,
-  `outcome`, `reason`) without inventing `ms`/`chunks`/`received`/`returned`.
+  `bypassed by <plugin>` (by tier rank, so a same-tier sibling still runs);
+  `ChainOptions.signal` aborts running handlers and the materializer passes
+  `ToolExecution.signal` into the chain; `budget` pauses during `next` and `$`
+  while classic hooks keep their snapshot; `trace` serves the pinned subset
+  (`index`, `plugin`, `tier`, `event`, `outcome`, `reason`) without inventing
+  `ms`/`chunks`/`received`/`returned`, excludes matcher skips, and reports a
+  throwing link as `rejected`. Review corrections pinned by tests: first-decision
+  continuations return instead of re-entering, pass-over is tier-ranked, and the
+  fan-out subset is empty after `await next(e)`.
   Pre-fix S15 reproduction: `TypeError: next.to is not a function` ×8, kernel
   `error` then `continue`. Post-fix sec-default end-to-end: seated at
   `prepend`, its guard skips a user-tier deny hook (tool runs, skip traced);

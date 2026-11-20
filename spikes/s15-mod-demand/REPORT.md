@@ -243,19 +243,30 @@ the trace is read.
 
 **Fixed after the spike (#68).** The mod-visible `next` is now the kernel's own
 continuation with the pinned seven members projected onto it: `to` reuses the
-kernel's tier order and records every passed link as `skipped` with
-`bypassed by <plugin>`; `signal` is the handler's controller, also fired by
-`ChainOptions.signal`; `origin` is the host raiser `{plugin:"engine",
-tier:"core"}`; `budget` is live and freezes during `next`; `trace` serves the
-pinned `TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`,
-`reason` — `ms`/`chunks`/`received`/`returned` are not invented). The
-`TargetTier` contract is enforced: `prepend`/`user` refuse, and `core` refuses
-with a reason because this chain's innermost link is `builtin`.
+kernel's tier order and records every passed-over link as `skipped` with
+`bypassed by <plugin>`; a jump is computed by tier rank, so a same-tier sibling
+still runs, and a first-decision continuation is returned rather than
+re-entered. `signal` is the handler's controller, fired by its timeout and
+linked to `ChainOptions.signal` (the materializer passes `ToolExecution.signal`
+for PreToolUse/PostToolUse); `origin` is the host raiser `{plugin:"engine",
+tier:"core"}`; `budget` is live and pauses during `next` and `$` (via
+`pauseWhilePending`), while classic hooks keep their entry snapshot; `trace`
+serves the pinned `TraceEntry` subset (`index`, `plugin`, `tier`, `event`,
+`outcome`, `reason` — `ms`/`chunks`/`received`/`returned` are not invented).
+A throwing link is `rejected` with the throw as its reason; a matcher skip never
+ran and is not projected. The subset is continuation-specific: first-decision
+sees the settled links beneath the call, whereas fan-out is empty after
+`await next(e)` and holds the pass-over after `next.to`. The `TargetTier`
+contract is enforced: `prepend`/`user` refuse, and `core` refuses with a reason
+because this chain's innermost link is `builtin`.
 
 Tests: `packages/dsh-anyplugin-intercept/test/mods.test.mjs` pins the member
-semantics (skip + forward-only, signal, `is`/`event`/`origin`/`budget`, tier
-refusal); `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` pins
-deny/unloaded contrast with `fixtures/mods/guard/`; and
+semantics (skip + forward-only, first-decision `next`/`to` single-run, fan-out
+same-tier sibling, matcher-skip exclusion, `rejected`, budget pause across
+`next` and `$`, classic budget snapshot, timeout abort, empty fan-out subset,
+signal, `is`/`event`/`origin`/`budget`, tier refusal);
+`packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` pins the
+deny-only guard/unloaded contrast with `fixtures/mods/guard/`; and
 `packages/dsh-anyplugin-conformance/test/mods.test.mjs` reproduces this turn
 with sec-default seated at `prepend` — the user-tier deny hook is skipped
 (`PreToolUse#0`, `bypassed by sec-default`), the tool call executes, and with
