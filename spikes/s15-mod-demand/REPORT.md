@@ -246,7 +246,9 @@ continuation with the pinned seven members projected onto it. `next` is eager
 and call-scoped: each call continues the chain from the calling link with that
 call's `to` target, a second call runs the remainder a second time (our host
 contract; the pin only says `trace` describes the latest call), an unawaited
-`next` is joined exactly once before the loop decides, and the latest trip is
+`next` is joined exactly once before the loop decides, a new call joins the
+previous trip before it starts so mixed unawaited-then-awaited calls run
+sequentially (a call supersedes ordering, not concurrency), and the latest trip is
 the one the hook's return and `trace` describe. A same-tier sibling's named
 target wins over the outer call's. `to` reuses the
 kernel's tier order and records every passed-over link as `skipped` with

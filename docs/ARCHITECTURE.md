@@ -636,7 +636,10 @@ we take it as the cited spec for this rule. The latest trip is the one the
 return decides with and the one `trace` describes, and a sibling's later call
 can never inherit or be blamed for someone else's jump. An unawaited `next` is
 joined exactly once before the loop decides, so the remainder never runs
-twice. Both
+twice. Every call also joins the previous trip before it starts, so
+`void next(e); await next(e)` runs the two trips sequentially — a call
+supersedes ordering, not concurrency, and the trace boundary is the second
+call's start. Both
 continuations follow the same rule: fan-out runs an eager fan-out trip and
 still collects its decisions, but a mod's `next` resolves the kernel's
 continue, not the classic arm's result. This refines D32 §6's sentence "a

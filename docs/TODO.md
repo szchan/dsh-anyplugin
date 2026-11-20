@@ -102,7 +102,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   throwing link as `rejected`. Review corrections pinned by tests: a continuation is eager and call-scoped,
 so a hook that calls `next` twice runs the remainder twice (our host contract;
 the pin only says `trace` describes the latest call) and the latest trip is the
-one its return and `trace` describe; an unawaited `next` is joined exactly once;
+one its return and `trace` describe; an unawaited `next` is joined exactly once
+and a later call joins the previous trip first (sequential, not concurrent);
 when a same-tier sibling names its own target, the nested target wins over the
 outer call's; pass-over is tier-ranked; fan-out
 lands direct targets and falls forward when the named tier is empty; a
