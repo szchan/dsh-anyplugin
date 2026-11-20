@@ -17,17 +17,8 @@
 // the frontmatter keys are recorded in the IR and annotated `planned` — the
 // harness neither maps nor refuses them; it never sees them.
 //
-// Run (needs the extra pins installed into the fetched tree, see s9's header):
+// Run (the fetch installs the packages this spike boots; see s9's header):
 //   node scripts/fetch-harness.mjs 0.2.2-rc.5
-//   npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
-//     --cache "$PWD/.npm-cache" \
-//     @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-subagent-spawn-in-process@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-session-persistence-jsonl@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-fs-local@0.2.2-rc.5
 //   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
 //     node spikes/s10-agents/run.mjs
 //

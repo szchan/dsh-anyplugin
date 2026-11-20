@@ -30,25 +30,8 @@
 // the CLI inventory not listing styles at 2.1.322, so a fixture must compare a
 // dumped composed prompt; (iv) `keep-coding-instructions`.
 //
-// Run:
+// Run (one fetch installs the packages this spike boots; see s9's header):
 //   node scripts/fetch-harness.mjs 0.2.2-rc.5
-//   npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
-//     --cache "$PWD/.npm-cache" \
-//     @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-llm@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-session@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-session-projection@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-agent@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-commands@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-token-meter@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-persona@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-agent-preset@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-agent-preset-registry@0.2.2-rc.5
 //   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
 //     node spikes/s11-prompt-scope/run.mjs   # or: npm run spike:s11
 //

@@ -57,8 +57,9 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
 4. Run `npm run verify` in the worktree. It must be green **before** the PR
    opens, including the tests that need a harness or the upstream CLI. CI
    fetches the pinned Claude CLI and both npm pins (0.2.2-rc.5 and 0.2.2-rc.2)
-   and fails on a skip, but it cannot test your Desktop installation — so paste
-   the local run in the PR.
+   once; the fetch installs the union the suite and spikes need, so there is no
+   per-step install. CI fails on a skip, but it cannot test your Desktop
+   installation — so paste the local run in the PR.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
 

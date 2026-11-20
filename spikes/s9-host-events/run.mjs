@@ -21,27 +21,10 @@
 //   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
 //     node spikes/s9-host-events/run.mjs   # or: npm run spike:s9
 //
-// The full turn probes need the agent loop and friends. The fetched rc.5 tree
-// deliberately carries only the four packages the oracle boots, so install the
-// extra pins into the fetched tree once (still rc.5, never `latest`):
-//
-//   npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
-//     --cache "$PWD/.npm-cache" \
-//     @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-agent-team@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-tool-fs@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-fs-observation-policy@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-user-questions@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-settings@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-experimental-worktree@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-agent-instructions@0.2.2-rc.5 \
-//     @deepseek-ai/dsh-tool-fs-search@0.2.2-rc.5
+// The full turn probes boot the agent loop and friends. `fetch-harness.mjs`
+// installs the union of every package this spike loads, at the pin; the list
+// lives there with a consumer note per entry, so the fetch above is the only
+// install the run needs (never `latest`).
 //
 // When a package is absent the corresponding probe reports `skipped` with the
 // missing name. A skipped required probe (or a run with no checks at all) exits
@@ -786,7 +769,7 @@ for (const [name, fn] of Object.entries({
 const passed = checks.filter((entry) => entry.ok).length
 console.log(`\n${passed}/${checks.length} checks passed${skipped.length > 0 ? `, ${skipped.length} skipped` : ''}`)
 if (checks.length === 0) {
-  console.error('s9: no checks ran; install the extra packages documented in the header and pass a full harness')
+  console.error('s9: no checks ran; fetch the pin with scripts/fetch-harness.mjs and pass that tree, not a bare one')
 } else if (skipped.length > 0) {
   console.error(`s9: ${skipped.length} required probe(s) skipped; a vacuous run is a failure, not a pass`)
 }

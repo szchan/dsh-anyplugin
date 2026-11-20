@@ -134,6 +134,14 @@ DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
   DSH_HARNESS_VERSION=0.2.2-rc.5 npm run verify
 ```
 
+One fetch is the whole tree: the script installs the **union** the conformance
+suite and every spike `verify.yml` runs boot, at that pin, in one `npm install`.
+There is no second install step, locally or in CI. A test or CI spike that
+starts loading a new `@deepseek-ai/dsh-*` package must add it to
+`HARNESS_PACKAGES` in `scripts/fetch-harness.mjs`; until it does,
+`packages/dsh-anyplugin-conformance/test/harness-union.test.mjs` fails the
+suite instead of letting the package be hand-installed.
+
 The upstream oracle resolves its `claude` the same way (D24), and CI fetches it
 instead of borrowing a laptop install:
 
