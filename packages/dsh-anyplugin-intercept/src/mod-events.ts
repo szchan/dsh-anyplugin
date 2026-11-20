@@ -22,7 +22,7 @@
  */
 
 /** How the host event at `hostSeam` carries a mod handler's `e`. */
-export type ModEventPayload = 'classic' | 'tool-call-envelope' | 'engine'
+export type ModEventPayload = 'classic' | 'tool-call-envelope' | 'prompt-context' | 'engine'
 
 /** Why a pinned event is not adapted, in the report's own vocabulary. */
 export type ModUnmappedCategory = 'missing bridge' | 'no host event' | 'not in spec'
@@ -55,7 +55,8 @@ export interface ModEventRoute {
 }
 
 /**
- * The 17 live routes: sixteen classic routes and `session.start`.
+ * The 19 live routes: sixteen classic routes, `session.start`, `tool.call`
+ * and `prompt.context`.
  *
  * The sixteen `classic.*` rows are the mod-side spellings of the classic hook
  * points; each shares the kernel event name (`ClassicEventOf` maps them
@@ -234,6 +235,28 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
     status: 'live',
     evidence:
       'EngineEventOf session.start fires once per process for each loaded plugin, before the first prompt, then once per fresh load (d.ts:5766 at the 2.1.329 pin). The materializer fires it from apply, once per loaded plugin, before the first prompt; a reload is a new apply. It is not agent/created (that is classic.SessionStart).',
+  },
+  {
+    modEvent: 'tool.call',
+    kernelEvent: 'PreToolUse',
+    hostSeam: 'tools/pre-execute',
+    payload: 'tool-call-envelope',
+    status: 'live',
+    evidence:
+      'EngineEventOf tool.call hands the hook ToolCallInput, the classic ToolCallEnvelope plus the loop and request meta (d.ts:4940-4959 at the 2.1.329 pin; ToolCallInput at d.ts:17697, built on ToolCallEnvelope at d.ts:17689). Its result is ToolCallResult: `{ deny }`, `{ result }` or `{ isError: true, result }` (d.ts:17729-17831 at the 2.1.329 pin). S8 confirms tools/pre-execute is the pre-execution waterfall and `PreToolDecision.deny` materializes a model-facing reason (docs/ARCHITECTURE.md:1218-1221). The route is a gate-only projection: deny is the kernel deny, and the result-bearing verbs are hard `unsupported` because this seam has no value channel (see modResultToKernel).',
+    caveat:
+      'A handler that awaits next() sees the gate projection (a continuation, not a native ToolCallResult); an authored { allow: true } is refused as a non-pin field. diff\'s afterTool reads result.result through that call, so its post-edit pane refresh is degraded on this route. agents-md\'s Read handler calls $.session.root()/$.fs.ancestors(), which the mod bridge lacks, so it errors and the chain fails open (the call still runs).',
+  },
+  {
+    modEvent: 'prompt.context',
+    kernelEvent: 'PromptContext',
+    hostSeam: 'system-prompt/assemble',
+    payload: 'prompt-context',
+    status: 'live',
+    evidence:
+      'EngineEventOf prompt.context fires once per conversation while the engine computes the context blocks of the first user message; next(e) resolves to PromptContextResult { blocks } (d.ts:5282-5288 at the 2.1.329 pin; PromptContextBlock at d.ts:11332-11357, PromptContextInput at d.ts:11359, PromptContextResult at d.ts:11379-11410). The agent-scoped system-prompt/assemble waterfall owns the contexts that agent-loop renders into the user-role runtime-context message at each step (S9 395-423; dsh-system-prompt PromptContext). The route projects only the pin-named blocks (claudeMd, userEmail, attachedProject, currentDate) plus blocks the mod itself added; DSH operational contexts are never exposed to the mod and cannot be dropped by it. `instructionFiles` has no host projection and is reported unsupported at the mount; agents-md\'s handler no-ops without instruction files and needs $.session.root/$.fs.ancestors, which the bridge lacks.',
+    caveat:
+      'The answer is cached once per seat until compaction/end (the host re-read); a /clear starts a new session and seat. $.ui.invalidate("prompt.context") is refused by the bridge (ERR_MOD_HOST_UI_UNSUPPORTED), so a mod cannot force the pin\'s re-read on the same seat.',
   },
 ])
 
@@ -479,7 +502,6 @@ const PROMPT_ELEMENT_EVENTS = [
   'prompt.suggest',
   'prompt.edit',
   'prompt.section',
-  'prompt.context',
   'prompt.compose',
   'prompt.attachment',
 ]
@@ -562,10 +584,8 @@ const ENGINE_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
     'createModBridge defines no vcs namespace, so $.vcs.* cannot resolve; the engine events have no host route either. Recorded missing at 2.1.329, not refused.',
   ),
   ...NEW_NO_HOST_EVENTS,
-  'tool.call':
-    'Protocol mismatch: tools/pre-execute carries the classic PreToolUse protocol, while tool.call returns the engine result { deny } / { result } (d.ts:4959 at the 2.1.329 pin). Routing it through that waterfall would translate one protocol into the other, not share one chain; leave the native engine event to its own subscription (D32).',
   'tool.check':
-    'Runs after tool.call and PreToolUse, before the ask; it has no classic counterpart and no separate host listener (d.ts:4977 at the 2.1.329 pin).',
+    'Refused (not routed) because it is the engine\'s own permission verdict, not the pre-execution gate: it runs after tool.call and PreToolUse, and next(e) resolves to the engine\'s { decision } (rules, mode, the tool\'s own check, PreToolUse\'s decision) without running a tool (d.ts:4961-4977 at the 2.1.329 pin; ToolCheckResult at d.ts:17950-18010). tools/pre-execute is the PreToolUse stage itself: it cannot see or answer that later verdict, cannot attribute an `ask` to a person or plugin, and cannot carry next.origin/trace/settings or the engine-set `op`/`ceiling` facts that the three real registrations read. Mapping allow/ask/deny onto PreToolDecision.allow/ask/deny would make the mod answer a different question at the wrong point, so it stays a measured refusal.',
   'agent.spawn':
     'The subagent spawn decision; subagent/start is emitted after the decision, so it cannot see or deny the spawn (d.ts:5162 (2.1.329 pin); S9 1279).',
   'prompt.submit':

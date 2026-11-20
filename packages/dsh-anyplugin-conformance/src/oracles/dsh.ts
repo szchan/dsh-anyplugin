@@ -334,6 +334,8 @@ export interface DshLifecycleProbeOptions {
   reloadWhileLive?: boolean
   /** Observe the root agent after it is seated, before its first turn. */
   onAgent?: (agent: unknown) => void | Promise<void>
+  /** Observe every agent the host creates (root and child), after it is seated. */
+  onAgentCreated?: (agent: unknown) => void | Promise<void>
   /** How long to wait for boot, the turn, the child and the expected labels, in milliseconds. */
   timeoutMs?: number
 }
@@ -460,6 +462,13 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
     await until(() => Boolean(ctx.get('llm')), timeoutMs, 'llm service')
     await until(() => Boolean(ctx.get('agentLoop')), timeoutMs, 'agent loop service')
     if (options.tool !== undefined) ctx.tools.register(options.tool)
+    if (options.onAgentCreated !== undefined) {
+      const observe = options.onAgentCreated
+      ctx.on('agent/created', (value: { agent?: unknown }) => {
+        if (value?.agent === undefined || value.agent === null) return
+        void observe(value.agent)
+      })
+    }
     // The header carries no cwd unless the creator seeds one, and the payload
     // builder reads it from the header. Seed it with the probe's own data
     // directory, which is distinct from the process cwd, so a payload that

@@ -356,6 +356,22 @@ const LIFECYCLE_EVENTS = ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart',
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000
 const KERNEL_GRACE_MS = 5_000
 
+/**
+ * The block names `prompt.context` names as its own at the pin (d.ts:11332-11357
+ * at the 2.1.329 pin): claudeMd, userEmail, attachedProject, currentDate and a
+ * plugin's own. DSH's systemPrompt.context names are operational
+ * (`working-directory:current`, `approval:policy`, `sandbox:policy`, …); they
+ * are deliberately not exposed, so a mod cannot drop or reorder them. A block
+ * this route itself produced is added to the exposed set after the first
+ * answer, which is how a plugin's own block keeps its identity.
+ */
+const PROMPT_CONTEXT_HOST_BLOCKS: ReadonlySet<string> = new Set([
+  'claudeMd',
+  'userEmail',
+  'attachedProject',
+  'currentDate',
+])
+
 const textify = (value: unknown): string => {
   if (typeof value === 'string') return value
   try {
@@ -521,6 +537,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     agent?: unknown,
     gaps?: readonly string[],
     signal?: AbortSignal,
+    continuation: 'fan-out' | 'first-decision' = 'fan-out',
   ): Promise<ChainResult> => {
     // A seat owns every host event, including ones this plugin has no handler
     // for. Running an empty chain would add an empty trace and an empty
@@ -530,7 +547,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     }
     const result = await invocation.run({ agent }, () =>
       runChain(event, registrations, {
-        continuation: 'fan-out',
+        continuation,
         timeoutMs: DEFAULT_HOOK_TIMEOUT_MS + KERNEL_GRACE_MS,
         ...(signal === undefined ? {} : { signal }),
         // A mod registration carries no timeout of its own unless the host set
@@ -1190,7 +1207,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       }
       for (const row of adapted.unmapped) {
         const where = row.category === undefined ? '' : `${row.category} at ${MOD_SPEC_LABEL}: `
-        warn(`anyplugin mod ${row.source}: ${where}${row.reason}`)
+        warn(`anyplugin mod ${row.source}: ${row.event} is ${where}${row.reason}`)
       }
     }
 
@@ -1253,6 +1270,18 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             (decision): decision is { kind: 'deny'; reason: string } => decision.kind === 'deny',
           )
           if (denied !== undefined) return { kind: 'deny', reason: denied.reason }
+          // A routed tool.call { result }/{ isError } has no value channel on
+          // this seam. The decision is typed unsupported (and traced); the
+          // host must refuse the call rather than execute a call whose output
+          // the mod tried to replace.
+          const blocked = result.decisions.find(
+            (decision): decision is { kind: 'unsupported'; field: string; reason: string; hard: true } =>
+              decision.kind === 'unsupported' && decision.hard === true,
+          )
+          if (blocked !== undefined) {
+            reportUnsupported('tool.call', blocked.field, blocked.reason)
+            return { kind: 'deny', reason: `tool.call ${blocked.field} is unsupported at tools/pre-execute: ${blocked.reason}` }
+          }
           const rewrite = applyToolInputRewrite(exec, result.event, chainEvent)
           if (!rewrite.applied && rewrite.reason !== undefined) {
             // The gate has no value channel; a host that freezes the execution
@@ -1283,6 +1312,81 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           }
           if (contexts.length === before.length) return decision
           return { ...decision, additionalContexts: contexts }
+        }),
+      )
+
+      // `prompt.context` is a once-per-conversation block projection over this
+      // agent's prompt assembly. Only the pin-named blocks (and blocks this
+      // route itself added) are exposed, so a mod cannot drop DSH's
+      // operational contexts. The answer is computed on the first assembly and
+      // reused until `compaction/end`, the host's re-read signal. The pin's
+      // `$.ui.invalidate("prompt.context")` is refused by the bridge
+      // (ERR_MOD_HOST_UI_UNSUPPORTED); a `/clear` is a new session/seat, not a
+      // same-seat re-read.
+      let promptApplied = false
+      const promptOwned = new Set<string>()
+      mount(() =>
+        agentCtx.on('session/event', (session: any, event: any) => {
+          if (event?.type !== 'compaction/end') return
+          const sessionId = String(session?.id ?? session?.header?.id ?? '')
+          if (sessionId !== String(id)) return
+          promptApplied = false
+        }),
+      )
+      mount(() =>
+        agentCtx.on('system-prompt/assemble', async (assembly: any, _context: unknown, next: () => Promise<any>) => {
+          const downstream = await next()
+          if (promptApplied) return downstream
+          promptApplied = true
+          const registrations = combined('PromptContext')
+          if (registrations.length === 0) return downstream
+          const exposed = new Set([...PROMPT_CONTEXT_HOST_BLOCKS, ...promptOwned])
+          const contexts: any[] = Array.isArray(downstream?.contexts) ? downstream.contexts : []
+          const input = contexts
+            .filter((context) => exposed.has(context.name))
+            .map((context) => ({ name: String(context.name), text: typeof context.text === 'string' ? context.text : '' }))
+          const chainEvent: ChainEvent = { name: 'PromptContext', subject: null, data: { blocks: input } }
+          const run = await runKernel(chainEvent, registrations, agent, undefined, undefined, 'first-decision')
+          for (const decision of run.decisions) {
+            if (decision.kind === 'unsupported') reportUnsupported('prompt.context', decision.field, decision.reason)
+          }
+          const answerInstructionFiles =
+            run.decision.kind === 'result' && isRecord(run.decision.result)
+              ? run.decision.result.instructionFiles
+              : undefined
+          if (run.event.data.instructionFiles !== undefined || answerInstructionFiles !== undefined) {
+            reportUnsupported(
+              'prompt.context',
+              'instructionFiles',
+              'the host has no projection of instruction files; the route carries PromptContextBlock text only (d.ts:11359, 11379 at the 2.1.329 pin)',
+            )
+          }
+          let answer: Array<{ name: string; text: string }> = input
+          if (run.decision.kind === 'result' && isRecord(run.decision.result) && Array.isArray(run.decision.result.blocks)) {
+            answer = run.decision.result.blocks.map((block) => ({ name: block.name, text: block.text }))
+          } else if (Array.isArray(run.event.data.blocks)) {
+            // A handler that rewrote with next({ ...e, blocks }) and returned
+            // it leaves the answer on the deepest event rather than in a
+            // result decision.
+            answer = run.event.data.blocks.map((block) => ({ name: block.name, text: block.text }))
+          }
+          for (const block of answer) promptOwned.add(block.name)
+          const kept = contexts.filter((context) => !exposed.has(context.name))
+          const first = contexts.findIndex((context) => exposed.has(context.name))
+          const insertAt = first === -1 ? kept.length : contexts.slice(0, first).filter((context) => !exposed.has(context.name)).length
+          kept.splice(
+            insertAt,
+            0,
+            ...answer.map((block) => ({
+              name: block.name,
+              // The pin's `name` is the key the block renders under as `# name`
+              // (d.ts:11332 at the 2.1.329 pin); the host assembly carries the
+              // rendered text, so materialize that heading here.
+              text: `# ${block.name}\n${block.text}`,
+              interpolate: false,
+            })),
+          )
+          return { ...downstream, contexts: kept }
         }),
       )
 

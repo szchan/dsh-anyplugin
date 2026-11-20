@@ -890,8 +890,9 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
       entry: diffFixture.entry,
     })
     assert.equal(kernel.routes.length, diffFixture.kernel.routed)
-    assert.equal(kernel.routes[0].route.modEvent, 'session.start')
-    assert.equal(kernel.routes[0].registration.event, 'session.start')
+    assert.deepEqual(kernel.routes.map(({ route }) => route.modEvent).sort(), ['session.start', 'tool.call'])
+    const sessionStartRoute = kernel.routes.find(({ route }) => route.modEvent === 'session.start')
+    assert.equal(sessionStartRoute.registration.event, 'session.start')
     assert.equal(kernel.unmapped.length, diffFixture.kernel.unmapped)
     for (const unmapped of kernel.unmapped) {
       assert.ok(unmapped.reason.length > 0, `${unmapped.event} has an empty unmapped reason`)
@@ -1067,4 +1068,218 @@ test('a loaded guard mod denies the tool call; unloaded, the same turn proceeds'
   assert.equal(allowedPre.length, 1)
   assert.deepEqual(allowedPre[0].decision, { kind: 'continue' })
   assert.deepEqual(allowed.calls, [{ command: 'ls' }], 'without the mod the same call runs')
+})
+
+// Issue #69, end to end: an engine tool.call mod's { deny } stops the native
+// call, and the same turn without the mod runs it. The trace proves the
+// decision came from the mod route, not from the classic hook that keeps the
+// chain non-empty.
+test('a loaded tool.call mod denies the call; unloaded, the same turn proceeds', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'tool-call-guard')
+  const turn = async (mods) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-call-'))
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    try {
+      await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        entry: modsEntry(dataDir, traceFile, { plugin: 'tool-call-guard', pluginRoot: modRoot, mods, hooks: [pinned(commandHook)] }),
+        expected: [],
+        tool: bashTool(calls),
+        toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+        timeoutMs: 20_000,
+      })
+      return { calls, trace: readTrace(traceFile) }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  }
+
+  const denied = await turn([{ entry: 'register.ts' }])
+  assert.deepEqual(denied.calls, [], 'the denied call never executes')
+  const deniedPre = denied.trace.filter((record) => record.event === 'PreToolUse')
+  assert.equal(deniedPre.length, 1)
+  assert.deepEqual(deniedPre[0].decision, { kind: 'deny', reason: 'the tool.call guard does not allow Bash' })
+
+  const allowed = await turn([])
+  assert.deepEqual(allowed.calls, [{ command: 'ls' }], 'without the mod the same call runs')
+  const allowedPre = allowed.trace.filter((record) => record.event === 'PreToolUse')
+  assert.deepEqual(allowedPre[0].decision, { kind: 'continue' })
+})
+
+// The pin's { result } answers in place of the tool; this seam has no value
+// channel, so the route must refuse the call and record the typed field rather
+// than execute it with the replacement silently dropped.
+test('a tool.call { result } is refused and traced as unsupported in a real turn', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'tool-call-result')
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-result-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  const seen = []
+  const messageText = (message) =>
+    Array.isArray(message.content)
+      ? message.content.map((block) => (typeof block.text === 'string' ? block.text : '')).join('')
+      : String(message.content ?? '')
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { plugin: 'tool-call-result', pluginRoot: modRoot, mods: [{ entry: 'register.ts' }] }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      onAgent: (root) => {
+        root.ctx.on('llm/stream', (options, next) => {
+          seen.push(options.messages)
+          return next()
+        })
+      },
+      timeoutMs: 20_000,
+    })
+    assert.deepEqual(calls, [], 'the call is denied rather than run with a dropped result')
+    const records = readTrace(traceFile)
+    const unsupported = records.filter((record) => record.event === 'tool.call')
+    assert.equal(unsupported.length, 1)
+    assert.equal(unsupported[0].unsupported.field, 'result')
+    assert.match(unsupported[0].unsupported.reason, /tools\/pre-execute/)
+    const pre = records.filter((record) => record.event === 'PreToolUse')
+    assert.equal(pre[0].decision.kind, 'unsupported')
+    assert.equal(pre[0].decision.field, 'result')
+    assert.equal(pre[0].decision.hard, true)
+    const modelText = seen.flat().map(messageText).join('\n')
+    assert.match(
+      modelText,
+      /tool\.call result is unsupported at tools\/pre-execute/,
+      'the model reads the typed refuse reason, not the raw tool output',
+    )
+    assert.doesNotMatch(modelText, /^ran$/m, 'the withheld result text never reaches the model')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// Issue #69, end to end: the block a prompt.context mod appends is asserted on
+// the composed messages the model receives, not on a trace or log line. The
+// same turn without the mod must not contain it.
+test('a loaded prompt.context mod appends a block to the composed model messages', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'prompt-context')
+  const messageText = (message) =>
+    Array.isArray(message.content)
+      ? message.content.map((block) => (typeof block.text === 'string' ? block.text : '')).join('')
+      : String(message.content ?? '')
+  const turn = async (mods) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-prompt-context-'))
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    const seen = []
+    const observed = new Set()
+    const observe = (agent) => {
+      const id = String(agent?.session?.header?.id ?? agent?.id ?? 'unknown')
+      if (observed.has(id)) return
+      observed.add(id)
+      agent.ctx.on('llm/stream', (options, next) => {
+        seen.push({ agentId: id, messages: options.messages })
+        return next()
+      })
+    }
+    try {
+      await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        entry: modsEntry(dataDir, traceFile, { plugin: 'prompt-context', pluginRoot: modRoot, mods }),
+        expected: [],
+        tool: bashTool(calls),
+        toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+        onAgentCreated: observe,
+        timeoutMs: 20_000,
+      })
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+    return seen
+  }
+
+  const loaded = await turn([{ entry: 'register.ts' }])
+  assert.ok(loaded.length > 0, 'the model received at least one call')
+  for (const call of loaded) {
+    const text = call.messages.map(messageText).join('\n')
+    assert.ok(
+      text.includes('# fixture-context\nPROMPT-CONTEXT-FIXTURE'),
+      `the composed prompt for ${call.agentId} carries the pin-visible heading and block`,
+    )
+    // DSH re-renders the context snapshot on each step, so a later model call
+    // can carry the block in both the first user message and the refreshed
+    // snapshot. Presence and the pin-visible heading are the assertions.
+    assert.ok(text.split('# fixture-context').length - 1 >= 1, 'the heading is in the composed prompt bytes')
+  }
+  assert.ok(
+    new Set(loaded.map((call) => call.agentId)).size >= 2,
+    'the root and the delegated child both assembled the block',
+  )
+
+  const unloaded = await turn([])
+  assert.ok(unloaded.length > 0)
+  for (const call of unloaded) {
+    const text = call.messages.map(messageText).join('\n')
+    assert.ok(!text.includes('PROMPT-CONTEXT-FIXTURE'), 'without the mod the block is absent')
+    assert.ok(!text.includes('# fixture-context'), 'without the mod the heading is absent')
+  }
+})
+
+// tool.check is refused with a load-time warning that names the difference.
+// The handler would deny if it ran, so the running call proves zero
+// invocations; the trace carries the warning and no tool.check decision.
+test('a loaded tool.check mod is refused with a named warning and never invoked', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'tool-check-refusal')
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-check-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { plugin: 'tool-check-refusal', pluginRoot: modRoot, mods: [{ entry: 'register.ts' }] }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 20_000,
+    })
+    assert.deepEqual(calls, [{ command: 'ls' }], 'the tool.check handler did not deny the call')
+    const records = readTrace(traceFile)
+    const warning = records.find((record) => typeof record.warning === 'string' && record.warning.includes('tool.check'))
+    assert.ok(warning, 'the refusal warning names tool.check')
+    assert.match(warning.warning, /permission verdict/)
+    assert.equal(records.filter((record) => record.event === 'tool.check').length, 0, 'the handler never joined a chain')
+    assert.equal(records.filter((record) => record.event === 'PreToolUse')[0].decision.kind, 'continue')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// MUST 1 on the direct-return path: `{ blocks, instructionFiles }` returns from
+// the handler itself, so the mount must inspect the result decision too.
+test('a direct prompt.context result with instructionFiles is typed unsupported', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'prompt-context-instruction')
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-prompt-instruction-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { plugin: 'prompt-context-instruction', pluginRoot: modRoot, mods: [{ entry: 'register.ts' }] }),
+      expected: [],
+      tool: bashTool([]),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 20_000,
+    })
+    const records = readTrace(traceFile)
+    const unsupported = records.filter(
+      (record) => record.event === 'prompt.context' && record.unsupported?.field === 'instructionFiles',
+    )
+    assert.ok(unsupported.length >= 1, 'the direct-return instructionFiles half is reported')
+    assert.match(unsupported[0].unsupported.reason, /no projection of instruction files/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })
