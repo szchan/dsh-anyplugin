@@ -11,12 +11,12 @@ const isCI = process.env.CI === 'true' || process.env.CI === '1'
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
 
 /**
- * The upstream acceptance for #33 is the *refusal*, not a fired hook: the
- * fetched graph reaches `views/pane-view.tsx` through `views/index.ts`, and D30
- * makes `.tsx` planned (no JSX transform). This test therefore asserts the
- * typed error names that module, plus the pin and the untouched bytes.
+ * The upstream acceptance for #45 is the load, not the refusal: the fetched
+ * graph reaches `views/pane-view.tsx` through `views/index.ts`, and the narrow
+ * classic transform makes that `.tsx` module loadable (D34). The entry pin and
+ * the untouched bytes are asserted on both sides of the load.
  */
-test('the fetched diff mod is refused at views/pane-view.tsx (D30 .tsx)', async (t) => {
+test('the fetched diff mod loads through the classic JSX transform', async (t) => {
   const tree = process.env.ANYPLUGIN_MOD_TREE
   if (!tree) {
     const reason =
@@ -33,26 +33,69 @@ test('the fetched diff mod is refused at views/pane-view.tsx (D30 .tsx)', async 
   assert.equal(statSync(entry).size, DIFF_MOD_PIN.entryBytes, 'fetched entry size must match the pin')
   assert.equal(before, DIFF_MOD_PIN.entrySha256, 'fetched entry sha256 must match the pin')
 
-  await assert.rejects(
-    loadMod({
-      root,
-      entry: DIFF_MOD_PIN.entry,
-      host: {
-        dollar: () => {
-          throw new Error('$ must not be built: the graph is refused before any handler runs')
+  const calls = []
+  const mod = await loadMod({
+    root,
+    entry: DIFF_MOD_PIN.entry,
+    host: {
+      dollar: () => ({
+        session: {
+          usage: async () => {
+            calls.push('session.usage')
+            return undefined
+          },
+          messages: async () => {
+            calls.push('session.messages')
+            return []
+          },
         },
-      },
-    }),
-    (error) => {
-      assert.equal(error.name, 'ModHostError')
-      assert.equal(error.code, 'ERR_MOD_HOST_TSX', error.message)
-      assert.equal(error.file, join(root, 'views', 'pane-view.tsx'))
-      assert.match(error.message, /views[\\/]pane-view\.tsx/)
-      assert.match(error.message, /planned/)
-      assert.match(error.message, /D30/)
-      return true
+        clock: {
+          now: async () => {
+            calls.push('clock.now')
+            return 1700000000000
+          },
+        },
+        command: {
+          register: async (spec) => {
+            calls.push(`command.register:${spec.name}`)
+          },
+        },
+      }),
     },
-  )
+  })
 
-  assert.equal(sha256(entry), before, 'refusing the mod must not touch the authored bytes')
+  const events = mod.registrations.map((registration) => registration.event)
+  assert.deepEqual(events, [
+    'session.start',
+    'ui.render',
+    'ui.render',
+    'command.run',
+    'ui.close',
+    'ui.focus',
+    'ui.scroll',
+    'command.run',
+    'tool.call',
+    'prompt.submit',
+  ])
+  assert.equal(new Set(events).size, 8)
+
+  // D31's handler contract, on the real mod's session.start handler.
+  const sessionStart = mod.registrations[0]
+  const event = { hook_event_name: 'SessionStart', cwd: '/tmp/diff-mod' }
+  const next = { kind: 'continued' }
+  let sawNext
+  const result = await sessionStart.handler(event, (seen) => {
+    sawNext = seen
+    return next
+  })
+  assert.equal(result, next)
+  assert.equal(sawNext, event)
+  assert.deepEqual(calls, [
+    'session.usage',
+    'clock.now',
+    'command.register:diff',
+    'session.messages',
+  ])
+
+  assert.equal(sha256(entry), before, 'loading the mod must not touch the authored bytes')
 })

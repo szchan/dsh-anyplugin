@@ -1235,6 +1235,12 @@ loadable by stock Node. JSX is not type stripping: it is a second transform
 producing a different program and needs a factory (`h`/`Fragment`) and a
 separate decision. A module that reaches JSX is not claimed runnable.
 
+**Amended by D34 (2026-11-19):** `.tsx` is no longer `planned`; a `.tsx`
+module that declares the classic pragma loads through one narrow transform,
+and D31's `.tsx` refusal is superseded for exactly that case. The rest of
+D30 — authored bytes, the scanner's view, and type stripping as the only
+transform for `.ts` — stands.
+
 The mod host will evaluate each mod in a per-mod `node:vm`
 `SourceTextModule` context, requiring `--experimental-vm-modules` (create →
 `link()` once → `evaluate()`), because it is the tested route whose context
@@ -1503,3 +1509,84 @@ Hook faithfulness reuses the single S9/D32 seam table; no second route is introd
 A manifest whose `$schema` is missing or foreign, or whose `name` is invalid, is recorded as unsupported and the file is still read for diagnosis. This differs from spec §5.2, which makes a required-schema violation fatal; components read from such a file are diagnostic, not evidence that the plugin is 1.0.0-conformant. Because the IR has no dialect field, the plugin `source` records `codex:<root>`.
 
 The dialect is not yet wired into `compileReport` (install remains Claude-only); that is a follow-up, not a claim made here.
+
+## D34 — `.tsx` loads through one narrow classic-pragma transform; `h`/`Fragment` are realm globals, not a renderer
+
+**Status:** ratified 2026-11-19 (issue #45, spike S14).
+
+**Context.** D30 kept `.tsx` `planned`: JSX is a second transform producing a
+different program, and stock Node refuses the extension. At the pin
+(claude-code `2.1.322`, commit
+`6e1e44f6433bfa17d198e932bff53373aa229eea`) all 21 `.tsx` modules under
+`mods/diff/hooks` declare the three classic pragma comments (`@jsxRuntime
+classic`, `@jsx h`, `@jsxFrag Fragment`) and none imports `h` or `Fragment`.
+The graph reaches them through `views/index.ts`, so `diff` could not load and
+the TODO item "Upstream mods as fixtures" was blocked on exactly that refusal.
+S14 answers the question: all 21 transform, type-strip, link and evaluate in
+one `node:vm` realm; the whole graph registers 10 `on()` sites over 8 unique
+events, and the scanner still reports its 10/8/23 `$.` calls/0 dynamic.
+
+**Decision.**
+
+1. **One transform, `.tsx` only, gated.** The host reads only each file's
+   leading comment block. It must declare `@jsx h` (the identifier `h`, not a
+   path, member expression or alias); if `@jsxRuntime` is present it must be
+   `classic`; if `@jsxFrag` is present it must be `Fragment`. A missing or
+   foreign pragma is `ERR_MOD_HOST_TSX` with a reason naming the file and no
+   `.tsx` module is loaded. A direct `.tsx` import specifier is still refused:
+   authored JSX imports spell `.jsx` (D30).
+2. **The transform is Babel's classic JSX transform, used narrowly.**
+   `@babel/plugin-transform-react-jsx` with `runtime: 'classic'`, `pragma: 'h'`
+   and `pragmaFrag: 'Fragment'`, over a parser that already understands JSX and
+   TypeScript. It runs once per `.tsx` at load time, in memory, and rewrites
+   JSX syntax only; D30's `stripTypeScriptTypes(..., { mode: 'strip' })` follows
+   it over the same in-memory text. No bundler, preset, module transform,
+   minifier or source map is involved, and the authored file is never edited.
+3. **`h` and `Fragment` are realm globals.** `h(type, props, ...children)`
+   returns a plain `{ type, props, children }` descriptor. `Fragment` is a
+   unique symbol. The realm adds nothing else: no `$`, no `process`, no `URL`,
+   no element runtime, no renderer and no `$.ui`. A host that draws descriptors
+   is a separate, still `planned` surface; S14 and the host tests assert the
+   descriptor, not a rendered string.
+4. **What "as authored" now excludes.** For `.tsx`, Babel reprints the module,
+   so the earlier byte/position-preservation claim does not extend to JSX
+   modules: source positions and source maps are not claimed, and bytes need
+   not match. The semantic claim is narrower — only JSX syntax is rewritten
+   and nothing else is transformed. The scanner still reads the authored text
+   and never sees the transform's output; the `.ts` path (in-memory strip,
+   preserved positions) is unchanged. This is the only exception to D30's
+   "no transpile" rule, and it is declared here rather than implied.
+5. **The dependency and why.** The host pins `@babel/core` `7.29.13` and
+   `@babel/plugin-transform-react-jsx` `7.29.7` exactly (the lockfile records
+   the resolved tree). Babel is a real JSX parser and transform rather than a
+   regular-expression rewrite, it runs synchronously in plain Node at test
+   time and at load time, and only the JSX plugin is enabled, so the package
+   gains a load-time transform without gaining a compiler pipeline. This is
+   the mod-host package's first runtime dependency.
+6. **What is still not supported.** Rendering and the element runtime
+   (`h()` builds descriptors only); the automatic runtime and any
+   `@jsxRuntime` other than `classic`; any `@jsx` other than `h`; any
+   `@jsxFrag` other than `Fragment`; a `.tsx` module with no pragma; JSX in a
+   `.ts` file; direct `.tsx` specifiers; source-position preservation for
+   `.tsx`. These refuse with a typed reason or stay `planned`; none is
+   silently degraded.
+
+**Consequences:**
+
+- `fixtures/mods/diff` loads from the fetched pin and asserts the scanner's
+  10/8 and 23/0 counts against the loaded graph; the synthetic fixture keeps
+  its minimal JSX and pragma-refusal cases.
+- The TODO item "Upstream mods as fixtures" is unblocked for `diff`; the other
+  six upstream mods remain to be fetched and asserted the same way.
+- D30's and D31's `.tsx` refusal is superseded only by this declared path. A
+  `.tsx` graph that does not follow the pragma convention is still refused,
+  not emulated.
+- The host needs `--experimental-vm-modules` and now also a JSX-capable parser
+  at load time; both are load-time costs, not changes to DSH behavior.
+
+**Evidence.** S14 at the pin: 122/122 checks, 21/21 `.tsx` transformed,
+stripped, linked and evaluated (505 `.ts` + 21 `.tsx` modules), registration
+order equal to the scanner's 10 sites/8 events, and `divider()` returns the
+`h` descriptor. The mod-host tests cover the minimal graph, the Fragment
+descriptor and the three refusals; `fixtures/mods/diff` and the conformance
+mods test cover the fetched graph and the kernel mapping.

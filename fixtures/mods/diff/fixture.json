@@ -1,0 +1,34 @@
+{
+  "name": "diff",
+  "description": "Upstream's diff mod, fetched at test time and never vendored. Its graph reaches .tsx through views/index.ts and loads through the D34 classic JSX transform.",
+  "fetch": "node scripts/fetch-mod.mjs",
+  "env": "ANYPLUGIN_MOD_TREE",
+  "entry": "register.ts",
+  "pin": {
+    "repo": "anthropics/claude-code",
+    "version": "2.1.322",
+    "commit": "6e1e44f6433bfa17d198e932bff53373aa229eea"
+  },
+  "scan": {
+    "events": 10,
+    "uniqueEvents": 8,
+    "calls": 23,
+    "dynamic": 0
+  },
+  "registrations": [
+    "session.start",
+    "ui.render",
+    "ui.render",
+    "command.run",
+    "ui.close",
+    "ui.focus",
+    "ui.scroll",
+    "command.run",
+    "tool.call",
+    "prompt.submit"
+  ],
+  "kernel": {
+    "routed": 1,
+    "unmapped": 9
+  }
+}
