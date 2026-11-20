@@ -28,6 +28,13 @@ export interface McpServerConfig {
   cwd?: string
   url?: string
   headers?: Record<string, string>
+  /**
+   * Exact tool-name prefix for this server, when the dialect does not use
+   * Claude's composition. Codex sends `mcp__<server>__<tool>`; the dialect puts
+   * those bytes on the IR so emitter and oracle agree. Absent = Claude's
+   * `mcp__plugin_<plugin>_<server>__` (D11, D33).
+   */
+  toolNamePrefix?: string
 }
 
 export interface Config {
@@ -39,8 +46,8 @@ export interface Config {
 }
 
 /** `mcp__plugin_<plugin>_<server>__<raw>`, byte for byte like Claude Code. */
-export function composeToolName(plugin: string, server: string, raw: string): string {
-  return `mcp__plugin_${plugin}_${server}__${raw}`
+export function composeToolName(plugin: string, server: string, raw: string, toolNamePrefix?: string): string {
+  return `${toolNamePrefix ?? `mcp__plugin_${plugin}_${server}__`}${raw}`
 }
 
 /**
@@ -48,8 +55,13 @@ export function composeToolName(plugin: string, server: string, raw: string): st
  * Over budget is reported, never repaired: a renamed tool is a passing smoke
  * test and a false claim (D11).
  */
-export function toolNameProblem(plugin: string, server: string, raw: string): string | undefined {
-  const composed = composeToolName(plugin, server, raw)
+export function toolNameProblem(
+  plugin: string,
+  server: string,
+  raw: string,
+  toolNamePrefix?: string,
+): string | undefined {
+  const composed = composeToolName(plugin, server, raw, toolNamePrefix)
   if (!TOOL_NAME.test(composed)) {
     return `tool name ${JSON.stringify(composed)} (${composed.length} chars) does not match ${String(TOOL_NAME)} — the provider would reject it`
   }
@@ -182,12 +194,12 @@ function attach(ctx: any, server: McpServerConfig, plugin: string, sdkRoot: stri
     const listed = await client.listTools()
     if (closed) return
     for (const tool of listed.tools ?? []) {
-      const problem = toolNameProblem(plugin, server.name, tool.name)
+      const problem = toolNameProblem(plugin, server.name, tool.name, server.toolNamePrefix)
       if (problem !== undefined) {
         ctx.logger?.warn?.(`anyplugin-mcp(${server.name}): ${problem}`)
         continue
       }
-      disposers.push(ctx.tools.register(definition(ctx, client, composeToolName(plugin, server.name, tool.name), tool)))
+      disposers.push(ctx.tools.register(definition(ctx, client, composeToolName(plugin, server.name, tool.name, server.toolNamePrefix), tool)))
     }
   }
 

@@ -1062,6 +1062,19 @@ dialect → IR → emit (group entry, pure data) → Loader → materializer
         → ctx.skills.register → ctx.skills.list() → inventory
 ```
 
+Two dialects feed that pipeline. `.claude-plugin/plugin.json` selects
+`dsh-anyplugin-dialect-claude-code`; any root `plugin.json` (the portable
+layout, whose `$schema` must be
+`https://agent-plugins.org/schemas/1.0.0/plugin.schema.json`), or a
+`.codex-plugin/plugin.json` when there is no Claude manifest, selects
+`dsh-anyplugin-dialect-codex`. Both return the same `ClaudePluginIr`; the rig's
+`report`, `grant` and `revoke` commands use the same detection, so a Codex
+plugin is not silently read as a Claude one. The Codex fixture's golden is
+**hand-authored** from the 1.0.0 schemas and the Codex hook documentation —
+there is no offline `codex plugin details` to capture from — so it is excluded
+from the upstream-observed totals below and carries that provenance in its
+`notes`.
+
 The loader anchors entry-name resolution at its `baseUrl`: the `dsh` package in
 a Desktop tree, the install root in a fetched tree (whose `package.json` is
 written by `fetch-harness.mjs` so the loader's scope resolver finds a manifest).

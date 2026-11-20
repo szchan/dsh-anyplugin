@@ -214,8 +214,17 @@ export function apply(ctx: any, config: Config = {}): void {
   if (hooks.length === 0) return
 
   const env: NodeJS.ProcessEnv = { ...process.env }
-  if (config.pluginRoot !== undefined) env.CLAUDE_PLUGIN_ROOT = config.pluginRoot
-  if (config.pluginData !== undefined) env.CLAUDE_PLUGIN_DATA = config.pluginData
+  // Claude's spelling is what existing hooks read; Codex-compatible hooks read
+  // PLUGIN_ROOT/PLUGIN_DATA. Both names point at the same directories, and
+  // setting an extra variable does not change any existing command (T2).
+  if (config.pluginRoot !== undefined) {
+    env.CLAUDE_PLUGIN_ROOT = config.pluginRoot
+    env.PLUGIN_ROOT = config.pluginRoot
+  }
+  if (config.pluginData !== undefined) {
+    env.CLAUDE_PLUGIN_DATA = config.pluginData
+    env.PLUGIN_DATA = config.pluginData
+  }
   env.CLAUDE_PROJECT_DIR = process.cwd()
 
   /**

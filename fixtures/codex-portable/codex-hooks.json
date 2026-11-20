@@ -1,0 +1,39 @@
+{
+  "description": "Explicit hooks for the portable fixture; this file replaces default hooks/hooks.json discovery.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/guard.sh",
+            "timeout": 5,
+            "statusMessage": "checking portable write"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/start.sh"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "matcher": "ignored-by-codex",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/interrupt.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

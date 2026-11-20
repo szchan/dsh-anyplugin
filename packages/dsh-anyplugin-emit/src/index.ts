@@ -208,6 +208,10 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
           ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
           ...(server.url === undefined ? {} : { url: server.url }),
           ...(server.headers === undefined ? {} : { headers: server.headers }),
+          // D33: a dialect may name its own tool prefix. Absent keeps Claude's
+          // `mcp__plugin_<plugin>_<server>__` composition in the materializer,
+          // so this is additive and the Claude path is byte-identical.
+          ...(server.toolNamePrefix === undefined ? {} : { toolNamePrefix: server.toolNamePrefix }),
         })),
       },
     })

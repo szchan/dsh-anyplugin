@@ -40,6 +40,7 @@ const ALLOWED = {
   'dsh-anyplugin-emit': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-install': ['dsh-anyplugin-dialect-claude-code', 'dsh-anyplugin-emit', 'dsh-anyplugin-trust'],
   'dsh-anyplugin-dialect-claude-code': ['dsh-anyplugin-ir'],
+  'dsh-anyplugin-dialect-codex': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-materialize-skill': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-materialize-agents': [],
   'dsh-anyplugin-materialize-command': ['dsh-anyplugin-ir', 'dsh-anyplugin-command-template'],

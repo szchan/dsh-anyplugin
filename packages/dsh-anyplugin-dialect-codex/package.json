@@ -1,0 +1,9 @@
+{
+  "name": "dsh-anyplugin-dialect-codex",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads Agent Plugins 1.0.0 / Codex plugin directories into the shared IR.",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "dsh-anyplugin-ir": "*" }
+}

@@ -26,6 +26,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories, normalizeInventory, type Inventory } from './inventory.ts'
@@ -172,6 +173,22 @@ function parseIrJson(text: string, path: string): ClaudePluginIr {
   return parsed
 }
 
+/**
+ * Pick the dialect from the manifest the plugin actually has. Claude's layout
+ * declares `.claude-plugin/plugin.json`; the portable layout declares a root
+ * `plugin.json` (or the `.codex-plugin/plugin.json` fallback). A directory
+ * with neither is still read as Claude so the manifest-less Claude fixtures
+ * keep working; a malformed portable manifest is handed to the Codex dialect,
+ * which reports the parse error instead of silently becoming a Claude plugin.
+ */
+function readPlugin(pluginDir: string): ClaudePluginIr {
+  if (existsSync(join(pluginDir, '.claude-plugin', 'plugin.json'))) return readClaudePlugin(pluginDir)
+  if (existsSync(join(pluginDir, 'plugin.json')) || existsSync(join(pluginDir, '.codex-plugin', 'plugin.json'))) {
+    return readCodexPlugin(pluginDir)
+  }
+  return readClaudePlugin(pluginDir)
+}
+
 async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
@@ -195,7 +212,7 @@ async function main(argv: string[]): Promise<number> {
     } else {
       const pluginDir = args.positionals[0]
       if (!pluginDir) throw new Error(`missing <plugin-dir>\n${USAGE}`)
-      ir = readClaudePlugin(pluginDir)
+      ir = readPlugin(pluginDir)
     }
     const grantsPath = args.options.get('grants')
     const grants = typeof grantsPath === 'string' ? readGrants(grantsPath) : undefined
@@ -215,7 +232,7 @@ async function main(argv: string[]): Promise<number> {
     const [pluginDir, grantsFile] = requiredOptions(args, 'plugin', 'grants')
     const scope = parseScope(args.options.get('scope'))
     if (args.command === 'grant') {
-      const run = runGrant(readClaudePlugin(pluginDir), grantsFile, {
+      const run = runGrant(readPlugin(pluginDir), grantsFile, {
         scope,
         yes: args.options.get('yes') === true,
         replaceRevoke: args.options.get('replace-revoke') === true,
@@ -237,7 +254,7 @@ async function main(argv: string[]): Promise<number> {
       pluginError = `plugin directory does not exist: ${pluginDir}`
     } else {
       try {
-        plugin = readClaudePlugin(pluginDir)
+        plugin = readPlugin(pluginDir)
       } catch (error: unknown) {
         // Revoking consent must not require the artifact to still exist. Fall
         // back to the record; planRevoke decides whether it is enough.
