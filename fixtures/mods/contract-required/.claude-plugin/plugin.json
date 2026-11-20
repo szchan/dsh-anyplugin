@@ -1,0 +1,13 @@
+{
+  "name": "contract-required",
+  "version": "0.1.0",
+  "description": "Host-contract fixture: a required userConfig field with no value must refuse the load.",
+  "userConfig": {
+    "channel": {
+      "type": "string",
+      "title": "Channel",
+      "description": "Required so the host has to refuse a load with no activation value.",
+      "required": true
+    }
+  }
+}

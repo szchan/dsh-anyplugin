@@ -13,14 +13,6 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-- [ ] **Remaining upstream mods as fixtures** (D14). `fixtures/mods/upstream.json`
-      fetches the whole `mods/` tree at the `2.1.322` pin (never vendored),
-      scans and loads every mod, and asserts one honest row per mod: `diff` and
-      `privacy` load; `sec-default`, `agents-md` and `telemetry` refuse until
-      the host returns `Registration`'s `catch` handle and passes
-      `register(on, options)`. Done when those host gaps close and every row
-      loads at the pin.
-
 ## Next
 
 - [ ] **Output styles** (S11). Carry `output-styles/*.md` as

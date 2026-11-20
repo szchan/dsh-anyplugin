@@ -9,18 +9,44 @@
  * 3. creates every reachable module, applies the narrow classic JSX transform
  *    to `.tsx` (classic pragma required), strips types in memory, links once,
  *    evaluates once (D30/D34's create → transform → link → evaluate);
- * 4. calls the authored `register(on)` with a controlled `on()` and returns the
- *    registrations in source order.
+ * 4. calls the authored `register(on, options)` with a controlled `on()` and the
+ *    `PluginOptions` its manifest declares, and returns the registrations in
+ *    source order.
+ *
+ * `on(event, hook)` returns the pinned `Registration`: a frozen object whose
+ * one member is `.catch(handler)`. A registration without `.catch` behaves as
+ * before. With one, a throw from the authored hook is passed to the catch
+ * handler as `HookFailure` (`kind: 'throw'`, the authored message, the pin's
+ * 1s `catchMs` grace) together with a replay-safe `next`: `next.called` says
+ * whether the hook called beneath it, and `next(e)` replays the last call
+ * instead of running the hooks beneath again. A second `.catch`, a `.catch`
+ * after `register(on)` returned, and `.catch` on `engine.create` are refused
+ * with `ERR_MOD_HOST_REGISTRATION`; the host never leaves an undefined member
+ * for the mod's first call to trip over.
+ *
+ * `PluginOptions` is built from the two facts the pin names: the plugin
+ * manifest's `userConfig` (at `<root>/.claude-plugin/plugin.json`, or at the
+ * parent when `root` is the plugin's `hooks/` directory) and the activation's
+ * stored values. Fields the manifest declares are served with the pinned
+ * value union; a malformed or unservable declaration is refused with
+ * `ERR_MOD_HOST_OPTIONS`, naming the field. A module with no manifest declared
+ * no fields, so its options are an empty frozen record — not a `{}` stub.
  *
  * A registration's handler is wrapped by the host: the returned wrapper is
  * `handler(event, next)`, and immediately before each invocation the host calls
  * `host.dollar()` exactly once and passes the result to the authored
- * `handler($, event, next)` as its first argument. The host never caches,
- * clones or freezes that namespace: `ModHost.dollar()` must return the
- * namespace for that one invocation. If a host returns the same object for two
- * calls, it has reused it — a `ModHost` bug, not host-side freshness.
- * `$` is never a global, so module-level code that reads it fails with the
- * realm's own `ReferenceError`; the host does not wrap authored errors.
+ * `handler($, event, next)` as its first argument. A caught invocation calls
+ * `host.dollar()` once more for the catch handler, because the pin gives it a
+ * `$` of its own. The host never caches, clones or freezes that namespace:
+ * `ModHost.dollar()` must return the namespace for that one invocation. If a
+ * host returns the same object for two calls, it has reused it — a `ModHost`
+ * bug, not host-side freshness. `$` is never a global, so module-level code
+ * that reads it fails with the realm's own `ReferenceError`; the host does not
+ * wrap authored errors.
+ *
+ * The pinned `PluginOptions` has no plugin-root or data-dir member, so the
+ * host does not add one: those stay host facts (`root` and the bridge's data
+ * dir), traced to D30 and the bridge rather than invented in this object.
  *
  * This is not a security boundary (D6/D30): it isolates the tested global
  * surface, not timers, promises, memory or permissions. It is also not the
@@ -36,9 +62,18 @@ import * as vm from 'node:vm'
 
 import { ModHostError, codeOf, describeValue, messageOf } from './errors.ts'
 import { jsxRealmGlobals, transformTsx } from './jsx.ts'
+import { resolvePluginOptions } from './options.ts'
 import { isWithin, resolveModSpecifier } from './resolve.ts'
 
 export { ModHostError, type ModHostErrorCode } from './errors.ts'
+export {
+  PLUGIN_MANIFEST_PATH,
+  resolvePluginOptions,
+  type PluginOptionValue,
+  type PluginOptions,
+  type ResolvePluginOptionsInput,
+  type ResolvedPluginOptions,
+} from './options.ts'
 export {
   commandRegistryFromContext,
   createModBridge,
@@ -83,8 +118,20 @@ export interface ModRegistration {
   /**
    * The host wrapper `handler(event, next)`. It calls `host.dollar()` exactly
    * once per invocation and invokes the authored `handler($, event, next)`.
+   * When the authored registration has a `.catch`, a hook failure is routed
+   * to it instead of rejecting this wrapper.
    */
   readonly handler: (event: unknown, next: ModNext) => unknown
+}
+
+/**
+ * The pinned `Registration<F>` surface this host serves: one `.catch`, during
+ * `register`, on declarations other than `engine.create` (claude-code.d.ts
+ * line 7480). It is frozen, so a later write does not replace the member the
+ * host armed.
+ */
+export interface RegistrationHandle {
+  catch(handler: (dollar: unknown, event: unknown, next: ModNext) => unknown): void
 }
 
 export interface LoadedMod {
@@ -107,12 +154,124 @@ export interface LoadModOptions {
   readonly entry: string
   /** Supplies `$` per handler invocation. */
   readonly host: ModHost
+  /**
+   * The plugin directory carrying `.claude-plugin/plugin.json`, when the
+   * caller knows it. Omitted, the host proves it at `root` or at the parent
+   * of `root` (the pinned complete plugins keep their manifest one level above
+   * `hooks/`). It is not an option member: `PluginOptions` in the pin has no
+   * plugin-root field.
+   */
+  readonly pluginRoot?: string
+  /**
+   * The activation's stored option values (settings.json
+   * `pluginConfigs[<plugin>].options`). Omitted, only manifest defaults
+   * apply. Values for fields the manifest does not declare are ignored, as
+   * the pin stores them for the loader but does not pass them through.
+   */
+  readonly pluginOptions?: Readonly<Record<string, unknown>>
 }
 
 type Registration = {
   readonly event: string
   readonly matcher: unknown
   readonly handler: (dollar: unknown, event: unknown, next: ModNext) => unknown
+  /** The one `.catch` the pinned Registration accepts, when authored. */
+  caughtBy: ((dollar: unknown, event: unknown, next: ModNext) => unknown) | undefined
+}
+
+/** The pinned `HookFailure` shape this host produces (claude-code.d.ts 4305). */
+interface HookFailure {
+  readonly kind: 'throw'
+  readonly message?: string
+  readonly budget: number
+}
+
+/** `HookBudget.catchMs` in the pinned claude-code.d.ts (line 4269). */
+const CATCH_GRACE_MS = 1_000
+
+interface NextState {
+  called: boolean
+  last: Promise<unknown> | undefined
+}
+
+/** Function members the tracked continuation owns; they are not copied. */
+const NEXT_HOST_KEYS = new Set([
+  'length',
+  'name',
+  'prototype',
+  'arguments',
+  'caller',
+  'called',
+  'error',
+])
+
+/**
+ * Carry the pinned `Next` surface (`to`, `origin`, `trace`, `budget`, ...)
+ * from the host's continuation onto the tracking wrapper, so a catch handler
+ * sees the same members the hook did. The property descriptors are copied, not
+ * the values, because some are accessors.
+ */
+function copyNextSurface(target: ModNext, source: ModNext): void {
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key === 'string' && NEXT_HOST_KEYS.has(key)) continue
+    const descriptor = Object.getOwnPropertyDescriptor(source, key)
+    if (descriptor === undefined) continue
+    try {
+      Object.defineProperty(target, key, descriptor)
+    } catch {
+      // A non-configurable authored property the wrapper cannot carry stays
+      // on the original; the pinned members are data and are copied.
+    }
+  }
+}
+
+function makeTrackedNext(source: ModNext, state: NextState, replay: boolean): ModNext {
+  const invoke = (event?: unknown): unknown => {
+    state.called = true
+    let result: unknown
+    try {
+      result = source(event)
+    } catch (error) {
+      const failed = Promise.reject(error)
+      // The value is replayed only if the catch handler asks; keep an unused
+      // sync failure from becoming an unhandled rejection in the meantime.
+      failed.catch(() => undefined)
+      state.last = failed
+      throw error
+    }
+    state.last = Promise.resolve(result)
+    return result
+  }
+  const tracked = ((event?: unknown): unknown => {
+    if (replay && state.called) return state.last
+    return invoke(event)
+  }) as ModNext
+  copyNextSurface(tracked, source)
+  return tracked
+}
+
+/** The pinned `N & Caught`: replay-safe `next`, `called`, and `error`. */
+function makeCaughtNext(source: ModNext, state: NextState, failure: HookFailure): ModNext {
+  const tracked = makeTrackedNext(source, state, true)
+  // `called` describes the failed hook's invocation of `next`; it is fixed at
+  // the moment the catch handler is built, like the pin's readonly field.
+  Object.defineProperty(tracked, 'called', {
+    value: state.called,
+    enumerable: true,
+  })
+  Object.defineProperty(tracked, 'error', {
+    value: failure,
+    enumerable: true,
+  })
+  return tracked
+}
+
+function hookFailure(error: unknown): HookFailure {
+  return Object.freeze({
+    kind: 'throw' as const,
+    message: messageOf(error),
+    budget: CATCH_GRACE_MS,
+  })
 }
 
 /**
@@ -178,6 +337,14 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
       'host.dollar must be a function; it supplies $ for one handler invocation',
     )
   }
+
+  // The pin validates a plugin's options before its module loads, so resolve
+  // them before creating the realm: a refusal must not run authored code.
+  const plugin = resolvePluginOptions({
+    root,
+    ...(options.pluginRoot === undefined ? {} : { pluginRoot: options.pluginRoot }),
+    ...(options.pluginOptions === undefined ? {} : { values: options.pluginOptions }),
+  })
 
   const context = vm.createContext(jsxRealmGlobals())
   const modules = new Map<string, vm.SourceTextModule>()
@@ -288,7 +455,7 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
 
   const declared: Registration[] = []
   let registering = true
-  const on = (event: unknown, matcherOrHandler?: unknown, maybeHandler?: unknown): void => {
+  const on = (event: unknown, matcherOrHandler?: unknown, maybeHandler?: unknown): RegistrationHandle => {
     if (!registering) {
       throw new ModHostError(
         'ERR_MOD_HOST_LINK',
@@ -319,11 +486,52 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
         { file: entryFile },
       )
     }
-    declared.push({ event, matcher, handler: handler as Registration['handler'] })
+    const registration: Registration = {
+      event,
+      matcher,
+      handler: handler as Registration['handler'],
+      caughtBy: undefined,
+    }
+    declared.push(registration)
+    let catchTaken = false
+    return Object.freeze({
+      catch(catchHandler: unknown): void {
+        if (!registering) {
+          throw new ModHostError(
+            'ERR_MOD_HOST_REGISTRATION',
+            `Registration.catch for '${event}' was called after register(on) returned; the pinned .catch is declared during register()`,
+            { file: entryFile },
+          )
+        }
+        if (event === 'engine.create') {
+          throw new ModHostError(
+            'ERR_MOD_HOST_REGISTRATION',
+            "Registration.catch cannot be served on 'engine.create': the pinned hook has no budget, so its failure is the load's",
+            { file: entryFile },
+          )
+        }
+        if (catchTaken) {
+          throw new ModHostError(
+            'ERR_MOD_HOST_REGISTRATION',
+            `Registration.catch for '${event}' was already set; the pinned Registration takes one .catch`,
+            { file: entryFile },
+          )
+        }
+        if (typeof catchHandler !== 'function') {
+          throw new ModHostError(
+            'ERR_MOD_HOST_REGISTRATION',
+            `Registration.catch for '${event}' requires a function, got ${describeValue(catchHandler)}`,
+            { file: entryFile },
+          )
+        }
+        catchTaken = true
+        registration.caughtBy = catchHandler as NonNullable<Registration['caughtBy']>
+      },
+    })
   }
 
   try {
-    await exported(on)
+    await exported(on, plugin.options)
   } finally {
     registering = false
   }
@@ -337,7 +545,24 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
           assertLive()
           const dollar = await host.dollar()
           assertLive()
-          return registration.handler(dollar, event, next)
+          const caughtBy = registration.caughtBy
+          if (caughtBy === undefined) {
+            return registration.handler(dollar, event, next)
+          }
+          const state: NextState = { called: false, last: undefined }
+          const tracked = makeTrackedNext(next, state, false)
+          let failure: HookFailure
+          try {
+            return await registration.handler(dollar, event, tracked)
+          } catch (error) {
+            failure = hookFailure(error)
+          }
+          assertLive()
+          // The pin gives the catch handler a `$` of its own; the hook's
+          // namespace belongs to the invocation that failed.
+          const catchDollar = await host.dollar()
+          assertLive()
+          return caughtBy(catchDollar, event, makeCaughtNext(next, state, failure))
         },
       }),
     ),

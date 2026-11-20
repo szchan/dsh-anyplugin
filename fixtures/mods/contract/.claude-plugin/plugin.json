@@ -1,0 +1,30 @@
+{
+  "name": "contract",
+  "version": "0.1.0",
+  "description": "Host-contract fixture: PluginOptions fields, Registration.catch, and registration-time refusals.",
+  "userConfig": {
+    "instructionFiles": {
+      "type": "string",
+      "title": "Instruction files",
+      "description": "Which project instruction files the plugin reads.",
+      "required": false,
+      "default": "claude-md-or-agents-md",
+      "options": [
+        "claude-md",
+        "claude-md-or-agents-md",
+        "claude-md-and-agents-md",
+        "managed-only"
+      ]
+    },
+    "retries": {
+      "type": "number",
+      "description": "How many times a transient read is retried.",
+      "default": 3
+    },
+    "strict": {
+      "type": "boolean",
+      "description": "Refuse instead of falling back when a file is absent.",
+      "default": false
+    }
+  }
+}
