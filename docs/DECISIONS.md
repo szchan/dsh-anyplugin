@@ -1842,3 +1842,72 @@ and we handed the mod a bare function.
 `probe-r4-unawaited-file.mjs`, `probe-r5-mixed.mjs`, the mutation table in PR #70,
 and `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` with
 `fixtures/mods/guard/`. Merge `5fcfb60`.
+
+## D39 — the resolver serves extensionless sibling files, file before directory
+
+A mod at the 2.1.329 pin imports `./reads-as-org-tool`, an extensionless sibling
+`.ts` file (D30 §3 had served extensionless specifiers only as
+`<spec>/index.ts`). Our refusal was a host obligation unmet, not an upstream
+refusal — the same class as D30's three resolved behaviours.
+
+The order for an extensionless relative specifier is:
+
+1. `<spec>.ts`
+2. `<spec>.tsx`
+3. `<spec>/index.ts`
+4. `<spec>/index.tsx`
+
+File before directory is **Node's own order, observed upstream at this pin**. It
+is *not* justified by the D34 shadowing argument: under file-first a sibling
+`views.tsx` would in fact win over `views/index.tsx`. The pinned
+`mods/diff/hooks/views/` still resolves to its directory only because no sibling
+`views.ts(x)` exists today. A synthetic fixture where both forms exist pins the
+order so it cannot silently flip.
+
+**Consequences.** `sec-default` loads again, with 45 registrations; its eight
+classic invocations run with zero handler errors once D38's continuation supplies
+`next.to`. A new resolver rule is always a **host** rule: it is recorded here,
+tested against a fixture that fails if the order flips, and never claimed as
+upstream spec.
+
+**Evidence.** `packages/dsh-anyplugin-mod-host/src/resolve.ts`,
+`test/mod-host.test.mjs` (`an extensionless import tries the file form before the
+directory form`), the both-exist fixture, and the directory-first mutation that
+reddens exactly that test. Merge `ac46bf2`.
+
+## D40 — the mod event vocabulary is pinned, and every unmapped name carries a category
+
+At 2.1.329 `EventOf` is **167** names (engine 59, op 75, classic 33), up from 129
+at 2.1.322. Our routing table stayed at 40 engine names while the mod artifacts
+moved, so `sec-default`'s newer registrations were warned as "not an event in the
+pinned `claude-code.d.ts`" — which was false and read as the mod's fault.
+
+The table now enumerates all 167. Seventeen names are routed to host seams; the
+other **150** carry one of three categories:
+
+- `missing bridge` (6): `vcs.detect`, `vcs.diff`, `vcs.isolate`, `vcs.list`,
+  `vcs.status`, `vcs.release` — `createModBridge` has no `vcs` namespace, so the
+  call is an absent member, not a typed refusal.
+- `no host event` (144): the engine additions and all 75 op hooks whose host
+  point does not exist yet (the S9 vocabulary).
+- `not in spec` (0): every `OpEventOf` name is in `EventOf`; the earlier bucket
+  was a false classification.
+
+Warnings name the spec label and the category, so a reader can tell *our* gap
+from the mod's mistake. Adding a host seam means moving names between
+categories, not rewriting the table.
+
+`sec-default` maps to **16 routed + 61 unmapped** (55 no host event + 6 missing
+bridge); the 61 exceeds 45 authored registrations because its one `classic.*`
+wildcard expands to 33 rows.
+
+**Consequences.** The pin move and the event vocabulary can no longer diverge
+silently: a pin bump that adds events shows up as new rows in the enumerated
+test, and a mod's warning names a category. `not in spec` is asserted to be
+empty, so a typo in a mod is the only way it can reappear.
+
+**Evidence.** `packages/dsh-anyplugin-intercept/src/mod-events.ts` (167 names,
+17 routes, 150 categorized), `test/mods.test.mjs` (deep-equal to the 59-name
+engine table, 75/167/150 counts, category totals), the `vcs.detect` removal
+mutation that reddens three tests, and the S15 run reporting 11 invocations /
+16 `$` calls / 0 handler errors. Merge `ac46bf2`.
