@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 
@@ -9,6 +9,16 @@ import { DIFF_MOD_PIN } from '../src/pin.ts'
 
 const isCI = process.env.CI === 'true' || process.env.CI === '1'
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+
+// `scripts/fetch-mod.mjs` prints the root of the whole pinned `mods/` tree;
+// the diff test loads one mod out of it. Accept either that root or the diff
+// hooks root itself, so an older cache and the new layout both work.
+const diffRoot = (candidate) => {
+  const root = resolve(candidate)
+  if (existsSync(join(root, DIFF_MOD_PIN.entry))) return root
+  const nested = join(root, 'mods', 'diff', 'hooks')
+  return existsSync(join(nested, DIFF_MOD_PIN.entry)) ? nested : root
+}
 
 /**
  * The upstream acceptance for #45 is the load, not the refusal: the fetched
@@ -20,14 +30,14 @@ test('the fetched diff mod loads through the classic JSX transform', async (t) =
   const tree = process.env.ANYPLUGIN_MOD_TREE
   if (!tree) {
     const reason =
-      'ANYPLUGIN_MOD_TREE is unset; run `node scripts/fetch-mod.mjs` and set it to the printed root'
+      'ANYPLUGIN_MOD_TREE is unset; run `node scripts/fetch-mod.mjs` and set it to the printed root (or its mods/diff/hooks)'
     if (isCI) {
       assert.fail(`CI must fetch the pinned diff mod before npm test: ${reason}`)
     }
     return t.skip(reason)
   }
 
-  const root = resolve(tree)
+  const root = diffRoot(tree)
   const entry = join(root, DIFF_MOD_PIN.entry)
   const before = sha256(entry)
   assert.equal(statSync(entry).size, DIFF_MOD_PIN.entryBytes, 'fetched entry size must match the pin')

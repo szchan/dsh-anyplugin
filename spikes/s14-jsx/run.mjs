@@ -16,8 +16,9 @@
 // Run:
 //   node --experimental-vm-modules spikes/s14-jsx/run.mjs
 //
-// Set ANYPLUGIN_MOD_TREE to a fetched tree, or let the spike use
-// `.mods/<commit>` / run `scripts/fetch-mod.mjs` itself. Every check prints.
+// Set ANYPLUGIN_MOD_TREE to a fetched tree (the printed root or its
+// `mods/diff/hooks`), or let the spike use `<repo>/.mods/<commit>` / run
+// `scripts/fetch-mod.mjs` itself. Every check prints.
 // A run that records zero checks exits 1 (docs/ARCHITECTURE.md §10, the S9
 // rule), as does any failed check.
 import assert from 'node:assert/strict'
@@ -70,17 +71,31 @@ function equal(name, actual, expected) {
   }
 }
 
+// The fetch script prints the root of the whole pinned `mods/` tree; the diff
+// graph lives in `<root>/mods/diff/hooks`. Accept either shape so an older
+// cache and the new layout both work.
+function diffRoot(candidate) {
+  const root = resolve(candidate)
+  if (existsSync(join(root, ENTRY_NAME))) return root
+  const nested = join(root, 'mods', 'diff', 'hooks')
+  return existsSync(join(nested, ENTRY_NAME)) ? nested : undefined
+}
+
 function findTree() {
   const candidates = [process.env.ANYPLUGIN_MOD_TREE, join(REPO, '.mods', DIFF_MOD_PIN.commit)]
   for (const candidate of candidates) {
-    if (candidate && existsSync(join(candidate, ENTRY_NAME))) return { tree: resolve(candidate), source: 'cache' }
+    if (!candidate) continue
+    const root = diffRoot(candidate)
+    if (root) return { tree: root, source: 'cache' }
   }
   const fetched = spawnSync(process.execPath, [join(REPO, 'scripts/fetch-mod.mjs')], { encoding: 'utf8' })
   if (fetched.status !== 0) {
     throw new Error(`scripts/fetch-mod.mjs failed: ${fetched.stderr || fetched.stdout}`)
   }
   const printed = fetched.stdout.trim().split('\n').at(-1)
-  return { tree: resolve(printed), source: 'fetch' }
+  const root = diffRoot(printed)
+  if (!root) throw new Error(`scripts/fetch-mod.mjs printed ${printed}, which has no ${ENTRY_NAME}`)
+  return { tree: root, source: 'fetch' }
 }
 
 const { tree: TREE, source: TREE_SOURCE } = findTree()
