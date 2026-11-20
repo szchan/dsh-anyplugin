@@ -1773,3 +1773,72 @@ complete without letting an unverifiable row look verified.
 name differs from the stem), `packages/dsh-anyplugin-conformance/test/output-styles-carry.test.mjs`,
 the frontmatter parser tests in the dialect package, and the live probe test
 that prints the pin's component lines. Merge `6d02fcc`.
+
+## D38 — the mod-visible `next` is the kernel's own continuation
+
+`runModHandler` wraps the same continuation every handler gets; `to` forwards its
+tier to the kernel, so tier order, matchers and trace stay owned by one chain
+(D13). `next` is eager and call-scoped: each call runs the remainder from the
+calling link immediately, with that call's target, and returns that trip.
+
+A hook that calls `next` twice runs the remainder twice — the author's choice,
+and our host contract rather than a pin statement: the pin only says `trace`
+describes "its latest next() call", and we cite it as the spec for this rule. The
+latest trip is the one the handler's return decides with and the one `trace`
+describes. This refines D32 §6's sentence "a mod's next(e) only rewrites the
+event … it does not run the classic arm itself": the eager trip now runs it,
+while the return rule is unchanged (the chain collects the trip's decisions; the
+mod does not decide them).
+
+An unawaited `next` is joined exactly once before the loop decides, so it cannot
+run the remainder twice. Every call joins the previous trip before it starts, so
+`void next(e); await next(e)` runs sequentially — a call supersedes ordering, not
+concurrency.
+
+A `to` target belongs to the call that named it: a same-tier sibling still runs
+and keeps its own jump, so a pass-over is never attributed to another link; when
+that sibling names its own target, the nested target wins over the outer target,
+which is never reached. A jump is by tier rank, not index: only links strictly
+between the caller's tier and the target are passed over, recorded `skipped` with
+`bypassed by <plugin>`. Landing is inclusive of the named target (a direct jump
+runs it); a named tier with no link left falls forward to the next tier that has
+one rather than dropping the chain. A target tier at or above the caller is
+refused with the direction and the pin's line.
+
+Both continuations share the rule; fan-out collects the eager trip's decisions
+but resolves the kernel's continue, not `ClassicResultOf` (D32 §6's return rule).
+
+`budget` is live for mod handlers, counts the hook's own work and pauses while
+`next` or `$` is in flight; classic hooks keep the entry snapshot (T3). A
+throwing link is `rejected` with the throw as its reason; a matcher skip never
+ran and is not projected. `trace` describes the latest trip in both
+continuations.
+
+`core` stays a **declared fidelity gap**: the pin's `TargetTier` allows it, this
+chain has no core link, and naming it would skip the `builtin` tier without
+running it, so `to` refuses with a reason (D36) — our gap, not a pin
+prohibition.
+
+`origin` is the dispatch's raiser, so host-raised dispatches read
+`{plugin:"engine", tier:"core"}` for every hook of that dispatch.
+
+**Why now.** S15 measured a real security mod whose guard hook called `next.to`
+and threw `TypeError: next.to is not a function`; the kernel recorded `error` and
+continued, so the guard enforced nothing. The pin's `Next` declares seven members
+and we handed the mod a bare function.
+
+**Consequences.**
+
+- No second dispatcher: the mod surface is a projection of the kernel's
+  continuation, so tier order, matcher grammar and trace remain single-owned
+  (AGENTS §3.6).
+- The classic arm is unchanged: classic registrations still get no `next`, and
+  their budget remains the entry snapshot (T3).
+- The subset of `TraceEntry` we serve is explicit: `index`, `tier`, `event`,
+  `plugin`, `outcome`, `reason`; `ms`, `chunks`, `received`, `returned` and an
+  engine entry are not served and say so.
+
+**Evidence.** `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (rounds 3–5),
+`probe-r4-unawaited-file.mjs`, `probe-r5-mixed.mjs`, the mutation table in PR #70,
+and `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` with
+`fixtures/mods/guard/`. Merge `5fcfb60`.
