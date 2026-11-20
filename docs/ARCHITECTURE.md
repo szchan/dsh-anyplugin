@@ -636,12 +636,90 @@ that report and that caveat, not the list alone.
 | --- | --- |
 | Terminal-only elements (`Raster`, `Image`, `AbovePrompt` band on terminal) | `derived` — DSH renders web; terminal panel only |
 | `Client` second file (animation / pointer half) — bundling and props are undocumented | `planned`, needs hands-on probing |
-| `.tsx` / JSX mods — JSX is sugar, but it needs a transform while `.ts/.js` load directly | open question: Node type-stripping covers `.ts`, not `.tsx` |
+| `.tsx` / JSX mods — type-stripping parses `.ts`, never JSX | **`planned`**: S13: 20 of 21 `.tsx` modules fail `stripTypeScriptTypes` in both modes (19 `Expected '>', got 'ident'`, one `Expected ',', got '.'`); the one JSX-free module strips, but stock Node still refuses the `.tsx` extension; a JSX transform is a decision, not a licence (see §7.7) |
+| Authored specifier conventions (`'./ask'`, `'./x.js'` for `x.ts`, `'.'` self-import) | **spike-proven resolver; host pending** — our host obligation, not an upstream specification; stock Node ESM refuses the four shapes; resolution changes no bytes (S13, §7.7) |
 | Cross-mod pane ownership (`$.ui.open({id})` collisions) | must be reproduced, bug reports already exist upstream |
 | Version drift (`$.ui.backdrop` removed in 2.1.319; `AbovePromptList` needs 2.1.323) | pin the release; regenerate the symbol table per pin |
 
 The commitment, stated plainly: *no release may make mods harder.* Every design
 choice that would need to be undone to support mods later is a defect now.
+
+### 7.7 S13: the authored `.ts` spine loads; `.tsx` is the wall (answered 2026-11-19)
+
+`spikes/s13-mod-load/run.mjs` (**89/89**) fetched the pinned artifact —
+claude-code `2.1.322`, commit `6e1e44f6433bfa17d198e932bff53373aa229eea`,
+`mods/diff/hooks/register.ts`, 33,891 bytes, sha256
+`cce8adf7b3218f33347707ffbfb25ff3294c184d440dfb49fa540656146debab` — and loaded
+it without editing a byte. The four questions:
+
+| Question | Answer | Evidence |
+| --- | --- | --- |
+| Can Node load it? | **Yes for the 505 reachable `.ts` modules**, with a host resolver; no for stock Node ESM | 579/579 `.ts` strip; the stripped entry stays 33,891 B / 1342 lines; `on('session.start')` stays line 938 |
+| Which realm? | **`node:vm` `SourceTextModule`** in a per-mod context | context has no `process`, `URL` or `$`; a same-thread import exposes Node globals |
+| Registration? | **10 sites / 8 unique**, equal to the scanner's 10/8 and 23 `$.` calls / 0 dynamic | both realms, source order |
+| Can one hook fire? | `session.start` calls `$.session.usage`, `$.command.register`, `$.session.messages`, then returns `next(e)`; if `usage()` has no timestamp, `$.clock.now` is inserted first | 3 calls with a `startedAt`; 4 with `usage()` returning `undefined`; that handler binds 22 `$` methods |
+
+**Resolution changes no bytes; type stripping is an in-memory, length-preserving
+transform.** The graph uses four specifier shapes, which exercise three host
+resolution behaviors: extensionless paths (`'./ask'`) and `'.'` self-imports
+resolve to a directory `index.ts`; `.js` specifiers resolve to `.ts` files
+(`'./array-of.js'`); `.jsx` specifiers resolve to `.tsx` files. The reachable
+graph exercises 737 directory-index resolutions, 246 `.js`→`.ts` and 21
+`.jsx`→`.tsx`; no exact-file fallback is used, and the resolver carries no other
+candidate branches. These are **our host obligation**, not an upstream
+specification. The only transform applied is
+`module.stripTypeScriptTypes(source, { mode: 'strip' })`; it replaces type
+syntax with whitespace, so byte length and line numbers are preserved (the
+scanner's line numbers remain the authored ones). The only bare specifier is
+`import type { ... } from 'claude-code'`; stripping erases it and the shim is
+requested **0** times in both realms. The scanner reads the authored text, so
+none of this is visible to it: §7.3 item 1 is unaffected.
+
+**The `.tsx` wall.** There are 21 `.tsx` modules and 21 `.jsx` specifiers that
+reach them. With the resolver in place, stock loading still stops at
+`ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".tsx" for .../views/detail/detail-view.tsx`.
+`stripTypeScriptTypes` refuses **20 of the 21** modules in both `strip` and
+`transform` modes: 19 fail with
+`ERR_INVALID_TYPESCRIPT_SYNTAX: Expected '>', got 'ident'`, and one
+(`views/prelude-of/prelude-of.tsx`) with `Expected ',', got '.'`. The single
+JSX-free module, `views/body/list-block-of.tsx`, strips in both modes, but the
+`.tsx` extension is still not loadable by stock Node (a direct import probe
+returns the same `ERR_UNKNOWN_FILE_EXTENSION`). S13 substitutes a
+name-preserving stub for each `.tsx` leaf *only* to evaluate the `.ts` spine;
+the stubs are probe scaffolding, not a host design. So a mod that draws
+anything is not runnable end-to-end at this pin, and the fix is a second
+transform (JSX → `h`/`Fragment`), not a resolution rule. That is a decision,
+not a licence under "type stripping" (§3.7).
+
+**Realm.** `vm.SourceTextModule` is the only route that gives the environment
+the `.d.ts` declares — *"an environment of its own: no DOM, no Node"* — because
+a same-thread `import()` shares `globalThis` and sees `process` and `URL`. The
+vm route needs `--experimental-vm-modules`, creates every module first, calls
+`entry.link(linker)` once, then evaluates (linking children from inside the
+linker throws `ERR_VM_MODULE_LINK_FAILURE`). It isolates the tested global
+surface, not timers, promises or memory: it is a fidelity and layering choice,
+not yet a security boundary.
+
+**`$` at load time provides nothing.** It is not a global: module-level code is
+imports plus `export function register(on)`, and `$` first appears as each
+handler's first parameter. The same-thread route installs a counting getter for
+`$` around `import()` and `register()`; it records **0 reads** and would throw
+`ReferenceError` on a read. The vm context has no `$` binding at all, and a
+direct `$` evaluation throws `ReferenceError`. When `session.start` fires with
+`usage()` returning `{ startedAt }`, the handler calls 3 `$` methods; when
+`usage()` returns `undefined`, the authored `startedAt() ?? engine.now()`
+fallback inserts `$.clock.now` before `$.command.register`, for 4. The bridge
+table (`register.ts:938–970`) declares 22 `$` methods; the 23rd `$.` call site
+is `$.ui.resolve` at line 1008, inside `ui.render`. The host should pass `$`
+per handler and resolve methods lazily, not build all 22 at load.
+
+**What S13 changes here.** §7.3's five dependencies stand; the host gains a
+prerequisite — a resolver and a linker — rather than a new subsystem. `.tsx`
+moves from "open question" to a declared `planned` gap with a named cause.
+What it does not settle: a host, a materializer, an emit path, IR changes,
+performance, or containment. The proposed decision text is in the #30 PR; it
+fixes type stripping as the only sanctioned transform and keeps `.tsx`
+`planned` pending an explicit JSX decision.
 
 ## 8. Seam capability matrix (P4)
 
@@ -1060,11 +1138,21 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 - `.tsx` mods: Node type-stripping covers `.ts` but not JSX. Do we add a JSX
   transform to the mod host, or require authors to ship `.js/.mjs`? Claude
   loads `.tsx` directly, so "no transform" would be a declared fidelity gap.
+  **S13:** type strip refuses 20 of the 21 `.tsx` modules in both modes (19
+  `Expected '>', got 'ident'`, one `Expected ',', got '.'`); the JSX-free
+  `views/body/list-block-of.tsx` strips but stock Node still refuses the `.tsx`
+  extension, and a resolver alone reaches only `ERR_UNKNOWN_FILE_EXTENSION`.
+  The `.ts` spine loads, but a drawing mod is not runnable until this is
+  decided (see §7.7 and the proposed decision in #30).
 - How does Claude bundle and serve a mod's `Client` second file? Undocumented;
   needs hands-on probing before it can be classified as anything but `planned`.
 - Which execution realm do we give a mod (`node:vm` like the dynamic-package
   runner, a worker, or the host thread)? It is a fidelity question *and* the
   security question, since mods can approve tool calls and read credentials.
+  **S13 answered the realm half:** `node:vm` `SourceTextModule`, because a
+  same-thread import shares `globalThis` and exposes Node globals (§7.7). The
+  containment half — timers, promises, memory — remains open; the spike proves
+  a global surface, not a sandbox.
 
 - **S7 — behavior face.** ✅ **Answered 2026-11-19** by `claude plugin eval` on
   the DeepSeek backend: the fixture suite scores 1.0 and each run writes
@@ -1554,3 +1642,62 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   ```
 
   `spikes/s12-hook-fanout/out/` is report output only and gitignored.
+
+- **S13 — can an authored mod be loaded unmodified and one of its hooks fire?**
+  ✅ **Answered 2026-11-19** by `spikes/s13-mod-load/run.mjs` against
+  claude-code `2.1.322` (commit
+  `6e1e44f6433bfa17d198e932bff53373aa229eea`; `mods/diff/hooks/register.ts`,
+  33,891 bytes, sha256
+  `cce8adf7b3218f33347707ffbfb25ff3294c184d440dfb49fa540656146debab`;
+  **89/89 checks**). Yes for the `.ts` graph; no for `.tsx`. The spike fetches
+  the artifact and a sparse `mods/diff/hooks` tree at run time, asserts size
+  and sha256 before and after, and never edits or commits them.
+
+  **Proven.** The authored `.ts` spine loads (505 reachable modules, no source
+  rewrite); `register(on)` reaches exactly the scanner's events; `session.start`
+  runs with a per-handler `$`; the vm context lacks `process`, `URL` and `$`.
+  **Not proven.** A host, materializer, emit path or IR change; `.tsx` or JSX
+  support; the element runtime; `$.ui` (its call site is
+  `register.ts:1008`, outside the fired hook); hooks longer than
+  `session.start`; containment (timers, promises, memory, permissions).
+
+  **Load.** All 579 `.ts` files strip with 0 failures; the stripped entry stays
+  33,891 bytes / 1342 lines and `on('session.start')` stays line 938. Stock ESM
+  refuses four specifier shapes that exercise three host resolution behaviors
+  — extensionless/`'.'` to `index.ts`, `.js`→`.ts`, `.jsx`→`.tsx` — so a host
+  resolver is required; with it both realms load 505 `.ts` modules plus 21
+  `.tsx` stubs. The reachable graph exercises 737 directory-index, 246
+  `.js`→`.ts` and 21 `.jsx`→`.tsx` resolutions; no other fallback is used. The
+  only bare specifier is `import type { ... } from 'claude-code'`, erased by
+  stripping; a `claude-code` shim is requested 0 times. Type strip refuses 20
+  of the 21 `.tsx` modules in both modes (19 `Expected '>', got 'ident'`, one
+  `Expected ',', got '.'`); the JSX-free `views/body/list-block-of.tsx` strips
+  but the `.tsx` extension is still refused by stock Node. The stubs are probe
+  scaffolding only (see §7.7).
+
+  **Realm.** `node:vm` `SourceTextModule` (`--experimental-vm-modules`;
+  create → `link()` once → `evaluate()`), because the context has no
+  `process`, `URL` or `$`, while a same-thread import exposes Node globals.
+  `$` is not a global: a counting getter around the same-thread load and
+  registration records 0 reads, and evaluating `$` in the vm context throws
+  `ReferenceError`.
+
+  **Registration.** `register(on)` has arity 1 and reaches exactly the
+  scanner's 10 sites / 8 unique events (23 `$.` calls, 0 dynamic) in both
+  realms, lines 938–1294.
+
+  **Fire.** With `usage()` returning a `startedAt`, `session.start` calls
+  `$.session.usage`, `$.command.register` (`{ name: 'diff', ... }`) and
+  `$.session.messages`, then returns `next(e)` unchanged. With `usage()`
+  returning `undefined`, the authored `?? engine.now()` fallback inserts
+  `$.clock.now` before `$.command.register`: 4 calls. The handler binds 22 `$`
+  methods; the host must provide `$` per handler, lazily.
+
+  Reproduce:
+
+  ```bash
+  npm run spike:s13
+  ```
+
+  `spikes/s13-mod-load/out/` is report/cache output only and gitignored; the
+  fetched artifact is never committed.
