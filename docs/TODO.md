@@ -92,9 +92,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `register(on)`'s registrations. The synthetic fixture fires `session.start`
   with both measured sequences (`usage → command.register → session.messages`,
   and `clock.now` inserted when `usage()` returns `undefined`). The fetched
-  `diff` mod is refused at `views/pane-view.tsx` with `ERR_MOD_HOST_TSX`: ESM
-  links the whole graph, so the JSX decision — not resolution — gates loading a
-  real mod at this pin.
+  `diff` mod loads through D34's classic transform (S14): the graph reaches
+  `.tsx` through `views/index.ts`, and the host now transforms only JSX syntax
+  under the file's own pragma. Before D34 that graph was refused at
+  `views/pane-view.tsx` — the same refusal that blocked this item.
 - CLI consent surface (D27): grant/revoke with all-or-nothing writes,
   re-consent on changed bytes, explicit `--replace-revoke`, and revocation that
   reads the record rather than the artifact.
