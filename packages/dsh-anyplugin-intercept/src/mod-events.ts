@@ -245,7 +245,7 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
     evidence:
       'EngineEventOf tool.call hands the hook ToolCallInput, the classic ToolCallEnvelope plus the loop and request meta (d.ts:4940-4959 at the 2.1.329 pin; ToolCallInput at d.ts:17697, built on ToolCallEnvelope at d.ts:17689). Its result is ToolCallResult: `{ deny }`, `{ result }` or `{ isError: true, result }` (d.ts:17729-17831 at the 2.1.329 pin). S8 confirms tools/pre-execute is the pre-execution waterfall and `PreToolDecision.deny` materializes a model-facing reason (docs/ARCHITECTURE.md:1218-1221). The route is a gate-only projection: deny is the kernel deny, and the result-bearing verbs are hard `unsupported` because this seam has no value channel (see modResultToKernel).',
     caveat:
-      'A handler that awaits next() sees the internal gate projection ({ allow: true }), not a native ToolCallResult; diff\'s afterTool reads result.result through that call, so its post-edit pane refresh is degraded on this route. agents-md\'s Read handler calls $.session.root()/$.fs.ancestors(), which the mod bridge lacks, so it errors and the chain fails open (the call still runs).',
+      'A handler that awaits next() sees the gate projection (a continuation, not a native ToolCallResult); an authored { allow: true } is refused as a non-pin field. diff\'s afterTool reads result.result through that call, so its post-edit pane refresh is degraded on this route. agents-md\'s Read handler calls $.session.root()/$.fs.ancestors(), which the mod bridge lacks, so it errors and the chain fails open (the call still runs).',
   },
   {
     modEvent: 'prompt.context',
@@ -256,7 +256,7 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
     evidence:
       'EngineEventOf prompt.context fires once per conversation while the engine computes the context blocks of the first user message; next(e) resolves to PromptContextResult { blocks } (d.ts:5282-5288 at the 2.1.329 pin; PromptContextBlock at d.ts:11332-11357, PromptContextInput at d.ts:11359, PromptContextResult at d.ts:11379-11410). The agent-scoped system-prompt/assemble waterfall owns the contexts that agent-loop renders into the user-role runtime-context message at each step (S9 395-423; dsh-system-prompt PromptContext). The route projects only the pin-named blocks (claudeMd, userEmail, attachedProject, currentDate) plus blocks the mod itself added; DSH operational contexts are never exposed to the mod and cannot be dropped by it. `instructionFiles` has no host projection and is reported unsupported at the mount; agents-md\'s handler no-ops without instruction files and needs $.session.root/$.fs.ancestors, which the bridge lacks.',
     caveat:
-      'The answer is cached once per conversation; $.ui.invalidate("prompt.context") is refused by the bridge (ERR_MOD_HOST_UI_UNSUPPORTED), so a mod cannot force the pin\'s re-read.',
+      'The answer is cached once per seat until compaction/end (the host re-read); a /clear starts a new session and seat. $.ui.invalidate("prompt.context") is refused by the bridge (ERR_MOD_HOST_UI_UNSUPPORTED), so a mod cannot force the pin\'s re-read on the same seat.',
   },
 ])
 

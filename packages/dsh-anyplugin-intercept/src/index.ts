@@ -661,6 +661,11 @@ function kernelDecisionToMod(decision: Decision, route: ModEventRoute): unknown 
           ? { block: true }
           : { block: decision.reason }
     case 'approve':
+      // `{ allow: true }` is the classic PreToolUse projection, not a
+      // ToolCallResult field (d.ts:17729-17831 at the 2.1.329 pin). On the
+      // tool.call route `next()` therefore resolves to no answer at all, and a
+      // handler that returns `{ allow: true }` itself is refused below.
+      if (route.modEvent === 'tool.call') return undefined
       return route.kernelEvent === 'PreToolUse'
         ? { allow: true }
         : { block: 'a kernel approve cannot be expressed as a classic result on this event' }
@@ -816,13 +821,18 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
   const present = Object.keys(value).filter((key) => value[key] !== undefined)
   if (route.modEvent === 'tool.call') {
     // ToolCallResult is { deny } | { result, ... } | { isError: true, result }.
-    // { deny } and { allow: true } have kernel carriers; the result-bearing
-    // verbs do not: tools/pre-execute hands the chain a PreToolDecision, not
-    // the tool's output (d.ts:17729-17831 at the 2.1.329 pin). A { result }
-    // turned into allow would run a call whose output the mod tried to
-    // replace, so it is a hard unsupported and the mount denies.
-    if (present.length === 1 && 'allow' in value && value.allow === true) {
-      return { decision: CONTINUE }
+    // { allow } is not a field of it (d.ts:17729-17831 at the 2.1.329 pin);
+    // it is the classic PreToolUse projection the kernel produces for
+    // `next()`, so accepting it as a handler's own answer would ratify a
+    // result the pin does not define. The result-bearing verbs have no
+    // pre-execute carrier: a { result } turned into allow would run a call
+    // whose output the mod tried to replace, so it is a hard unsupported and
+    // the mount denies.
+    if ('allow' in value) {
+      return hardUnsupported(
+        'allow',
+        'allow is not a ToolCallResult field (d.ts:17729-17831 at the 2.1.329 pin); next() is the classic PreToolUse gate projection, so return its value or { deny }',
+      )
     }
     if ('isError' in value) {
       return hardUnsupported(
@@ -1251,7 +1261,7 @@ function expandModPattern(pattern: string): ModPatternExpansion {
  *   (`PluginRegisterInput.tier`, d.ts:9899 at the 2.1.329 pin); the adapter never invents a
  *   per-mod table.
  * - A `Pattern` (d.ts:9447 at the 2.1.329 pin) expands to the routed names it selects: `classic.*`
- *   selects the sixteen classic routes, `*` selects all seventeen, and a
+ *   selects the sixteen classic routes, `*` selects all nineteen, and a
  *   negation selects the complement. Selected names that are not routed are
  *   reported with their pinned reason; a pattern that cannot be expanded gets
  *   its own reason.

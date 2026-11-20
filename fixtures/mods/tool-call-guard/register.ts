@@ -3,9 +3,6 @@
 export function register(on: On): void {
   on('tool.call', { tool: 'Bash' }, async (_$: Dollar, event: unknown, _next: Next) => {
     const envelope = event as { tool: string }
-    if (envelope.tool === 'Bash') {
-      return { deny: 'the tool.call guard does not allow Bash' }
-    }
-    return { allow: true }
+    return { deny: `the tool.call guard does not allow ${envelope.tool}` }
   })
 }

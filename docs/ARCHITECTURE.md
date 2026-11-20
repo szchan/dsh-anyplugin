@@ -611,17 +611,20 @@ to the kernel's `session.start`, not to `agent/created` (that is classic
 classic PreToolUse result channel: the mod event is the `ToolCallEnvelope`
 (d.ts:17689 at the 2.1.329 pin), so its structural matcher is evaluated against
 that envelope, and its result is the engine's `ToolCallResult` (d.ts:17729 at the 2.1.329 pin).
-`{ deny }` (and the internal `next()` projection `{ allow: true }`) become the
-gate decision; `{ result }` and `{ isError }` are typed `unsupported` with
-`hard: true`, and the pre-execute mount turns that into a real deny plus a
+`{ deny }` becomes the gate decision; `next()` projects the gate's
+continuation, not a `ToolCallResult`, and an authored `{ allow: true }` is
+refused as a non-pin field. `{ result }` and `{ isError }` are typed
+`unsupported` with `hard: true`, and the pre-execute mount turns that into a deny plus a
 trace record, because the seam has no value channel and executing the call
 would silently drop the mod's answer. `prompt.context` maps to the agent-scoped
 `system-prompt/assemble` waterfall: the route sees only the pin-named blocks
 (`claudeMd`, `userEmail`, `attachedProject`, `currentDate`) plus blocks it owns,
-so a mod cannot drop DSH's operational contexts; it runs once per conversation
-and reads back a `{ blocks }` answer, while `instructionFiles` is typed
-`unsupported` (the host projects instruction files into a user-role message,
-not into the assembly contexts, and `$.ui.invalidate` is refused by the bridge).
+so a mod cannot drop DSH's operational contexts; it runs once per seat until
+`compaction/end` (the host re-read) and reads back a `{ blocks }` answer, while
+`instructionFiles` is typed `unsupported` (the host projects instruction files
+into a user-role message, not into the assembly contexts, and
+`$.ui.invalidate` is refused by the bridge; a `/clear` starts a new session and
+therefore a new seat).
 The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`

@@ -1207,7 +1207,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       }
       for (const row of adapted.unmapped) {
         const where = row.category === undefined ? '' : `${row.category} at ${MOD_SPEC_LABEL}: `
-        warn(`anyplugin mod ${row.source}: ${where}${row.reason}`)
+        warn(`anyplugin mod ${row.source}: ${row.event} is ${where}${row.reason}`)
       }
     }
 
@@ -1319,10 +1319,20 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       // agent's prompt assembly. Only the pin-named blocks (and blocks this
       // route itself added) are exposed, so a mod cannot drop DSH's
       // operational contexts. The answer is computed on the first assembly and
-      // reused; the pin says it stands until `$.ui.invalidate` or a re-read,
-      // and the bridge refuses that call (ERR_MOD_HOST_UI_UNSUPPORTED).
+      // reused until `compaction/end`, the host's re-read signal. The pin's
+      // `$.ui.invalidate("prompt.context")` is refused by the bridge
+      // (ERR_MOD_HOST_UI_UNSUPPORTED); a `/clear` is a new session/seat, not a
+      // same-seat re-read.
       let promptApplied = false
       const promptOwned = new Set<string>()
+      mount(() =>
+        agentCtx.on('session/event', (session: any, event: any) => {
+          if (event?.type !== 'compaction/end') return
+          const sessionId = String(session?.id ?? session?.header?.id ?? '')
+          if (sessionId !== String(id)) return
+          promptApplied = false
+        }),
+      )
       mount(() =>
         agentCtx.on('system-prompt/assemble', async (assembly: any, _context: unknown, next: () => Promise<any>) => {
           const downstream = await next()
@@ -1340,7 +1350,11 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           for (const decision of run.decisions) {
             if (decision.kind === 'unsupported') reportUnsupported('prompt.context', decision.field, decision.reason)
           }
-          if (run.event.data.instructionFiles !== undefined) {
+          const answerInstructionFiles =
+            run.decision.kind === 'result' && isRecord(run.decision.result)
+              ? run.decision.result.instructionFiles
+              : undefined
+          if (run.event.data.instructionFiles !== undefined || answerInstructionFiles !== undefined) {
             reportUnsupported(
               'prompt.context',
               'instructionFiles',
@@ -1363,7 +1377,14 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           kept.splice(
             insertAt,
             0,
-            ...answer.map((block) => ({ name: block.name, text: block.text, interpolate: false })),
+            ...answer.map((block) => ({
+              name: block.name,
+              // The pin's `name` is the key the block renders under as `# name`
+              // (d.ts:11332 at the 2.1.329 pin); the host assembly carries the
+              // rendered text, so materialize that heading here.
+              text: `# ${block.name}\n${block.text}`,
+              interpolate: false,
+            })),
           )
           return { ...downstream, contexts: kept }
         }),

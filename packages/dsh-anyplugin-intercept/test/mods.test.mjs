@@ -427,6 +427,18 @@ test('tool.call { result } is a typed hard unsupported, never a silent kernel re
   assert.match(result.decision.reason, /tools\/pre-execute/)
 })
 
+test('tool.call refuses the classic { allow } projection as a named non-pin field', async () => {
+  const { registrations } = adapt([mod('tool.call', async () => ({ allow: true }))])
+  const result = await runChain(
+    { name: 'PreToolUse', subject: 'Bash', data: { tool_name: 'Bash', tool_use_id: 'toolu_1', tool_input: { command: 'ls' } } },
+    registrations,
+  )
+  assert.equal(result.decision.kind, 'unsupported')
+  assert.equal(result.decision.field, 'allow')
+  assert.equal(result.decision.hard, true)
+  assert.match(result.decision.reason, /not a ToolCallResult field/)
+})
+
 test('tool.check is refused as the engine permission verdict, not the pre-execute gate', () => {
   const { registrations, unmapped } = adapt([mod('tool.check', () => ({ decision: 'deny' }))])
   assert.equal(registrations.length, 0)

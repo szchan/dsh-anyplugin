@@ -1117,6 +1117,11 @@ test('a tool.call { result } is refused and traced as unsupported in a real turn
   const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-result-'))
   const traceFile = join(dataDir, 'trace.jsonl')
   const calls = []
+  const seen = []
+  const messageText = (message) =>
+    Array.isArray(message.content)
+      ? message.content.map((block) => (typeof block.text === 'string' ? block.text : '')).join('')
+      : String(message.content ?? '')
   try {
     await probeLifecycleWithDsh({
       harnessDir: harness.harnessDir,
@@ -1124,6 +1129,12 @@ test('a tool.call { result } is refused and traced as unsupported in a real turn
       expected: [],
       tool: bashTool(calls),
       toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      onAgent: (root) => {
+        root.ctx.on('llm/stream', (options, next) => {
+          seen.push(options.messages)
+          return next()
+        })
+      },
       timeoutMs: 20_000,
     })
     assert.deepEqual(calls, [], 'the call is denied rather than run with a dropped result')
@@ -1136,6 +1147,13 @@ test('a tool.call { result } is refused and traced as unsupported in a real turn
     assert.equal(pre[0].decision.kind, 'unsupported')
     assert.equal(pre[0].decision.field, 'result')
     assert.equal(pre[0].decision.hard, true)
+    const modelText = seen.flat().map(messageText).join('\n')
+    assert.match(
+      modelText,
+      /tool\.call result is unsupported at tools\/pre-execute/,
+      'the model reads the typed refuse reason, not the raw tool output',
+    )
+    assert.doesNotMatch(modelText, /^ran$/m, 'the withheld result text never reaches the model')
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
@@ -1156,6 +1174,16 @@ test('a loaded prompt.context mod appends a block to the composed model messages
     const traceFile = join(dataDir, 'trace.jsonl')
     const calls = []
     const seen = []
+    const observed = new Set()
+    const observe = (agent) => {
+      const id = String(agent?.session?.header?.id ?? agent?.id ?? 'unknown')
+      if (observed.has(id)) return
+      observed.add(id)
+      agent.ctx.on('llm/stream', (options, next) => {
+        seen.push({ agentId: id, messages: options.messages })
+        return next()
+      })
+    }
     try {
       await probeLifecycleWithDsh({
         harnessDir: harness.harnessDir,
@@ -1163,12 +1191,7 @@ test('a loaded prompt.context mod appends a block to the composed model messages
         expected: [],
         tool: bashTool(calls),
         toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
-        onAgent: (root) => {
-          root.ctx.on('llm/stream', (options, next) => {
-            seen.push(options.messages)
-            return next()
-          })
-        },
+        onAgentCreated: observe,
         timeoutMs: 20_000,
       })
     } finally {
@@ -1179,17 +1202,84 @@ test('a loaded prompt.context mod appends a block to the composed model messages
 
   const loaded = await turn([{ entry: 'register.ts' }])
   assert.ok(loaded.length > 0, 'the model received at least one call')
+  for (const call of loaded) {
+    const text = call.messages.map(messageText).join('\n')
+    assert.ok(
+      text.includes('# fixture-context\nPROMPT-CONTEXT-FIXTURE'),
+      `the composed prompt for ${call.agentId} carries the pin-visible heading and block`,
+    )
+    // DSH re-renders the context snapshot on each step, so a later model call
+    // can carry the block in both the first user message and the refreshed
+    // snapshot. Presence and the pin-visible heading are the assertions.
+    assert.ok(text.split('# fixture-context').length - 1 >= 1, 'the heading is in the composed prompt bytes')
+  }
   assert.ok(
-    loaded[0].some((message) => messageText(message).includes('PROMPT-CONTEXT-FIXTURE')),
-    'the appended block is in the first composed prompt bytes',
+    new Set(loaded.map((call) => call.agentId)).size >= 2,
+    'the root and the delegated child both assembled the block',
   )
-  const loadedText = loaded[0].map(messageText).join('\n')
-  assert.equal(loadedText.split('PROMPT-CONTEXT-FIXTURE').length - 1, 1, 'the block appears once in the prompt')
 
   const unloaded = await turn([])
   assert.ok(unloaded.length > 0)
-  assert.ok(
-    !unloaded[0].some((message) => messageText(message).includes('PROMPT-CONTEXT-FIXTURE')),
-    'without the mod the block is absent',
-  )
+  for (const call of unloaded) {
+    const text = call.messages.map(messageText).join('\n')
+    assert.ok(!text.includes('PROMPT-CONTEXT-FIXTURE'), 'without the mod the block is absent')
+    assert.ok(!text.includes('# fixture-context'), 'without the mod the heading is absent')
+  }
+})
+
+// tool.check is refused with a load-time warning that names the difference.
+// The handler would deny if it ran, so the running call proves zero
+// invocations; the trace carries the warning and no tool.check decision.
+test('a loaded tool.check mod is refused with a named warning and never invoked', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'tool-check-refusal')
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-tool-check-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { plugin: 'tool-check-refusal', pluginRoot: modRoot, mods: [{ entry: 'register.ts' }] }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 20_000,
+    })
+    assert.deepEqual(calls, [{ command: 'ls' }], 'the tool.check handler did not deny the call')
+    const records = readTrace(traceFile)
+    const warning = records.find((record) => typeof record.warning === 'string' && record.warning.includes('tool.check'))
+    assert.ok(warning, 'the refusal warning names tool.check')
+    assert.match(warning.warning, /permission verdict/)
+    assert.equal(records.filter((record) => record.event === 'tool.check').length, 0, 'the handler never joined a chain')
+    assert.equal(records.filter((record) => record.event === 'PreToolUse')[0].decision.kind, 'continue')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// MUST 1 on the direct-return path: `{ blocks, instructionFiles }` returns from
+// the handler itself, so the mount must inspect the result decision too.
+test('a direct prompt.context result with instructionFiles is typed unsupported', async (t) => {
+  if (skip) return t.skip(skip)
+  const modRoot = join(repoRoot, 'fixtures', 'mods', 'prompt-context-instruction')
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-prompt-instruction-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { plugin: 'prompt-context-instruction', pluginRoot: modRoot, mods: [{ entry: 'register.ts' }] }),
+      expected: [],
+      tool: bashTool([]),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 20_000,
+    })
+    const records = readTrace(traceFile)
+    const unsupported = records.filter(
+      (record) => record.event === 'prompt.context' && record.unsupported?.field === 'instructionFiles',
+    )
+    assert.ok(unsupported.length >= 1, 'the direct-return instructionFiles half is reported')
+    assert.match(unsupported[0].unsupported.reason, /no projection of instruction files/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })
