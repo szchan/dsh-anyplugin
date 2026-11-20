@@ -200,9 +200,10 @@ test('resolveModSpecifier implements the D30/D39 behaviors in candidate order', 
 })
 
 test('an extensionless import tries the file form before the directory form', () => {
-  // Both exist under order-choice/; Node's order says the file wins, and the
-  // D34 .tsx rule depends on it (views -> views/index.tsx must not be shadowed
-  // by a sibling views.tsx when the author meant the directory).
+  // Both exist under order-choice/; Node's order says the file wins. The
+  // directory form is not shadowed today only because the pinned
+  // `mods/diff/hooks/views/` has no sibling `views.ts(x)`; this fixture pins
+  // the order before such a file can appear.
   assert.deepEqual(
     resolveModSpecifier({
       specifier: './order-choice/thing',

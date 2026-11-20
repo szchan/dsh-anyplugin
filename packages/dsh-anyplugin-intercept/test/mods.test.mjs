@@ -227,7 +227,7 @@ test('registration conversion: wrap, host tier, source order, one source each', 
     'mod-host/load',
     'tools/post-execute',
   ])
-  // Default seating is where a person's plugins sit, never core (d.ts:6253-6265).
+  // Default seating is where a person's plugins sit, never core (d.ts:9899 at the 2.1.329 pin).
   assert.equal(adapt([mod('session.start', () => {})]).registrations[0].tier, 'user')
   assert.throws(() => adapt([], { tier: 'core' }), /unknown tier core/)
   assert.throws(() => modRegistrationsToKernel([], { plugin: '' }), /plugin must be a non-empty string/)
@@ -654,10 +654,11 @@ test('next.to(e, "append") from prepend skips a user classic hook, runs append, 
 test('next.to only moves forward and never re-enters a tier', async () => {
   const ran = []
   const guard = mod('classic.PreToolUse', async (event, next) => {
-    // `prepend` is not a legal target at the pin; asking for a tier above
-    // resumes at the next link rather than looping back (kernel rule).
-    await assert.rejects(next.to(event, 'user'), /takes "append" or "builtin"/)
-    return next(event)
+    // `prepend` is not a legal target at the pin. `user` is legal for a
+    // prepend hook and lands on the next tier; a tier at or above the caller
+    // would re-enter the chain and is refused.
+    await assert.rejects(next.to(event, 'prepend'), /takes "user", "append" or "builtin"/)
+    return next.to(event, 'user')
   })
   const { registrations } = adapt([guard], { tier: 'prepend' })
   const user = classicHookRegistration({ event: 'PreToolUse', source: 'user#0', run: () => ran.push('user') })
@@ -746,10 +747,10 @@ test('is, event, origin and budget are what the host knows, not what the mod wri
   assert.equal('origin' in result.event.data, false)
 })
 
-test('next.to refuses the tiers TargetTier excludes and the core tier this chain cannot serve', async () => {
+test('next.to refuses prepend, the core tier this chain cannot serve, and nonsense', async () => {
   const failures = []
   const guard = mod('classic.PreToolUse', async (event, next) => {
-    for (const tier of ['user', 'prepend', 'core', 'nonsense']) {
+    for (const tier of ['prepend', 'core', 'nonsense']) {
       try {
         await next.to(event, tier)
       } catch (error) {
@@ -761,15 +762,15 @@ test('next.to refuses the tiers TargetTier excludes and the core tier this chain
   const { registrations } = adapt([guard])
   await runChain(classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_tier', tool_input: {} }), registrations)
 
-  assert.equal(failures.length, 4)
-  for (const tier of ['user', 'prepend', 'nonsense']) {
+  assert.equal(failures.length, 3)
+  for (const tier of ['prepend', 'nonsense']) {
     assert.equal(failures.find((failure) => failure.tier === tier).name, 'TypeError')
-    assert.match(failures.find((failure) => failure.tier === tier).message, /takes "append" or "builtin"/)
+    assert.match(failures.find((failure) => failure.tier === tier).message, /takes "user", "append" or "builtin"/)
   }
   const core = failures.find((failure) => failure.tier === 'core')
   assert.equal(core.name, 'TypeError')
   assert.match(core.message, /not served/)
-  assert.match(core.message, /9938/)
+  assert.match(core.message, /16473/)
 })
 
 // ---- Review rulings M1–M5 / S-a–S-c --------------------------------------
@@ -1332,7 +1333,7 @@ test('next.to refuses a target tier that already ran, naming the direction and p
     builtin,
   ])
   assert.match(backwards.message, /would move backwards/)
-  assert.match(backwards.message, /5281-5289/)
+  assert.match(backwards.message, /8289-8367/)
 
   let sameTier
   await runChain(

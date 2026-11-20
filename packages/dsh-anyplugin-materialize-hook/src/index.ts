@@ -229,7 +229,7 @@ export function applyToolInputRewrite(
 
 /**
  * A `$` call is work the handler spends its own budget on, and the pin's clock
- * stands still while one is in flight (`claude-code.d.ts:5339-5352`). The
+ * stands still while one is in flight (`claude-code.d.ts:8289-8367 (2.1.329 pin)`). The
  * kernel's meter is only reachable through the scope `invoke` enters, so the
  * host wraps the dollar namespace: each call reports itself as paused time.
  * The wrapper is transparent to the caller (sync stays sync, promises pass

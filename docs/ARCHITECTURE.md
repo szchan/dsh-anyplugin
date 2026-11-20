@@ -589,7 +589,7 @@ seam and the pinned `claude-code.d.ts` line as evidence — claude-code
 header still says 2.1.277; the commit is the pin). It is **16 live `classic.*` routes
 plus the live `session.start` loader event**, 17 live routes.
 
-`on()`'s `Pattern` is first-class (d.ts:6101): `classic.*` expands to the 16
+`on()`'s `Pattern` is first-class (d.ts:9447 at the 2.1.329 pin): `classic.*` expands to the 16
 classic routes, `*` to all 17, and a negation (`!tool.*`) to the complement.
 Selected names without a route keep their own reason (a classic event S9 leaves
 unprobed or refutes, or an engine event with no shared protocol); a pattern
@@ -597,7 +597,7 @@ that cannot be expanded gets a pattern-shaped reason of its own.
 
 The 16 `classic.*` names map one-to-one onto their classic kernel points and S9
 seams; `classic.PreToolUse` is special-cased because the mod API hands it
-`ToolCallEnvelope` (d.ts:10081-10093), not the classic stdin payload, so the
+`ToolCallEnvelope` (d.ts:17689 at the 2.1.329 pin), not the classic stdin payload, so the
 adapter rebuilds the envelope and carries a rewrite back.
 `classic.PermissionRequest` and `classic.PermissionDenied` record their partial
 payloads at the S9 seam (no `tool_input`; no tool name or input).
@@ -606,7 +606,7 @@ to the kernel's `session.start`, not to `agent/created` (that is classic
 `SessionStart`). The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`
-(d.ts:6253-6265). Unmapped engine-native events (39) and classic events S9
+(d.ts:9899 at the 2.1.329 pin). Unmapped engine-native events (39) and classic events S9
 leaves unprobed or refutes (17) stay on the adapter's `unmapped` list with that
 reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
 reported as absent from the pin and point at their real spelling rather than
@@ -628,7 +628,7 @@ not collapsed: `additionalContext` becomes the kernel's `text` channel,
 `unsupported` with a reason.
 
 The mod-visible `next` is that same continuation with the pinned members
-projected onto it (`claude-code.d.ts:5271-5352`, issue #68): `to(e, tier)` calls
+projected onto it (`claude-code.d.ts:8289-8367 (2.1.329 pin)`, issue #68): `to(e, tier)` calls
 the kernel `Next` with the tier argument the kernel already understands, so
 tier order, matcher skipping and trace recording stay in one place. `next` is
 eager and call-scoped: each call immediately continues the chain from the
@@ -659,7 +659,7 @@ once by the innermost call. The landing is
 inclusive of the named target, including a direct jump with no link in
 between; a named tier with no link left falls forward to the next tier that
 has one rather than dropping the rest of the chain. `to` refuses a target tier
-that has already run (the pin only moves outward, `claude-code.d.ts:5281-5289`).
+that has already run (the pin only moves outward, `claude-code.d.ts:8289-8367`).
 `core` is a declared fidelity gap: the pin's `TargetTier` allows it, but this
 chain has no core link, and naming it would skip the `builtin` tier without
 running it, so the member refuses with a reason naming the gap instead of
@@ -683,8 +683,9 @@ pass-over entries a `to` recorded when it was called; a second `next` starts a
 new slice, so the earlier trip's steps leave. A matcher skip never ran and is
 not projected (it stays in the kernel trace as `skipped-matcher`); a throwing
 link is `rejected` with the throw message as the reason. `TargetTier` is
-enforced: `prepend`/`user` are refused because the pin's type excludes them,
-and `core` refuses as the declared gap above.
+enforced: `prepend` is refused because the pin's type excludes it; `user`,
+`append` and `builtin` are served when they move outward from the caller, and
+`core` refuses as the declared gap above.
 Covered by `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (`to` skip and
 forward-only, direct-target and missing-tier landings, first-decision
 `next`/`to` single-run, fan-out same-tier sibling, two same-tier jumps,
@@ -721,9 +722,9 @@ Both flows share: a matcher miss is skipped, a throwing handler is skipped and
 recorded, an over-budget handler is aborted and recorded, one trace step per
 handler run. `TIER_ORDER` (`prepend → user → append → builtin`) is a single
 table with `builtin` innermost. D13 recorded its values as a prose-derived
-assumption; the pinned `claude-code.d.ts` (d.ts:10022-10039) now confirms them
+assumption; the pinned `claude-code.d.ts` (d.ts:17636-17645 at the 2.1.329 pin) now confirms them
 as the first four of five tiers — the fifth, `core`, is the engine's own seat
-and never a plugin's (`PluginRegisterInput.tier` excludes it, d.ts:6253-6265).
+and never a plugin's (`PluginRegisterInput.tier` excludes it, d.ts:9899 at the 2.1.329 pin).
 
 A classic hook has no `next`, so `classicHookRegistration` always produces
 `observe` mode and declares `continuation: 'fan-out'`; a caller that passes no
@@ -1521,8 +1522,9 @@ the 16 classic events were not exercised by this turn. The load-time
 **Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations**, **16 `$` calls**, and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: **16 served**, **8 typed refusals**, **6 absent** — the original three plus `ui.ask`, `vcs.detect` and `vcs.diff`. `ui.ask` and `vcs.*` are absent members, not refusals: `createModBridge` never defines them, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
 
 **Host bug found, now fixed (#68).** `next.to`, declared by the pin
-(`claude-code.d.ts:5271-5352`; at the 2.1.322 line numbers the same seven
-members appear as `GlobNext` at `:4236`; at 2.1.329 `GlobNext.to` is line 6666) and claimed by the host's `copyNextSurface`
+(2.1.322 pin: `Next` at `claude-code.d.ts:5271-5352`, `GlobNext` at `:4236`; 2.1.329 pin: `Next` at `8289-8367` with `to` at
+`8306`, `GlobNext` at `6660-6685` with `to` at `6666`) and claimed by the
+host's `copyNextSurface`
 (`dsh-anyplugin-mod-host/src/index.ts:214`), was absent from the mod-visible
 continuation: the kernel's `Next` had no `to`; `runModHandler` built a fresh
 bare function. `sec-default`'s `classic.*` handler therefore threw

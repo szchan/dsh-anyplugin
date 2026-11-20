@@ -11,13 +11,14 @@
  *
  * At the 2.1.329 pin, `sec-default` imports `'./reads-as-org-tool'` — a sibling
  * `.ts` file with no extension. Refusing that was our gap, not upstream's:
- * their loader serves it. The order is Node's file-then-directory order, and it
- * is load-bearing:
+ * their loader serves it. The order is Node's own file-then-directory order,
+ * observed upstream at this pin, and it is load-bearing:
  *
  *   `<spec>.ts`, `<spec>.tsx`, `<spec>/index.ts`, `<spec>/index.tsx`
  *
- * File before directory is also the only order that keeps the D34 `.tsx`
- * transform working for `views` → `views/index.tsx`. Bare self-imports (`'.'`,
+ * A directory import is not shadowed today because the pinned graph has no
+ * sibling `<name>.ts`/`.tsx` beside a directory of the same name; the fixture
+ * exists so a future mod cannot silently change that. Bare self-imports (`'.'`,
  * `'..'`, a trailing slash) keep the older directory-index behavior: they name
  * a directory, not a file.
  *

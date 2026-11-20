@@ -120,7 +120,7 @@ own work while `next`/`$` still pause.
   tool call. At 2.1.329 the D39 resolver fallback seats the same mod (45
   registrations), and the guard behavior above is the measured behavior at
   that pin too. The pre-fix defect was reported at the 2.1.322 line numbers
-  (`claude-code.d.ts:4236`); at 2.1.329 `GlobNext.to` is line 6666.
+  (`claude-code.d.ts:4236` at the 2.1.322 pin); at 2.1.329 `GlobNext.to` is line 6666.
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
@@ -220,7 +220,8 @@ own work while `next`/`$` still pause.
   seven load. `sec-default`'s author added extensionless *file* imports; the
   D39 resolver fallback (file before directory) serves them, so the table
   records 45 registrations and no refusal. Its eight classic invocations are
-  live and hit the `next.to` defect above.
+  live; after #70 the continuation serves `next.to`, and S15 reports 0 handler
+  errors at this pin.
 - Mod capability scanner (`dsh-anyplugin-mod-scan`): a lexical read of a mod's
   `register.ts` yields the event sites and `$.` calls an install grant would
   display, without vendoring or executing the mod (D21).
