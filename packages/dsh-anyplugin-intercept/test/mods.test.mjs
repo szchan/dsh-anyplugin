@@ -450,3 +450,190 @@ test('the engine verbs stay available to a mod on any event', async () => {
   )
   assert.deepEqual(dropped.decision, { kind: 'block', reason: 'stop here' })
 })
+
+// ---- Issue #68: the pinned `Next` surface ---------------------------------
+// `next` is the kernel's own continuation with the pinned members around it.
+// These tests assert semantics, not presence: a guard that calls `to` must
+// really pass over the links above the tier it names, and every member must
+// report what the host knows rather than what the mod wrote.
+
+const observeAt = (tier, run, source = `${tier}#0`) => ({
+  event: 'PreToolUse',
+  tier,
+  mode: 'observe',
+  continuation: 'fan-out',
+  source,
+  run,
+})
+
+test('next.to(e, "append") from prepend skips a user classic hook, runs append, and traces the skip', async (t) => {
+  const ran = []
+  let seenBeneath
+  const guard = mod('classic.PreToolUse', async (event, next) => {
+    const resolved = await next.to(event, 'append')
+    // The link it passed over has already settled; the trace sees it, nearest
+    // first, with the pinned reason.
+    seenBeneath = next.trace
+    return resolved
+  })
+  const { registrations } = adapt([guard], { tier: 'prepend' })
+  const user = classicHookRegistration({
+    event: 'PreToolUse',
+    matcher: 'Bash',
+    source: 'user#0',
+    run: () => {
+      ran.push('user')
+    },
+  })
+  const append = observeAt('append', () => {
+    ran.push('append')
+  })
+  const result = await runChain(
+    classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_guard', tool_input: { command: 'ls' } }),
+    [registrations[0], user, append],
+  )
+  t.diagnostic(describeTrace(result.trace).join('\n'))
+
+  assert.deepEqual(ran, ['append'])
+  const skipped = result.trace.find((entry) => entry.source === 'user#0')
+  assert.equal(skipped.status, 'skipped')
+  assert.equal(skipped.detail, 'bypassed by synthetic')
+  // The projection is the pinned subset: index, plugin, tier, event, outcome, reason.
+  assert.deepEqual(seenBeneath, [
+    {
+      index: 1,
+      plugin: 'user#0',
+      tier: 'user',
+      event: 'classic.PreToolUse',
+      outcome: 'skipped',
+      reason: 'bypassed by synthetic',
+    },
+  ])
+  assert.equal(Object.isFrozen(seenBeneath), true)
+  assert.equal(Object.isFrozen(seenBeneath[0]), true)
+  // The append link is recorded after the prepend hook unsets, so the mod's own
+  // view is short of it — nothing it never saw leaves, nothing it never ran joins.
+  assert.deepEqual(result.trace.map((entry) => [entry.index, entry.status]), [[1, 'skipped'], [0, 'ran'], [2, 'ran']])
+  assert.equal(result.decision.kind, 'continue')
+})
+
+test('next.to only moves forward and never re-enters a tier', async () => {
+  const ran = []
+  const guard = mod('classic.PreToolUse', async (event, next) => {
+    // `prepend` is not a legal target at the pin; asking for a tier above
+    // resumes at the next link rather than looping back (kernel rule).
+    await assert.rejects(next.to(event, 'user'), /takes "append" or "builtin"/)
+    return next(event)
+  })
+  const { registrations } = adapt([guard], { tier: 'prepend' })
+  const user = classicHookRegistration({ event: 'PreToolUse', source: 'user#0', run: () => ran.push('user') })
+  await runChain(
+    classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_1', tool_input: {} }),
+    [registrations[0], user],
+  )
+  assert.deepEqual(ran, ['user'])
+})
+
+test('next.signal aborts while the hook is still running', async () => {
+  const controller = new AbortController()
+  let sawAbort = false
+  let resolveSawAbort
+  const saw = new Promise((resolve) => {
+    resolveSawAbort = resolve
+  })
+  const guard = mod('classic.PreToolUse', async (event, next) => {
+    assert.equal(next.signal.aborted, false)
+    next.signal.addEventListener(
+      'abort',
+      () => {
+        sawAbort = true
+        resolveSawAbort()
+      },
+      { once: true },
+    )
+    // Hold the hook open across the abort so this is "mid-hook", not "before".
+    await saw
+    return next(event)
+  })
+  const { registrations } = adapt([guard])
+  const pending = runChain(
+    classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_abort', tool_input: {} }),
+    registrations,
+    { signal: controller.signal },
+  )
+  controller.abort()
+  await saw
+  assert.equal(sawAbort, true)
+  assert.equal((await pending).decision.kind, 'continue')
+})
+
+test('is, event, origin and budget are what the host knows, not what the mod writes', async () => {
+  let view
+  const guard = mod('classic.PreToolUse', async (event, next) => {
+    view = {
+      event: next.event,
+      isAllClassic: next.is('classic.*', event),
+      isOther: next.is('classic.PostToolUse', event),
+      origin: next.origin,
+      to: typeof next.to,
+      signalIsAbortSignal: next.signal instanceof AbortSignal,
+      traceBeforeNext: next.trace,
+      budgetBefore: { ms: next.budget.ms, remainingMs: next.budget.remainingMs },
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    view.budgetAfter = { ms: next.budget.ms, remainingMs: next.budget.remainingMs }
+    // A write from the mod reaches the event it passes on, never the origin.
+    const resolved = await next({ ...event, origin: { plugin: 'forged', tier: 'prepend' } })
+    view.originAfter = next.origin
+    return resolved
+  })
+  const { registrations } = adapt([guard])
+  const result = await runChain(
+    classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_view', tool_input: {} }),
+    registrations,
+  )
+
+  assert.equal(view.event, 'classic.PreToolUse')
+  assert.equal(view.isAllClassic, true)
+  assert.equal(view.isOther, false)
+  assert.deepEqual(view.origin, { plugin: 'engine', tier: 'core' })
+  assert.equal(Object.isFrozen(view.origin), true)
+  assert.equal(view.to, 'function')
+  assert.equal(view.signalIsAbortSignal, true)
+  assert.deepEqual(view.traceBeforeNext, [])
+  assert.equal(view.budgetBefore.ms, 10_000)
+  assert.ok(view.budgetBefore.remainingMs <= 10_000 && view.budgetBefore.remainingMs > 0)
+  assert.ok(view.budgetAfter.remainingMs < view.budgetBefore.remainingMs)
+  assert.equal(view.budgetAfter.ms, view.budgetBefore.ms)
+  assert.deepEqual(view.originAfter, { plugin: 'engine', tier: 'core' })
+  assert.equal(Object.isFrozen(result.event), false)
+  // The forged origin did not reach the kernel's event copy either: the adapter
+  // rebuilds the mod-shaped payload, so `origin` is not a field it can carry.
+  assert.equal('origin' in result.event.data, false)
+})
+
+test('next.to refuses the tiers TargetTier excludes and the core tier this chain cannot serve', async () => {
+  const failures = []
+  const guard = mod('classic.PreToolUse', async (event, next) => {
+    for (const tier of ['user', 'prepend', 'core', 'nonsense']) {
+      try {
+        await next.to(event, tier)
+      } catch (error) {
+        failures.push({ tier, name: error.name, message: error.message })
+      }
+    }
+    return next(event)
+  })
+  const { registrations } = adapt([guard])
+  await runChain(classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_tier', tool_input: {} }), registrations)
+
+  assert.equal(failures.length, 4)
+  for (const tier of ['user', 'prepend', 'nonsense']) {
+    assert.equal(failures.find((failure) => failure.tier === tier).name, 'TypeError')
+    assert.match(failures.find((failure) => failure.tier === tier).message, /takes "append" or "builtin"/)
+  }
+  const core = failures.find((failure) => failure.tier === 'core')
+  assert.equal(core.name, 'TypeError')
+  assert.match(core.message, /not served/)
+  assert.match(core.message, /9938/)
+})

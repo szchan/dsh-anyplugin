@@ -572,6 +572,8 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       matcher: hook.matcher,
       timeoutMs: hookBudgetMs(hook),
       source: `${hook.event}#${hook.index ?? index}`,
+      // The trace's owner: a classic arm is the configured plugin's hook.
+      plugin: config.plugin,
       run: async (_context, event, next) => {
         const changed = artifactChange(hook)
         if (changed !== undefined) return { kind: 'deny', reason: changed }
@@ -626,6 +628,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       matcher: hook.matcher,
       timeoutMs: hookBudgetMs(hook),
       source: `${hook.event}#${hook.index ?? index}`,
+      plugin: config.plugin,
       run: async (_context, event) => {
         const changed = artifactChange(hook)
         if (changed !== undefined) {
@@ -689,6 +692,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         matcher: hook.matcher,
         timeoutMs: hookBudgetMs(hook),
         source: `${hook.event}#${hook.index ?? index}`,
+        plugin: config.plugin,
         run: async (_context, chainEvent) => {
           const changed = artifactChange(hook)
           if (changed !== undefined) {
