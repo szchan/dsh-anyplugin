@@ -32,6 +32,7 @@ const ALLOWED = {
   'dsh-anyplugin-ir': [],
   'dsh-anyplugin-intercept': [],
   'dsh-anyplugin-mod-scan': [],
+  'dsh-anyplugin-mod-host': [],
   'dsh-anyplugin-hook-runner': [],
   'dsh-anyplugin-skill-template': [],
   'dsh-anyplugin-command-template': [],

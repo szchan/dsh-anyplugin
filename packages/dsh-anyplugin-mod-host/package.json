@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-mod-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Load one authored Claude mod in a per-mod node:vm realm: D30 resolver, position-preserving type strip, controlled on() and a per-handler $, with no source rewrite.",
+  "exports": { ".": "./src/index.ts" }
+}

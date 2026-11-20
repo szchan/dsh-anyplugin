@@ -637,7 +637,7 @@ that report and that caveat, not the list alone.
 | Terminal-only elements (`Raster`, `Image`, `AbovePrompt` band on terminal) | `derived` — DSH renders web; terminal panel only |
 | `Client` second file (animation / pointer half) — bundling and props are undocumented | `planned`, needs hands-on probing |
 | `.tsx` / JSX mods — type-stripping parses `.ts`, never JSX | **`planned`**: S13: 20 of 21 `.tsx` modules fail `stripTypeScriptTypes` in both modes (19 `Expected '>', got 'ident'`, one `Expected ',', got '.'`); the one JSX-free module strips, but stock Node still refuses the `.tsx` extension; a JSX transform is a decision, not a licence (see §7.7) |
-| Authored specifier conventions (`'./ask'`, `'./x.js'` for `x.ts`, `'.'` self-import) | **spike-proven resolver; host pending** — our host obligation, not an upstream specification; stock Node ESM refuses the four shapes; resolution changes no bytes (S13, §7.7) |
+| Authored specifier conventions (`'./ask'`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33) — three behaviors only, no candidate fallbacks; our host obligation, not an upstream specification; stock Node ESM refuses the four shapes; resolution changes no bytes (S13, D30, §7.7) |
 | Cross-mod pane ownership (`$.ui.open({id})` collisions) | must be reproduced, bug reports already exist upstream |
 | Version drift (`$.ui.backdrop` removed in 2.1.319; `AbovePromptList` needs 2.1.323) | pin the release; regenerate the symbol table per pin |
 
@@ -716,10 +716,54 @@ per handler and resolve methods lazily, not build all 22 at load.
 **What S13 changes here.** §7.3's five dependencies stand; the host gains a
 prerequisite — a resolver and a linker — rather than a new subsystem. `.tsx`
 moves from "open question" to a declared `planned` gap with a named cause.
-What it does not settle: a host, a materializer, an emit path, IR changes,
-performance, or containment. The proposed decision text is in the #30 PR; it
-fixes type stripping as the only sanctioned transform and keeps `.tsx`
-`planned` pending an explicit JSX decision.
+What it did not settle at S13 time: a host, a materializer, an emit path, IR
+changes, performance, or containment. D30 fixes type stripping as the only
+sanctioned transform and keeps `.tsx` `planned` pending an explicit JSX
+decision; the host skeleton followed in #33.
+
+**Host landed (#33).** `dsh-anyplugin-mod-host` implements this section:
+`loadMod({ root, entry, host })` creates one `node:vm` context per mod,
+resolves the entry and every child through the three rules, strips `.ts` in
+memory, links once and evaluates once, then calls the authored `register(on)`
+and returns its registrations in source order. `$` is never a global: the host
+wraps each registration as `handler(event, next)`; immediately before every
+invocation it calls `host.dollar()` exactly once and passes the result to the
+authored `handler($, event, next)`. The host never caches, clones or freezes
+that namespace; `ModHost.dollar()` **must return the namespace for that one
+invocation**. A host that returns the same object for two calls has reused it —
+a `ModHost` bug, not host-side freshness. Evaluation happens
+before `loadMod` resolves; `evaluate()` is an idempotent accessor, so a mod
+cannot evaluate twice. `dispose()` makes the realm inert. The host reads
+authored bytes and never writes them (the tests assert sha256 before and after).
+The package has no runtime dependencies; `npm test` runs Node with
+`--experimental-vm-modules`, because D30's realm needs `SourceTextModule`.
+
+Failures are `ModHostError`s with one of four codes: `ERR_MOD_HOST_TSX` (the
+graph reaches a `.tsx`), `ERR_MOD_HOST_MISSING` (the root, entry or a named
+module is absent), `ERR_MOD_HOST_UNSUPPORTED_EXT` (an extension D30 does not
+load) and `ERR_MOD_HOST_LINK` (a specifier outside the three rules, a
+read/strip/syntax failure, a link-time named-import mismatch, a missing or
+misused `register(on)`, or use after `dispose()`). Authored errors are never
+wrapped: a module-level `$` remains the realm's `ReferenceError`, and a throw
+from `register` keeps the mod's own stack. No `.tsx` stub, override hook or
+test-only escape hatch exists. The realm is not containment (D6/D30): `on` is
+a host-realm function, so authored code can reach host globals with
+`on.constructor('return process')()`; the host isolates the tested global
+surface, nothing more.
+
+**The refusal is the upstream acceptance.** `loadMod` on the pinned `diff` mod
+throws `ERR_MOD_HOST_TSX` naming `views/pane-view.tsx`: `register.ts` imports
+`./views`, `views/index.ts` contains `export * from './pane-view.jsx'`, and ESM
+links the whole graph before any hook can fire. S13 reached the hook only by
+substituting `.tsx` stubs, which D30 forbids as a host mechanism. Therefore
+**no upstream mod that re-exports views is loadable at this pin** — the JSX
+decision gates the diff acceptance (and any mod whose graph reaches a `.tsx`),
+not just drawing. The
+synthetic fixture is the `$` proof: `session.start` calls
+`$.session.usage → $.command.register → $.session.messages`, or
+`$.session.usage → $.clock.now → $.command.register → $.session.messages` when
+`usage()` returns `undefined`, then returns `next(e)`. The fetched `diff` test
+asserts the refusal instead of a fired hook.
 
 ## 8. Seam capability matrix (P4)
 
@@ -1656,10 +1700,12 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   **Proven.** The authored `.ts` spine loads (505 reachable modules, no source
   rewrite); `register(on)` reaches exactly the scanner's events; `session.start`
   runs with a per-handler `$`; the vm context lacks `process`, `URL` and `$`.
-  **Not proven.** A host, materializer, emit path or IR change; `.tsx` or JSX
-  support; the element runtime; `$.ui` (its call site is
+  **Not proven by this spike.** A host, materializer, emit path or IR change;
+  `.tsx` or JSX support; the element runtime; `$.ui` (its call site is
   `register.ts:1008`, outside the fired hook); hooks longer than
-  `session.start`; containment (timers, promises, memory, permissions).
+  `session.start`; containment (timers, promises, memory, permissions). (The
+  host skeleton landed separately in #33 — §7.7 — but `.tsx` remains the
+  refusal, so "load a real mod" is still gated on the JSX decision.)
 
   **Load.** All 579 `.ts` files strip with 0 failures; the stripped entry stays
   33,891 bytes / 1342 lines and `on('session.start')` stays line 938. Stock ESM

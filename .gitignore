@@ -15,3 +15,6 @@ fixtures/**/captured/
 
 # generated diagram candidates and artifacts; keep the tree clean
 .archify/
+
+# pinned upstream mod tree fetched by scripts/fetch-mod.mjs (D14: never vendored)
+.mods/
