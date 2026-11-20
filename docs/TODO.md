@@ -79,8 +79,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
   caller-supplied seating, source order preserved) so mods and classic hooks
-  share one chain. `mod-events.ts` pins the mapping as data (16 live classic
-  routes plus the `session.start` loader point, 56 unmapped names with reasons
+  share one chain. `mod-events.ts` pins the mapping as data (17 live routes:
+  16 classic plus `session.start`, 56 unmapped names with reasons
   from S9), `on()` patterns (`classic.*`, `*`, negations) expand instead of
   being dropped, classic results are translated (`additionalContext`,
   `updatedInput`) or typed `unsupported`, and the fan-out `next()` divergence
