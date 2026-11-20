@@ -279,6 +279,11 @@ set per fixture. Today (CI re-runs it against `0.2.2-rc.5` and `0.2.2-rc.2`):
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 |
 | **total** | **11** | **9** | **1** | **1** |
 
+The Codex portable fixture has its own hand-authored golden (no offline
+`codex plugin details` oracle exists), so it is reported beside this table, not
+folded into it: `codex-portable` declares 3 components and matches 3. See
+`packages/dsh-anyplugin-conformance/test/codex.test.mjs`.
+
 A test that only went green would tell you nothing about the missing
 components. A ratchet tells you the distance to 100 % on every run, and closing
 one gap is a one-line reviewable edit in the matrix. "Refused" is a third

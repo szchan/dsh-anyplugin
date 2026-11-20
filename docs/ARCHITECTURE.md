@@ -1122,6 +1122,16 @@ enough before `verify`; CI fetches each pin once and installs nothing else:
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
 | **total** | **16** | **15** | **0** | **1** | |
 
+The Codex fixture is reported separately because its golden is a declaration,
+not an upstream observation:
+
+| Fixture | Declared | Matched | Missing | Refused | What the gap needs |
+| --- | --- | --- | --- | --- | --- |
+| `codex-portable` | 3 | 3 | 0 | 0 | two skills and the `mcp__probe__` server; hooks are exec-gated separately (D25) |
+
+Adding that row to the Claude totals would make a hand-authored surface look
+observed, so the total above stays Claude-only.
+
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
 and the `/plugin:name args` typing surface — so its IR node carries
