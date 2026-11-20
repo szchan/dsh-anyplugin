@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { loadMod, resolveModSpecifier } from '../src/index.ts'
+import { FRAGMENT } from '../src/jsx.ts'
 
 const ROOT = fileURLToPath(new URL('../../../fixtures/mods/synthetic/', import.meta.url))
 const REGISTER = join(ROOT, 'register.ts')
@@ -243,9 +244,69 @@ test('a link-time missing export is ERR_MOD_HOST_LINK, not a raw SyntaxError', a
   )
 })
 
-test('.tsx reach is refused as planned, whether imported or used as the entry', async () => {
-  await rejectsWith(loadFixture('jsx-reach.ts'), 'ERR_MOD_HOST_TSX', '.tsx', 'planned')
-  await rejectsWith(loadFixture('view.tsx'), 'ERR_MOD_HOST_TSX', '.tsx', 'planned')
+test('a minimal .tsx graph loads and its handler builds an h() descriptor', async () => {
+  const view = join(ROOT, 'view.tsx')
+  const before = sha256(view)
+  const mod = await loadFixture('jsx-reach.ts')
+  assert.equal(mod.registrations.length, 1)
+  assert.equal(mod.registrations[0].event, 'ui.render')
+
+  const element = await mod.registrations[0].handler({}, () => undefined)
+  assert.deepEqual(element, { type: 'div', props: null, children: [7] })
+  assert.equal(sha256(view), before, 'the transform is in memory; it must not rewrite the authored file')
+})
+
+test('fragment syntax becomes a Fragment descriptor, not a string', async () => {
+  const mod = await loadFixture('fragment.tsx')
+  const element = await mod.registrations[0].handler({}, () => undefined)
+  assert.equal(element.type, FRAGMENT)
+  assert.deepEqual(element.children, ['a', 'b'])
+})
+
+test('a .tsx module without the classic pragma is a typed refusal naming the file', async () => {
+  await rejectsWith(
+    loadFixture('view-no-pragma.tsx'),
+    'ERR_MOD_HOST_TSX',
+    'view-no-pragma.tsx',
+    'leading comment block',
+    '@jsx h',
+  )
+})
+
+test('a .tsx module with a foreign @jsx pragma is a typed refusal naming the file', async () => {
+  await rejectsWith(
+    loadFixture('view-foreign-pragma.tsx'),
+    'ERR_MOD_HOST_TSX',
+    'view-foreign-pragma.tsx',
+    '@jsx h2',
+  )
+})
+
+test('a .tsx module with a non-classic runtime is a typed refusal naming the file', async () => {
+  await rejectsWith(
+    loadFixture('view-automatic-runtime.tsx'),
+    'ERR_MOD_HOST_TSX',
+    'view-automatic-runtime.tsx',
+    '@jsxRuntime automatic',
+  )
+})
+
+test('a pragma after the leading comment block is not a file pragma', async () => {
+  await rejectsWith(
+    loadFixture('view-late-pragma.tsx'),
+    'ERR_MOD_HOST_TSX',
+    'view-late-pragma.tsx',
+    'leading comment block',
+  )
+})
+
+test('a .tsx module with a foreign @jsxFrag is a typed refusal naming the file', async () => {
+  await rejectsWith(
+    loadFixture('view-foreign-fragment.tsx'),
+    'ERR_MOD_HOST_TSX',
+    'view-foreign-fragment.tsx',
+    '@jsxFrag div',
+  )
 })
 
 test('an unknown extension is a typed error naming the extension', async () => {

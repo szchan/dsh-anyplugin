@@ -7,14 +7,18 @@
 // proves the seat is per-agent, and the trace file proves load-before-turn
 // ordering because apply settles before the loader reports success.
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { classicEvent } from '../../dsh-anyplugin-intercept/src/index.ts'
+import { classicEvent, modRegistrationsToKernel } from '../../dsh-anyplugin-intercept/src/index.ts'
 import { applyToolInputRewrite } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
+import { loadMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
+import { DIFF_MOD_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
+import { scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
 import { hashManifest } from '../../dsh-anyplugin-trust/src/index.ts'
 import { probeLifecycleWithDsh } from '../src/oracles/dsh.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
@@ -424,4 +428,76 @@ test('two plugins load mods with their own $ and registrations', { skip }, async
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
+})
+
+// The fetched upstream `diff` mod as a kernel fixture (D34, D32). Sources are
+// fetched at test time and never vendored; CI sets ANYPLUGIN_MOD_TREE.
+const diffFixturePath = fileURLToPath(new URL('../../../fixtures/mods/diff/fixture.json', import.meta.url))
+const diffFixture = JSON.parse(readFileSync(diffFixturePath, 'utf8'))
+const isCI = process.env.CI === 'true' || process.env.CI === '1'
+const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+
+test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async (t) => {
+  const tree = process.env[diffFixture.env]
+  if (!tree) {
+    const reason = `${diffFixture.env} is unset; run \`${diffFixture.fetch}\` and set it to the printed root`
+    if (isCI) {
+      assert.fail(`CI must fetch the pinned diff mod before npm test: ${reason}`)
+    }
+    return t.skip(reason)
+  }
+
+  // The fixture declaration and the host pin are the same claim.
+  assert.equal(diffFixture.pin.version, DIFF_MOD_PIN.version)
+  assert.equal(diffFixture.pin.commit, DIFF_MOD_PIN.commit)
+  assert.equal(diffFixture.entry, DIFF_MOD_PIN.entry)
+
+  const root = resolve(tree)
+  const entry = join(root, diffFixture.entry)
+  const before = sha256(entry)
+  assert.equal(sha256(entry), DIFF_MOD_PIN.entrySha256, 'the fetched entry must be the pinned artifact')
+
+  const source = readFileSync(entry, 'utf8')
+  const scan = scanModSource(source, { file: 'mods/diff/hooks/register.ts' })
+  assert.equal(scan.events.length, diffFixture.scan.events)
+  assert.equal(new Set(scan.events.map((event) => event.name)).size, diffFixture.scan.uniqueEvents)
+  assert.equal(scan.calls.length, diffFixture.scan.calls)
+  assert.equal(scan.dynamic.length, diffFixture.scan.dynamic)
+
+  // Loading proves the .tsx path: without the classic transform the graph is
+  // refused at views/pane-view.tsx (the pre-#45 nail).
+  const load = await loadMod({
+    root,
+    entry: diffFixture.entry,
+    host: {
+      dollar: () => {
+        throw new Error('$ must not be built while loading: register() declares only')
+      },
+    },
+  })
+  const events = load.registrations.map((registration) => registration.event)
+  assert.deepEqual(events, diffFixture.registrations, 'the runtime registrations are the authored order')
+  assert.deepEqual(
+    scan.events.map((event) => event.name),
+    events,
+    'the scanner and the loaded graph must see the same on() sites',
+  )
+
+  // D32: the registrations ride the one kernel. Only session.start has a host
+  // route at this pin; the rest are reported as unmapped with a reason, never
+  // silently dropped.
+  const kernel = modRegistrationsToKernel(load.registrations, {
+    plugin: diffFixture.name,
+    entry: diffFixture.entry,
+  })
+  assert.equal(kernel.routes.length, diffFixture.kernel.routed)
+  assert.equal(kernel.routes[0].route.modEvent, 'session.start')
+  assert.equal(kernel.routes[0].registration.event, 'session.start')
+  assert.equal(kernel.unmapped.length, diffFixture.kernel.unmapped)
+  for (const unmapped of kernel.unmapped) {
+    assert.ok(unmapped.reason.length > 0, `${unmapped.event} has an empty unmapped reason`)
+  }
+  assert.equal(kernel.routes.length + kernel.unmapped.length, diffFixture.registrations.length)
+
+  assert.equal(sha256(entry), before, 'the fixture load must not touch the authored bytes')
 })

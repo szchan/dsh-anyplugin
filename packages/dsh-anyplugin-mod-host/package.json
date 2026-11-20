@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Load one authored Claude mod in a per-mod node:vm realm: D30 resolver, position-preserving type strip, controlled on() and a per-handler $, with no source rewrite.",
-  "exports": { ".": "./src/index.ts" }
+  "description": "Load one authored Claude mod in a per-mod node:vm realm: D30 resolver, narrow classic JSX transform for .tsx, in-memory type strip, controlled on() and a per-handler $.",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@babel/core": "7.29.13",
+    "@babel/plugin-transform-react-jsx": "7.29.7"
+  }
 }

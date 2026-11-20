@@ -728,7 +728,7 @@ that report and that caveat, not the list alone.
 | --- | --- |
 | Terminal-only elements (`Raster`, `Image`, `AbovePrompt` band on terminal) | `derived` — DSH renders web; terminal panel only |
 | `Client` second file (animation / pointer half) — bundling and props are undocumented | `planned`, needs hands-on probing |
-| `.tsx` / JSX mods — type-stripping parses `.ts`, never JSX | **`planned`**: S13: 20 of 21 `.tsx` modules fail `stripTypeScriptTypes` in both modes (19 `Expected '>', got 'ident'`, one `Expected ',', got '.'`); the one JSX-free module strips, but stock Node still refuses the `.tsx` extension; a JSX transform is a decision, not a licence (see §7.7) |
+| `.tsx` / JSX mods | **host landed** (D34): a `.tsx` module declaring the classic pragma (`@jsxRuntime classic`, `@jsx h`, `@jsxFrag Fragment`) loads through one narrow in-memory transform with `h`/`Fragment` as realm globals; all 21 pinned `.tsx` load (S14, 122/122). No pragma, a foreign pragma/runtime, direct `.tsx` specifiers and rendering stay unsupported/`planned` |
 | Authored specifier conventions (`'./ask'`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33) — three behaviors only, no candidate fallbacks; our host obligation, not an upstream specification; stock Node ESM refuses the four shapes; resolution changes no bytes (S13, D30, §7.7) |
 | Cross-mod pane ownership (`$.ui.open({id})` collisions) | must be reproduced, bug reports already exist upstream |
 | Version drift (`$.ui.backdrop` removed in 2.1.319; `AbovePromptList` needs 2.1.323) | pin the release; regenerate the symbol table per pin |
@@ -736,7 +736,7 @@ that report and that caveat, not the list alone.
 The commitment, stated plainly: *no release may make mods harder.* Every design
 choice that would need to be undone to support mods later is a defect now.
 
-### 7.7 S13: the authored `.ts` spine loads; `.tsx` is the wall (answered 2026-11-19)
+### 7.7 S13/S14: the authored graph loads; `.tsx` needs one declared classic transform (answered 2026-11-19)
 
 `spikes/s13-mod-load/run.mjs` (**89/89**) fetched the pinned artifact —
 claude-code `2.1.322`, commit `6e1e44f6433bfa17d198e932bff53373aa229eea`,
@@ -757,18 +757,24 @@ resolution behaviors: extensionless paths (`'./ask'`) and `'.'` self-imports
 resolve to a directory `index.ts`; `.js` specifiers resolve to `.ts` files
 (`'./array-of.js'`); `.jsx` specifiers resolve to `.tsx` files. The reachable
 graph exercises 737 directory-index resolutions, 246 `.js`→`.ts` and 21
-`.jsx`→`.tsx`; no exact-file fallback is used, and the resolver carries no other
-candidate branches. These are **our host obligation**, not an upstream
-specification. The only transform applied is
-`module.stripTypeScriptTypes(source, { mode: 'strip' })`; it replaces type
-syntax with whitespace, so byte length and line numbers are preserved (the
-scanner's line numbers remain the authored ones). The only bare specifier is
+`.jsx`→`.tsx` against S13's `.tsx` stubs; S14, loading the real `.tsx`
+modules, counts 795 directory-index resolutions, 246 and 21 (the extra 58 are
+imports inside the `.tsx` modules the stubs did not have, not new modules). No
+exact-file fallback is used, and the resolver carries no other candidate
+branches. These are **our host obligation**, not an upstream
+specification. `module.stripTypeScriptTypes(source, { mode: 'strip' })` is the
+only transform applied to `.ts`; it replaces type syntax with whitespace, so
+byte length and line numbers are preserved for `.ts` (the scanner's line
+numbers remain the authored ones). A `.tsx` module goes through D34's classic
+transform first and then the same strip; its positions are not preserved.
+The only bare specifier is
 `import type { ... } from 'claude-code'`; stripping erases it and the shim is
 requested **0** times in both realms. The scanner reads the authored text, so
 none of this is visible to it: §7.3 item 1 is unaffected.
 
-**The `.tsx` wall.** There are 21 `.tsx` modules and 21 `.jsx` specifiers that
-reach them. With the resolver in place, stock loading still stops at
+**The `.tsx` wall (pre-D34).** There are 21 `.tsx` modules and 21 `.jsx`
+specifiers that reach them. With the resolver in place, stock loading still
+stops at
 `ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".tsx" for .../views/detail/detail-view.tsx`.
 `stripTypeScriptTypes` refuses **20 of the 21** modules in both `strip` and
 `transform` modes: 19 fail with
@@ -809,9 +815,9 @@ per handler and resolve methods lazily, not build all 22 at load.
 prerequisite — a resolver and a linker — rather than a new subsystem. `.tsx`
 moves from "open question" to a declared `planned` gap with a named cause.
 What it did not settle at S13 time: a host, a materializer, an emit path, IR
-changes, performance, or containment. D30 fixes type stripping as the only
-sanctioned transform and keeps `.tsx` `planned` pending an explicit JSX
-decision; the host skeleton followed in #33.
+changes, performance, or containment. D30 fixed type stripping as the only
+sanctioned transform and kept `.tsx` `planned`; #45/D34 replaced that with
+one declared classic-pragma transform, and the host skeleton followed in #33.
 
 **Host landed (#33).** `dsh-anyplugin-mod-host` implements this section:
 `loadMod({ root, entry, host })` creates one `node:vm` context per mod,
@@ -827,13 +833,17 @@ a `ModHost` bug, not host-side freshness. Evaluation happens
 before `loadMod` resolves; `evaluate()` is an idempotent accessor, so a mod
 cannot evaluate twice. `dispose()` makes the realm inert. The host reads
 authored bytes and never writes them (the tests assert sha256 before and after).
-The package has no runtime dependencies; `npm test` runs Node with
-`--experimental-vm-modules`, because D30's realm needs `SourceTextModule`.
+The package has two load-time dependencies, pinned exactly (D34:
+`@babel/core` `7.29.13` and `@babel/plugin-transform-react-jsx` `7.29.7`);
+`npm test` runs Node with `--experimental-vm-modules`, because D30's realm
+needs `SourceTextModule`.
 
-Failures are `ModHostError`s with one of four codes: `ERR_MOD_HOST_TSX` (the
-graph reaches a `.tsx`), `ERR_MOD_HOST_MISSING` (the root, entry or a named
-module is absent), `ERR_MOD_HOST_UNSUPPORTED_EXT` (an extension D30 does not
-load) and `ERR_MOD_HOST_LINK` (a specifier outside the three rules, a
+Failures are `ModHostError`s with one of four codes: `ERR_MOD_HOST_TSX` (a
+`.tsx` module lacks the classic pragma or declares a foreign `@jsx`,
+`@jsxRuntime` or `@jsxFrag`, or a direct `.tsx` specifier is written),
+`ERR_MOD_HOST_MISSING` (the root, entry or a named module is absent),
+`ERR_MOD_HOST_UNSUPPORTED_EXT` (an extension D30/D34 does not load) and
+`ERR_MOD_HOST_LINK` (a specifier outside the three rules, a
 read/strip/syntax failure, a link-time named-import mismatch, a missing or
 misused `register(on)`, or use after `dispose()`). Authored errors are never
 wrapped: a module-level `$` remains the realm's `ReferenceError`, and a throw
@@ -843,19 +853,25 @@ a host-realm function, so authored code can reach host globals with
 `on.constructor('return process')()`; the host isolates the tested global
 surface, nothing more.
 
-**The refusal is the upstream acceptance.** `loadMod` on the pinned `diff` mod
-throws `ERR_MOD_HOST_TSX` naming `views/pane-view.tsx`: `register.ts` imports
-`./views`, `views/index.ts` contains `export * from './pane-view.jsx'`, and ESM
-links the whole graph before any hook can fire. S13 reached the hook only by
-substituting `.tsx` stubs, which D30 forbids as a host mechanism. Therefore
-**no upstream mod that re-exports views is loadable at this pin** — the JSX
-decision gates the diff acceptance (and any mod whose graph reaches a `.tsx`),
-not just drawing. The
-synthetic fixture is the `$` proof: `session.start` calls
+**`.tsx` was the wall; S14/D34 remove it.** Before #45, `loadMod` on the pinned
+`diff` mod threw `ERR_MOD_HOST_TSX` naming `views/pane-view.tsx`: `register.ts`
+imports `./views`, `views/index.ts` contains `export * from
+'./pane-view.jsx'`, and ESM links the whole graph before any hook can fire.
+S13 reached the hook only by substituting `.tsx` stubs, which D30 forbids as a
+host mechanism; the refusal was the pre-#45 acceptance. S14 now transforms
+every one of the 21 `.tsx` modules through D34's classic-pragma transform,
+type-strips them in memory, and links/evaluates them in one `node:vm` realm
+whose only additions are `h` and `Fragment`: 505 `.ts` + 21 `.tsx` modules,
+**122/122 checks**, registrations equal to the scanner's 10 sites/8 events
+(23 `$.` calls/0 dynamic), and `divider()` returns the `h` descriptor. The
+fetched `diff` fixture therefore loads rather than refusing, and both the host
+test and the conformance test assert its registrations. The synthetic fixture
+is the `$` proof: `session.start` calls
 `$.session.usage → $.command.register → $.session.messages`, or
 `$.session.usage → $.clock.now → $.command.register → $.session.messages` when
-`usage()` returns `undefined`, then returns `next(e)`. The fetched `diff` test
-asserts the refusal instead of a fired hook.
+`usage()` returns `undefined`, then returns `next(e)`. Rendering the returned
+descriptors is still `planned`; D34 is a load-time transform, not an element
+runtime.
 
 ## 8. Seam capability matrix (P4)
 
@@ -1304,8 +1320,10 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   `Expected '>', got 'ident'`, one `Expected ',', got '.'`); the JSX-free
   `views/body/list-block-of.tsx` strips but stock Node still refuses the `.tsx`
   extension, and a resolver alone reaches only `ERR_UNKNOWN_FILE_EXTENSION`.
-  The `.ts` spine loads, but a drawing mod is not runnable until this is
-  decided (see §7.7 and the proposed decision in #30).
+  The `.ts` spine loads. **Resolved by D34 (#45):** the host transforms a
+  `.tsx` module that declares the classic pragma, so the pinned `diff` graph
+  loads (S14, 122/122); rendering and foreign pragmas remain separate
+  `planned` surfaces (see §7.7).
 - How does Claude bundle and serve a mod's `Client` second file? Undocumented;
   needs hands-on probing before it can be classified as anything but `planned`.
 - Which execution realm do we give a mod (`node:vm` like the dynamic-package

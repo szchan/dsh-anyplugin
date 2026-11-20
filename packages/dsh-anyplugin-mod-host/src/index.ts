@@ -4,9 +4,11 @@
  * One call to `loadMod()`:
  *
  * 1. resolves the entry under `root` and refuses anything that leaves it;
- * 2. creates a fresh `node:vm` context per mod (no `process`, no `URL`, no `$`);
- * 3. creates every reachable module, strips types in memory for `.ts`, links
- *    once, evaluates once (D30's create → link → evaluate);
+ * 2. creates a fresh `node:vm` context per mod (no `process`, no `URL`, no `$`;
+ *    a `.tsx` realm also gets the classic `h`/`Fragment` globals, D34);
+ * 3. creates every reachable module, applies the narrow classic JSX transform
+ *    to `.tsx` (classic pragma required), strips types in memory, links once,
+ *    evaluates once (D30/D34's create → transform → link → evaluate);
  * 4. calls the authored `register(on)` with a controlled `on()` and returns the
  *    registrations in source order.
  *
@@ -22,7 +24,9 @@
  *
  * This is not a security boundary (D6/D30): it isolates the tested global
  * surface, not timers, promises, memory or permissions. It is also not the
- * element runtime or the bridges — `$` is whatever the caller supplies.
+ * element runtime or the bridges — `$` is whatever the caller supplies, and
+ * the `.tsx` realm's `h`/`Fragment` only build descriptors; nothing renders
+ * (D34).
  */
 import { readFileSync, statSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
@@ -31,6 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as vm from 'node:vm'
 
 import { ModHostError, codeOf, describeValue, messageOf } from './errors.ts'
+import { jsxRealmGlobals, transformTsx } from './jsx.ts'
 import { isWithin, resolveModSpecifier } from './resolve.ts'
 
 export { ModHostError, type ModHostErrorCode } from './errors.ts'
@@ -161,7 +166,7 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
     )
   }
 
-  const context = vm.createContext({})
+  const context = vm.createContext(jsxRealmGlobals())
   const modules = new Map<string, vm.SourceTextModule>()
   let disposed = false
 
@@ -176,17 +181,10 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
     if (cached !== undefined) return cached
 
     const extension = extname(file)
-    if (extension === '.tsx') {
-      throw new ModHostError(
-        'ERR_MOD_HOST_TSX',
-        '.tsx is planned, not loadable: JSX is not type stripping and needs a second transform (D30, ARCHITECTURE §7.6)',
-        { file },
-      )
-    }
-    if (extension !== '.ts' && extension !== '.js' && extension !== '.mjs') {
+    if (extension !== '.ts' && extension !== '.tsx' && extension !== '.js' && extension !== '.mjs') {
       throw new ModHostError(
         'ERR_MOD_HOST_UNSUPPORTED_EXT',
-        `cannot load '${extension === '' ? '(no extension)' : extension}': D30 permits .ts (type-stripped), .js and .mjs only`,
+        `cannot load '${extension === '' ? '(no extension)' : extension}': D30/D34 permits .ts (type-stripped), .tsx (classic JSX transform then type strip), .js and .mjs only`,
         { file },
       )
     }
@@ -203,9 +201,12 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
     }
 
     let code = source
-    if (extension === '.ts') {
+    if (extension === '.tsx') {
+      code = transformTsx(source, file)
+    }
+    if (extension === '.ts' || extension === '.tsx') {
       try {
-        code = stripTypeScriptTypes(source, { mode: 'strip' })
+        code = stripTypeScriptTypes(code, { mode: 'strip' })
       } catch (cause) {
         throw new ModHostError('ERR_MOD_HOST_LINK', `type stripping failed: ${messageOf(cause)}`, {
           file,

@@ -8,7 +8,7 @@
  *   resolve to `<dir>/index.ts`;
  * - a `.js` specifier resolves to the `.ts` file beside it;
  * - a `.jsx` specifier resolves to the `.tsx` file beside it (resolution
- *   succeeds; the loader then refuses the extension as planned).
+ *   succeeds; the loader applies the classic transform from D34).
  *
  * There is deliberately no exact-file fallback and no `index.js` variant: the
  * spike measured zero uses of anything else (737 / 246 / 21 at the pin), and
@@ -92,13 +92,13 @@ export function resolveModSpecifier(options: ResolveModSpecifierOptions): Resolv
   } else if (extension === '.tsx') {
     throw new ModHostError(
       'ERR_MOD_HOST_TSX',
-      `.tsx is planned, not loadable: '${specifier}' names the JSX module ${resolve(base, specifier)} (D30, ARCHITECTURE §7.7)`,
+      `a direct .tsx specifier is not a D30/D34 resolution rule: '${specifier}' names ${resolve(base, specifier)}; authored JSX imports spell '.jsx' (D30)`,
       { file: parent },
     )
   } else {
     throw new ModHostError(
       'ERR_MOD_HOST_UNSUPPORTED_EXT',
-      `cannot load '${specifier}': D30 defines extensionless directory imports and .js/.jsx rewrites, not '${extension}'`,
+      `cannot load '${specifier}': D30/D34 define extensionless directory imports and .js/.jsx rewrites, not '${extension}'`,
       { file: parent },
     )
   }
