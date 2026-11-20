@@ -918,16 +918,37 @@ async function runModHandler(
   // describes "its latest next() call, the one started last" (d.ts:5331), so
   // a hook that calls `next` twice sees the second trip's entries only.
   let tripStart = 0
+  let inFlight: Promise<unknown> | undefined
 
   const continueWith = async (rewritten: unknown, tier?: Tier): Promise<unknown> => {
+    // A new call starts only after the previous trip settled. Without this, a
+    // `void next(e); await next(e)` pair lets the second trip start while the
+    // first is still appending, and the length-based boundary would include both
+    // trips. Calls are therefore sequential; a call supersedes ordering, not
+    // concurrency. The join is inline (not an `await` helper) so the first
+    // call installs `inFlight` before the second one observes it.
+    const pending = inFlight
+    if (pending !== undefined) {
+      inFlight = undefined
+      await pending.catch(() => {})
+    }
     const nextEvent = rewritten === undefined ? undefined : fromModEvent(route, event, rewritten)
     tripStart = context.trace?.().length ?? 0
-    const resolved = await next(nextEvent, tier)
-    // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
-    if (route.modEvent === 'session.start') {
-      return { cwd: (nextEvent ?? event).data.cwd }
+    const resolved = next(nextEvent, tier)
+    inFlight = resolved
+    // The handler may not await this call; observe a rejection once here so the
+    // trip cannot become an unhandled rejection.
+    resolved.catch(() => {})
+    try {
+      const decision = await resolved
+      // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
+      if (route.modEvent === 'session.start') {
+        return { cwd: (nextEvent ?? event).data.cwd }
+      }
+      return kernelDecisionToMod(decision, route)
+    } finally {
+      if (inFlight === resolved) inFlight = undefined
     }
-    return kernelDecisionToMod(resolved, route)
   }
 
   const selects = (pattern: string): boolean => expandModPattern(pattern).selected.includes(route.modEvent)
