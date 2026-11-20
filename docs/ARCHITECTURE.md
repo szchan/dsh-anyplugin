@@ -46,7 +46,7 @@ CI pins the source-agent version and re-runs conformance on every bump.
 
 ### 0.4 The framing decisions
 
-D1–D3 shape every section below; the rest of the ratified log (D4–D36) is
+D1–D3 shape every section below; the rest of the ratified log (D4–D37) is
 `docs/DECISIONS.md`.
 
 - **D1 — Emission is pure data.** No code generation, no `eval`, no generated
