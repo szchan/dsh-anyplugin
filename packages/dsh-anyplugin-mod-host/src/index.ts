@@ -10,8 +10,13 @@
  * 4. calls the authored `register(on)` with a controlled `on()` and returns the
  *    registrations in source order.
  *
- * A registration's handler is wrapped by the host: each invocation asks
- * `host.dollar()` for a fresh `$` and passes it as the handler's first argument.
+ * A registration's handler is wrapped by the host: the returned wrapper is
+ * `handler(event, next)`, and immediately before each invocation the host calls
+ * `host.dollar()` exactly once and passes the result to the authored
+ * `handler($, event, next)` as its first argument. The host never caches,
+ * clones or freezes that namespace: `ModHost.dollar()` must return the
+ * namespace for that one invocation. If a host returns the same object for two
+ * calls, it has reused it — a `ModHost` bug, not host-side freshness.
  * `$` is never a global, so module-level code that reads it fails with the
  * realm's own `ReferenceError`; the host does not wrap authored errors.
  *
@@ -44,9 +49,10 @@ export type ModNext = (event?: unknown) => unknown
 
 export interface ModHost {
   /**
-   * Build `$` for one handler invocation. Called lazily, once per invocation,
-   * so a host can construct the namespace (or a Proxy over the DSH seams)
-   * without paying for it at load time.
+   * Return the namespace for one handler invocation. Called exactly once,
+   * immediately before each invocation; the host never caches the result,
+   * never clones it and never freezes it. Returning the same object for two
+   * calls reuses a namespace — a `ModHost` bug, not a guarantee of freshness.
    */
   dollar(): ModDollar | Promise<ModDollar>
 }
@@ -56,7 +62,10 @@ export interface ModRegistration {
   readonly event: string
   /** The authored matcher value, unchanged (`undefined` for a bare `on`). */
   readonly matcher: unknown
-  /** `handler($, event, next)`; `$` comes from `host.dollar()` per call. */
+  /**
+   * The host wrapper `handler(event, next)`. It calls `host.dollar()` exactly
+   * once per invocation and invokes the authored `handler($, event, next)`.
+   */
   readonly handler: (event: unknown, next: ModNext) => unknown
 }
 
@@ -241,7 +250,16 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
   }
 
   const entryModule = createModule(entryFile)
-  await entryModule.link(linker)
+  try {
+    await entryModule.link(linker)
+  } catch (error) {
+    if (error instanceof ModHostError) throw error
+    throw new ModHostError(
+      'ERR_MOD_HOST_LINK',
+      `cannot link the module graph: ${messageOf(error)}`,
+      { file: entryFile, cause: error },
+    )
+  }
   const evaluation = entryModule.evaluate()
   await evaluation
 

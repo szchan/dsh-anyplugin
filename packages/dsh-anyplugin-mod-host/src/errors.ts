@@ -20,8 +20,9 @@ export type ModHostErrorCode =
   | 'ERR_MOD_HOST_UNSUPPORTED_EXT'
   /**
    * The host could not link, evaluate or arm the mod: a specifier outside the
-   * three D30 rules, a read/strip/syntax failure, a missing `register(on)`, or
-   * a call after `dispose()`. The reason names the actual failure.
+   * three D30 rules, a read/strip/syntax failure, a link-time named-import
+   * mismatch, a missing `register(on)`, or a call after `dispose()`. The
+   * reason names the actual failure.
    */
   | 'ERR_MOD_HOST_LINK'
 

@@ -726,8 +726,12 @@ decision; the host skeleton followed in #33.
 resolves the entry and every child through the three rules, strips `.ts` in
 memory, links once and evaluates once, then calls the authored `register(on)`
 and returns its registrations in source order. `$` is never a global: the host
-wraps each registration so every invocation asks `host.dollar()` for a fresh
-namespace and passes it as the handler's first argument. Evaluation happens
+wraps each registration as `handler(event, next)`; immediately before every
+invocation it calls `host.dollar()` exactly once and passes the result to the
+authored `handler($, event, next)`. The host never caches, clones or freezes
+that namespace; `ModHost.dollar()` **must return the namespace for that one
+invocation**. A host that returns the same object for two calls has reused it —
+a `ModHost` bug, not host-side freshness. Evaluation happens
 before `loadMod` resolves; `evaluate()` is an idempotent accessor, so a mod
 cannot evaluate twice. `dispose()` makes the realm inert. The host reads
 authored bytes and never writes them (the tests assert sha256 before and after).
@@ -738,10 +742,14 @@ Failures are `ModHostError`s with one of four codes: `ERR_MOD_HOST_TSX` (the
 graph reaches a `.tsx`), `ERR_MOD_HOST_MISSING` (the root, entry or a named
 module is absent), `ERR_MOD_HOST_UNSUPPORTED_EXT` (an extension D30 does not
 load) and `ERR_MOD_HOST_LINK` (a specifier outside the three rules, a
-read/strip/syntax failure, a missing or misused `register(on)`, or use after
-`dispose()`). Authored errors are never wrapped: a module-level `$` remains the
-realm's `ReferenceError`, and a throw from `register` keeps the mod's own stack.
-No `.tsx` stub, override hook or test-only escape hatch exists.
+read/strip/syntax failure, a link-time named-import mismatch, a missing or
+misused `register(on)`, or use after `dispose()`). Authored errors are never
+wrapped: a module-level `$` remains the realm's `ReferenceError`, and a throw
+from `register` keeps the mod's own stack. No `.tsx` stub, override hook or
+test-only escape hatch exists. The realm is not containment (D6/D30): `on` is
+a host-realm function, so authored code can reach host globals with
+`on.constructor('return process')()`; the host isolates the tested global
+surface, nothing more.
 
 **The refusal is the upstream acceptance.** `loadMod` on the pinned `diff` mod
 throws `ERR_MOD_HOST_TSX` naming `views/pane-view.tsx`: `register.ts` imports
@@ -749,7 +757,8 @@ throws `ERR_MOD_HOST_TSX` naming `views/pane-view.tsx`: `register.ts` imports
 links the whole graph before any hook can fire. S13 reached the hook only by
 substituting `.tsx` stubs, which D30 forbids as a host mechanism. Therefore
 **no upstream mod that re-exports views is loadable at this pin** — the JSX
-decision gates the entire "load a real mod" milestone, not just drawing. The
+decision gates the diff acceptance (and any mod whose graph reaches a `.tsx`),
+not just drawing. The
 synthetic fixture is the `$` proof: `session.start` calls
 `$.session.usage → $.command.register → $.session.messages`, or
 `$.session.usage → $.clock.now → $.command.register → $.session.messages` when

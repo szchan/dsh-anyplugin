@@ -22,44 +22,45 @@ function recorder(options = {}) {
   const usage = Object.hasOwn(options, 'usage') ? options.usage : { startedAt: 1700000000000 }
   const calls = []
   const commands = []
-  const dollar = {
-    session: {
-      usage: async () => {
-        calls.push('session.usage')
-        return usage
-      },
-      messages: async () => {
-        calls.push('session.messages')
-        return []
-      },
-      flush: async () => {
-        calls.push('flush')
-      },
-    },
-    clock: {
-      now: async () => {
-        calls.push('clock.now')
-        return 1700000000001
-      },
-    },
-    command: {
-      register: async (spec) => {
-        calls.push('command.register')
-        commands.push(spec)
-      },
-    },
-  }
   let built = 0
+  // A fresh object per dollar() call: the host may not cache, clone or freeze
+  // it, but it also cannot make a reusing host fresh. Reuse is this fixture's
+  // job to expose, so each call builds a new namespace.
+  const makeDollar = () => {
+    built += 1
+    return {
+      session: {
+        usage: async () => {
+          calls.push('session.usage')
+          return usage
+        },
+        messages: async () => {
+          calls.push('session.messages')
+          return []
+        },
+        flush: async () => {
+          calls.push('flush')
+        },
+      },
+      clock: {
+        now: async () => {
+          calls.push('clock.now')
+          return 1700000000001
+        },
+      },
+      command: {
+        register: async (spec) => {
+          calls.push('command.register')
+          commands.push(spec)
+        },
+      },
+    }
+  }
   return {
     calls,
     commands,
     built: () => built,
-    host: {
-      dollar: () => {
-        built += 1
-        return dollar
-      },
-    },
+    host: { dollar: makeDollar },
   }
 }
 
@@ -141,6 +142,24 @@ test('fires session.start as usage → command.register → session.messages', a
   })
 })
 
+test('each invocation gets its own $; a mutation does not leak to the next handler', async () => {
+  const recorderHost = recorder()
+  const mod = await loadFixture('mutation.ts', recorderHost.host)
+
+  assert.equal(mod.registrations.length, 2)
+  const [first, second] = mod.registrations
+  assert.equal(first.event, 'first')
+  assert.equal(second.event, 'second')
+
+  assert.equal(await first.handler({}, () => {}), undefined)
+  assert.equal(
+    await second.handler({}, () => {}),
+    undefined,
+    'the second handler observed the first handler\'s $ mutation: the host reused a namespace',
+  )
+  assert.equal(recorderHost.built(), 2, 'one dollar() call per handler invocation')
+})
+
 test('falls back to clock.now when usage() returns undefined', async () => {
   const recorderHost = recorder({ usage: undefined })
   const mod = await loadFixture('register.ts', recorderHost.host)
@@ -212,6 +231,15 @@ test('a missing relative module fails at link time with the specifier and expect
     'ERR_MOD_HOST_MISSING',
     './nowhere.js',
     'does not exist',
+  )
+})
+
+test('a link-time missing export is ERR_MOD_HOST_LINK, not a raw SyntaxError', async () => {
+  await rejectsWith(
+    loadFixture('bad-export.ts'),
+    'ERR_MOD_HOST_LINK',
+    "does not provide an export named 'nope'",
+    'bad-export.ts',
   )
 })
 
