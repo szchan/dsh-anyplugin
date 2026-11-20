@@ -1723,3 +1723,53 @@ caught failure is only ever `kind: 'throw'`; routing a kernel timeout through
 **Evidence.** Both pins (`0.2.2-rc.5`, `0.2.2-rc.2`) 402/402 with zero skips;
 `check:arch` 18 packages / 46 files. Mutations: returning `void` from `on()`
 reddens four contract tests; omitting `options.instructionFiles` reddens three.
+
+---
+
+## D37 — An oracle-invisible face is carried, hashed, and premise-tested — never given a golden
+
+**Date:** 2026-11-20. **Status:** ratified. **Narrows how D1's `planned` rows are proven.**
+
+**Decision.** `output-styles/*.md` is carried into the IR as `outputStyles`
+rows (`class: planned`), and the way it is proven sets the rule for every face
+the pinned upstream cannot inventory:
+
+1. **Carried, not emitted.** The row holds the frontmatter-derived name (stem
+   fallback) and description plus the style body. Body bytes equal the authored
+   file's body; nothing is re-serialised.
+2. **No golden row, ever.** The pinned `claude plugin details` prints no
+   output-style line at 2.1.322. A row in an `.inventory` golden would be an
+   observation nobody made — the same reason hand-authored Codex rows say
+   `Hand-authored, not observed`.
+3. **Byte evidence instead of inventory evidence.** A test hashes the authored
+   body against the carried body, including CRLF, a mid-body `---`, and a body
+   with no trailing newline. A drifted body is a bug even though the row is
+   `planned`.
+4. **The premise is tested too.** A test asserts that the pinned CLI prints no
+   output-style line for the fixture. A pin bump that starts inventorying
+   styles therefore fails, and the exclusion has to be re-reviewed rather than
+   silently outliving its justification.
+
+**Why.** Three ways exist to be honest about a face we cannot diff: refuse to
+carry it (loses the component), fake a golden (invents an observation), or carry
+it with evidence about *what we can actually check*. The third keeps the ledger
+complete without letting an unverifiable row look verified.
+
+**Consequences:**
+
+- `rig report` lists `outputStyles/<name>` rows as `planned` with `carry=skipped`
+  and a reason naming all four activation gaps: the `/<plugin>:<name>` alias
+  (D10), at-start provenance, the composition rules (`keep-coding-instructions`,
+  `force-for-plugin`), and the missing inventory.
+- Fidelity totals do not move: an oracle-invisible face never enters the
+  declared/matched/refused matrix, so it cannot pad the number it cannot
+  support.
+- The rule generalises: any future face without an upstream oracle (Codex
+  `interface.logo`, F2 palettes) must ship with (a) carried rows, (b) a
+  byte-level assertion where bytes exist, and (c) a premise test that fails
+  when the oracle grows the surface.
+
+**Evidence.** `fixtures/claude-output-styles` (two styles, one whose frontmatter
+name differs from the stem), `packages/dsh-anyplugin-conformance/test/output-styles-carry.test.mjs`,
+the frontmatter parser tests in the dialect package, and the live probe test
+that prints the pin's component lines. Merge `6d02fcc`.
