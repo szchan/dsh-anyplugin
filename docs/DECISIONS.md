@@ -1335,3 +1335,97 @@ claim that every upstream mod is blocked: only graphs that reach a `.tsx` are.
   runs a host that would violate it if the wrapper cached.
 - The host is inert after `dispose()` but does not free the realm; callers must
   drop the registrations to let it be collected.
+
+## D32 — Mod events ride the one kernel; the mapping is data
+
+**Status:** ratified 2026-11-19 (issue #36, PR #37).
+
+**Context.** `loadMod` (D31) returns a mod's `register(on)` registrations, and
+`dsh-anyplugin-intercept` already owns tier ordering, matchers, continuation
+and trace for classic hooks (D13, D28). AGENTS §3.6 forbids a second event path,
+so mod registrations must become kernel registrations — not a parallel
+dispatcher. The mapping from a mod's `on('…')` name to a host seam is the
+fidelity claim, so it is data with evidence, not code with comments.
+
+**Decision.**
+
+1. **One kernel, one chain.** `modRegistrationsToKernel` emits
+   `HandlerRegistration`s with `mode: 'wrap'`, `continuation` left unset, source
+   order preserved, and no per-mod tier table. A mixed chain is one `runChain`;
+   the classic arm's `fan-out` declaration owns continuation (D28). `tier` is
+   the host's seating, passed by the caller; `user` is a **fallback** for a
+   caller with no seating, never a derivation, and `core` is rejected (it is
+   the engine's own seat).
+2. **The mapping is data, pinned to the spec.** `mod-events.ts` holds one row
+   per mod event with its host seam and its `claude-code.d.ts` evidence. Pin:
+   claude-code 2.1.322, commit `6e1e44f6433bfa17d198e932bff53373aa229eea` (the
+   file's own header still says 2.1.277 — cite the commit, not the header).
+   `on()` names are exactly `EngineEventOf` plus `classic.${ClassicHookEvent}`
+   (d.ts:941-953); there is no separate mod vocabulary. The names guessed in
+   the ticket — `post.tool.use`, `pre.tool.use`, `turn.stop`, `subagent.start`,
+   `subagent.stop`, `tool.use.failure` — do not exist at the pin; each is
+   reported absent and points at its real spelling (`classic.PostToolUse`,
+   etc.), never aliased.
+3. **Patterns are first-class.** `on()` takes `EventName | Glob | Negation`
+   (d.ts:6101, 4211, 5256). A pattern expands to the routed names it selects
+   (`classic.*` → 16, `*` → 17, `!tool.*` → the complement with tool routes
+   excluded); a selected-but-unrouted name keeps its own S9/D31 reason, and an
+   unexpandable pattern gets a `pattern` reason. Nothing is dropped as "not an
+   event".
+4. **`session.start` is a loader point, not live.** It fires once per loaded
+   plugin at load, not at `agent/created` (that is classic `SessionStart`). The
+   table therefore has **16 live classic routes plus one loader point**, and
+   says so. Wiring the loader front-end is a follow-up, not a claim.
+5. **What stays unmapped, and why.** 17 classic names: six S9-unprobed
+   (`TaskCreated`, `TaskCompleted`, `TeammateIdle`, `WorktreeCreate`,
+   `WorktreeRemove`, `StopFailure`), ten S9-refuted with a per-name reason
+   (`Notification`, `PreModelSwitch`, `InstructionsLoaded`, `DirectoryAdded`,
+   `Setup`, `UserPromptExpansion`, `MessageDisplay`, `PostToolBatch`,
+   `Elicitation`, `ElicitationResult`), and `PostModelSwitch` declared but
+   unprobed. 39 engine names: the UI/element, prompt-element and session
+   families. `tool.call` is unmapped for **protocol mismatch** —
+   `tools/pre-execute` carries the classic `PreToolUse` protocol while
+   `tool.call` returns engine `{deny}`/`{result}` — not because routing it would
+   double-fire. `PermissionRequest`/`PermissionDenied` record that their S9
+   payloads are partial (no `tool_input`; no tool name/input).
+6. **Continuation divergence is explicit.** A mod-only chain is
+   `first-decision`: `next(e)` runs the chain beneath and resolves that event's
+   `ClassicResultOf` (`{cwd}` for `session.start`). In **fan-out**, a mod's
+   `next(e)` only rewrites the event for later registrations; it does not run
+   the classic arm and resolves the kernel's continue, not `ClassicResultOf`.
+   D13's "a mod that declines `next()` owns the rest of the chain" is therefore
+   a `first-decision` statement; in a fan-out channel the channel owns
+   continuation.
+7. **Classic results are translated, never collapsed.** `additionalContext`
+   becomes the kernel's `text` channel; `updatedInput` becomes an event
+   rewrite; engine verbs pass through. `ask`, `preventContinuation`,
+   `stopReason`, `updatedToolOutput`, `updatedMCPToolOutput`, `decision` and any
+   unknown field become a typed `unsupported` with field and reason — never a
+   silent `continue`. Classic events return `ClassicResultOf`, not the engine
+   verbs (d.ts:1086-1087).
+8. **`$` stays per invocation.** The adapter never receives `$`; D31's host
+   wrapper calls `host.dollar()` once immediately before each invocation and
+   never caches it. The proof through the adapter is transitive — two kernel
+   runs build two namespaces; caching in the wrapper turns both the adapter and
+   the host isolation test red.
+9. **Status.** There is no production caller yet: the loader front-end that
+   calls the adapter, and the host wiring that applies `updatedInput` at the
+   seam, are follow-ups. The D13 tier assumption is now grounded in the pinned
+   d.ts; no other D13 semantic changed.
+
+**Evidence.** 346 tests pass on both pins (`0.2.2-rc.5`, `0.2.2-rc.2`);
+`check:arch` clean (17 packages / 42 files); CI `verify` green. The event lists
+were diffed against the pinned d.ts by script (33 classic / 40 engine names, no
+missing, extra, duplicate or unaccounted). Mutations: dropping the mod arm
+makes the classic arm error in the same trace; caching `$` fails four tests.
+
+**Consequences.**
+
+- Mod registrations now have exactly one path into execution, and adding a
+  route is a table edit with a `d.ts` line — reviewable without reading the
+  adapter.
+- The ticket's wrong event names are recorded here so the next ticket inherits
+  the corrected vocabulary instead of repeating the guess.
+- `session.start` and production wiring are the next ticket; until then a mod's
+  `session.start` handler does not run in a real session, and `updatedInput`
+  rewrites stop at the adapter.
