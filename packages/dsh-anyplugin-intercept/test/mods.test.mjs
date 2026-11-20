@@ -933,3 +933,219 @@ test('fan-out: next.trace is empty while the kernel owns the remainder', async (
   assert.equal(Object.isFrozen(beneath), true)
   assert.deepEqual(result.trace.map((entry) => entry.status), ['ran', 'ran'])
 })
+
+// Round-3 review (M1): a deferred jump must land ON the named target, and a
+// named tier with no link must not drop the rest of the chain. `tierStart`
+// used to return `at + 1` for a direct target and `ordered.length` for a
+// missing tier, so the target and everything after it never ran.
+test('first-decision: next.to reaches a direct target with no intermediate link', async () => {
+  const ran = []
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('prepend')
+      return next.to(event, 'append')
+    }),
+  )
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('append')
+      return next(event)
+    }),
+  )
+  const result = await runChain(guardedCall(), [prepend, append])
+  assert.deepEqual(ran, ['prepend', 'append'])
+  assert.deepEqual(result.trace.map((entry) => entry.status), ['ran', 'ran'])
+})
+
+test('first-decision: next.to reaches builtin from append with no intermediate link', async () => {
+  const ran = []
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('append')
+      return next.to(event, 'builtin')
+    }),
+  )
+  const builtin = at(
+    'builtin',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('builtin')
+      return next(event)
+    }),
+  )
+  const result = await runChain(guardedCall(), [append, builtin])
+  assert.deepEqual(ran, ['append', 'builtin'])
+  assert.deepEqual(result.trace.map((entry) => entry.status), ['ran', 'ran'])
+})
+
+test('next.to falls forward when the named tier has no link left', async () => {
+  const ran = []
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('prepend')
+      return next.to(event, 'append')
+    }),
+  )
+  const builtin = at(
+    'builtin',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('builtin')
+      return next(event)
+    }),
+  )
+  const result = await runChain(guardedCall(), [prepend, builtin])
+  assert.deepEqual(ran, ['prepend', 'builtin'])
+  assert.deepEqual(result.decision, { kind: 'continue' })
+})
+
+test('fan-out: next.to reaches the direct target and falls forward too', async () => {
+  for (const entries of [
+    ['append'],
+    ['builtin'],
+  ]) {
+    const ran = []
+    const prepend = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        ran.push('prepend')
+        await next.to(event, entries[0])
+      }),
+    )
+    const target = at(
+      entries[0],
+      mod('classic.PreToolUse', async (event, next) => {
+        ran.push(entries[0])
+        return next(event)
+      }),
+    )
+    await runChain(guardedCall(), [prepend, target], { continuation: 'fan-out' })
+    assert.deepEqual(ran, ['prepend', entries[0]], `direct ${entries[0]}`)
+  }
+})
+
+test('fan-out: next.to skips only strictly beneath tiers, never a direct same-tier sibling', async () => {
+  const ran = []
+  const guard = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next.to(event, 'append')
+      ran.push('guard')
+    }),
+  )
+  const sibling = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('sibling')
+      return next(event)
+    }),
+  )
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('append')
+      return next(event)
+    }),
+  )
+  const result = await runChain(guardedCall(), [guard, sibling, append], { continuation: 'fan-out' })
+  assert.deepEqual(ran, ['guard', 'sibling', 'append'])
+  assert.deepEqual(result.trace.filter((entry) => entry.tier === 'prepend').map((entry) => entry.status), ['ran', 'ran'])
+})
+
+test('a second next call is refused by name instead of silently reusing the first', async () => {
+  const seen = []
+  let secondCall
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next({ ...event, command: 'First' })
+      try {
+        await next({ ...event, command: 'Second' })
+      } catch (error) {
+        secondCall = error
+      }
+    }),
+  )
+  const user = at(
+    'user',
+    mod('classic.PreToolUse', (event, next) => {
+      seen.push(event.command)
+      return next(event)
+    }),
+  )
+  await runChain(guardedCall(), [prepend, user])
+  assert.equal(seen.length, 1, 'the chain ran once, not twice')
+  assert.deepEqual(seen, ['First'], 'the first call is the one that ran')
+  assert.match(secondCall.message, /called twice/)
+  assert.match(secondCall.message, /5325-5338/)
+})
+
+test('budget accounts for own work and stands still across next', async () => {
+  let before
+  let after
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await sleep(100)
+      before = next.budget.remainingMs
+      await next(event)
+      after = next.budget.remainingMs
+    }),
+    { timeoutMs: 500 },
+  )
+  const downstream = at(
+    'append',
+    mod('classic.PreToolUse', async (event, next) => {
+      await sleep(200)
+      return next(event)
+    }),
+    { timeoutMs: 1_000 },
+  )
+  await runChain(guardedCall(), [prepend, downstream], { deadlineMs: 5_000 })
+  // Own work counts: ~400 ms left, not the full 500. `next` does not count:
+  // the value after it is the same reading, not the entry snapshot.
+  assert.ok(before <= 450 && before >= 300, `before ${before}`)
+  assert.ok(after <= before && before - after <= 25, `after ${after}, before ${before}`)
+})
+
+test('next.to refuses a target tier that already ran, naming the direction and pin', async () => {
+  let backwards
+  const builtin = at(
+    'builtin',
+    mod('classic.PreToolUse', async (event, next) => {
+      try {
+        await next.to(event, 'append')
+      } catch (error) {
+        backwards = error
+      }
+      return next(event)
+    }),
+  )
+  await runChain(guardedCall(), [
+    at('append', mod('classic.PreToolUse', (event, next) => next(event))),
+    builtin,
+  ])
+  assert.match(backwards.message, /would move backwards/)
+  assert.match(backwards.message, /5281-5289/)
+
+  let sameTier
+  await runChain(
+    guardedCall(),
+    [
+      at(
+        'append',
+        mod('classic.PreToolUse', async (event, next) => {
+          try {
+            await next.to(event, 'append')
+          } catch (error) {
+            sameTier = error
+          }
+          return next(event)
+        }),
+      ),
+    ],
+  )
+  assert.match(sameTier.message, /would move backwards/)
+})
