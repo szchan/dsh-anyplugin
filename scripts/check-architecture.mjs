@@ -44,7 +44,7 @@ const ALLOWED = {
   'dsh-anyplugin-materialize-skill': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-materialize-agents': [],
   'dsh-anyplugin-materialize-command': ['dsh-anyplugin-ir', 'dsh-anyplugin-command-template'],
-  'dsh-anyplugin-materialize-hook': ['dsh-anyplugin-hook-runner', 'dsh-anyplugin-intercept', 'dsh-anyplugin-trust'],
+  'dsh-anyplugin-materialize-hook': ['dsh-anyplugin-hook-runner', 'dsh-anyplugin-intercept', 'dsh-anyplugin-mod-host', 'dsh-anyplugin-trust'],
   'dsh-anyplugin-materialize-mcp': [],
   'dsh-anyplugin-conformance': '*',
 }
