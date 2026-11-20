@@ -3,7 +3,7 @@ import { label } from './value.js'
 
 // The published diff mod's `bind()` shape, minus the drawing: read usage, fall
 // back to clock.now, register the command, then read messages. The three
-// imports above prove the resolver's three behaviors at the same time.
+// imports above prove the resolver's extensionless and rewrite behaviors at the same time.
 export function register(on: On): void {
   on('session.start', async ($: Dollar, event: unknown, next: Next) => {
     const usage = await $.session.usage()

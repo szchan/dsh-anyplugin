@@ -243,10 +243,10 @@ if (byMod.get('privacy').length !== 0) {
 
 // 2. The turn really reached the tool: both classic chains ran, unless
 //    sec-default is refused at load. At 2.1.329 upstream added extensionless
-//    *file* imports; D30's resolver serves only a directory index, so the mod
-//    never registers its classic.* handlers. A refused load is data, and the
-//    report names the exact resolver gap; it must not be mistaken for "the
-//    chain silently vanished".
+//    *file* imports; the D38 resolver fallback now serves them, so the mod
+//    seats and the chains run. The conditional keeps a future refusal honest:
+//    a refused load is data, and the report names the exact resolver gap; it
+//    must not be mistaken for "the chain silently vanished".
 if (toolCalls.length !== 1) fail(`expected one Bash call, saw ${toolCalls.length}`)
 const classicEvents = ['PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop']
 for (const event of classicEvents) {

@@ -16,36 +16,47 @@ in §6 and left in place (measure, do not fix).
 
 At claude-code 2.1.329 (mods commit `f9e4d1e`), the five-mod set is
 agents-md, diff, privacy, sec-default, telemetry (the pin's seven minus
-`easel` and `hipaa-default`). The turn recipe is unchanged. Two numbers moved,
-and both follow from one upstream change:
+`easel` and `hipaa-default`). The turn recipe is unchanged. One upstream
+change moved the load surface, and the host resolver caught up with it:
 
-- **sec-default refuses at load** with `ERR_MOD_HOST_MISSING`:
-  `mods/sec-default/hooks/policy/names-org-tool.ts` imports
-  `./reads-as-org-tool` — a sibling `.ts` file — without an extension. D30's
-  resolver serves an extensionless specifier only as a directory index, so the
-  load stops before `register()` runs. The materializer records the warning;
-  S15 prints it and does not count the mod as seated.
-- Consequently the turn has **3 handler invocations**, all `session.start`
-  (agents-md, diff, telemetry), and **no classic chains**:
-  `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart/Stop` and
-  `SessionEnd` do not invoke sec-default. The 11-invocation, eight-`next.to`
-  baseline in §4/§6 is a 2.1.322 measurement and is not reachable at this pin;
-  the host bug is latent, not fixed.
+- **sec-default seats.** `mods/sec-default/hooks/policy/names-org-tool.ts`
+  imports `./reads-as-org-tool` — a sibling `.ts` file — without an
+  extension. D30's resolver served only the directory form, so the mod refused
+  at load until the host adopted Node's file-then-directory order
+  (`<spec>.ts`, `<spec>.tsx`, `<spec>/index.ts`, `<spec>/index.tsx`;
+  D38 proposal). It now loads with **45 registrations**, including one
+  `classic.*` wildcard.
+- The turn is back to **11 handler invocations** and 5 `$` calls. The eight
+  routed classic events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+  `PostToolUse`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`)
+  invoke sec-default's handler and **all eight throw
+  `TypeError: next.to is not a function`** — the host bug in §6 is live again,
+  not latent.
 - Authored demand over the same five mods: **69 call sites / 30
-  `namespace.method` pairs / 11 namespaces**. **16 served**, **8 typed
-  refusals** (six `ui.*`, `process.run`, `settings.read`), **6 absent**:
-  `session.identity`, `session.root`, `fs.ancestors`, plus `ui.ask`,
-  `vcs.detect`, `vcs.diff`. `ui.ask` and `vcs.*` are *absent*, not typed
-  refusals: `createModBridge` has no `ui.ask` member and no `vcs` namespace,
-  so they throw `TypeError` at the call site. The old status heuristic labelled
-  every unknown name "served"; the spike now classifies against the bridge's
-  exact member table.
+  `namespace.method` pairs / 11 namespaces**. The 30 pairs partition exactly:
+  **16 served + 8 typed refusals + 6 absent = 30**.
+  - served (16): `env.get`, `fs.list`, `fs.read`, `fs.stat`, `store.get`,
+    `store.set`, `telemetry.log`, `telemetry.mark`, `clock.after`,
+    `clock.every`, `clock.now`, `command.register`, `session.cwd`,
+    `session.id`, `session.messages`, `session.usage`;
+  - typed refusals (8): `ui.log`, `ui.close`, `ui.invalidate`, `ui.open`,
+    `ui.resolve`, `ui.status`, `process.run`, `settings.read`;
+  - absent (6): `session.identity`, `session.root`, `fs.ancestors`,
+    `ui.ask`, `vcs.detect`, `vcs.diff`.
+
+  `ui.ask` and `vcs.*` are *absent*, not typed refusals:
+  `createModBridge` has no `ui.ask` member and no `vcs` namespace, so they
+  throw `TypeError` at the call site. `vcs.detect`/`vcs.diff` are cited at
+  the pin (`mods/diff/hooks/register.ts:962-963`). The old status heuristic
+  labelled every unknown name "served"; the spike now classifies against the
+  bridge's exact member table.
 - `$` calls on the executed path: 5 (agents-md 1, diff 4), all resolved; 0
   typed refusals reached.
 - Output tail: `tool: 1 Bash call; child agent: started; SubagentStart chain:
-  none (no handler registered)`; `session.start: 3 handler invocation(s)`;
-  `trace: 32 lines; invocations: 3`; `result: OK (turn assertions passed;
-  handler errors are recorded above; refused at load: sec-default)`.
+  observed`; `session.start: 3 handler invocation(s)`; `trace: 104 lines;
+  invocations: 11; $ groups: 11; $ calls: 5`; `handler errors: 8 (sec-default:
+  TypeError: next.to is not a function)`; `result: OK (turn assertions passed;
+  handler errors are recorded above)`.
 
 ## 1. Run it
 

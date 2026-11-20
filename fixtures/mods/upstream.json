@@ -283,10 +283,168 @@
         "calls": 23,
         "dynamic": 0
       },
-      "outcome": "refused",
-      "code": "ERR_MOD_HOST_MISSING",
-      "path": "mods/sec-default/hooks/policy/names-org-tool.ts",
-      "message": "mods/sec-default/hooks/policy/names-org-tool.ts: cannot resolve './reads-as-org-tool': extensionless directory import → index.ts expected mods/sec-default/hooks/policy/reads-as-org-tool/index.ts, which does not exist"
+      "outcome": "loaded",
+      "registrations": [
+        {
+          "event": "classic.*"
+        },
+        {
+          "event": "prompt.section"
+        },
+        {
+          "event": "prompt.context"
+        },
+        {
+          "event": "prompt.attachment"
+        },
+        {
+          "event": "prompt.compose"
+        },
+        {
+          "event": "skill.prompt"
+        },
+        {
+          "event": "attribution.text"
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "attachment"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "hook-context"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "compaction"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "tool-message"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "note"
+          }
+        },
+        {
+          "event": "session.compact"
+        },
+        {
+          "event": "settings.read"
+        },
+        {
+          "event": "telemetry.log",
+          "matcher": {
+            "to": "collector"
+          }
+        },
+        {
+          "event": "session.identity"
+        },
+        {
+          "event": "tool.describe"
+        },
+        {
+          "event": "command.describe"
+        },
+        {
+          "event": "agent.offer"
+        },
+        {
+          "event": "agent.spawn"
+        },
+        {
+          "event": "agent.report"
+        },
+        {
+          "event": "tool.offer"
+        },
+        {
+          "event": "tool.register"
+        },
+        {
+          "event": "tool.list"
+        },
+        {
+          "event": "tool.call"
+        },
+        {
+          "event": "agent.call"
+        },
+        {
+          "event": "tool.run"
+        },
+        {
+          "event": "prompt.submit"
+        },
+        {
+          "event": "fs.write"
+        },
+        {
+          "event": "fs.stat",
+          "matcher": {
+            "resolve": true
+          }
+        },
+        {
+          "event": "process.run"
+        },
+        {
+          "event": "process.spawn"
+        },
+        {
+          "event": "tool.check"
+        },
+        {
+          "event": "tool.judge"
+        },
+        {
+          "event": "ui.log"
+        },
+        {
+          "event": "env.get"
+        },
+        {
+          "event": "env.set"
+        },
+        {
+          "event": "vcs.detect"
+        },
+        {
+          "event": "vcs.diff"
+        },
+        {
+          "event": "wasm.compile"
+        },
+        {
+          "event": "vcs.isolate"
+        },
+        {
+          "event": "vcs.list"
+        },
+        {
+          "event": "vcs.status"
+        },
+        {
+          "event": "vcs.release"
+        },
+        {
+          "event": "plugin.register",
+          "matcher": {
+            "tier": "user"
+          }
+        }
+      ]
     },
     {
       "name": "telemetry",

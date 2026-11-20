@@ -830,7 +830,7 @@ that report and that caveat, not the list alone.
 | Terminal-only elements (`Raster`, `Image`, `AbovePrompt` band on terminal) | `derived` — DSH renders web; terminal panel only |
 | `Client` second file (animation / pointer half) — bundling and props are undocumented | `planned`, needs hands-on probing |
 | `.tsx` / JSX mods | **host landed** (D34): a `.tsx` module declaring the classic pragma (`@jsxRuntime classic`, `@jsx h`, `@jsxFrag Fragment`) loads through one narrow in-memory transform with `h`/`Fragment` as realm globals; all 21 pinned `.tsx` load (S14, 122/122). No pragma, a foreign pragma/runtime, direct `.tsx` specifiers and rendering stay unsupported/`planned` |
-| Authored specifier conventions (`'./ask'`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33) — three behaviors only, no candidate fallbacks; our host obligation, not an upstream specification; stock Node ESM refuses the four shapes; resolution changes no bytes (S13, D30, §7.7) |
+| Authored specifier conventions (`'./ask'`, `'./reads-as-org-tool'` for the sibling `.ts`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33/#58) — extensionless imports try the file form (`<spec>.ts`, `<spec>.tsx`) before the directory form (`<spec>/index.ts`, `<spec>/index.tsx`), preserving `.js`→`.ts`, `.jsx`→`.tsx` and bare/dot→`index.ts`; our host obligation, not an upstream specification; stock Node ESM refuses these shapes; resolution changes no bytes (S13, D30, D38, §7.7) |
 | Cross-mod pane ownership (`$.ui.open({id})` collisions) | must be reproduced, bug reports already exist upstream |
 | Version drift (`$.ui.backdrop` removed in 2.1.319; `AbovePromptList` needs 2.1.323) | pin the release; regenerate the symbol table per pin |
 
@@ -861,9 +861,11 @@ graph exercises 737 directory-index resolutions, 246 `.js`→`.ts` and 21
 `.jsx`→`.tsx` against S13's `.tsx` stubs; S14, loading the real `.tsx`
 modules, counts 795 directory-index resolutions, 246 and 21 (the extra 58 are
 imports inside the `.tsx` modules the stubs did not have, not new modules). No
-exact-file fallback is used, and the resolver carries no other candidate
-branches. These are **our host obligation**, not an upstream
-specification. `module.stripTypeScriptTypes(source, { mode: 'strip' })` is the
+exact-file fallback is used at this pin, and the resolver carries no other
+candidate branches. The 2.1.329 pin adds a fifth shape — extensionless sibling
+file imports such as `./reads-as-org-tool` — that this graph does not contain;
+D38 adds it with the same file-before-directory order. These are **our host
+obligation**, not an upstream specification. `module.stripTypeScriptTypes(source, { mode: 'strip' })` is the
 only transform applied to `.ts`; it replaces type syntax with whitespace, so
 byte length and line numbers are preserved for `.ts` (the scanner's line
 numbers remain the authored ones). A `.tsx` module goes through D34's classic
@@ -2129,8 +2131,8 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   **Load.** All 579 `.ts` files strip with 0 failures; the stripped entry stays
   33,891 bytes / 1342 lines and `on('session.start')` stays line 938. Stock ESM
-  refuses four specifier shapes that exercise three host resolution behaviors
-  — extensionless/`'.'` to `index.ts`, `.js`→`.ts`, `.jsx`→`.tsx` — so a host
+  refuses four specifier shapes that exercised three host resolution behaviors
+  at the 2.1.322 pin — extensionless/`'.'` to `index.ts`, `.js`→`.ts`, `.jsx`→`.tsx` — so a host
   resolver is required; with it both realms load 505 `.ts` modules plus 21
   `.tsx` stubs. The reachable graph exercises 737 directory-index, 246
   `.js`→`.ts` and 21 `.jsx`→`.tsx` resolutions; no other fallback is used. The
