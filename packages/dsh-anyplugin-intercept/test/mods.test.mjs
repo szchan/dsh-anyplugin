@@ -1254,6 +1254,24 @@ test('fan-out: an unawaited next runs the remainder exactly once', async () => {
     const result = await runChain(guardedCall(), [guard, user, append], { continuation })
     assert.deepEqual(seen, ['user', 'append'], continuation)
     assert.equal(result.decision.kind, 'continue')
+
+    // The same join covers an unawaited item.to: the pass-over runs once.
+    const jumped = []
+    const jumper = at(
+      'prepend',
+      mod('classic.PreToolUse', (event, next) => {
+        void next.to(event, 'append')
+      }),
+    )
+    const passOver = observeAt('user', () => {
+      jumped.push('user')
+    })
+    const target = observeAt('append', () => {
+      jumped.push('append')
+    })
+    const second = await runChain(guardedCall(), [jumper, passOver, target], { continuation })
+    assert.deepEqual(jumped, ['append'], continuation)
+    assert.equal(second.decision.kind, 'continue')
   }
 })
 
