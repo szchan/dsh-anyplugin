@@ -104,6 +104,11 @@ jobs:
       # command substitution: each pin is attempted, its status recorded, and
       # the step fails only after both were tried. continue-on-error keeps the
       # job alive so the pin that did fetch can still be verified.
+      #
+      # `fetch-harness.mjs` installs the union the oracle and every spike below
+      # boot, at that pin, in one `npm install`. No later step installs into
+      # the tree: a second `--no-save` install would prune the first one's
+      # packages, which is how a fresh tree came to fail `npm run verify`.
       - name: Fetch DSH harness pins
         id: fetch
         continue-on-error: true
@@ -127,40 +132,6 @@ jobs:
           fetch_pin 0.2.2-rc.5 dir_rc5
           fetch_pin 0.2.2-rc.2 dir_rc2
           exit "$status"
-
-      # `verify` now includes a lifecycle probe that runs a real turn: the
-      # coverage row is a handler's log line, so the suite must compose an
-      # agent loop, a subagent runtime and a filesystem, not just the layer's
-      # own deps. These nine direct packages are the graph's minimum; the other
-      # rows of the §10 S9 composition table arrive transitively (or are base
-      # deps). Each fetched pin gets the same packages at its own version; the
-      # tests never fetch.
-      - name: Install turn-graph pins for the conformance oracle
-        env:
-          DIR_RC5: ${{ steps.fetch.outputs.dir_rc5 }}
-          DIR_RC2: ${{ steps.fetch.outputs.dir_rc2 }}
-        run: |
-          set -euo pipefail
-          install_pin() {
-            version="$1"
-            dir="$2"
-            if [ -z "${dir:-}" ] || [ ! -d "$dir/node_modules/@deepseek-ai" ]; then
-              echo "::error::cannot install the turn-graph pins for DSH $version: harness dir is missing"
-              exit 1
-            fi
-            npm install --prefix "$dir" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
-              @deepseek-ai/dsh-agent-loop@$version \
-              @deepseek-ai/dsh-subagent@$version \
-              @deepseek-ai/dsh-subagent-fork-in-process@$version \
-              @deepseek-ai/dsh-fs-local@$version \
-              @deepseek-ai/dsh-working-directory@$version \
-              @deepseek-ai/dsh-llm@$version \
-              @deepseek-ai/dsh-session@$version \
-              @deepseek-ai/dsh-session-projection@$version \
-              @deepseek-ai/dsh-agent@$version
-          }
-          install_pin 0.2.2-rc.5 "$DIR_RC5"
-          install_pin 0.2.2-rc.2 "$DIR_RC2"
 
       # A skipped fidelity test on CI is a bug. The guard is per pin so a
       # missing rc.5 cannot stop rc.2 from being verified.
@@ -204,8 +175,8 @@ jobs:
           verify_pin 0.2.2-rc.2 "$DIR_RC2"
           exit "$status"
 
-      # S9 is a spike, not a test: a 0/0 run is a failure. Install the extra
-      # pinned packages the turn/lifecycle probes need, then run the script.
+      # S9 is a spike, not a test: a 0/0 run is a failure. The fetch step
+      # already installed the union the spike boots.
       - name: S9 host-event spike (rc.5)
         env:
           DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
@@ -216,28 +187,10 @@ jobs:
             echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S9 spike would skip"
             exit 1
           fi
-          npm install --prefix "$DSH_HARNESS_DIR" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
-            @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-            @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-            @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
-            @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
-            @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
-            @deepseek-ai/dsh-agent-team@0.2.2-rc.5 \
-            @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-            @deepseek-ai/dsh-tool-fs@0.2.2-rc.5 \
-            @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
-            @deepseek-ai/dsh-fs-observation-policy@0.2.2-rc.5 \
-            @deepseek-ai/dsh-user-questions@0.2.2-rc.5 \
-            @deepseek-ai/dsh-settings@0.2.2-rc.5 \
-            @deepseek-ai/dsh-experimental-worktree@0.2.2-rc.5 \
-            @deepseek-ai/dsh-agent-instructions@0.2.2-rc.5 \
-            @deepseek-ai/dsh-tool-fs-search@0.2.2-rc.5
           npm run spike:s9
 
       # S10 is also a spike: 16/16 checks are required, including the child
-      # receiving the fixture body. Install the extra pins it boots, then run it.
-      # This runs after S9 because `--no-save` prunes packages the other spike
-      # installed; each step keeps its own complete list.
+      # receiving the fixture body. Its packages are in the fetched union.
       - name: S10 agent-catalog spike (rc.5)
         env:
           DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
@@ -248,22 +201,13 @@ jobs:
             echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S10 spike would skip"
             exit 1
           fi
-          npm install --prefix "$DSH_HARNESS_DIR" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
-            @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-            @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-            @deepseek-ai/dsh-subagent-spawn-in-process@0.2.2-rc.5 \
-            @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
-            @deepseek-ai/dsh-session-persistence-jsonl@0.2.2-rc.5 \
-            @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-            @deepseek-ai/dsh-fs-local@0.2.2-rc.5
           npm run spike:s10
 
       # S11 is a spike too: 16/16 checks are required, including the command
       # handler's byte-for-byte `complete: true` prompt and the sibling/compaction
       # proofs. It boots the command service, the loader (to resolve the persona
-      # row), the preset registry and the compaction engine. Like S9/S10, this
-      # step owns a complete install list because `--no-save` prunes the previous
-      # step's extras.
+      # row), the preset registry and the compaction engine; all of them are in
+      # the fetched union.
       - name: S11 prompt-scope spike (rc.5)
         env:
           DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
@@ -274,18 +218,6 @@ jobs:
             echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S11 spike would skip"
             exit 1
           fi
-          npm install --prefix "$DSH_HARNESS_DIR" --no-save --ignore-scripts --cache "$PWD/.npm-cache" \
-            @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-            @deepseek-ai/dsh-agent@0.2.2-rc.5 \
-            @deepseek-ai/dsh-llm@0.2.2-rc.5 \
-            @deepseek-ai/dsh-session@0.2.2-rc.5 \
-            @deepseek-ai/dsh-session-projection@0.2.2-rc.5 \
-            @deepseek-ai/dsh-commands@0.2.2-rc.5 \
-            @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
-            @deepseek-ai/dsh-token-meter@0.2.2-rc.5 \
-            @deepseek-ai/dsh-persona@0.2.2-rc.5 \
-            @deepseek-ai/dsh-agent-preset@0.2.2-rc.5 \
-            @deepseek-ai/dsh-agent-preset-registry@0.2.2-rc.5
           npm run spike:s11
 
       # continue-on-error deliberately kept the job alive; make the fetch
