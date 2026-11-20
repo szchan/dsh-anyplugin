@@ -5,12 +5,37 @@
  */
 import { readdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { HAND_AUTHORED_FIXTURES } from './hand-authored-fixtures.mjs'
 
 const root = new URL('..', import.meta.url).pathname
-const fixturesDir = join(root, 'fixtures')
 const rig = join(root, 'packages/dsh-anyplugin-conformance/src/rig.ts')
+
+/**
+ * `--fixtures-dir <dir>` makes the command hermetically testable (and usable on
+ * a fixture tree outside the checkout); positional names narrow the run to
+ * specific fixtures. The default is every fixture in this checkout.
+ */
+const args = process.argv.slice(2)
+let fixturesDir = join(root, 'fixtures')
+const only = []
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i]
+  if (arg === '--fixtures-dir') {
+    const value = args[++i]
+    if (!value) {
+      console.error('capture-fixtures: --fixtures-dir needs a directory')
+      process.exit(2)
+    }
+    fixturesDir = resolve(value)
+  } else if (arg.startsWith('-')) {
+    console.error(`capture-fixtures: unknown option ${arg}`)
+    process.exit(2)
+  } else {
+    only.push(arg)
+  }
+}
 
 /**
  * The portable/Codex fixture has no upstream oracle to capture from (there is
@@ -41,11 +66,22 @@ function pluginLike(dir) {
   ].some((path) => existsSync(join(dir, path)))
 }
 
-const entries = await readdir(fixturesDir)
+const allEntries = (await readdir(fixturesDir)).sort()
+for (const name of only) {
+  if (!allEntries.includes(name)) {
+    console.error(`capture-fixtures: ${name} is not in ${fixturesDir}`)
+    process.exit(2)
+  }
+}
+const entries = only.length === 0 ? allEntries : allEntries.filter((entry) => only.includes(entry))
 let failures = 0
-for (const entry of entries.sort()) {
+for (const entry of entries) {
   const dir = join(fixturesDir, entry)
   if (!(await stat(dir)).isDirectory() || entry.startsWith('.')) continue
+  if (HAND_AUTHORED_FIXTURES.has(entry)) {
+    console.log(`${entry}: skipped (hand-authored fixture; ${HAND_AUTHORED_FIXTURES.get(entry)})`)
+    continue
+  }
   if (!pluginLike(dir)) {
     console.log(`${entry}: skipped (not a plugin fixture; no manifest or component location)`)
     continue

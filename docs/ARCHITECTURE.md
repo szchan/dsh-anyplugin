@@ -15,7 +15,7 @@
 | **C** Effects | tool-call arguments, file writes, spawned processes, exit codes, stdio protocol traffic | byte-identical |
 | **D** Control flow | allow / deny / block decisions (`exit 2`, `decision:"block"`, `continue:false`, permission results) | equivalent |
 | **E** Trust | approval prompts, grant records, scope of effect | equivalent |
-| **F1** Output style | `output-styles/*.md` | byte-identical |
+| **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `planned` — D10's `/<plugin>:<name>` alias, at-start provenance, the `keep-coding-instructions` composition rule, and no `plugin details` inventory at 2.1.322 |
 | **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | every declared color |
 | **F3** GUI chrome | cards, overlays, charts, shadows | **derived** — not in the denominator; Claude has no such artifact to translate |
 | **F4** Assets | icons / complete SVGs | byte-identical |
@@ -999,7 +999,7 @@ run degraded *by design*.
 | hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
-| per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles `planned` per style with the seam and gaps named; activation waits on D10's command alias; no global injection |
+| per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) but stay `planned` per style, with the seam and all four gaps named; activation waits on D10's command alias, at-start provenance, the composition rule, and an oracle that can see styles; no global injection |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
@@ -1141,8 +1141,8 @@ references before removing or updating anything.
   `claude --plugin-dir <dir> plugin details <name>` under a throwaway `$HOME`
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
   the emitted entry into the *pinned* harness and reads the same inventory
-  back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  table: 16 declared rows, 15 matched, 0 missing, 1 refused. Both halves also
+  back. `npm test` re-probes both sides; `coverage.test.mjs` owns the burn-down
+  row totals and is the only place that asserts them. Both halves also
   run in CI, with the pinned Claude CLI fetched from npm (D24).
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
@@ -1403,7 +1403,7 @@ agents + bin + theme.
 | --- | --- |
 | v0.1 | S1 + S3 rig; **`dsh-anyplugin-intercept` skeleton**; skills + commands materializers; Claude Code dialect read-only; fidelity report |
 | v0.2 | MCP; classic hooks on the shared kernel (command handler, event subset); exec trust grants; project/user scope |
-| v0.3 | Codex dialect via portable IR; LSP; output-styles (carry unblocked; activation waits on the D10 command alias); bin |
+| v0.3 | Codex dialect via portable IR; LSP; output-styles (body carried in the IR; activation waits on D10's command alias, at-start provenance and the `keep-coding-instructions` rule); bin |
 | v0.4 | agents (per-agent tools or prompt template); themes (F2 ANSI seam); monitors; workflows |
 | v0.5 | `dsh-mod-host` alpha: static scanner + chain engine + fs/store/http/session bridges + `AbovePrompt` render site |
 | v0.6 | mod host beta: element runtime (~17 elements), panes, redraw scheduler, guard layer (sec-default equivalent) |
@@ -1843,7 +1843,7 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   request after `compaction/end`: compaction rewrites history, not the section
   layer.
 
-  **4. What this does not settle.** Four gaps remain before a carry:
+  **4. What this does not settle.** Four gaps remain before activation:
   (i) **provenance** — `agent/created` carries the agent but no plugin id, so an
   at-start contribution needs an id filter or a plugin-created agent;
   (ii) **activation name** — `/<plugin>:<name>` needs D10's additive
@@ -1859,13 +1859,17 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   session-wide while the plugin is enabled; a DSH carry must choose an explicit
   activation path rather than inject at load.
 
-  **What this buys, and what it does not.** Each `output-styles/*.md` is one
-  `planned` row (`outputStyles:<name>`) whose reason names the reachable seam
-  and the four gaps; a `manifest:outputStyles` row records a custom directory.
-  It does not carry the style: no materializer, no coverage row, no fixture.
-  The upstream CLI's inventory has no output-style line, so a golden would be
-  empty and could not anchor the row. The totals stay **16 declared / 15
-  matched / 0 missing / 1 refused**; this ticket moves no fixture row.
+  **What this buys, and what it does not.** Each flat `output-styles/*.md` is
+  now an `IrOutputStyle` row in `ir.outputStyles`, carrying its body byte for
+  byte (`output-styles-carry.test.mjs` hashes the IR body against the file);
+  the row is still `planned`, and its reason names the reachable seam and all
+  four gaps. A nested file, and a `manifest:outputStyles` declaration, remain
+  `pending`: the flat surface is the only one this dialect reads. Activation is
+  not implemented — there is no materializer and no emitted prompt — and the
+  upstream CLI's inventory still has no output-style line, so
+  `fixtures/claude-output-styles` is hand-authored and carries no `.inventory`
+  golden; it is asserted by the body hash and excluded from the oracle loop.
+  No fidelity total changes: an absent golden adds no oracle row.
 
   Reproduce:
 

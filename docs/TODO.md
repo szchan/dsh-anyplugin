@@ -15,16 +15,14 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Next
 
-- [ ] **Output styles** (S11). Carry `output-styles/*.md` as
-      `outputStyles:<name>` rows. The seam is reachable
-      (`invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces
-      one agent's prompt byte for byte; `setup(agentCtx)`, `agent/created`,
-      `dsh-persona` and a preset reach the same scope), so the rows are
-      `planned`, not `unsupported`. Carry is unblocked; activation waits on the
-      D10 command-alias decision for `/<plugin>:<name>`, plus a call on at-start
-      provenance, the `keep-coding-instructions` composition rule, and the
-      fixture shape (the CLI inventory does not list styles, so a fixture must
-      compare a dumped composed prompt).
+- [ ] **Output-style activation** (S11; the byte-for-byte carry has landed).
+      Apply a carried `outputStyles:<name>` body at agent start. Activation
+      waits on the D10 command-alias decision for `/<plugin>:<name>`, a call on
+      at-start provenance (`agent/created` carries the agent but no plugin id),
+      the composition rules (`keep-coding-instructions`; `force-for-plugin` is
+      session-wide, so applying a style must stay an explicit activation
+      choice), and an oracle that can see styles (the pinned CLI inventory does
+      not list them).
 
 ## Upstream proposals (union-only seams, T2)
 
