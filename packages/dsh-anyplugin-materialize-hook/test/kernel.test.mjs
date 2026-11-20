@@ -5,7 +5,7 @@
 // happens to preserve the visible verdict. Classic hooks fan out: a deny is
 // collected, not used to skip the next handler.
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -247,6 +247,56 @@ test('the payload keys are the runner payload, unchanged by the kernel', async (
       tool_input: { file_path: '/work/a.txt' },
       tool_use_id: '1',
     })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+
+test('a dispatch abort reaches the mod as next.signal', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-kernel-'))
+  try {
+    const controller = new AbortController()
+    writeFileSync(
+      join(dir, 'signal-probe.ts'),
+      [
+        'export function register(on: On): void {',
+        '  on("classic.PreToolUse", async (_$: Dollar, _event: unknown, next: Next) => {',
+        '    const aborted = await new Promise<boolean>((resolve) => {',
+        '      if (next.signal.aborted) return resolve(true)',
+        '      next.signal.addEventListener("abort", () => resolve(true), { once: true })',
+        '    })',
+        "    return { deny: \"signal:\" + String(aborted) }",
+        '  })',
+        '}',
+      ].join('\n'),
+    )
+    const { ctx, listeners, config } = harness()
+    await apply(ctx, { ...config([]), mods: [{ entry: 'signal-probe.ts' }], pluginRoot: dir })
+    const seatListeners = new Map()
+    const seat = {
+      on(event, listener) {
+        const list = seatListeners.get(event) ?? []
+        list.push(listener)
+        seatListeners.set(event, list)
+        return () => {}
+      },
+      effect(register) {
+        return register()
+      },
+      logger: { warn: () => {} },
+    }
+    const agent = {
+      session: { header: { id: 'session-signal', cwd: '/work' } },
+      model: { current: () => ({ provider: 'fake', model: 'fake-1' }) },
+      ctx: seat,
+    }
+    for (const listener of listeners.get('agent/created') ?? []) await listener({ agent })
+    setTimeout(() => controller.abort(), 20)
+    const result = await seatListeners.get('tools/pre-execute')[0]({ ...pre(), signal: controller.signal }, async () => ({
+      kind: 'accept',
+    }))
+    assert.deepEqual(result, { kind: 'deny', reason: 'signal:true' })
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

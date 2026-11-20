@@ -11,6 +11,8 @@
  * through `runChain`, not around it.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import { MOD_EVENT_ROUTES, MOD_PINNED_EVENTS, modUnmappedReason, type ModEventRoute } from './mod-events.ts'
 
 export * from './mod-events.ts'
@@ -172,6 +174,12 @@ export interface HandlerContext {
   budget: Budget
   /** Aborted on timeout or when the chain is aborted. */
   signal: AbortSignal
+  /**
+   * The trace as it stands while the handler runs, live. Internal to the
+   * front-ends that need to project it onto a foreign surface (`next.trace`);
+   * the array is the kernel's own, so a consumer must copy, never mutate.
+   */
+  trace?: () => readonly TraceStep[]
 }
 
 /**
@@ -215,6 +223,12 @@ export interface HandlerRegistration {
   timeoutMs?: number
   /** Who registered it, for traces and the trust UI. */
   source: string
+  /**
+   * The owning plugin's name, when the front-end knows one. The trace carries
+   * it so a foreign `next.trace` can answer "whose link was that?"; the
+   * source label remains the fallback for a registration without an owner.
+   */
+  plugin?: string
   run: Handler
 }
 
@@ -235,6 +249,14 @@ export interface ChainOptions {
   /** Default per-handler budget. */
   timeoutMs?: number
   /**
+   * Abort the chain (D13's "abandoned" case). Every running handler's
+   * `context.signal` aborts; a chain that starts aborted hands its first
+   * handler an already-aborted signal. The kernel does not by itself stop
+   * dispatching when this fires: the front-end owns the decision, because only
+   * it knows whether a partial result is still usable.
+   */
+  signal?: AbortSignal
+  /**
    * Decision flow. When omitted, registrations that declare `continuation`
    * select it (classic registrations declare `fan-out`); with no declaration
    * the default is `first-decision`.
@@ -242,15 +264,21 @@ export interface ChainOptions {
   continuation?: Continuation
 }
 
-export type StepStatus = 'ran' | 'skipped-matcher' | 'timeout' | 'error' | 'not-called'
+export type StepStatus = 'ran' | 'skipped-matcher' | 'skipped' | 'timeout' | 'error' | 'not-called'
 
 export interface TraceStep {
   source: string
   tier: Tier
   index: number
   status: StepStatus
-  /** Set for `error` and `timeout`. */
+  /**
+   * Set for `error` and `timeout`. For `skipped` it is the reason the link was
+   * not run: `bypassed by <plugin>`, the pinned wording for a `next.to` that
+   * went beneath this tier (claude-code.d.ts:10555-10574).
+   */
   detail?: string
+  /** The owning plugin, when the registration named one. */
+  plugin?: string
   /** The decision a handler returned, if any. */
   decision?: Decision['kind']
 }
@@ -332,6 +360,8 @@ export interface ClassicHookSpec {
   timeoutMs?: number
   /** Who registered it, for traces. */
   source: string
+  /** The owning plugin, when the classic arm knows one. */
+  plugin?: string
   run: Handler
 }
 
@@ -354,6 +384,7 @@ export function classicHookRegistration(spec: ClassicHookSpec): HandlerRegistrat
     compiledMatcher: compileClassicMatcher(spec.matcher),
     timeoutMs: spec.timeoutMs,
     source: spec.source,
+    plugin: spec.plugin,
     run: spec.run,
   }
 }
@@ -729,22 +760,241 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
   return rewrite === undefined ? { decision } : { decision, rewrite }
 }
 
+/**
+ * The pinned `Next` surface, as the mod sees it (claude-code.d.ts:5271-5366).
+ *
+ * The continuation is the kernel's own `Next`: `to(e, tier)` calls the same
+ * function with the tier argument the kernel already understands, so tier
+ * order, matcher skipping, trace recording and continuation semantics stay in
+ * one place (AGENTS.md §3.6, D13). The members around it are a projection, not
+ * a second dispatcher.
+ *
+ * Subset notes (the pinned `TraceEntry`, d.ts:10555-10574):
+ * - `index`, `plugin`, `tier`, `event`, `outcome`, `reason` are served;
+ * - `ms`, `chunks`, `received` and `returned` are **not**: the kernel does not
+ *   meter a handler's own wall time while `next` is in flight, does not count
+ *   chunks, and does not keep the mod-shaped payloads, so inventing them would
+ *   be fabrication;
+ * - a kernel `error` is reported as `rejected` with the throw message as the
+ *   reason: the pin's `rejected` is a failing link, while `skipped` asserts
+ *   that the link failed before `next` and the links beneath ran in its place,
+ *   which the kernel cannot know without the mod's own ordering;
+ * - a link the matcher removed never ran, so it is a kernel diagnostic and is
+ *   not projected: `TraceEntry` lists links beneath the call, not every
+ *   registration the chain considered.
+ *
+ * `origin` is the dispatch's raiser, which is the host for every route served
+ * today (the classic arm and `session.start`), so it is the pin's engine origin
+ * (`{ plugin: "engine", tier: "core" }`, d.ts:5311-5321) and is constant for
+ * the whole dispatch. It is not the mod's seat: the pin says "who raised this
+ * dispatch", and every hook of one dispatch sees the same origin.
+ */
+export type ModOriginTier = Tier | 'core'
+
+export interface ModOrigin {
+  readonly plugin: string
+  readonly tier: ModOriginTier
+}
+
+export type ModTraceOutcome = 'caught' | 'expired' | 'kept' | 'passed' | 'rejected' | 'returned' | 'skipped'
+
+export interface ModTraceEntry {
+  readonly index: number
+  /**
+   * A host label, not a value the mod wrote: the owning plugin when the
+   * registration carried one, otherwise the registration's stable source
+   * (a classic hook may have no plugin name in this host). The pinned shape
+   * requires a string, and hiding the fallback would make it look invented.
+   */
+  readonly plugin: string
+  readonly tier: Tier
+  readonly event: string
+  readonly outcome: ModTraceOutcome
+  readonly reason?: string
+}
+
+export interface ModNextBudget {
+  /** The handler's own limit, as the kernel metered it. */
+  readonly ms: number
+  /** Time left, which stands still while a `next` call is in flight. */
+  readonly remainingMs: number
+}
+
+export interface ModNext {
+  (event?: unknown): Promise<unknown>
+  readonly to: (event: unknown, tier: string) => Promise<unknown>
+  readonly signal: AbortSignal
+  readonly is: (pattern: string, event?: unknown) => boolean
+  readonly event: string
+  readonly origin: ModOrigin
+  readonly trace: readonly ModTraceEntry[]
+  readonly budget: ModNextBudget
+}
+
+const HOST_ORIGIN: ModOrigin = Object.freeze({ plugin: 'engine', tier: 'core' })
+
+/** Map the kernel's step vocabulary onto the pinned `TraceOutcome` (d.ts:10608). */
+function modTraceOutcome(step: TraceStep): ModTraceOutcome {
+  switch (step.status) {
+    case 'timeout':
+      return 'expired'
+    case 'error':
+      return 'rejected'
+    case 'skipped-matcher':
+    case 'skipped':
+      return 'skipped'
+    case 'not-called':
+      return 'returned'
+    case 'ran':
+      return step.decision === undefined ? 'passed' : 'returned'
+  }
+}
+
+function toModTraceEntry(route: ModEventRoute, step: TraceStep): ModTraceEntry {
+  return Object.freeze({
+    index: step.index,
+    // A host label: the owning plugin when the registration carried one,
+    // otherwise the registration's stable source. It is not a claim about a
+    // plugin id the host did not know.
+    plugin: step.plugin ?? step.source,
+    tier: step.tier,
+    event: route.modEvent,
+    outcome: modTraceOutcome(step),
+    ...(step.detail === undefined ? {} : { reason: step.detail }),
+  })
+}
+
+/**
+ * `TargetTier = Exclude<Tier, 'prepend' | 'user'>` (d.ts:9938). The kernel
+ * serves `append` and `builtin`; `core` is legal at the pin but there is no
+ * core link in this chain, so naming it would skip the builtin tier and
+ * resolve `continue` without ever consulting it. Refusing it is the honest
+ * degradation (D36).
+ */
+function assertTargetTier(tier: unknown, callerTier: Tier): asserts tier is 'append' | 'builtin' {
+  if (tier === 'core') {
+    throw new TypeError(
+      'next.to(e, "core") is not served: the kernel\'s innermost tier is "builtin" and there is no core link (TargetTier, claude-code.d.ts:9938)',
+    )
+  }
+  if (tier !== 'append' && tier !== 'builtin') {
+    throw new TypeError(
+      `next.to(e, tier) takes "append" or "builtin" (TargetTier, claude-code.d.ts:9938); received ${JSON.stringify(tier)}`,
+    )
+  }
+  const targetRank = TIER_ORDER.indexOf(tier)
+  const callerRank = TIER_ORDER.indexOf(callerTier)
+  if (targetRank <= callerRank) {
+    // The pin's `to` only moves outward: prepend may name append/builtin/core,
+    // append may name core (claude-code.d.ts:5281-5289). A backward jump would
+    // re-enter a tier that already ran, so it is refused instead of resolving
+    // and doing nothing.
+    throw new TypeError(
+      `next.to(e, "${tier}") from the "${callerTier}" tier would move backwards; the pin only moves outward (prepend -> append/builtin/core, append -> core; claude-code.d.ts:5281-5289)`,
+    )
+  }
+}
+
 async function runModHandler(
   route: ModEventRoute,
   handler: ModRegistrationLike['handler'],
+  context: HandlerContext,
   event: ChainEvent,
   next: Next,
 ): Promise<Decision> {
   const modEvent = toModEvent(route, event)
-  const modNext = async (rewritten?: unknown): Promise<unknown> => {
-    const nextEvent = rewritten === undefined ? undefined : fromModEvent(route, event, rewritten)
-    const resolved = await next(nextEvent)
-    // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
-    if (route.modEvent === 'session.start') {
-      return { cwd: (nextEvent ?? event).data.cwd }
+
+  // `budget` is read fresh on each access and stands still while `next` is in
+  // flight (d.ts:5335-5341). The kernel's meter already pauses across `next`,
+  // and the host pauses it across `$` through `pauseWhilePending`, so this
+  // projection must not add a second accounting layer: it forwards the one
+  // clock the kernel owns.
+  const readBudget = (): ModNextBudget => ({
+    ms: context.budget.ms,
+    remainingMs: Math.max(0, Math.min(context.budget.ms, context.budget.remainingMs)),
+  })
+
+  // Where the latest trip starts in the kernel trace. The pin says `trace`
+  // describes "its latest next() call, the one started last" (d.ts:5331), so
+  // a hook that calls `next` twice sees the second trip's entries only.
+  let tripStart = 0
+  let inFlight: Promise<unknown> | undefined
+
+  const continueWith = async (rewritten: unknown, tier?: Tier): Promise<unknown> => {
+    // A new call starts only after the previous trip settled. Without this, a
+    // `void next(e); await next(e)` pair lets the second trip start while the
+    // first is still appending, and the length-based boundary would include both
+    // trips. Calls are therefore sequential; a call supersedes ordering, not
+    // concurrency. The join is inline (not an `await` helper) so the first
+    // call installs `inFlight` before the second one observes it.
+    const pending = inFlight
+    if (pending !== undefined) {
+      inFlight = undefined
+      await pending.catch(() => {})
     }
-    return kernelDecisionToMod(resolved, route)
+    const nextEvent = rewritten === undefined ? undefined : fromModEvent(route, event, rewritten)
+    tripStart = context.trace?.().length ?? 0
+    const resolved = next(nextEvent, tier)
+    inFlight = resolved
+    // The handler may not await this call; observe a rejection once here so the
+    // trip cannot become an unhandled rejection.
+    resolved.catch(() => {})
+    try {
+      const decision = await resolved
+      // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
+      if (route.modEvent === 'session.start') {
+        return { cwd: (nextEvent ?? event).data.cwd }
+      }
+      return kernelDecisionToMod(decision, route)
+    } finally {
+      if (inFlight === resolved) inFlight = undefined
+    }
   }
+
+  const selects = (pattern: string): boolean => expandModPattern(pattern).selected.includes(route.modEvent)
+
+  const modNext = ((rewritten?: unknown) => continueWith(rewritten)) as ModNext
+
+  // Own enumerable members, so the mod host's `.catch` relay
+  // (`copyNextSurface`) carries the whole pinned surface onto its wrapper.
+  Object.defineProperties(modNext, {
+    to: {
+      enumerable: true,
+      configurable: true,
+      value: async (rewritten: unknown, tier: unknown): Promise<unknown> => {
+        assertTargetTier(tier, context.tier)
+        return continueWith(rewritten, tier)
+      },
+    },
+    signal: { enumerable: true, configurable: true, get: () => context.signal },
+    is: {
+      enumerable: true,
+      configurable: true,
+      value: (pattern: string): boolean => selects(pattern),
+    },
+    event: { enumerable: true, configurable: true, value: route.modEvent },
+    origin: { enumerable: true, configurable: true, value: HOST_ORIGIN },
+    trace: {
+      enumerable: true,
+      configurable: true,
+      get: (): readonly ModTraceEntry[] => {
+        // Only what settled beneath this hook on its latest trip, nearest
+        // first. Frozen: the pin says the data is frozen and nothing listed may
+        // leave. A second `next` call starts a fresh trip, so the slice starts
+        // where that call started; the caller's own step is recorded after the
+        // handler returns and is never in the slice.
+        const settled = (context.trace?.() ?? [])
+          .slice(tripStart)
+          // `skipped-matcher` is a kernel diagnostic: the registration never
+          // ran, so it is not a link beneath this call (M3).
+          .filter((step) => step.index > context.index && step.status !== 'skipped-matcher')
+          .sort((left, right) => left.index - right.index)
+        return Object.freeze(settled.map((step) => toModTraceEntry(route, step)))
+      },
+    },
+    budget: { enumerable: true, configurable: true, get: readBudget },
+  })
+
   const translation = modResultToKernel(route, event, await handler(modEvent, modNext))
   if (translation.rewrite === undefined) return translation.decision
   const resolved = await next(translation.rewrite)
@@ -876,7 +1126,8 @@ export function modRegistrationsToKernel(
         compiledMatcher: matcher.compiledMatcher,
         timeoutMs: options.timeoutMs,
         source,
-        run: (_context, kernelEvent, next) => runModHandler(route, registration.handler, kernelEvent, next),
+        plugin: options.plugin,
+        run: (context, kernelEvent, next) => runModHandler(route, registration.handler, context, kernelEvent, next),
       }
       adapted.push(kernelRegistration)
       routes.push({ registration: kernelRegistration, route })
@@ -911,19 +1162,137 @@ export function resolveOrder(registrations: readonly HandlerRegistration[]): Res
 const TIMED_OUT = Symbol('timeout')
 const TIMED_OUT_NOT = Symbol('error')
 
-async function withinLimit<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T | typeof TIMED_OUT> {
-  if (ms <= 0) return TIMED_OUT
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), ms)
-    timer.unref?.()
-  })
-  try {
-    return await Promise.race([work, timeout])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-    void signal
+/**
+ * One handler's budget clock. Time spent inside the links beneath the handler
+ * does not count: the pin says `budget` stands still while a `next` (or `$`)
+ * call is in flight, so the hook is metered on its own work (d.ts:5335-5341).
+ *
+ * The clock is refcounted because a paused call can contain another paused
+ * call from the same handler; the outer resume re-arms with what is left
+ * rather than restarting the full limit.
+ */
+class BudgetMeter {
+  readonly ms: number
+  private remaining: number
+  private started = Date.now()
+  private paused = false
+  private depth = 0
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private closed = false
+  private readonly expiredPromise: Promise<void>
+  private expire: (() => void) | undefined
+
+  constructor(ms: number) {
+    this.ms = Math.max(0, ms)
+    this.remaining = this.ms
+    this.expiredPromise = new Promise<void>((resolve) => {
+      this.expire = resolve
+    })
+    this.arm()
   }
+
+  private arm(): void {
+    if (this.closed || this.paused || this.remaining <= 0 || this.timer !== undefined) return
+    this.timer = setTimeout(() => this.expire?.(), this.remaining)
+    this.timer.unref?.()
+  }
+
+  private hold(): void {
+    if (this.depth === 0) {
+      if (this.timer !== undefined) clearTimeout(this.timer)
+      this.timer = undefined
+      this.remaining = Math.max(0, this.remaining - (Date.now() - this.started))
+      this.paused = true
+    }
+    this.depth += 1
+  }
+
+  private release(): void {
+    if (this.depth === 0) return
+    this.depth -= 1
+    if (this.depth === 0) {
+      this.paused = false
+      this.started = Date.now()
+      this.arm()
+    }
+  }
+
+  pause(): void {
+    this.hold()
+  }
+
+  resume(): void {
+    this.release()
+  }
+
+  get expired(): Promise<void> {
+    return this.expiredPromise
+  }
+
+  get remainingMs(): number {
+    return this.paused
+      ? Math.max(0, this.remaining)
+      : Math.max(0, this.remaining - (Date.now() - this.started))
+  }
+
+  dispose(): void {
+    this.closed = true
+    if (this.timer === undefined) return
+    clearTimeout(this.timer)
+    this.timer = undefined
+  }
+}
+
+/**
+ * The meter of the handler currently executing. It is scoped through an
+ * `AsyncLocalStorage` so host-side calls the kernel cannot see — a mod's `$` —
+ * pause the same clock as `next`; the host wraps those calls with
+ * `pauseWhilePending`.
+ */
+const budgetScope = new AsyncLocalStorage<BudgetMeter>()
+
+/**
+ * Run `work` with the current handler's budget paused until its result
+ * settles. A synchronous result pauses for the call only, so wrapping a
+ * synchronous `$` member does not make it asynchronous.
+ */
+export function pauseWhilePending<T>(work: () => T): T {
+  const meter = budgetScope.getStore()
+  if (meter === undefined) return work()
+  meter.pause()
+  let result: T
+  try {
+    result = work()
+  } catch (error) {
+    meter.resume()
+    throw error
+  }
+  if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+    return (result as Promise<unknown>).finally(() => meter.resume()) as T
+  }
+  meter.resume()
+  return result
+}
+
+async function withinLimit<T>(work: Promise<T>, meter: BudgetMeter): Promise<T | typeof TIMED_OUT> {
+  if (meter.ms <= 0) return TIMED_OUT
+  return await Promise.race([work, meter.expired.then(() => TIMED_OUT)])
+}
+
+/**
+ * Drive a running handler's controller from the chain's abort signal. The
+ * chain does not by itself stop dispatching: it aborts what is running, and
+ * the front-end keeps ownership of the turn.
+ */
+function linkAbort(chain: AbortSignal | undefined, controller: AbortController): () => void {
+  if (chain === undefined) return () => {}
+  if (chain.aborted) {
+    controller.abort()
+    return () => {}
+  }
+  const onAbort = (): void => controller.abort()
+  chain.addEventListener('abort', onAbort, { once: true })
+  return () => chain.removeEventListener('abort', onAbort)
 }
 
 /**
@@ -979,15 +1348,70 @@ export async function runChain(
   const continuation = options.continuation ?? declaredContinuation(registrations)
   let deepest = event
 
-  const tierStart = (tier: Tier, at: number): number => {
-    const found = ordered.findIndex((entry) => entry.registration.tier === tier)
-    // A tier that already ran cannot be re-entered backwards; asking for it
-    // resumes at the next handler instead of looping.
-    return found === -1 ? ordered.length : found > at ? found : at + 1
+  // Where a `to` continuation lands: the named tier when a link of that tier
+  // (or a deeper one) sits at or after `at`, otherwise the next tier with a
+  // link. Inclusive of a link exactly at `at`, the common case for a direct
+  // target; a missing tier falls forward rather than dropping the rest of the
+  // chain (the pin never skips a tier with more authority, d.ts:5281-5289).
+  const jumpStart = (tier: Tier, at: number): number => {
+    const targetRank = tierRank(tier)
+    for (let index = at; index < ordered.length; index += 1) {
+      if (tierRank(ordered[index].registration.tier) >= targetRank) return index
+    }
+    return ordered.length
   }
 
   const record = (registration: HandlerRegistration, index: number, status: StepStatus, extra: Partial<TraceStep> = {}): void => {
-    trace.push({ source: registration.source, tier: registration.tier, index, status, ...extra })
+    trace.push({
+      source: registration.source,
+      tier: registration.tier,
+      index,
+      status,
+      // Only when the front-end named an owner: the existing deepEqual trace
+      // assertions for un-owned registrations keep their exact shape.
+      ...(registration.plugin === undefined ? {} : { plugin: registration.plugin }),
+      ...extra,
+    })
+  }
+
+  const pluginOf = (registration: HandlerRegistration): string => registration.plugin ?? registration.source
+  const tierRank = (tier: Tier): number => TIER_ORDER.indexOf(tier)
+
+  /** A `next.to` continuation, kept until the loop leaves the caller's tier. */
+  type TierJump = { readonly target: Tier; readonly callerRank: number; readonly by: string }
+
+  /**
+   * Record the links a `next.to(e, tier)` did not run. They are skipped, not
+   * absent: the pin's trace lists every link beneath the call and says why a
+   * link did not run (claude-code.d.ts:10555-10574). A skipped link still
+   * consults its matcher, exactly as it would have on the way through.
+   *
+   * "Beneath" is a tier rank, not an array index: only links strictly between
+   * the caller's tier and the target tier are bypassed. A same-tier sibling
+   * stays in the dispatch (d.ts:5286-5289: "every link between this hook's own
+   * tier and that one", and `TraceEntry.reason` names "beneath this tier").
+   */
+  const recordBypassed = (
+    from: number,
+    to: number,
+    by: string,
+    current: ChainEvent,
+    callerRank: number,
+    targetRank: number,
+  ): void => {
+    for (let at = from; at < to && at < ordered.length; at += 1) {
+      const { registration } = ordered[at]
+      const rank = tierRank(registration.tier)
+      if (rank <= callerRank || rank >= targetRank) continue
+      const subject = current.subject === undefined ? classicSubject(current) : current.subject
+      const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
+      const matched = subject === null ? !matcher.specified : matcher.test(subject)
+      if (matched) {
+        record(registration, at, 'skipped', { detail: `bypassed by ${by}` })
+      } else {
+        record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
+      }
+    }
   }
 
   type HandlerRun =
@@ -998,6 +1422,11 @@ export async function runChain(
   /**
    * Run one handler under its budget. A throw is reported, never propagated;
    * the caller decides whether to continue (fan-out) or skip (first-decision).
+   *
+   * The budget clock pauses while the handler is inside `next`: the pin meters
+   * the hook's own work, not the links beneath it. `$` calls are host-side;
+   * the host wraps them with `pauseWhilePending`, which reads the meter from
+   * the scope this function enters.
    */
   const invoke = async (
     registration: HandlerRegistration,
@@ -1005,23 +1434,57 @@ export async function runChain(
     current: ChainEvent,
     next: Next,
     ms: number,
-    remainingMs: number,
   ): Promise<HandlerRun> => {
     const controller = new AbortController()
+    const detach = linkAbort(options.signal, controller)
+    const meter = new BudgetMeter(ms)
+    const wrapped = (registration.mode ?? 'observe') === 'wrap'
+
+    // The live getter is for mod handlers. A classic hook keeps the entry
+    // snapshot it has always received: a decreasing value would be a change in
+    // an existing behaviour (T3), and no classic caller asked for it.
+    const budget = wrapped
+      ? {
+          ms,
+          get remainingMs(): number {
+            return Math.min(ms, meter.remainingMs)
+          },
+        }
+      : { ms, remainingMs: meter.remainingMs }
+
+    const timedNext: Next = wrapped
+      ? async (nextEvent, tier) => {
+          meter.pause()
+          try {
+            return await next(nextEvent, tier)
+          } finally {
+            meter.resume()
+          }
+        }
+      : next
+
     let failure: string | undefined
     const outcome = await withinLimit(
-      (async () =>
+      budgetScope.run(meter, async () =>
         registration.run(
-          { tier: registration.tier, index: at, budget: { ms, remainingMs }, signal: controller.signal },
+          {
+            tier: registration.tier,
+            index: at,
+            budget,
+            signal: controller.signal,
+            trace: () => trace,
+          },
           current,
-          next,
-        ))(),
-      ms,
-      controller.signal,
+          timedNext,
+        ),
+      ),
+      meter,
     ).catch((error: unknown) => {
       failure = (error as Error)?.message ?? String(error)
       return TIMED_OUT_NOT
     })
+    detach()
+    meter.dispose()
 
     if (outcome === TIMED_OUT) {
       controller.abort()
@@ -1031,9 +1494,22 @@ export async function runChain(
     return { status: 'ran', decision: (outcome as HandlerOutcome) ?? CONTINUE }
   }
 
-  const step = async (position: number, current: ChainEvent): Promise<Decision> => {
-    for (let at = position; at < ordered.length; at += 1) {
+  const step = async (position: number, current: ChainEvent, pending?: TierJump): Promise<Decision> => {
+    let at = position
+    while (at < ordered.length) {
       const { registration } = ordered[at]
+      const rank = tierRank(registration.tier)
+
+      // The caller's tier is finished once a link of a deeper tier is reached.
+      // Only then does its `to` take effect; same-tier siblings ran first.
+      if (pending !== undefined && rank > pending.callerRank) {
+        const target = jumpStart(pending.target, at)
+        recordBypassed(at, target, pending.by, current, pending.callerRank, tierRank(pending.target))
+        at = target
+        pending = undefined
+        continue
+      }
+
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
       const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
       // No subject means the matcher cannot be evaluated. Running it would
@@ -1041,92 +1517,170 @@ export async function runChain(
       const matched = subject === null ? !matcher.specified : matcher.test(subject)
       if (!matched) {
         record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
+        at += 1
         continue
       }
 
       const remainingMs = Math.max(0, deadline - Date.now())
       const ms = Math.min(registration.timeoutMs ?? defaultTimeout, remainingMs)
-      let resumed: Promise<Decision> | undefined
+      let latest: Promise<Decision> | undefined
 
       const next: Next = (nextEvent, tier) => {
-        // One continuation per handler: a second call would run the remainder
-        // of the chain twice.
-        if (resumed !== undefined) return resumed
+        // `next` is the continuation, not a deferred slot: every call runs the
+        // remainder immediately from this link, with this call's `to` target.
+        // A hook that calls it twice asks the chain to run twice; the latest
+        // trip is the one it decides with (claude-code.d.ts:5325-5338), and a
+        // sibling's later call can never be attributed to this jump.
         if (nextEvent !== undefined) {
           deepest = nextEvent
           current = nextEvent
         }
-        resumed = step(Math.max(0, tier === undefined ? at + 1 : tierStart(tier, at)), current)
-        return resumed
+        let carry = pending
+        if (tier !== undefined && tierRank(tier) > rank) {
+          carry = { target: tier, callerRank: rank, by: pluginOf(registration) }
+        }
+        latest = step(at + 1, current, carry)
+        return latest
       }
 
-      const run = await invoke(registration, at, current, next, ms, remainingMs)
+      const run = await invoke(registration, at, current, next, ms)
       if (run.status === 'timeout') {
         record(registration, at, 'timeout', { detail: `exceeded ${run.ms}ms` })
+        // The handler may have started the remainder before it timed out. That
+        // trip owns the rest of the chain; the outer loop must not run it again.
+        if (latest !== undefined) return await latest
+        at += 1
         continue
       }
       if (run.status === 'error') {
         record(registration, at, 'error', { detail: run.detail })
+        if (latest !== undefined) return await latest
+        at += 1
         continue
       }
 
       const own = run.decision
-      const decided = resumed === undefined ? own : await resumed
-      const final = own !== CONTINUE ? own : decided
-
-      if (resumed === undefined && own === CONTINUE) {
-        if ((registration.mode ?? 'observe') === 'wrap') {
-          // A wrapper that declined to continue has ended the chain.
-          record(registration, at, 'not-called')
-          return CONTINUE
+      if (latest === undefined) {
+        if (own === CONTINUE) {
+          if ((registration.mode ?? 'observe') === 'wrap') {
+            // A wrapper that declined to continue has ended the chain.
+            record(registration, at, 'not-called')
+            return CONTINUE
+          }
+          // An observing hook has no "next": it ran, and the chain continues.
+          record(registration, at, 'ran')
+          at += 1
+          continue
         }
-        // An observing hook has no "next": it ran, and the chain continues.
-        record(registration, at, 'ran')
-        continue
+        record(registration, at, 'ran', { decision: own.kind })
+        return own
       }
+
+      // The latest trip ran the whole remainder. Its decision stands unless
+      // this handler overrode it; either way the loop is over.
+      const decided = await latest
+      const final = own !== CONTINUE ? own : decided
       record(registration, at, 'ran', final === CONTINUE ? {} : { decision: final.kind })
-      if (final !== CONTINUE) return final
+      return final
     }
     return CONTINUE
   }
 
   /**
-   * Run every matching handler, collecting decisions. A decision, throw or
-   * timeout only affects the handler that produced it; later siblings still
-   * run. `next()` rewrites the event for downstream handlers but cannot jump
-   * tiers or end the chain — there is nothing to continue.
+   * Run every matching handler in [position, end), collecting decisions.
+   *
+   * `next` is eager here too: a call immediately runs the remainder from the
+   * calling link as its own fan-out trip and returns that trip's decision.
+   * After the handler returns, the outer loop does not run those links again;
+   * a second `next` call starts a second trip (the author's choice), and the
+   * latest trip is the one whose decisions this link contributes. A `to`
+   * target belongs to its own call, so a same-tier sibling's later `next`
+   * cannot inherit or be blamed for someone else's jump.
    */
-  const fanOut = async (): Promise<{ decision: Decision; decisions: Decision[] }> => {
+  type FanTrip = { first: Decision; decisions: Decision[]; event: ChainEvent }
+
+  const fanFrom = async (position: number, start: ChainEvent, jump?: TierJump): Promise<FanTrip> => {
     const decisions: Decision[] = []
     let first: Decision = CONTINUE
-    let current = event
-    for (let at = 0; at < ordered.length; at += 1) {
+    let current = start
+    let at = position
+    let active = jump
+    while (at < ordered.length) {
       const { registration } = ordered[at]
+      const rank = tierRank(registration.tier)
+
+      if (active !== undefined && rank > active.callerRank) {
+        // The pass-over was recorded when `to` was called, so the hook can
+        // read it while it still runs; applying the jump must not record it a
+        // second time.
+        at = jumpStart(active.target, at)
+        active = undefined
+        continue
+      }
+
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
       const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
       const matched = subject === null ? !matcher.specified : matcher.test(subject)
       if (!matched) {
         record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
+        at += 1
         continue
       }
 
       const remainingMs = Math.max(0, deadline - Date.now())
       const ms = Math.min(registration.timeoutMs ?? defaultTimeout, remainingMs)
-      const next: Next = async (nextEvent, _tier) => {
+      let sub: FanTrip | undefined
+      const next: Next = async (nextEvent, tier) => {
         if (nextEvent !== undefined) {
           deepest = nextEvent
           current = nextEvent
         }
+        // A plain `next` continues the trip's own jump; a named tier starts a
+        // new one for this call only, so a sibling cannot inherit or be blamed
+        // for someone else's target.
+        const callJump: TierJump | undefined =
+          tier !== undefined && tierRank(tier) > rank
+            ? { target: tier, callerRank: rank, by: pluginOf(registration) }
+            : active
+        if (tier !== undefined && tierRank(tier) > rank) {
+          // Record now: `await next.to(e, tier)` must resolve with the skipped
+          // links already in `next.trace`. Only links strictly between the two
+          // tiers are named, so a same-tier sibling is not mislabelled.
+          recordBypassed(at + 1, jumpStart(tier, at + 1), callJump.by, current, rank, tierRank(tier))
+        }
+        // Assign before awaiting: a handler may call next without awaiting it.
+        // The outer loop must observe the trip when the handler returns, or it
+        // would run the remainder while the eager trip runs it too.
+        const pending = fanFrom(at + 1, current, callJump)
+        sub = pending
+        await pending
         return CONTINUE
       }
 
-      const run = await invoke(registration, at, current, next, ms, remainingMs)
+      const run = await invoke(registration, at, current, next, ms)
+      // Join an unawaited trip exactly once before deciding about the loop.
+      const trip = sub === undefined ? undefined : await sub
+
       if (run.status === 'timeout') {
         record(registration, at, 'timeout', { detail: `exceeded ${run.ms}ms` })
+        if (trip !== undefined) {
+          decisions.push(...trip.decisions)
+          if (first === CONTINUE) first = trip.first
+          current = trip.event
+          return { first, decisions, event: current }
+        }
+        at += 1
         continue
       }
       if (run.status === 'error') {
         record(registration, at, 'error', { detail: run.detail })
+        if (trip !== undefined) {
+          decisions.push(...trip.decisions)
+          if (first === CONTINUE) first = trip.first
+          current = trip.event
+          return { first, decisions, event: current }
+        }
+        at += 1
         continue
       }
 
@@ -1136,13 +1690,22 @@ export async function runChain(
         decisions.push(own)
         if (first === CONTINUE) first = own
       }
+      if (trip !== undefined) {
+        // The remainder already ran inside this handler; this link contributes
+        // its own decision plus the latest trip's, and the loop is over.
+        decisions.push(...trip.decisions)
+        if (first === CONTINUE) first = trip.first
+        current = trip.event
+        return { first, decisions, event: current }
+      }
+      at += 1
     }
-    return { decision: first, decisions }
+    return { first, decisions, event: current }
   }
 
   if (continuation === 'fan-out') {
-    const fan = await fanOut()
-    return { decision: fan.decision, decisions: fan.decisions, event: deepest, trace }
+    const fan = await fanFrom(0, event)
+    return { decision: fan.first, decisions: fan.decisions, event: fan.event, trace }
   }
   const decision = await step(0, event)
   return { decision, decisions: decision === CONTINUE ? [] : [decision], event: deepest, trace }

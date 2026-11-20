@@ -89,8 +89,9 @@ test('one runChain trace: a loaded mod (prepend/wrap) and a classic hook (user/o
   assert.deepEqual(
     result.trace.map((entry) => [entry.index, entry.tier, entry.source, entry.status]),
     [
-      [0, 'prepend', 'synthetic/kernel.ts#0', 'ran'],
+      // next runs the remainder, so the classic link settles first.
       [1, 'user', 'hook#0', 'ran'],
+      [0, 'prepend', 'synthetic/kernel.ts#0', 'ran'],
     ],
   )
   assert.deepEqual(result.decision, { kind: 'text', text: 'hook-allowed' })
@@ -114,7 +115,7 @@ test('one runChain trace: a loaded mod (prepend/wrap) and a classic hook (user/o
     { continuation: 'fan-out' },
   )
   t.diagnostic(describeTrace(second.trace).join('\n'))
-  assert.deepEqual(second.trace.map((entry) => entry.tier), ['prepend', 'user'])
+  assert.deepEqual(second.trace.map((entry) => entry.tier), ['user', 'prepend'])
   assert.equal(recorderHost.built(), 2)
   assert.deepEqual(recorderHost.calls, ['clock.now', 'session.messages'])
 })
@@ -164,4 +165,52 @@ test('a real mod with unprefixed event names is reported, not silently dropped',
   for (const entry of adapted.unmapped) {
     assert.match(entry.reason, /not a Pattern/)
   }
+})
+
+// ---- Issue #68: the guard must guard --------------------------------------
+// A loaded guard mod's deny reaches the chain; without the mod the same call
+// continues. This case is deny-only on purpose: the guard never calls `next.to`,
+// so it says nothing about continuation coverage (the kernel's own tests carry
+// that), and the title says so. It is the unit-level contrast for the
+// sec-default end-to-end test (sec-default itself bypasses user hooks; it does
+// not deny a tool).
+
+const GUARD_ROOT = fileURLToPath(new URL('../../../fixtures/mods/guard/', import.meta.url))
+
+const bashCall = () =>
+  classicEvent('PreToolUse', {
+    tool_name: 'Bash',
+    tool_use_id: 'toolu_guard',
+    tool_input: { command: 'echo guarded' },
+  })
+
+test('a loaded deny-only guard mod denies one tool; unloaded, the same call continues', async (t) => {
+  const { host } = recorder()
+  const loaded = await loadMod({ root: GUARD_ROOT, entry: 'register.ts', host })
+  const { registrations } = modRegistrationsToKernel(loaded.registrations, {
+    plugin: 'guard',
+    entry: 'register.ts',
+    tier: 'user',
+  })
+  const denied = await runChain(bashCall(), registrations)
+  t.diagnostic(describeTrace(denied.trace).join('\n'))
+  assert.deepEqual(denied.decision, { kind: 'deny', reason: 'the guard mod does not allow Bash' })
+  assert.deepEqual(
+    denied.trace.map((entry) => [entry.plugin, entry.tier, entry.status, entry.decision]),
+    [['guard', 'user', 'ran', 'deny']],
+  )
+
+  const unloaded = await runChain(bashCall(), [])
+  assert.deepEqual(unloaded.decision, { kind: 'continue' })
+  assert.deepEqual(unloaded.trace, [])
+
+  // The same mod lets another tool through, so the deny is the tool, not the mod.
+  const read = classicEvent('PreToolUse', {
+    tool_name: 'Read',
+    tool_use_id: 'toolu_read',
+    tool_input: { file_path: '/tmp/x' },
+  })
+  const allowed = await runChain(read, registrations)
+  assert.deepEqual(allowed.decision, { kind: 'continue' })
+  assert.deepEqual(allowed.trace.map((entry) => entry.status), ['ran'])
 })
