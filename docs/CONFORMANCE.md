@@ -60,9 +60,12 @@ commit and diff. Classification is **not** stored here: fidelity classes
 ## Fixtures
 
 `fixtures/claude-*/`, one behavior per directory, with the golden under
-`.inventory/<tool>@<version>.json`. Current set: skills-only, flat commands,
-nested command (drift), root skill without a manifest, flat + nested agents
-(drift), hooks + MCP.
+`.inventory/<tool>@<version>.json`. The current matrix is `EXPECTED_ROWS` in
+`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`;
+`claude-hooks-fanout` is a real-turn behaviour probe outside it,
+`claude-output-styles` is hand-authored because the pin's inventory has no
+style line (D29), and `fixtures/codex-portable/` has its own hand-authored DSH
+golden.
 
 ## Commands
 
@@ -210,10 +213,14 @@ whitespace-only `CLAUDE_BIN` is treated as unset, so `CLAUDE_BIN= npm test` is
 the normal way to fall back to `PATH` rather than a typo to punish.
 
 `node scripts/fetch-claude.mjs` (or `npm run fetch:claude`) installs the pinned
-`@anthropic-ai/claude-code@2.1.322` into `.claude-code/2.1.322/` with
-`--ignore-scripts`, and prints the platform-native binary. The version lives
-only in `CLAUDE_CODE_PIN` (`packages/dsh-anyplugin-conformance/src/pin.ts`);
-the fetch, the CI guard and the tests all read it. `--verify <path>` checks an
+`@anthropic-ai/claude-code` at `CLAUDE_CODE_PIN` into `.claude-code/<version>/`
+with `--ignore-scripts`, and prints the platform-native binary. The pin is
+declared in `packages/dsh-anyplugin-conformance/src/pin.ts`; the fetch script
+and the tests import it, and the workflow's cache key hashes the file. Two
+other declarations carry the same
+version: `CLAUDE_CODE_PIN` in the dialect package (it may not depend on the
+rig) and `PIN` in `scripts/extract-hook-payloads.mjs` (for the provenance it
+writes), so a pin bump touches all three. `--verify <path>` checks an
 already-resolved binary against the pin without installing anything. The
 workflow caches `.claude-code/` keyed on `pin.ts` and
 `scripts/fetch-claude.mjs`, so a pin bump is one edit and one cold cache.
@@ -221,7 +228,7 @@ Probes still run under a throwaway `HOME` and `CLAUDE_CONFIG_DIR`, so the
 fetched client never reads a real installation.
 
 **Can CI hold this gate now?** Yes, for the inventory gate: the `verify` job
-fetches the pin and runs the same nine golden probes the laptop runs, and the
+fetches the pin and runs the same golden probes the laptop runs, and the
 upstream CLI's version is asserted before the suite. What CI still cannot hold
 is local by nature — the Desktop `DSH_INSTALL_DIR` path, the `asar` read path,
 and the behavior face (`claude plugin eval`, which costs money). Those remain
@@ -263,26 +270,15 @@ returns an inventory whose pin is `dsh@<version of the tree that booted>`.
 
 ### Coverage, not pass/fail
 
-`coverage.test.mjs` runs every fixture through both sides and pins the exact row
-set per fixture. Today (CI re-runs it against `0.2.2-rc.5` and `0.2.2-rc.2`):
-
-| Fixture | Declared | Matched | Missing | Refused |
-| --- | --- | --- | --- | --- |
-| `claude-skills-only` | 2 | 2 | 0 | 0 |
-| `claude-root-skill` | 1 | 1 | 0 | 0 |
-| `claude-command-nested` | 0 | 0 | 0 | 0 |
-| `claude-commands-flat` | 2 | 2 | 0 | 0 |
-| `claude-agents` | 1 | 0 | 1 | 0 |
-| `claude-hooks-mcp` | 2 | 2 | 0 | 0 |
-| `claude-mcp-http` | 1 | 1 | 0 | 0 |
-| `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 |
-| `claude-mcp-budget` | 1 | 0 | 0 | 1 |
-| **total** | **11** | **9** | **1** | **1** |
+`coverage.test.mjs` runs every fixture through both sides and owns the matrix:
+`EXPECTED_ROWS` pins the exact row set per fixture and the closing
+`assert.deepEqual(totals, …)` pins the totals. Read the table there, not here —
+this page does not keep a second copy. CI re-runs it against `0.2.2-rc.5` and
+`0.2.2-rc.2`.
 
 The Codex portable fixture has its own hand-authored golden (no offline
-`codex plugin details` oracle exists), so it is reported beside this table, not
-folded into it: `codex-portable` declares 3 components and matches 3 (one
-portable skill, one root `SKILL.md` compatibility skill, one MCP server). See
+`codex plugin details` oracle exists), so it is reported beside the Claude
+matrix, not folded into it: its rows are asserted in
 `packages/dsh-anyplugin-conformance/test/codex.test.mjs`.
 
 A test that only went green would tell you nothing about the missing

@@ -136,8 +136,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   waiting on the tool-schema seam (D17).
 - S10 agents (D26) — one tool per `<plugin>:<agent>`, description byte for
   byte, body as the first block of the child user message; `fixtures/claude-agents`
-  matches on a denominator of 11 (the nested planner is not loaded at the pin),
-  and model/tools/limits stay `planned` with reasons.
+  matches its row in `coverage.test.mjs` (the nested planner is not loaded at
+  the pin), and model/tools/limits stay `planned` with reasons.
 - S8: hooks ride the tool waterfalls (`tools/pre-execute` deny →
   `Error: <reason>`, `tools/post-execute` value + `additionalContexts`); the
   guard list is denial-only and is not used (D19).
@@ -152,8 +152,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `agent/disposed`, `subagent/start` and `subagent/end` now mount
   SessionStart, Stop, SessionEnd, SubagentStart and SubagentStop through the
   same matcher/verdict path as the tool hooks; a real headless turn plus one
-  delegated child made every handler write its line, so all five rows are
-  `match` on a denominator of 16 (oracle recipe in ARCHITECTURE §10 S9).
+  delegated child made every handler write its line, so every row is `match`
+  in `coverage.test.mjs` (oracle recipe in ARCHITECTURE §10 S9).
 - Behavior oracle: `claude plugin eval` runs upstream suites and yields
   per-run traces; the skill envelope and its missing argument substitution were
   found there (D16).
@@ -184,7 +184,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   while its sibling registers (`claude-mcp-tool-budget`). The rig counts a
   deliberate refusal as `refused`, not `missing` (D11).
 - MCP: stdio and streamable-http servers connect under the materializer and
-  expose `mcp__plugin_<plugin>_<server>__<tool>` byte for byte (11 declared / 8 matched / 2 missing / 1 refused).
+  expose `mcp__plugin_<plugin>_<server>__<tool>` byte for byte; the row set and
+  totals are asserted in `coverage.test.mjs`, not restated here.
   The HTTP fixture carries `${ANYPLUGIN_MCP_URL}`, so the materializer resolves
   the URL from the environment at attach time instead of pinning a port.
 - Skills: skills-dir, root `SKILL.md`, and the command model face materialize

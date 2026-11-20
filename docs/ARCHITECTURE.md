@@ -1,6 +1,7 @@
 # dsh-anyplugin — Architecture
 
-> Status: baseline (decisions D1–D3 ratified by the owner, see §0.4).
+> Status: baseline (decisions D1–D36 ratified by the owner — the log is
+> `docs/DECISIONS.md`; §0.4 keeps the three that frame the design).
 > Scope: make DSH able to install and faithfully run plugins written for other
 > agents — Claude Code first, then Codex, then Cursor and others.
 
@@ -43,7 +44,10 @@ be `planned` without a roadmap entry; a node may never silently change class.
 Corollary: **100% is a claim about a pinned version**, not a permanent state.
 CI pins the source-agent version and re-runs conformance on every bump.
 
-### 0.4 Ratified decisions
+### 0.4 The framing decisions
+
+D1–D3 shape every section below; the rest of the ratified log (D4–D36) is
+`docs/DECISIONS.md`.
 
 - **D1 — Emission is pure data.** No code generation, no `eval`, no generated
   TS packages. A foreign plugin compiles to a declarative `EntryTree` patch.
@@ -107,22 +111,43 @@ foreign plugin sources
 mapping code. This is the architectural reason the project can grow from
 Claude Code to Codex to Cursor without rewrite; §9 makes it an acceptance test.
 
-### Package layout (one bundle)
+### Package layout (as built)
+
+This is the as-built set, not a target: exactly the packages
+`scripts/check-architecture.mjs` accepts. Anything the original design named but
+that does not exist yet is under **Not yet built**, not in this table.
 
 | Package | Role |
 | --- | --- |
-| `dsh-anyplugin` | host controller: reconcile loop, `anyplugin` command family, API for UI |
 | `dsh-anyplugin-ir` | IR schema, normalizer, fidelity algebra, validators |
-| `dsh-anyplugin-mod-scan` | static mod scanner: literal `on` / `$` sites, capability list, `dynamic` for what it can see but cannot prove |
-| `dsh-anyplugin-dialect-claude-code` | `.claude-plugin/` → IR |
-| `dsh-anyplugin-dialect-codex` | portable `plugin.json` / `.codex-plugin/` → IR |
-| `dsh-anyplugin-dialect-portable` | `agent-plugins.org` 1.0 → IR (shared by Codex and future sources) |
-| `dsh-anyplugin-materialize-{skill,command,hook,mcp,agent,bin,theme,output-style,monitor,workflow}` | IR → one seam each |
+| `dsh-anyplugin-intercept` | the one interception kernel: event points, matcher grammar, decision protocol, tier ordering, budgets; consumed by classic hooks and, eventually, the mod host |
+| `dsh-anyplugin-hook-runner` | runs a Claude-style command hook: payload in, verdict out; no host knowledge |
+| `dsh-anyplugin-mod-scan` | static, non-executing scan of a mod: literal `on('event')` / `$.ns.method` sites, plus what the scanner cannot prove; feeds the capability list |
+| `dsh-anyplugin-mod-host` | loads one authored mod in a per-mod `node:vm` realm: resolver, classic-pragma `.tsx` transform, in-memory type strip, `on()` and a per-handler `$` (D30, D34) |
+| `dsh-anyplugin-skill-template` | Claude skill argument substitution as a pure function, waiting on the tool-schema seam (D17) |
+| `dsh-anyplugin-command-template` | Claude command expansion (`$ARGUMENTS`, `$1..$9`, the trailer) as a pure function |
 | `dsh-anyplugin-trust` | exec classify/authorize/gate + the canonical `grants.yml` store (D25) |
-| `dsh-anyplugin-emit` | IR → `EntryTree` patch |
-| `dsh-anyplugin-install` | lock + scope replay → loader entries; idempotent reconcile |
-| `dsh-anyplugin-ui` | client plugin: install list, fidelity report, trust grants |
+| `dsh-anyplugin-emit` | IR → `EntryTree` patch; emission is data |
+| `dsh-anyplugin-install` | install lock + scope replay → loader entries; idempotent reconcile |
+| `dsh-anyplugin-dialect-claude-code` | `.claude-plugin/` → IR, at a pinned host version |
+| `dsh-anyplugin-dialect-codex` | Agent Plugins 1.0.0 / `.codex-plugin/` → IR (today's portable reader) |
+| `dsh-anyplugin-materialize-skill` | IR → the skill registry |
+| `dsh-anyplugin-materialize-command` | IR → the command registry under the exact colon names; reports each rejection |
+| `dsh-anyplugin-materialize-hook` | IR → the tool and lifecycle waterfalls, through the one kernel (D19) |
+| `dsh-anyplugin-materialize-mcp` | IR → the MCP client, with Claude Code's exact tool names (D12) |
+| `dsh-anyplugin-materialize-agents` | one model-facing tool per agent file; the child is started through `ctx.subagents` (S10) |
 | `dsh-anyplugin-conformance` | fixtures + record/replay diff (first-class, not an afterthought) |
+
+**Not yet built.** The original map also named `dsh-anyplugin-ui` (client half:
+install list, fidelity report, trust grants), `dsh-anyplugin-dialect-portable`
+(the shared `agent-plugins.org` reader; `dsh-anyplugin-dialect-codex` reads that
+shape itself today), and
+`dsh-anyplugin-materialize-{bin,theme,output-style,monitor,workflow}`. Themes
+and output styles are carried as `planned` IR rows but have no materializer
+(S11); the rest are roadmap items. The host-controller surface the old row
+called `dsh-anyplugin` — the `anyplugin` command family and an API for the UI —
+is not built either: the root package is the private workspace root, and
+reconcile lives in `dsh-anyplugin-install`.
 
 ## 3. AgentPlugin IR
 
@@ -638,8 +663,9 @@ plus a 5 s grace window, and the chain deadline is exactly the sum of those
 budgets, so a slow handler is cut off at its own budget instead of truncating a
 healthy one or stretching the turn past the declared timeouts.
 
-**Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds 32
-payloads extracted from the pinned docs plus 3 captures from a live 2.1.322.
+**Calibrated against payloads, not prose (D15).** `fixtures/hooks/` holds the
+doc-extracted payloads plus the live captures from a 2.1.322 turn; the set and
+its provenance are `fixtures/hooks/PROVENANCE.md` (`payloads/` and `observed/`).
 Two corrections came out of running them through the kernel:
 
 - The event vocabulary is **32 events, not the 10 we had guessed**. The table is
@@ -978,12 +1004,12 @@ this order: `session.usage` (there is no session yet, so the view is empty and
 `next(e)`. A reload with a live root supplies `startedAt` from that session's
 header, so the authored clock fallback is skipped: three calls,
 `session.usage → command.register → session.messages`, against the live view.
-The other 19 scanned sites are declared capabilities that load does not reach —
+The other scanned sites are declared capabilities that load does not reach —
 `ui.render` is where `ui.*` and the `.tsx` descriptors would be used, and
 rendering remains `planned`. The conformance test asserts both the static
-23-row ledger and the four-call dynamic sequence against the fetched graph, and
-the synthetic fixture asserts the ordered `ran` / `refused:<code>` ledger for
-all 23.
+ledger and the ordered dynamic sequence against the fetched graph, and the
+synthetic fixture asserts the ordered `ran` / `refused:<code>` ledger for
+every row.
 
 ## 8. Seam capability matrix (P4)
 
@@ -1177,15 +1203,16 @@ claude        PATH lookup
 `scripts/fetch-claude.mjs` installs the pinned npm package into
 `.claude-code/<version>/` and prints the platform-native binary; the tests and
 the workflow guard assert `claude --version` against `CLAUDE_CODE_PIN`. With
-neither source a local run skips with a reason; under CI that is an error. The
-same nine goldens are therefore re-probed by CI, so the inventory gate does not
+neither source a local run skips with a reason; under CI that is an error. Every
+golden is therefore re-probed by CI, so the inventory gate does not
 depend on the laptop.
 
 What the rig already reports, at the pin it was captured on, is in §10.3.
 
 ### 10.3 What the first pin says (claude-code 2.1.322)
 
-Six fixtures, captured and re-verified on every `npm test`. Two observations
+Every fixture with a golden is re-probed and re-verified on every `npm test`.
+Two observations
 contradict the prose documentation and are now the reason surface mapping is
 pin-gated (D8):
 
@@ -1244,8 +1271,7 @@ there is no offline `codex plugin details` to capture from — so it is excluded
 from the upstream-observed totals below and carries that provenance in its
 `notes`. Portable 1.0.0 discovers skills only under `skills/`; the root
 `SKILL.md` this dialect still reads is a ticket/Claude-layout compatibility
-extra, counted as compatibility (the fixture is 2 portable components + 1
-compatibility skill), not as portable evidence.
+extra, not portable evidence.
 
 The loader anchors entry-name resolution at its `baseUrl`: the `dsh` package in
 a Desktop tree, the install root in a fetched tree (whose `package.json` is
@@ -1271,48 +1297,48 @@ Two traps that cost real time and are now load-bearing:
   the skill after the entry is removed — invisible in a green test, visible in
   a reload.
 
-Measured coverage across the eleven fixtures (declared components from the
-goldens, matched by the DSH oracle). CI measures the same rows against both
-`0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there. Nine
-fixtures boot the loader with `probeWithDsh`. Two have no registry face at all:
+Coverage is owned by `coverage.test.mjs`: `EXPECTED_ROWS` pins the exact row set
+per fixture and the closing `assert.deepEqual(totals, …)` pins the total the
+project reports. CI measures the same rows against both `0.2.2-rc.5` and
+`0.2.2-rc.2`; a skipped row is a failed job there. Most fixtures boot the loader
+with `probeWithDsh`. Two have no registry face at all:
 `claude-hooks-lifecycle` boots a real turn graph with `probeLifecycleWithDsh`,
 and `claude-hooks-seams` boots the full approval/filesystem/settings/compaction
 stack from `test/lifecycle.test.mjs` (§10 S9), because their rows exist only as
 lines the handlers wrote. The turn graph is part of the fetched
 union (`HARNESS_PACKAGES` in `scripts/fetch-harness.mjs`), so one fetch is
-enough before `verify`; CI fetches each pin once and installs nothing else:
+enough before `verify`; CI fetches each pin once and installs nothing else.
 
-| Fixture | Declared | Matched | Missing | Refused | What the gap needs |
-| --- | --- | --- | --- | --- | --- |
-| `claude-skills-only` | 2 | 2 | 0 | 0 | — |
-| `claude-root-skill` | 1 | 1 | 0 | 0 | — |
-| `claude-command-nested` | 0 | 0 | 0 | 0 | — (host loads nothing; we emit nothing) |
-| `claude-commands-flat` | 2 | 2 | 0 | 0 | model face done; human face needs the two seams in D10 |
-| `claude-agents` | 1 | 1 | 0 | 0 | one tool per agent; description byte for byte, body as the first user block (S10; invocation `equivalent`) |
-| `claude-hooks-mcp` | 2 | 2 | 0 | 0 | hook mounted on `tools/post-execute` and observed on a real call (D20) |
-| `claude-hooks-lifecycle` | 5 | 5 | 0 | 0 | five handlers ran on one real headless turn (root start/stop/end + one child); SessionStart/Stop/SessionEnd root-only, SubagentStart/Stop child-only (§10 S9) |
-| `claude-hooks-seams` | 9 | 9 | 0 | 0 | the four listener seams and the five notification records ran on one real turn: one prompt line per prompt (not per step), one PermissionRequest (matcher), one failure (a denied call is excluded), one FileChanged (the read is filtered out), compaction start before end, one denial, one cwd change, settings revision 0 then 1 (§10 S9) |
-| `claude-mcp-http` | 1 | 1 | 0 | 0 | streamable-http arm; the server is started by the test (D12) |
-| `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
-| `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
-| **total** | **25** | **24** | **0** | **1** | |
+`EXPECTED_ROWS` is the authoritative row list. The table below is not a
+scoreboard: it explains what the non-obvious rows require, and deliberately
+carries none of the numbers the test asserts.
 
-The Codex fixture is reported separately because its golden is a declaration,
-not an upstream observation:
+| Fixture | What its row needs |
+| --- | --- |
+| `claude-skills-only` | — |
+| `claude-root-skill` | — |
+| `claude-command-nested` | — (host loads nothing; we emit nothing) |
+| `claude-commands-flat` | model face done; human face needs the two seams in D10 |
+| `claude-agents` | one tool per agent; description byte for byte, body as the first user block (S10; invocation `equivalent`) |
+| `claude-hooks-mcp` | hook mounted on `tools/post-execute` and observed on a real call (D20) |
+| `claude-hooks-lifecycle` | the lifecycle handlers ran on one real headless turn (root start/stop/end + one child); SessionStart/Stop/SessionEnd root-only, SubagentStart/Stop child-only (§10 S9) |
+| `claude-hooks-seams` | the listener seams and notification records ran on one real turn: one prompt line per prompt (not per step), one PermissionRequest (matcher), one failure (a denied call is excluded), one FileChanged (the read is filtered out), compaction start before end, one denial, one cwd change, settings revision 0 then 1 (§10 S9) |
+| `claude-mcp-http` | streamable-http arm; the server is started by the test (D12) |
+| `claude-mcp-tool-budget` | one fitting tool registers, one over-budget tool is skipped |
+| `claude-mcp-budget` | prefix alone is 66 characters; refused at plan time (D11) |
 
-| Fixture | Declared | Matched | Missing | Refused | What the gap needs |
-| --- | --- | --- | --- | --- | --- |
-| `codex-portable` | 3 | 3 | 0 | 0 | one portable skill, one root `SKILL.md` compatibility skill, and the `mcp__probe__` server; hooks are exec-gated separately (D25) |
+The Codex fixture is not in that matrix because its golden is a declaration,
+not an upstream observation; its rows are asserted in
+`packages/dsh-anyplugin-conformance/test/codex.test.mjs`. Adding them to the
+Claude totals would make a hand-authored surface look observed.
 
-Adding that row to the Claude totals would make a hand-authored surface look
-observed, so the total above stays Claude-only.
-
-`claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
+`claude-commands-flat` moved on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,
 and the `/plugin:name args` typing surface — so its IR node carries
 `faces.model` / `faces.human`; the count moves on the model face, while the
-component's overall fidelity stays `planned` (D10). Reporting 6/8 without that
-distinction would claim a two-component win that a user still cannot type.
+component's overall fidelity stays `planned` (D10). Reporting the model-face
+matches without that distinction would claim a win that a user still cannot
+type.
 
 **Refused** is a third outcome, not a softer `missing`. It means we read a
 component, judged it unrepresentable, and said so with a reason — the
@@ -1785,13 +1811,12 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   the two sides cannot drift together. A tool cannot put the body in its
   description (we forbid it), cannot set the child's fresh system prompt,
   cannot filter the child's tools or cap its turns per activation, and cannot
-  resolve a Claude model alias. `fixtures/claude-agents` therefore moves to
-  `agents:reviewer:match`; the truthful totals became **11 declared / 10
-  matched / 0 missing / 1 refused** at this ticket — the goldens declare 11
-  rows in total, and the nested `agents/deep/planner.md` is not loaded at the
-  pin, so it is not a declared row, and the issue text's "12/10/1/1" counts a
-  row the host does not have. (The S9 lifecycle and seam wiring that follows
-  moves the totals to 25/24/0/1; §10.3.)
+  resolve a Claude model alias. `fixtures/claude-agents` therefore matches
+  `agents:reviewer:match` in `coverage.test.mjs`. The goldens declare the rows,
+  and the nested `agents/deep/planner.md` is not loaded at the pin, so it is not
+  a declared row — the matrix, not an issue's arithmetic, is the scoreboard.
+  (The S9 lifecycle and seam wiring that follows is what moves the totals;
+  §10.3.)
 
   Reproduce:
 
@@ -1929,8 +1954,8 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   `.tsx` or JSX support; the element runtime; `$.ui` (its call site is
   `register.ts:1008`, outside the fired hook); hooks longer than
   `session.start`; containment (timers, promises, memory, permissions). (The
-  host skeleton landed separately in #33 — §7.7 — but `.tsx` remains the
-  refusal, so "load a real mod" is still gated on the JSX decision.)
+  host skeleton landed separately in #33 — §7.7 — and S14/D34 later removed the
+  `.tsx` refusal, so "load a real mod" is no longer gated on the JSX decision.)
 
   **Load.** All 579 `.ts` files strip with 0 failures; the stripped entry stays
   33,891 bytes / 1342 lines and `on('session.start')` stays line 938. Stock ESM
