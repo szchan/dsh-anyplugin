@@ -19,8 +19,10 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
       Apply a carried `outputStyles:<name>` body at agent start. Activation
       waits on the D10 command-alias decision for `/<plugin>:<name>`, a call on
       at-start provenance (`agent/created` carries the agent but no plugin id),
-      the `keep-coding-instructions` composition rule, and an oracle that can
-      see styles (the pinned CLI inventory does not list them).
+      the composition rules (`keep-coding-instructions`; `force-for-plugin` is
+      session-wide, so applying a style must stay an explicit activation
+      choice), and an oracle that can see styles (the pinned CLI inventory does
+      not list them).
 
 ## Upstream proposals (union-only seams, T2)
 

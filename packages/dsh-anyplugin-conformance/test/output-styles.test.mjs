@@ -1,7 +1,7 @@
 // Output styles are F1: the body is prompt text the model reads at agent start.
 // S11 proved the pinned harness has a per-agent prompt seam (`invocation.agent` /
 // `setup(agentCtx)` / `agent/created` / `dsh-persona` / an agent preset), but the
-// carry still waits on activation (D10's command alias) and three fidelity gaps.
+// carry still waits on activation (D10's command alias) and the other fidelity gaps.
 // The dialect therefore carries each body byte for byte and still annotates the
 // row `planned`, with a reason that names the reachable seam and every gap. This
 // test is the annotation contract; the fresh-fixture body hash is in
@@ -59,6 +59,7 @@ test('an output style is planned and names the reachable seam and its gaps', (t)
   assert.match(style.annotation.reason, /command-alias/, 'the D10 activation gap is named')
   assert.match(style.annotation.reason, /plugin details/, 'the oracle gap is named')
   assert.match(style.annotation.reason, /keep-coding-instructions/, 'the composition gap is named')
+  assert.match(style.annotation.reason, /force-for-plugin/, 'the session-wide activation rule is named')
   assert.match(style.annotation.reason, /terse bullet points/, 'the style description is recorded, not dropped')
   assert.equal(
     ir.unsupported.some((row) => row.surface === 'outputStyles'),
@@ -93,7 +94,8 @@ test('a manifest outputStyles declaration is planned explicitly', (t) => {
   assert.equal(manifest.sourcePath, '.claude-plugin/plugin.json')
   assert.equal(manifest.annotation.fidelity, 'planned')
   assert.match(manifest.annotation.reason, /custom output-style directories/)
-  assert.match(manifest.annotation.reason, /invocation\.agent\.ctx/)
+  assert.match(manifest.annotation.reason, /flat `output-styles\/\*\.md` surface/)
+  assert.match(manifest.annotation.reason, /separate decision/)
 })
 
 test('a plugin without output-styles declares no style rows', (t) => {
@@ -117,5 +119,5 @@ test('a nested style file is visible as planned, not silently dropped', (t) => {
   assert.equal(style.annotation.fidelity, 'planned')
   assert.equal(ir.outputStyles.length, 0, 'outside the flat surface means no body claim')
   assert.match(style.annotation.reason, /outside the flat/)
-  assert.match(style.annotation.reason, /invocation\.agent\.ctx/)
+  assert.match(style.annotation.reason, /separate decision/)
 })

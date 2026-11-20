@@ -1141,8 +1141,8 @@ references before removing or updating anything.
   `claude --plugin-dir <dir> plugin details <name>` under a throwaway `$HOME`
   and commits the result as a golden per pin. The DSH half (§10.4) materializes
   the emitted entry into the *pinned* harness and reads the same inventory
-  back. `npm test` re-probes both sides; `coverage.test.mjs` is the burn-down
-  table: 16 declared rows, 15 matched, 0 missing, 1 refused. Both halves also
+  back. `npm test` re-probes both sides; `coverage.test.mjs` owns the burn-down
+  row totals and is the only place that asserts them. Both halves also
   run in CI, with the pinned Claude CLI fetched from npm (D24).
   This landed *before* the translator could lie, because it is the only honest
   scoreboard.
@@ -1843,7 +1843,7 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   request after `compaction/end`: compaction rewrites history, not the section
   layer.
 
-  **4. What this does not settle.** Four gaps remain before a carry:
+  **4. What this does not settle.** Four gaps remain before activation:
   (i) **provenance** — `agent/created` carries the agent but no plugin id, so an
   at-start contribution needs an id filter or a plugin-created agent;
   (ii) **activation name** — `/<plugin>:<name>` needs D10's additive

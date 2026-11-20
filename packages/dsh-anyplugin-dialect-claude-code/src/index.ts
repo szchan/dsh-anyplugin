@@ -70,8 +70,11 @@ function parseScalar(raw: string): unknown {
  * raw string rather than being silently dropped.
  */
 export function parseFrontmatter(text: string): Frontmatter {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
-  if (!match) return { data: {}, body: text, closed: true }
+  // A byte-order mark is not part of the document, but it does defeat `^---`.
+  // Strip it before matching so a BOM cannot turn the whole file into the body.
+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n)?/.exec(source)
+  if (!match) return { data: {}, body: source, closed: true }
   const data: Record<string, unknown> = {}
   const lines = match[1].split(/\r?\n/)
   for (let i = 0; i < lines.length; i++) {
@@ -81,18 +84,47 @@ export function parseFrontmatter(text: string): Frontmatter {
     if (!pair) continue
     const key = pair[1]
     const rest = pair[2]
-    if (rest === '|' || rest === '>' || rest === '|-') {
+    if (rest === '|' || rest === '>' || rest === '|-' || rest === '>-') {
       const collected: string[] = []
       while (i + 1 < lines.length && (/^\s+/.test(lines[i + 1]) || lines[i + 1] === '')) {
-        collected.push(lines[i + 1].replace(/^\s{2}/, ''))
+        collected.push(lines[i + 1])
         i++
       }
-      data[key] = collected.join('\n').replace(/\n+$/, '')
+      const block = dedentBlock(collected)
+      const value = rest.startsWith('>')
+        ? foldBlock(block)
+        : block.join('\n').replace(/\n+$/, '')
+      data[key] = rest.endsWith('-') ? value.replace(/\n+$/, '') : value
       continue
     }
-    data[key] = parseScalar(rest)
+    // A plain scalar continues on the following indented lines. Claude's
+    // frontmatter is full of wrapped descriptions; dropping the continuation
+    // would silently shorten the value.
+    const parts = [rest.trim()]
+    while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) {
+      parts.push(lines[++i].trim())
+    }
+    data[key] = parseScalar(parts.filter(Boolean).join(' '))
   }
-  return { data, body: text.slice(match[0].length), closed: true }
+  return { data, body: source.slice(match[0].length), closed: true }
+}
+
+/** Remove the block scalar's common indentation, keeping deeper nesting. */
+function dedentBlock(lines: string[]): string[] {
+  const indents = lines
+    .filter((line) => line.trim() !== '')
+    .map((line) => /^[ \t]*/.exec(line)?.[0].length ?? 0)
+  const indent = indents.length > 0 ? Math.min(...indents) : 0
+  return lines.map((line) => line.slice(Math.min(indent, /^[ \t]*/.exec(line)?.[0].length ?? 0)))
+}
+
+/** YAML folded style: single line breaks become spaces, a blank line one newline. */
+function foldBlock(lines: string[]): string {
+  return lines
+    .join('\n')
+    .replace(/([^\n])\n(?=[^\n])/g, '$1 ')
+    .replace(/\n{2,}/g, (breaks) => '\n'.repeat(breaks.length - 1))
+    .replace(/\n+$/, '')
 }
 
 function stringField(data: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -915,7 +947,7 @@ const OUTPUT_STYLE_SEAM =
   'Applying output-styles waits on four gaps: (i) an at-start contribution needs plugin provenance — `agent/created` carries the agent but no plugin id — or a plugin-created agent; ' +
   '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam (D10), because a command name cannot contain `:` until that lands (an alias would be new additive work, not an existing equivalent); ' +
   '(iii) `claude plugin details` does not inventory output styles at 2.1.322, so the inventory oracle cannot anchor the row; proving activation needs a fixture that compares a dumped composed prompt; ' +
-  '(iv) `keep-coding-instructions: true` keeps Claude\'s built-in coding instructions, which a `complete` section cannot express because it replaces the whole prompt.'
+  '(iv) `keep-coding-instructions: true` keeps Claude\'s built-in coding instructions, which a `complete` section cannot express because it replaces the whole prompt; `force-for-plugin` applies a style session-wide while the plugin is enabled, so activation must be an explicit user choice, never an injected default.'
 
 function outputStyleReason(name: string, description: string | undefined): string {
   const label = description === undefined
@@ -947,7 +979,7 @@ function readOutputStyles(root: string): { styles: IrOutputStyle[]; pending: IrU
         sourcePath: file.rel,
         annotation: {
           fidelity: 'planned',
-          reason: `A nested output-style file is outside the flat \`output-styles/*.md\` surface this dialect reads; it is planned with that surface. ${OUTPUT_STYLE_SEAM}`,
+          reason: 'A nested output-style file is outside the flat `output-styles/*.md` surface this dialect reads; reading nested directories is a separate decision, not part of the flat-file carry.',
         },
       })
       continue
@@ -1002,7 +1034,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
       sourcePath: '.claude-plugin/plugin.json',
       annotation: {
         fidelity: 'planned',
-        reason: `The manifest declares custom output-style directories; reading them is planned with the output-styles carry. ${OUTPUT_STYLE_SEAM}`,
+        reason: 'The manifest declares custom output-style directories; the dialect reads only the flat `output-styles/*.md` surface, so honoring this declaration is a separate decision, not part of the flat-file carry.',
       },
     })
   }
