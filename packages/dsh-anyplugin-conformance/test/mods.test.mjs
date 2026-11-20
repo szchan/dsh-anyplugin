@@ -583,6 +583,11 @@ const DIFF_LEDGER = [
 // session.usage, falls back to clock.now, registers /diff, then opens the
 // restore view with the (empty) message list. None of the other 19 sites is
 // reached at load; they remain declared capabilities, not load-time calls.
+const DIFF_SESSION_START_RELOAD = [
+  'session.usage:ran',
+  'command.register:ran',
+  'session.messages:ran',
+]
 const DIFF_SESSION_START = [
   'session.usage:ran',
   'clock.now:ran',
@@ -788,6 +793,41 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     bridge.dispose()
     assert.equal(registered.size, 0, 'dispose removes the load-lifetime registration')
     assert.throws(() => bridge.dollar(), (error) => error.code === 'ERR_MOD_HOST_DISPOSED')
+
+    // A reload has a live root: the session view now carries header.createdAt,
+    // so session.usage() is observed and the clock.now fallback does not run.
+    const reloaded = createModBridge({
+      plugin: 'diff/register.ts',
+      dataDir,
+      commands,
+      session: () => ({
+        id: 'diff-ledger-session',
+        cwd: root,
+        messages: [],
+        usage: { startedAt: 1_700_000_000_000 },
+      }),
+      env: process.env,
+      warn: () => {},
+    })
+    const reloadCalls = []
+    const second = await loadMod({
+      root,
+      entry: diffFixture.entry,
+      host: { dollar: () => recordingDollar(reloaded, reloadCalls) },
+    })
+    const secondStart = second.registrations.find((registration) => registration.event === 'session.start')
+    const secondResult = await secondStart.handler(
+      { cwd: root },
+      async (event) => ({ decision: 'continue', event }),
+    )
+    assert.equal(secondResult.decision, 'continue', 'a reloaded session.start completes')
+    assert.deepEqual(
+      reloadCalls,
+      DIFF_SESSION_START_RELOAD,
+      'a reload reads startedAt from the live session and skips clock.now',
+    )
+    second.dispose()
+    reloaded.dispose()
   } finally {
     bridge.dispose()
     rmSync(dataDir, { recursive: true, force: true })
