@@ -19,6 +19,7 @@ import type {
   IrAgentFaces,
   IrHook,
   IrMcpServer,
+  IrOutputStyle,
   IrPin,
   IrSkill,
   IrUnmaterialized,
@@ -911,34 +912,36 @@ function readMcp(root: string, plugin: string): {
  */
 const OUTPUT_STYLE_SEAM =
   'DSH 0.2.2-rc.5 can carry it: a command handler receives `invocation.agent`, and `invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces that agent\'s system prompt byte for byte; `createAgent(..., { setup })`, an `agent/created` listener, `dsh-persona`, and an agent preset reach the same scoped seam (S11). ' +
-  'Carrying output-styles waits on four gaps: (i) an at-start contribution needs plugin provenance — `agent/created` carries the agent but no plugin id — or a plugin-created agent; ' +
-  '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam, because a command name cannot contain `:` until that lands (an alias would be new additive work, not an existing equivalent); ' +
-  '(iii) `claude plugin details` does not inventory output styles at 2.1.322, so the inventory oracle cannot anchor the row and a fixture must compare a dumped composed prompt; ' +
+  'Applying output-styles waits on four gaps: (i) an at-start contribution needs plugin provenance — `agent/created` carries the agent but no plugin id — or a plugin-created agent; ' +
+  '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam (D10), because a command name cannot contain `:` until that lands (an alias would be new additive work, not an existing equivalent); ' +
+  '(iii) `claude plugin details` does not inventory output styles at 2.1.322, so the inventory oracle cannot anchor the row; proving activation needs a fixture that compares a dumped composed prompt; ' +
   '(iv) `keep-coding-instructions: true` keeps Claude\'s built-in coding instructions, which a `complete` section cannot express because it replaces the whole prompt.'
 
 function outputStyleReason(name: string, description: string | undefined): string {
   const label = description === undefined
     ? `Output style ${JSON.stringify(name)}`
     : `Output style ${JSON.stringify(name)} (${JSON.stringify(description)})`
-  return `${label} is prompt text applied at agent start; it is planned, not carried. ${OUTPUT_STYLE_SEAM}`
+  return `${label} is prompt text applied at agent start; its body is carried byte for byte, but applying it is planned. ${OUTPUT_STYLE_SEAM}`
 }
 
 /**
  * Claude's `output-styles/*.md` is F1: the body is the prompt the model reads at
- * agent start. The files are read for their declared identity so a report can
- * name each style individually instead of hiding the directory behind one row;
- * every row is `planned` (not `unsupported`): S11 proves a per-agent section is
- * reachable, and the remaining work is activation plus the four gaps named in
- * the reason. Reading the frontmatter is not carrying it.
+ * agent start. A flat file is carried as an `IrOutputStyle` — identity from the
+ * frontmatter `name` (falling back to the file stem, as the host does), the
+ * description for the row, and the body byte for byte. The row stays `planned`
+ * because carrying the bytes is not applying them: activation waits on the four
+ * gaps in the reason. A nested file is outside the flat surface and stays in
+ * `pending`; so does a manifest-declared directory, which is not read at all.
  */
-function readOutputStyles(root: string): IrUnmaterialized[] {
+function readOutputStyles(root: string): { styles: IrOutputStyle[]; pending: IrUnmaterialized[] } {
   const dir = join(root, 'output-styles')
-  if (!existsSync(dir)) return []
-  const rows: IrUnmaterialized[] = []
+  if (!existsSync(dir)) return { styles: [], pending: [] }
+  const styles: IrOutputStyle[] = []
+  const pending: IrUnmaterialized[] = []
   for (const file of markdownFiles(dir, root)) {
     const fallback = basename(file.abs).replace(/\.md$/, '')
     if (file.depth !== 1) {
-      rows.push({
+      pending.push({
         surface: 'outputStyles',
         name: fallback,
         sourcePath: file.rel,
@@ -952,14 +955,16 @@ function readOutputStyles(root: string): IrUnmaterialized[] {
     const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
     const name = stringField(parsed.data, 'name') ?? fallback
     const description = stringField(parsed.data, 'description')
-    rows.push({
+    styles.push({
       surface: 'outputStyles',
       name,
+      ...(description === undefined ? {} : { description }),
+      body: parsed.body,
       sourcePath: file.rel,
       annotation: { fidelity: 'planned', reason: outputStyleReason(name, description) },
     })
   }
-  return rows
+  return { styles, pending }
 }
 
 export function readClaudePlugin(root: string, options: ReadOptions = {}): ClaudePluginIr {
@@ -970,8 +975,9 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName)
   const { hooks, pending: hookPending } = readHooks(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
+  const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
 
-  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending, ...readOutputStyles(root)]
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending, ...stylePending]
   const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
@@ -1015,6 +1021,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
     agents,
     hooks,
     mcpServers: servers,
+    outputStyles,
     pending,
     unsupported,
   }

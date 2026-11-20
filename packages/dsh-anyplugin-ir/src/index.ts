@@ -176,6 +176,22 @@ export interface IrUnmaterialized {
   annotation: Annotation
 }
 
+/**
+ * A Claude output style: prompt text the host applies at agent start (F1).
+ *
+ * The body is carried byte for byte even though activation is `planned`. That
+ * is the point of the row: a later materializer must not have to re-read and
+ * re-serialize prompt text, and a test can hash the exact bytes the dialect
+ * read (`output-styles-carry.test.mjs`). The row keeps the
+ * `IrUnmaterialized` shape so the report names it like every other surface.
+ */
+export interface IrOutputStyle extends IrUnmaterialized {
+  /** `description` from the frontmatter, when present. */
+  description?: string
+  /** The body exactly as authored, with the frontmatter removed. Never trimmed. */
+  body: string
+}
+
 export interface IrPin {
   tool: string
   version: string
@@ -197,6 +213,15 @@ export interface ClaudePluginIr {
   agents: IrAgent[]
   hooks: IrHook[]
   mcpServers: IrMcpServer[]
+  /**
+   * `output-styles/*.md` rows. The body is carried, but nothing is emitted:
+   * activation waits on the D10 alias, at-start provenance, the
+   * `keep-coding-instructions` composition rule, and an oracle that can see
+   * styles (D29). Optional because the portable Codex format has no
+   * output-style surface, and an IR produced before this field existed is
+   * still readable.
+   */
+  outputStyles?: IrOutputStyle[]
   /** Recognized, not materialized yet — every one annotated `planned`. */
   pending: IrUnmaterialized[]
   /** Recognized, cannot be materialized — every one annotated `unsupported`. */
@@ -312,6 +337,16 @@ export function validateIr(ir: ClaudePluginIr): string[] {
     if (server.transport === 'stdio' && !server.command?.trim()) problems.push(`${where}: stdio server needs a command`)
     if (server.transport === 'http' && !server.url?.trim()) problems.push(`${where}: http server needs a url`)
   }
+  for (const style of ir.outputStyles ?? []) {
+    const where = `outputStyle ${JSON.stringify(style.name)}`
+    if (style.surface !== 'outputStyles') problems.push(`${where}: surface must be "outputStyles"`)
+    if (!style.name?.trim()) problems.push(`${where}: empty name`)
+    // A planned row still promises exact bytes; the annotation says nothing is
+    // applied, not that the carried body may drift.
+    if (typeof style.body !== 'string') problems.push(`${where}: body must be a string`)
+    if (style.annotation?.fidelity !== 'planned') problems.push(`${where}: must be planned`)
+    problems.push(...annotationProblems(where, style.annotation))
+  }
   for (const item of ir.pending ?? []) {
     const where = `pending ${item.surface}/${JSON.stringify(item.name)}`
     if (item.annotation?.fidelity !== 'planned') problems.push(`${where}: pending nodes must be planned`)
@@ -335,6 +370,7 @@ export function summarizeIr(ir: ClaudePluginIr): FidelityReport {
   for (const agent of ir.agents) push('agents', agent.name, agent.annotation)
   for (const hook of ir.hooks) push('hooks', `${hook.event}#${hook.index}`, hook.annotation)
   for (const server of ir.mcpServers) push('mcpServers', server.name, server.annotation)
+  for (const style of ir.outputStyles ?? []) push(style.surface, style.name, style.annotation)
   for (const item of ir.pending) push(item.surface, item.name, item.annotation)
   for (const item of ir.unsupported) push(item.surface, item.name, item.annotation)
 

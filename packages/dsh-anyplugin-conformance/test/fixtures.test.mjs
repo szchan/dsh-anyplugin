@@ -1,14 +1,14 @@
 /**
- * End-to-end: re-probe every fixture with the installed upstream CLI and diff
- * against its committed golden. This is the test that turns "100 %" into a
- * number: it fails when the pin moves and behavior changes.
+ * End-to-end: re-probe every oracle-backed fixture with the installed upstream
+ * CLI and diff against its committed golden. This is the test that turns
+ * "100 %" into a number: it fails when the pin moves and behavior changes.
  *
  * Resolution lives in `resolveClaudeBinary()` (D24): `CLAUDE_BIN`, then
  * `claude` on PATH. Locally, no CLI means a named skip; under CI it throws,
  * because a skipped fidelity test on CI is a bug.
  */
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,16 +29,42 @@ const skip = claudeSkipReason()
 
 const claude = resolveClaudeBinary()
 
+/**
+ * Fixtures no upstream command can inventory. `claude-output-styles` is
+ * hand-authored: at the pin, `claude plugin details` prints no output-style
+ * line (D29), so an `.inventory` golden would be a hand-written row pretending
+ * to have been observed. Its evidence is the body hash in
+ * `output-styles-carry.test.mjs`; this set only keeps the oracle loop from
+ * demanding a golden. The test below asserts both the README label and the
+ * absence of a golden, so the exclusion cannot go stale silently.
+ */
+const HAND_AUTHORED = new Set(['claude-output-styles'])
+
 async function fixtureDirs() {
   const entries = await readdir(fixturesDir)
   const dirs = []
   for (const entry of entries.sort()) {
     if (!entry.startsWith('claude-')) continue
+    if (HAND_AUTHORED.has(entry)) continue
     const dir = join(fixturesDir, entry)
     if ((await stat(dir)).isDirectory()) dirs.push({ name: entry, dir })
   }
   return dirs
 }
+
+test('a hand-authored fixture says so and has no invented golden', () => {
+  for (const name of HAND_AUTHORED) {
+    const dir = join(fixturesDir, name)
+    assert.ok(existsSync(join(dir, '.claude-plugin', 'plugin.json')), `${name}: a fixture is still a plugin`)
+    const readme = readFileSync(join(dir, 'README.md'), 'utf8')
+    assert.match(readme, /Hand-authored, not observed/, `${name}: the README must label the fixture as hand-authored`)
+    assert.equal(
+      existsSync(join(dir, '.inventory')),
+      false,
+      `${name}: no oracle can produce this inventory; do not invent a golden for it`,
+    )
+  }
+})
 
 test(
   `the resolved claude reports ${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`,

@@ -2,9 +2,10 @@
 // S11 proved the pinned harness has a per-agent prompt seam (`invocation.agent` /
 // `setup(agentCtx)` / `agent/created` / `dsh-persona` / an agent preset), but the
 // carry still waits on activation (D10's command alias) and three fidelity gaps.
-// The dialect therefore names each style as `planned`, with a reason that names
-// the reachable seam and the remaining gaps. This test is the annotation
-// contract; the spike is the evidence.
+// The dialect therefore carries each body byte for byte and still annotates the
+// row `planned`, with a reason that names the reachable seam and every gap. This
+// test is the annotation contract; the fresh-fixture body hash is in
+// `output-styles-carry.test.mjs` and the spike is the evidence.
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -41,14 +42,16 @@ test('an output style is planned and names the reachable seam and its gaps', (t)
   t.after(() => rmSync(root, { recursive: true, force: true }))
 
   const ir = readClaudePlugin(root)
-  const rows = ir.pending.filter((row) => row.surface === 'outputStyles')
+  const rows = ir.outputStyles ?? []
   assert.equal(rows.length, 1, 'one row per style file, not one row per directory')
   const [style] = rows
   assert.equal(style.name, 'terse', 'frontmatter name is the identity Claude registers')
   assert.equal(style.sourcePath, 'output-styles/terse.md')
+  assert.equal(style.body, '\nAnswer in terse bullet points. Never explain the obvious.\n', 'the body is carried, not just the identity')
   assert.equal(style.annotation.fidelity, 'planned')
   assert.equal(isCarried(style.annotation), false)
-  assert.match(style.annotation.reason, /planned, not carried/)
+  assert.match(style.annotation.reason, /body is carried byte for byte/)
+  assert.match(style.annotation.reason, /applying it is planned/)
   assert.match(style.annotation.reason, /invocation\.agent\.ctx/)
   assert.match(style.annotation.reason, /complete: true/)
   assert.match(style.annotation.reason, /S11/)
@@ -71,8 +74,9 @@ test('a style without a frontmatter name falls back to its filename', (t) => {
   })
   t.after(() => rmSync(root, { recursive: true, force: true }))
 
-  const [style] = readClaudePlugin(root).pending.filter((row) => row.surface === 'outputStyles')
+  const [style] = readClaudePlugin(root).outputStyles ?? []
   assert.equal(style.name, 'plain')
+  assert.equal(style.body, '\nBe brief.\n')
   assert.equal(style.annotation.fidelity, 'planned')
   assert.match(style.annotation.reason, /invocation\.agent\.ctx/)
 })
@@ -81,9 +85,11 @@ test('a manifest outputStyles declaration is planned explicitly', (t) => {
   const root = pluginDir({}, { name: 'styles-probe', version: '0.0.1', outputStyles: ['./styles'] })
   t.after(() => rmSync(root, { recursive: true, force: true }))
 
-  const rows = readClaudePlugin(root).pending.filter((row) => row.surface === 'outputStyles')
+  const ir = readClaudePlugin(root)
+  const rows = ir.pending.filter((row) => row.surface === 'outputStyles')
   const manifest = rows.find((row) => row.name === 'manifest:outputStyles')
   assert.ok(manifest, 'a directory the dialect does not read must not be silent')
+  assert.deepEqual(ir.outputStyles, [], 'a declared directory is not a carried style')
   assert.equal(manifest.sourcePath, '.claude-plugin/plugin.json')
   assert.equal(manifest.annotation.fidelity, 'planned')
   assert.match(manifest.annotation.reason, /custom output-style directories/)
@@ -97,16 +103,19 @@ test('a plugin without output-styles declares no style rows', (t) => {
   const ir = readClaudePlugin(root)
   assert.equal(ir.unsupported.some((row) => row.surface === 'outputStyles'), false)
   assert.equal(ir.pending.some((row) => row.surface === 'outputStyles'), false)
+  assert.deepEqual(ir.outputStyles, [])
 })
 
 test('a nested style file is visible as planned, not silently dropped', (t) => {
   const root = pluginDir({ 'output-styles/nested/deep.md': '---\nname: deep\n---\n\nBody.\n' })
   t.after(() => rmSync(root, { recursive: true, force: true }))
 
-  const [style] = readClaudePlugin(root).pending.filter((row) => row.surface === 'outputStyles')
+  const ir = readClaudePlugin(root)
+  const [style] = ir.pending.filter((row) => row.surface === 'outputStyles')
   assert.equal(style.name, 'deep')
   assert.equal(style.sourcePath, 'output-styles/nested/deep.md')
   assert.equal(style.annotation.fidelity, 'planned')
+  assert.equal(ir.outputStyles.length, 0, 'outside the flat surface means no body claim')
   assert.match(style.annotation.reason, /outside the flat/)
   assert.match(style.annotation.reason, /invocation\.agent\.ctx/)
 })
