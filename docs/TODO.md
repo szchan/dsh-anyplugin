@@ -13,7 +13,14 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-Nothing claimed.
+- [ ] **Mod host: route a mod's `on()` registrations through the kernel.**
+      `loadMod` (D31) returns registrations; the shared kernel
+      (`dsh-anyplugin-intercept`, D13/D28) must be the only event path for
+      them (AGENTS §3.6), so a mod handler and a classic hook handler sit on
+      the same tiers and decision protocol. Done when a synthetic mod's
+      `session.start` fires through `runChain` with the same fan-out and
+      decision semantics a classic hook gets, and the D31 contract is
+      unchanged.
 
 ## Next
 
@@ -30,8 +37,11 @@ Nothing claimed.
 - [ ] **Upstream mods as fixtures** (D14). Pull the seven mods under
       `mods/` from the pinned upstream revision into `fixtures/` (fetch at
       test time or from the installed tree; never vendored), starting with
-      `diff` because it ships its own `hooks/` and `tests/`. Done when one
-      real mod loads in the host and its own test expectations pass against us.
+      `diff` because it ships its own `hooks/` and `tests/`. **Blocked at the
+      pin:** `diff`'s graph reaches `views/pane-view.tsx` through
+      `views/index.ts`, so `loadMod` refuses it with `ERR_MOD_HOST_TSX`
+      (D30/D31); the fixture's current nail is that refusal. Done when a real
+      mod whose graph is `.ts`-only loads, or when JSX is decided.
 
 ## Upstream proposals (union-only seams, T2)
 

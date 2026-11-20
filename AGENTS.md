@@ -22,7 +22,7 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D30. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D31. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
 | `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S10) and what a spike must prove. |
