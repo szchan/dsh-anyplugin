@@ -1261,3 +1261,77 @@ the fetched tree lives under `out/` and is gitignored.
   the blocking transform is named and scoped.
 - The spike's evidence contract is the citation for "0 checks exits 1"
   (`docs/ARCHITECTURE.md` §10, S9 note), not D19.
+
+## D31 — Mod-host skeleton: one authored mod per vm realm; strip in memory; three resolver rules; `.tsx` refused
+
+**Status:** ratified 2026-11-19 (ticket #33).
+
+`loadMod({ root, entry, host })` loads one authored mod and resolves to a frozen
+`{ registrations, evaluate(), dispose() }`. `registrations` are the
+`{ event, matcher, handler }` records declared by the mod's
+`export function register(on)`, in source order. The returned handler is called
+as `handler(event, next)`; the authored handler it wraps is called as
+`($, event, next)`, where `$` comes from `host.dollar()`.
+
+`$` is never a global. The host calls `host.dollar()` exactly once immediately
+before each handler invocation and never caches the result. `ModHost.dollar()`
+must return the namespace for that invocation; the host does not clone, freeze
+or reuse it, and a host that returns the same object for two calls has reused
+it. Module-level code that reads `$` fails with the realm's own
+`ReferenceError`.
+
+`loadMod` evaluates the entry once before resolving. `evaluate()` is an
+idempotent accessor that never evaluates twice and rejects after `dispose()`.
+`dispose()` makes the realm inert: `evaluate()` and every returned handler
+reject with `ERR_MOD_HOST_LINK`, and no new `on()` calls are accepted. It does
+not destroy the vm context (Node has no such API); the returned registrations
+keep the realm reachable while they are held.
+
+The host applies no transform except
+`module.stripTypeScriptTypes(source, { mode: 'strip' })` in memory and writes
+no authored bytes. It resolves only extensionless/`'.'` imports to
+`<dir>/index.ts`, `.js` to `.ts`, and `.jsx` to `.tsx`; no fallbacks, no stubs.
+`.tsx` is refused, not emulated. Each mod gets one `node:vm`
+`SourceTextModule` context (create → link once → evaluate), which requires
+`--experimental-vm-modules` and exposes neither `process` nor `URL` nor `$`.
+This is a fidelity/layering boundary, not a security boundary; D6 stands. The
+realm is not containment: `on` is a host-realm function, so
+`on.constructor('return process')()` reaches host globals.
+
+Load failures are `ModHostError`s with one of four codes:
+
+- `ERR_MOD_HOST_TSX`: the reachable graph reaches a `.tsx`; the message names
+  the module; there is no stub.
+- `ERR_MOD_HOST_MISSING`: the root, entry or a named module is absent, or the
+  entry is absolute, outside `root`, or not a file.
+- `ERR_MOD_HOST_UNSUPPORTED_EXT`: an entry extension other than
+  `.ts`/`.js`/`.mjs`, or a specifier extension with no D30 rule. Direct `.ts`
+  and `.mjs` specifiers are refused; `.js` specifiers resolve only to `.ts`;
+  a direct `.tsx` is `ERR_MOD_HOST_TSX`.
+- `ERR_MOD_HOST_LINK`: a non-relative/bare/URL specifier, a graph
+  read/strip/link/syntax failure (including a missing named export), a missing
+  or misused `register(on)`, or use after `dispose()`.
+
+Authored errors are never wrapped: a module-level `$` remains the realm's
+`ReferenceError`, and a throw from `register` or a handler keeps the mod's own
+stack.
+
+At the pin (claude-code 2.1.322, commit
+`6e1e44f6433bfa17d198e932bff53373aa229eea`), `diff`'s `register.ts` reaches
+`./views` → `views/index.ts` → `export * from './pane-view.jsx'`; ESM links the
+whole graph before a hook can fire, so `loadMod` throws `ERR_MOD_HOST_TSX`
+naming `views/pane-view.tsx`. Therefore no mod whose reachable graph reaches or
+re-exports a `.tsx` is loadable at this pin; the JSX decision gates that class,
+not only drawing. The refusal is the upstream acceptance; S13's fired hook
+depended on `.tsx` stubs, which D30 forbids as a host mechanism. This does not
+claim that every upstream mod is blocked: only graphs that reach a `.tsx` are.
+
+**Consequences:**
+
+- The `diff` fixture's nail is the *refusal*, not a fired hook; "a real mod
+  loads" stays blocked until the JSX decision, and that decision is deliberately
+  separate from this one.
+- `$` freshness is a `ModHost` contract, not host-enforced; the isolation test
+  runs a host that would violate it if the wrapper cached.
+- The host is inert after `dispose()` but does not free the realm; callers must
+  drop the registrations to let it be collected.
