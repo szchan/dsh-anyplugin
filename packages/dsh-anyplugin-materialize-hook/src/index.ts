@@ -126,6 +126,92 @@ export interface Config {
   traceFile?: string
 }
 
+/**
+ * Result of applying a chain rewrite to the host's execution object.
+ * `applied:false` with no `reason` means the chain never rewrote the event.
+ */
+export interface ToolInputRewrite {
+  applied: boolean
+  reason?: string
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/** A JSON value, with no lossy member: no undefined, function, symbol or BigInt. */
+const isJsonValue = (value: unknown): boolean => {
+  if (value === null) return true
+  if (typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every(isJsonValue)
+  if (typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return false
+    for (const key of Object.keys(value)) {
+      if ((value as Record<string, unknown>)[key] === undefined) return false
+      if (!isJsonValue((value as Record<string, unknown>)[key])) return false
+    }
+    return true
+  }
+  return false
+}
+
+/** Clone a lossless JSON value and deep-freeze the clone (D32 §9). */
+const losslessClone = (value: unknown): { ok: true; value: unknown } | { ok: false; reason: string } => {
+  if (!isJsonValue(value)) return { ok: false, reason: 'not lossless JSON' }
+  let text: string
+  try {
+    text = JSON.stringify(value)
+  } catch (error) {
+    return { ok: false, reason: `not lossless JSON (${(error as Error).message})` }
+  }
+  const parsed: unknown = JSON.parse(text)
+  const freeze = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return
+    Object.freeze(node)
+    for (const child of Object.values(node)) freeze(child)
+  }
+  freeze(parsed)
+  return { ok: true, value: parsed }
+}
+
+const argumentsWritable = (exec: object): boolean => {
+  const descriptor = Object.getOwnPropertyDescriptor(exec, 'arguments')
+  if (descriptor !== undefined) return descriptor.writable === true || typeof descriptor.set === 'function'
+  return Object.isExtensible(exec)
+}
+
+/**
+ * Apply a chain's final `tool_input` to the host's execution object.
+ *
+ * The host's pre-execute gate has no value channel (D32 §9), so the seat
+ * mutates the execution object before `next()`. This function is exported for
+ * the conformance suite: the host pipeline freezes the argument snapshot, not
+ * the execution object, and a future host that freezes the object early must
+ * degrade to a typed unsupported rather than throw or drop the rewrite.
+ */
+export function applyToolInputRewrite(
+  exec: { arguments?: unknown },
+  rewritten: ChainEvent,
+  original: ChainEvent,
+): ToolInputRewrite {
+  // Reference equality is the chain contract: `runChain` starts with the
+  // authored event and only moves `deepest` when a handler calls `next(event)`.
+  if (rewritten === original) return { applied: false }
+  const toolInput = isRecord(rewritten.data) ? rewritten.data.tool_input : undefined
+  if (!isRecord(toolInput)) {
+    return {
+      applied: false,
+      reason: toolInput === undefined ? 'the rewrite carried no tool_input' : 'tool_input is not an object',
+    }
+  }
+  const clone = losslessClone(toolInput)
+  if (!clone.ok) return { applied: false, reason: `tool_input is ${clone.reason}` }
+  if (!argumentsWritable(exec)) return { applied: false, reason: 'exec.arguments is read-only' }
+  ;(exec as { arguments: unknown }).arguments = clone.value
+  return { applied: true }
+}
+
 interface ExecView {
   callId: string | number
   name: string
@@ -381,6 +467,15 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     const logger = ctx.logger
     if (typeof logger?.warn === 'function') logger.warn(message)
     else if (typeof logger === 'function') logger(message)
+    // A warning is evidence too: when a trace sink is configured, keep the
+    // text beside the chain records. Never let the sink's failure recurse
+    // through this function.
+    if (config.traceFile === undefined) return
+    try {
+      appendFileSync(config.traceFile, `${JSON.stringify({ warning: message })}\n`)
+    } catch {
+      // The trace sink is already unavailable; the logger above carried it.
+    }
   }
 
   // The install record names the plugin's data directory (D2), but creating it
@@ -407,10 +502,25 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   const hookBudgetMs = (hook: MaterialHook): number =>
     (hook.timeout === undefined ? DEFAULT_HOOK_TIMEOUT_MS : hook.timeout * 1000) + KERNEL_GRACE_MS
 
+  /**
+   * Record a rewrite the seam cannot apply. A typed unsupported is a trace
+   * record and a warning, never a throw and never a silent no-op (D32 §9).
+   */
+  const reportUnsupported = (event: string, field: string, reason: string): void => {
+    warn(`anyplugin ${event}: unsupported ${field}: ${reason}`)
+    if (config.traceFile === undefined) return
+    try {
+      appendFileSync(config.traceFile, `${JSON.stringify({ event, unsupported: { field, reason } })}\n`)
+    } catch (error) {
+      warn(`anyplugin ${event}: trace file ${config.traceFile} is not writable (${(error as Error).message})`)
+    }
+  }
+
   const runKernel = async (
     event: ChainEvent,
     registrations: readonly HandlerRegistration[],
     agent?: unknown,
+    gaps?: readonly string[],
   ): Promise<ChainResult> => {
     // A seat owns every host event, including ones this plugin has no handler
     // for. Running an empty chain would add an empty trace and an empty
@@ -443,6 +553,8 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           sources: registrations.map((registration) => registration.source),
           trace: result.trace,
           decision: result.decision,
+          data: event.data,
+          ...(gaps === undefined ? {} : { gaps }),
         })}\n`)
       } catch (error) {
         warn(`anyplugin hook ${event.name}: trace file ${config.traceFile} is not writable (${(error as Error).message})`)
@@ -486,11 +598,27 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       matcher: hook.matcher,
       timeoutMs: hookBudgetMs(hook),
       source: `${hook.event}#${hook.index ?? index}`,
-      run: async (_context, event) => {
+      run: async (_context, event, next) => {
         const changed = artifactChange(hook)
         if (changed !== undefined) return { kind: 'deny', reason: changed }
         const verdict = await execute(hook, event)
-        return verdict.deny === undefined ? CONTINUE : { kind: 'deny', reason: verdict.deny }
+        if (verdict.deny !== undefined) return { kind: 'deny', reason: verdict.deny }
+        if (verdict.updatedInput !== undefined) {
+          // One rewrite path: a command hook's updatedInput becomes the same
+          // chain event rewrite a mod's updatedInput does, so later handlers
+          // (and the seat's exec.arguments application) see it identically.
+          if (!isRecord(verdict.updatedInput)) {
+            reportUnsupported('PreToolUse', 'updatedInput', 'hookSpecificOutput.updatedInput is not an object')
+            return CONTINUE
+          }
+          const clone = losslessClone(verdict.updatedInput)
+          if (!clone.ok) {
+            reportUnsupported('PreToolUse', 'updatedInput', clone.reason)
+            return CONTINUE
+          }
+          return next({ ...event, data: { ...event.data, tool_input: clone.value } })
+        }
+        return CONTINUE
       },
     }),
   )
@@ -715,21 +843,6 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       ...classicByEvent(event),
     ]
 
-    // `session.start` is a loader point, not an agent event (D32 §4): it fires
-    // once per load, before the plugin's first turn, from the same async apply
-    // that loaded the realm. The loader awaits this apply, so the first turn
-    // cannot start before the fire settles. A reload runs a new apply and thus
-    // a new fire with exactly this load's registrations.
-    const sessionStart = modByEvent.get('session.start') ?? []
-    if (sessionStart.length > 0) {
-      const event: ChainEvent = {
-        name: 'session.start',
-        subject: null,
-        data: { cwd: modRoot, surface: null, isInteractive: false },
-      }
-      await runKernel(event, sessionStart)
-    }
-
     const createSeat = (agent: any): void => {
       const header = agent?.session?.header
       const id = header?.id
@@ -776,21 +889,18 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             toolUseId: String(exec.callId),
             cwd: typeof agent?.session?.header?.cwd === 'string' ? agent.session.header.cwd : undefined,
           })
-          const result = await runKernel(classicEvent('PreToolUse', payload), combined('PreToolUse'), agent)
+          const chainEvent = classicEvent('PreToolUse', payload)
+          const result = await runKernel(chainEvent, combined('PreToolUse'), agent)
           const denied = result.decisions.find(
             (decision): decision is { kind: 'deny'; reason: string } => decision.kind === 'deny',
           )
           if (denied !== undefined) return { kind: 'deny', reason: denied.reason }
-          const rewritten = result.event?.data
-          const toolInput = rewritten !== null && typeof rewritten === 'object'
-            ? (rewritten as Record<string, unknown>).tool_input
-            : undefined
-          if (toolInput !== null && typeof toolInput === 'object') {
-            // Same chain, same seam: the pre-execute gate has no value channel,
-            // so the host applies the chain's final rewrite to the execution
-            // object before calling next(). The executor reads exec.arguments
-            // at dispatch time; the original snapshot stays frozen and unused.
-            ;(exec as { arguments: unknown }).arguments = toolInput
+          const rewrite = applyToolInputRewrite(exec, result.event, chainEvent)
+          if (!rewrite.applied && rewrite.reason !== undefined) {
+            // The gate has no value channel; a host that freezes the execution
+            // object (or a value that is not lossless JSON) is reported as a
+            // typed unsupported, never a throw and never a silent drop.
+            reportUnsupported('PreToolUse', 'tool_input', rewrite.reason)
           }
           return next()
         }),
@@ -855,6 +965,33 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         }),
       )
     }
+
+    // A late enable or reload may run this apply while agents already exist:
+    // `agent/created` will not fire for them, so seat the live set explicitly.
+    // This is also what re-seats a root across a reload: the old plugin effect
+    // disposed its seats, and the new apply sweeps the still-live agents.
+    const agentsService = typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+    const liveAgents: any[] = typeof agentsService?.list === 'function' ? agentsService.list() : []
+    const liveRoot = liveAgents.find((item) => item?.session?.header?.parentSession === undefined)
+
+    // `session.start` is a live load event, not an agent event (D32 §4): it
+    // fires once per load, before the plugin's first turn, from the same async
+    // apply that loaded the realm. The loader awaits this apply, so the first
+    // turn cannot start before the fire settles. A reload runs a new apply and
+    // thus a new fire with exactly this load's registrations.
+    const sessionStart = modByEvent.get('session.start') ?? []
+    if (sessionStart.length > 0) {
+      // The pin's cwd is the session/process working directory, never
+      // CLAUDE_PLUGIN_ROOT. surface and isInteractive are host facts apply
+      // cannot observe, so they are omitted and reported as a field gap.
+      const cwd = typeof liveRoot?.session?.header?.cwd === 'string' ? liveRoot.session.header.cwd : process.cwd()
+      const gaps = ['surface', 'isInteractive'] as const
+      warn(`anyplugin mod ${pluginName}: session.start surface and isInteractive are host facts apply cannot observe; omitted (unbridged)`)
+      const event: ChainEvent = { name: 'session.start', subject: null, data: { cwd } }
+      await runKernel(event, sessionStart, undefined, gaps)
+    }
+
+    for (const agent of liveAgents) createSeat(agent)
 
     // Every agent gets a seat, but SessionStart is a root-session event: a
     // subagent's `agent/created` must not run the plugin's SessionStart again.

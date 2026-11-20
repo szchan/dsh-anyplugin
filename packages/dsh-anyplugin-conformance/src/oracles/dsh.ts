@@ -328,6 +328,12 @@ export interface DshLifecycleProbeOptions {
   secondAgent?: boolean
   /** Reload the entry before the first turn, proving session.start runs again. */
   reload?: boolean
+  /** Create the root session before the plugin loads, so apply must sweep live agents. */
+  preExistingRoot?: boolean
+  /** Reload the entry while the root is live, then run a second turn on that root. */
+  reloadWhileLive?: boolean
+  /** Observe the root agent after it is seated, before its first turn. */
+  onAgent?: (agent: unknown) => void | Promise<void>
   /** How long to wait for boot, the turn, the child and the expected labels, in milliseconds. */
   timeoutMs?: number
 }
@@ -419,8 +425,11 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
       // the probe tool, calls 2 and 4 answer in text. The delegated child then
       // gets a text answer (call 5), so a second-agent trace is not polluted by
       // the child's own tool call.
+      // Only the root turns may request the tool: the delegated child's model
+      // call must answer in text or it would pollute the per-agent call list.
+      const toolTurns = (options.reloadWhileLive === true ? 2 : 1) + (options.secondAgent === true ? 1 : 0)
       const chunks =
-        call !== undefined && this.#calls % 2 === 1 && this.#calls <= 4
+        call !== undefined && this.#calls % 2 === 1 && this.#calls <= toolTurns * 2 - 1
           ? toolCallChunks(call)
           : textChunks('stub answer')
       for (const chunk of chunks) yield chunk
@@ -451,6 +460,18 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
     await until(() => Boolean(ctx.get('llm')), timeoutMs, 'llm service')
     await until(() => Boolean(ctx.get('agentLoop')), timeoutMs, 'agent loop service')
     if (options.tool !== undefined) ctx.tools.register(options.tool)
+    // The header carries no cwd unless the creator seeds one, and the payload
+    // builder reads it from the header. Seed it with the probe's own data
+    // directory, which is distinct from the process cwd, so a payload that
+    // silently fell back would fail the assertion instead of matching.
+    const makeRoot = (id: string): Promise<any> =>
+      ctx.agentLoop.create(id, { provider: 'fake', model: 'fake-1' }, { cwd: dataDir })
+    let root: any
+    if (options.preExistingRoot === true) {
+      // A late enable or a reload can run apply while a root already exists:
+      // `agent/created` will not fire again, so apply must sweep the live set.
+      root = await makeRoot('anyplugin-lifecycle-root')
+    }
     await ctx.loader.create(options.entry)
     await ctx.loader.await()
     if (options.reload === true) {
@@ -462,22 +483,22 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
       await ctx.loader.create(options.entry)
       await ctx.loader.await()
     }
+    if (root === undefined) root = await makeRoot('anyplugin-lifecycle-root')
+    // The observer mounts after apply has seated this root, so a listener
+    // registered here sees the execution object the seat handed downstream.
+    if (options.onAgent !== undefined) await options.onAgent(root)
 
-    // The header carries no cwd unless the creator seeds one, and the payload
-    // builder reads it from the header. Seed it with the probe's own data
-    // directory, which is distinct from the process cwd, so a payload that
-    // silently fell back would fail the assertion instead of matching.
-    const waitTurnEnd = (sessionId: string): Promise<void> =>
+    const waitTurnEnd = (sessionId: string, turn: number): Promise<void> =>
       new Promise<void>((resolve, reject) => {
         const timer = setTimeout(
-          () => reject(new Error(`dsh lifecycle probe: turn on ${sessionId} did not end`)),
+          () => reject(new Error(`dsh lifecycle probe: turn ${turn} on ${sessionId} did not end`)),
           timeoutMs,
         )
         const off = ctx.on(
           'session/event',
           (session: { id?: unknown }, event: { type?: string; data?: { turn?: number } }) => {
             if (session.id !== sessionId) return
-            if (event.type === 'turn/end' && event.data?.turn === 1) {
+            if (event.type === 'turn/end' && event.data?.turn === turn) {
               clearTimeout(timer)
               off()
               resolve()
@@ -485,23 +506,28 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
           },
         )
       })
-    const root = await ctx.agentLoop.create(
-      'anyplugin-lifecycle-root',
-      { provider: 'fake', model: 'fake-1' },
-      { cwd: dataDir },
-    )
-    const turnEnded = waitTurnEnd(root.id)
-    root.followup(createUserMessage({ content: [{ type: 'text', text: 'one turn' }], source: { kind: 'user' } }))
-    await turnEnded
+    const runTurn = async (sessionId: string, turn: number, text: string): Promise<void> => {
+      const ended = waitTurnEnd(sessionId, turn)
+      root.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      await ended
+    }
+
+    await runTurn(root.id, 1, 'one turn')
+    if (options.reloadWhileLive === true) {
+      // The root stays live across the reload: apply must dispose the old seat
+      // with the plugin effect and re-seat the live set, not wait for a new
+      // `agent/created` that will never arrive.
+      ctx.loader.remove(options.entry.id)
+      await ctx.loader.await()
+      await ctx.loader.create(options.entry)
+      await ctx.loader.await()
+      await runTurn(root.id, 2, 'second turn')
+    }
 
     let secondRoot: any
     if (options.secondAgent === true) {
-      secondRoot = await ctx.agentLoop.create(
-        'anyplugin-lifecycle-root-2',
-        { provider: 'fake', model: 'fake-1' },
-        { cwd: dataDir },
-      )
-      const secondEnded = waitTurnEnd(secondRoot.id)
+      secondRoot = await makeRoot('anyplugin-lifecycle-root-2')
+      const secondEnded = waitTurnEnd(secondRoot.id, 1)
       secondRoot.followup(createUserMessage({ content: [{ type: 'text', text: 'second turn' }], source: { kind: 'user' } }))
       await secondEnded
     }

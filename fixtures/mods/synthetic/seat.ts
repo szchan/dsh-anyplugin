@@ -21,7 +21,7 @@ export function register(on: On): void {
       .filter((block) => block.type === 'text')
       .map((block) => block.text ?? '')
       .join(' ')
-    if (envelope.tool !== 'Bash' || envelope.command !== 'ls') {
+    if (envelope.tool !== 'Bash' || !String(envelope.command).startsWith('ls')) {
       throw new Error(`unexpected PreToolUse envelope: ${JSON.stringify(envelope)}`)
     }
     const marker = text.includes('second') ? 'second' : 'first'
