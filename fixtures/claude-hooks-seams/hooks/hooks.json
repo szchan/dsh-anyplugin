@@ -1,0 +1,68 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" UserPromptSubmit" }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "gated-allow",
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" PermissionRequest" }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" PostToolUseFailure" }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" FileChanged" }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" PreCompact" }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" PostCompact" }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" PermissionDenied" }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" CwdChanged" }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/log-event.sh\" ConfigChange" }
+        ]
+      }
+    ]
+  }
+}

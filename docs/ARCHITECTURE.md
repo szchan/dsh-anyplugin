@@ -884,7 +884,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop), each proved by a line its handler wrote on a real headless turn (§10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles `planned` per style with the seam and gaps named; activation waits on D10's command alias; no global injection |
@@ -1159,12 +1159,14 @@ Two traps that cost real time and are now load-bearing:
   the skill after the entry is removed — invisible in a green test, visible in
   a reload.
 
-Measured coverage across the ten fixtures (declared components from the
+Measured coverage across the eleven fixtures (declared components from the
 goldens, matched by the DSH oracle). CI measures the same rows against both
-`0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there. The other nine
-fixtures boot the loader with `probeWithDsh`; the lifecycle fixture
-boots a real turn graph with `probeLifecycleWithDsh` (§10 S9), because its rows
-exist only as lines the handlers wrote. The turn graph is part of the fetched
+`0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there. Nine
+fixtures boot the loader with `probeWithDsh`. Two have no registry face at all:
+`claude-hooks-lifecycle` boots a real turn graph with `probeLifecycleWithDsh`,
+and `claude-hooks-seams` boots the full approval/filesystem/settings/compaction
+stack from `test/lifecycle.test.mjs` (§10 S9), because their rows exist only as
+lines the handlers wrote. The turn graph is part of the fetched
 union (`HARNESS_PACKAGES` in `scripts/fetch-harness.mjs`), so one fetch is
 enough before `verify`; CI fetches each pin once and installs nothing else:
 
@@ -1177,10 +1179,11 @@ enough before `verify`; CI fetches each pin once and installs nothing else:
 | `claude-agents` | 1 | 1 | 0 | 0 | one tool per agent; description byte for byte, body as the first user block (S10; invocation `equivalent`) |
 | `claude-hooks-mcp` | 2 | 2 | 0 | 0 | hook mounted on `tools/post-execute` and observed on a real call (D20) |
 | `claude-hooks-lifecycle` | 5 | 5 | 0 | 0 | five handlers ran on one real headless turn (root start/stop/end + one child); SessionStart/Stop/SessionEnd root-only, SubagentStart/Stop child-only (§10 S9) |
+| `claude-hooks-seams` | 9 | 9 | 0 | 0 | the four listener seams and the five notification records ran on one real turn: one prompt line per prompt (not per step), one PermissionRequest (matcher), one failure (a denied call is excluded), one FileChanged (the read is filtered out), compaction start before end, one denial, one cwd change, settings revision 0 then 1 (§10 S9) |
 | `claude-mcp-http` | 1 | 1 | 0 | 0 | streamable-http arm; the server is started by the test (D12) |
 | `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
-| **total** | **16** | **15** | **0** | **1** | |
+| **total** | **25** | **24** | **0** | **1** | |
 
 The Codex fixture is reported separately because its golden is a declaration,
 not an upstream observation:
@@ -1398,9 +1401,9 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   **The spike itself moved no coverage row** — a hook counts only when it runs
   (D20), so wiring the confirmed events was a separate ticket. That wiring now
-  exists for the lifecycle five: their `planned` annotations became
-  `equivalent` and their five coverage rows are log lines from a real turn
-  (§10.3), while the four remaining listener seams stay `planned`. Nothing
+  exists for all fourteen: the five lifecycle events, the four listener seams and
+  the five notification records are `equivalent`, and their coverage rows are log
+  lines from real turns (`claude-hooks-lifecycle`, `claude-hooks-seams`; §10.3). Nothing
   here adds a second event path: every row is a listener on the existing host
   bus. The mod front-end reuses the same carrier: `agent/created` seats
   each agent's mod and classic registrations on `payload.agent.ctx`, and
@@ -1675,8 +1678,8 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   matched / 0 missing / 1 refused** at this ticket — the goldens declare 11
   rows in total, and the nested `agents/deep/planner.md` is not loaded at the
   pin, so it is not a declared row, and the issue text's "12/10/1/1" counts a
-  row the host does not have. (The S9 lifecycle wiring that follows moves the
-  totals to 16/15/0/1; §10.3.)
+  row the host does not have. (The S9 lifecycle and seam wiring that follows
+  moves the totals to 25/24/0/1; §10.3.)
 
   Reproduce:
 

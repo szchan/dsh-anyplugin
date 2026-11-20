@@ -54,11 +54,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `DirectoryAdded`, `Setup`, `UserPromptExpansion`, `MessageDisplay`,
       `PostToolBatch`, `Notification`, `Elicitation`, `ElicitationResult` are
       refuted; `TaskCreated`, `TaskCompleted`, `TeammateIdle`,
-      `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. Five of
-      the nine listener seams are wired (SessionStart, Stop, SessionEnd,
-      SubagentStart, SubagentStop); UserPromptSubmit, PermissionRequest,
-      PostToolUseFailure and FileChanged, plus the five notification-only
-      records, remain.
+      `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. All nine
+      listener seams and the five notification-only records are wired; what
+      remains is host support for the sixteen events above.
 - [ ] `dsh-shell-env` — `PATH` contribution for plugin `bin/`.
 - [ ] Monitor notifications: a background process's stdout reaching the model.
 - [ ] Terminal ANSI palette (F2).

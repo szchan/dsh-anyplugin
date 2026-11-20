@@ -528,13 +528,62 @@ function readAgents(root: string, plugin: string): { agents: IrAgent[]; unsuppor
 }
 
 /**
- * The five lifecycle events ride host events that S9 observed on a real headless
- * turn. None can be byte-identical: the host event carries less than Claude's
- * payload (and some of it in a different shape), and only Stop/SubagentStop have
- * a decision channel upstream, which this host does not expose. Each reason
- * names the seam, the fields that survive, and every field or channel that does
- * not.
+ * The four listener seams and the five notification records ride host events S9
+ * observed on a real headless turn; the five lifecycle events do the same in
+ * `LIFECYCLE_HOOKS`. None can be byte-identical: the host event carries less
+ * than Claude's payload (and some of it in a different shape), and only
+ * Stop/SubagentStop have a decision channel upstream, which this host does not
+ * expose here. Each reason names the seam, the fields that survive, and every
+ * field or channel that does not.
  */
+const SEAM_HOOKS: Record<string, string> = {
+  UserPromptSubmit:
+    'Rides the agent/pre-step waterfall (S9), filtered to step 1 and to the newest user-source message. ' +
+    'Fires once per prompt, before the first model step; a delegated child is filtered out and takes SubagentStart. ' +
+    'The payload carries hook_event_name, cwd, session_id and prompt. ' +
+    'It omits transcript_path and permission_mode, which this host has no source for. ' +
+    'A decision is not applied: agent/pre-step can enter or reject a step, so a block or continue verdict is reported with a warning instead of changing the turn.',
+  PermissionRequest:
+    'Rides the approval/request waterfall (S9), scoped to the agent whose tool is being decided. ' +
+    'The payload carries hook_event_name, cwd, session_id, tool_name and tool_use_id (the request callId); ' +
+    'it omits tool_input and permission_suggestions, which this host never puts on the seam, so a tool_input matcher is skipped with a warning. ' +
+    'Report-only: the hook runs while the request is decided, but its decision is not applied and never approves or denies the tool.',
+  PostToolUseFailure:
+    'Rides the tools/post-execute waterfall (S9), filtered to result.isError === true. ' +
+    'The payload carries hook_event_name, cwd, session_id, tool_name, tool_input, tool_use_id and error (the failed result message); ' +
+    'it omits is_interrupt and duration_ms, which this host does not record. ' +
+    'A failed result value cannot be replaced (D19), so a decision is reported with a warning instead of obeyed. ' +
+    'A denied call is excluded: the host materializes a gate denial as an ordinary failed result, so the callId recorded on approval/decided or on a PreToolUse deny is skipped and the denial fires PermissionDenied alone, as upstream does.',
+  FileChanged:
+    'Rides the fs/observed emit (S9), filtered to the write, edit and apply_patch tools and observation.kind === \'present\'. ' +
+    'The payload carries hook_event_name, cwd, session_id and file_path (the host displayPath); ' +
+    'it omits the upstream event kind (add/change/unlink): fs/observed reports present/absent, so an event matcher cannot be evaluated and is skipped with a warning, and a handler runs for every present mutation. ' +
+    'The emit carries no content delta and no decision channel.',
+  PreCompact:
+    'Rides the session/event record compaction/start (S9), before summarization. ' +
+    'The payload carries hook_event_name, cwd, session_id, compaction_id and turn; ' +
+    'it omits trigger (manual/auto) and custom_instructions, which the record does not carry, so a trigger matcher is skipped with a warning. ' +
+    'The record is a notification: no decision channel, and additionalContext is reported with a warning instead of delivered.',
+  PostCompact:
+    'Rides the session/event record compaction/end (S9), after the summary committed. ' +
+    'The payload carries hook_event_name, cwd, session_id, compaction_id and turn; ' +
+    'it omits trigger and compact_summary (the summary is a separate compaction/summary record), so a trigger matcher is skipped with a warning. ' +
+    'Notification only: no decision channel.',
+  PermissionDenied:
+    'Rides the session/event record approval/decided (S9), filtered to the non-grant outcomes (rejected, cancelled, unavailable); tool_name and callId are correlated from the approval/asked record carrying the same id. ' +
+    'The payload carries hook_event_name, cwd, session_id, tool_name, tool_use_id and outcome (the host enum); ' +
+    'it omits tool_input and reason, which the records do not carry. Notification only: no decision channel.',
+  CwdChanged:
+    'Rides the session/event record working-directory/change (S9). ' +
+    'The payload carries hook_event_name, cwd (the new directory, which is what upstream cwd means) and session_id; ' +
+    'it omits old_cwd and new_cwd, which the record does not carry: repeating the new directory under new_cwd would be a guess. ' +
+    'Notification only: no decision channel.',
+  ConfigChange:
+    'Rides the settings/document-updated emit (S9), which also fires on the first read (revision 0) and only again when the document changes. ' +
+    'The payload carries hook_event_name, cwd (the process directory), namespace and revision; ' +
+    'it omits source, file_path and session_id, which the emit does not carry. Notification only: no decision channel.',
+}
+
 const LIFECYCLE_HOOKS: Record<string, string> = {
   SessionStart:
     'Rides the agent/created serial event (S9). Fires for the root agent only; a child creation is filtered out and takes SubagentStart. ' +
@@ -563,14 +612,15 @@ const LIFECYCLE_HOOKS: Record<string, string> = {
 }
 
 /**
- * Seven events have a host: the two tool-scoped ones ride `tools/pre-execute`
- * and `tools/post-execute` (S8, D19), and the lifecycle five ride the host
- * events named in `LIFECYCLE_HOOKS` below (S9). Even there the payload is not
- * byte-identical — the host has no transcript path or permission mode, and the
- * root lifecycle ids and cwd come from the session header rather than from
- * Claude's payload (a subagent's id comes from the emit, and its cwd is the
- * harness process directory) — so the honest class is `equivalent`, not
- * `exact`.
+ * Sixteen events have a host: the two tool-scoped ones ride
+ * `tools/pre-execute` and `tools/post-execute` (S8, D19), the lifecycle five
+ * ride the host events named in `LIFECYCLE_HOOKS` below (S9), and the four
+ * listener seams plus the five notification records ride the events named in
+ * `SEAM_HOOKS` (S9). Even there the payload is not byte-identical — the
+ * host has no transcript path or permission mode, and the root lifecycle ids
+ * and cwd come from the session header rather than from Claude's payload (a
+ * subagent's id comes from the emit, and its cwd is the harness process
+ * directory) — so the honest class is `equivalent`, not `exact`.
  */
 function hookAnnotation(event: string, type: string, command: string | undefined): Annotation {
   if (type !== 'command' || command === undefined) {
@@ -590,6 +640,10 @@ function hookAnnotation(event: string, type: string, command: string | undefined
   const lifecycle = LIFECYCLE_HOOKS[event]
   if (lifecycle !== undefined) {
     return { fidelity: 'equivalent', reason: lifecycle }
+  }
+  const seam = SEAM_HOOKS[event]
+  if (seam !== undefined) {
+    return { fidelity: 'equivalent', reason: seam }
   }
   return {
     fidelity: 'planned',

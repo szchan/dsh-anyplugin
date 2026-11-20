@@ -27,6 +27,7 @@ const materializers = {
 }
 const fixture = join(repoRoot, 'fixtures', 'claude-hooks-mcp')
 const lifecycleFixture = join(repoRoot, 'fixtures', 'claude-hooks-lifecycle')
+const seamsFixture = join(repoRoot, 'fixtures', 'claude-hooks-seams')
 function gateAll(ir) {
   let store = emptyGrants()
   for (const row of classify(ir)) store = grantFor(ir, store, row.target, { scope: 'user' })
@@ -84,6 +85,54 @@ test('the five lifecycle hooks are carried on the five host events', () => {
     assert.deepEqual(
       child.config.hooks.map((hook) => hook.event),
       ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+    )
+    assert.deepEqual(skipped, [])
+    assert.deepEqual(refused, [])
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('the four listener seams and the five notification records ride the S9 host events', () => {
+  const ir = readClaudePlugin(seamsFixture)
+  const hosts = {
+    UserPromptSubmit: /agent\/pre-step/,
+    PermissionRequest: /approval\/request/,
+    PostToolUseFailure: /tools\/post-execute/,
+    FileChanged: /fs\/observed/,
+    PreCompact: /compaction\/start/,
+    PostCompact: /compaction\/end/,
+    PermissionDenied: /approval\/decided/,
+    CwdChanged: /working-directory\/change/,
+    ConfigChange: /settings\/document-updated/,
+  }
+  assert.deepEqual(
+    ir.hooks.map((hook) => hook.event),
+    Object.keys(hosts),
+    'the fixture declares the nine events, in order',
+  )
+  for (const hook of ir.hooks) {
+    assert.equal(hook.annotation.fidelity, 'equivalent', `${hook.event} is annotated at the source`)
+    assert.match(hook.annotation.reason, /S9/, `${hook.event} names the observation that proves the seam`)
+    assert.match(hook.annotation.reason, hosts[hook.event], `${hook.event} names the host event it rides`)
+  }
+
+  const gated = gateAll(ir)
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-seams-'))
+  try {
+    const { entry, emitted, skipped, refused } = emitPlugin(gated.ir, {
+      materializers,
+      sdkRoot: harness?.modulesDir,
+      trusted: gated.decision.allowed,
+      dataDir,
+    })
+    assert.ok(emitted.includes('hooks'))
+    const child = entry.config.find((item) => item.id === 'hook')
+    assert.equal(child.config.pluginData, dataDir, 'the hook child carries the data directory')
+    assert.deepEqual(
+      child.config.hooks.map((hook) => hook.event),
+      Object.keys(hosts),
+      'all nine handlers reach the one kernel',
     )
     assert.deepEqual(skipped, [])
     assert.deepEqual(refused, [])

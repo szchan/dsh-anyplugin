@@ -1,15 +1,23 @@
 /**
  * Hook materializer — mounts a plugin's command hooks on this host's tool
- * waterfalls and on the host events that carry the five lifecycle hooks, and
+ * waterfalls, on the host events that carry the five lifecycle hooks, and on
+ * the four listener seams and five notification records S9 confirmed, and
  * seats an authored mod's registrations on the same agent channels.
  *
  * Mount points are the ones S8/S9 proved: `tools/pre-execute` can deny (the
  * model reads `Error: <reason>`), `tools/post-execute` can attach
  * additionalContexts, and `agent/created`, `agent/turn-stopping`,
  * `agent/disposed`, `subagent/start` and `subagent/end` carry SessionStart,
- * Stop, SessionEnd, SubagentStart and SubagentStop. Every listener is
- * registered through `ctx.effect` so unloading the plugin removes it
- * (S1 finding 3).
+ * Stop, SessionEnd, SubagentStart and SubagentStop. `agent/pre-step` (step 1
+ * of a user prompt), `approval/request`, the error slice of
+ * `tools/post-execute` and the write/edit/apply_patch slice of `fs/observed`
+ * carry UserPromptSubmit, PermissionRequest, PostToolUseFailure and
+ * FileChanged; the `session/event` records `compaction/start`,
+ * `compaction/end`, `approval/decided` and `working-directory/change`, plus
+ * `settings/document-updated`, carry PreCompact, PostCompact,
+ * PermissionDenied, CwdChanged and ConfigChange as notifications. Every
+ * listener is registered through `ctx.effect` so unloading the plugin removes
+ * it (S1 finding 3).
  *
  * A mod is loaded once per plugin entry, its `session.start` fires during this
  * apply, and its registrations are seated on each agent's own context
@@ -32,11 +40,11 @@
  * PreToolUse runs *before* the host dispatches; every matching hook runs and a
  * denial from any of them becomes the block reason (the first denial by order
  * wins), matching the upstream "block" semantics. PostToolUse runs after the
- * call settled and only when it was accepted — a failed call takes the
- * upstream's separate PostToolUseFailure path, which S9 found on
- * `tools/post-execute` but which is not mounted yet. PostToolUse denial is
- * feedback: it joins the additionalContexts instead of blocking a call that
- * already ran.
+ * call settled and only when it was accepted. A failed call is the
+ * PostToolUseFailure slice of the same waterfall (`result.isError === true`),
+ * mounted beside PostToolUse on the same host event; it reports the failure
+ * and never replaces the failed result. PostToolUse denial is feedback: it
+ * joins the additionalContexts instead of blocking a call that already ran.
  *
  * The five lifecycle mounts are emits or serial events, not waterfalls: the
  * handler runs, but a `block` decision or additionalContext has nowhere to go.
@@ -592,6 +600,11 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   }
 
   const pre = of('PreToolUse')
+  // A gate denial is materialized by the host as an ordinary failed result, so
+  // tools/post-execute cannot tell it apart from a body that threw. A denied
+  // call is recorded here and the failure slice skips it: upstream fires
+  // PermissionDenied for a denied call, never PostToolUseFailure.
+  const deniedCalls = new Set<string>()
   const preRegistrations = pre.map((hook, index) =>
     classicHookRegistration({
       event: hook.event,
@@ -637,7 +650,10 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         })
         const result = await runKernel(classicEvent('PreToolUse', payload), preRegistrations)
         const denied = result.decisions.find((decision): decision is { kind: 'deny'; reason: string } => decision.kind === 'deny')
-        if (denied !== undefined) return { kind: 'deny', reason: denied.reason }
+        if (denied !== undefined) {
+          deniedCalls.add(String(exec.callId))
+          return { kind: 'deny', reason: denied.reason }
+        }
         return next()
       }),
     )
@@ -696,22 +712,16 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   }
 
   /**
-   * One lifecycle mount for all five events: matcher, artifact re-hash, spawn
-   * and verdict translation are the same code the tool mounts use. The host
-   * event is an emit or a serial, never a waterfall, so a decision is reported
-   * and dropped rather than applied; every handler returns CONTINUE so the
-   * kernel still runs all matching hooks.
+   * One registration builder for every lifecycle, seam and notification
+   * event: matcher, artifact re-hash, spawn and verdict translation are the
+   * same code the tool mounts use. Every handler returns CONTINUE so the
+   * kernel still runs all matching hooks; a decision is reported, not applied.
    */
   const lifecycleRegistrations = new Map<string, HandlerRegistration[]>()
   const modsMode = mods.length > 0
-  const lifecycle = <T>(
-    event: (typeof LIFECYCLE_EVENTS)[number],
-    host: string,
-    read: (value: T) => LifecycleOccurrence | undefined,
-    mount = true,
-  ): void => {
+  const registerLifecycle = (event: string, host: string): HandlerRegistration[] => {
     const selected = of(event)
-    if (selected.length === 0) return
+    if (selected.length === 0) return []
     const registrations = selected.map((hook, index) =>
       classicHookRegistration({
         event: hook.event,
@@ -736,6 +746,84 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       }),
     )
     lifecycleRegistrations.set(event, registrations)
+    return registrations
+  }
+
+  /** The chain event, plus a warning per matcher the host cannot evaluate. */
+  const chainEventFor = (event: string, host: string, payload: Record<string, unknown>): ChainEvent => {
+    const chainEvent = classicEvent(event, payload)
+    if (chainEvent.subject === null) {
+      for (const hook of of(event)) {
+        if (hook.matcher !== undefined && hook.matcher !== '') {
+          warn(`anyplugin hook ${event}: matcher ${JSON.stringify(hook.matcher)} has no value in ${host}; skipped`)
+        }
+      }
+    }
+    return chainEvent
+  }
+
+  /**
+   * A field the host event does not carry is omitted and reported once per
+   * event and field (D19/D20): never synthesized, and never repeated for a
+   * handler that fires once per model step.
+   */
+  const reportedGaps = new Set<string>()
+  const reportGap = (event: string, field: string, reason: string): void => {
+    const key = `${event}:${field}`
+    if (reportedGaps.has(key)) return
+    reportedGaps.add(key)
+    reportUnsupported(event, field, reason)
+  }
+
+  const sessionFields = (session: unknown): Record<string, unknown> => {
+    const header = (session as { header?: { id?: unknown; cwd?: unknown } } | undefined)?.header
+    const fields: Record<string, unknown> = {}
+    if (typeof header?.id === 'string') fields.session_id = header.id
+    if (typeof header?.cwd === 'string') fields.cwd = header.cwd
+    return fields
+  }
+
+  const agentFields = (agent: unknown): Record<string, unknown> =>
+    sessionFields((agent as { session?: unknown } | undefined)?.session)
+
+  /**
+   * The prompt a model step answers. `agent/pre-step` carries the conversation
+   * including runtime-context and tool-registry user messages, so only a
+   * message whose source is the user is the prompt; the newest one wins.
+   */
+  const promptText = (messages: unknown): string | undefined => {
+    if (!Array.isArray(messages)) return undefined
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index] as { role?: unknown; source?: { kind?: unknown } }
+      if (message?.role !== 'user' || message.source?.kind !== 'user') continue
+      const text = messageText((message as { content?: unknown }).content)
+      if (text !== undefined) return text
+    }
+    return undefined
+  }
+
+  const MUTATION_TOOLS = new Set(['write', 'edit', 'apply_patch'])
+  const isFailedResult = (result: unknown): boolean =>
+    (result as { isError?: unknown } | undefined)?.isError === true
+  const failureText = (result: unknown): string | undefined => {
+    const message = (result as { error?: { message?: unknown } } | undefined)?.error?.message
+    return typeof message === 'string' ? message : undefined
+  }
+
+  /**
+   * One lifecycle mount for all five events. The host event is an emit or a
+   * serial, never a waterfall, so a decision is reported and dropped rather
+   * than applied; every handler returns CONTINUE so the kernel still runs all
+   * matching hooks.
+   */
+  const lifecycle = <T>(
+    event: (typeof LIFECYCLE_EVENTS)[number],
+    host: string,
+    read: (value: T) => LifecycleOccurrence | undefined,
+    mount = true,
+  ): void => {
+    const registrations = registerLifecycle(event, host)
+    if (registrations.length === 0) return
     // With mods loaded, the seat owns every lifecycle chain (one chain per
     // agent channel). The generic mount would be a second dispatch of the
     // same classic registration, which fan-out would run twice.
@@ -745,16 +833,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         const occurrence = read(value)
         if (occurrence === undefined) return
         const payload = { hook_event_name: event, cwd: process.cwd(), ...occurrence.fields }
-        const chainEvent = classicEvent(event, payload)
-        // A host event with no matcher subject skips every authored matcher;
-        // the kernel records that, and this front-end reports it (D19).
-        if (chainEvent.subject === null) {
-          for (const hook of selected) {
-            if (hook.matcher !== undefined && hook.matcher !== '') {
-              warn(`anyplugin hook ${event}: matcher ${JSON.stringify(hook.matcher)} has no value in ${host}; skipped`)
-            }
-          }
-        }
+        const chainEvent = chainEventFor(event, host, payload)
         await runKernel(chainEvent, registrations)
       }),
     )
@@ -799,6 +878,259 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     }
   }, !modsMode)
 
+  // The nine S9-confirmed seams no earlier ticket mounted: four listener
+  // seams and five notification records. Each is registered through the same
+  // builder as the lifecycle five; the mounts below are the only dispatch.
+  const SEAM_EVENTS = ['UserPromptSubmit', 'PermissionRequest', 'PostToolUseFailure', 'FileChanged'] as const
+  const NOTIFICATION_EVENTS = ['PreCompact', 'PostCompact', 'PermissionDenied', 'CwdChanged', 'ConfigChange'] as const
+  const seamHost: Record<(typeof SEAM_EVENTS)[number], string> = {
+    UserPromptSubmit: 'agent/pre-step',
+    PermissionRequest: 'approval/request',
+    PostToolUseFailure: 'tools/post-execute',
+    FileChanged: 'fs/observed',
+  }
+  const notificationHost: Record<(typeof NOTIFICATION_EVENTS)[number], string> = {
+    PreCompact: 'session/event',
+    PostCompact: 'session/event',
+    PermissionDenied: 'approval/decided',
+    CwdChanged: 'working-directory/change',
+    ConfigChange: 'settings/document-updated',
+  }
+  for (const event of SEAM_EVENTS) registerLifecycle(event, seamHost[event])
+  for (const event of NOTIFICATION_EVENTS) registerLifecycle(event, notificationHost[event])
+
+  type MountSeam = (register: () => unknown) => void
+
+  /**
+   * The four listener mounts. `target` is the plugin entry in the classic arm
+   * and the agent's own context in a seat; `chains` resolves registrations at
+   * dispatch time because a seat's chain is built after the mods load.
+   */
+  const mountAgentSeams = (
+    target: any,
+    mount: MountSeam,
+    chains: (event: string) => HandlerRegistration[],
+  ): void => {
+    if (chains('UserPromptSubmit').length > 0) {
+      mount(() =>
+        target.on('agent/pre-step', async (payload: any, next: () => Promise<unknown>) => {
+          const agent = payload?.agent
+          const fields = agentFields(agent)
+          const header = (agent as { session?: { header?: { parentSession?: unknown } } } | undefined)?.session?.header
+          // agent/pre-step fires once per model step; UserPromptSubmit is the
+          // prompt's first step. A child's activation is SubagentStart's
+          // subject, so the root filter keeps the two apart.
+          if (header?.parentSession !== undefined) return next()
+          if (payload?.step !== 1) return next()
+          const prompt = promptText(payload?.messages)
+          if (prompt === undefined) return next()
+          reportGap('UserPromptSubmit', 'transcript_path', 'this host keeps an event log, not a transcript file path')
+          reportGap('UserPromptSubmit', 'permission_mode', 'this host has no permission-mode source')
+          const data = {
+            hook_event_name: 'UserPromptSubmit',
+            cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+            ...fields,
+            prompt,
+          }
+          await runKernel(chainEventFor('UserPromptSubmit', 'agent/pre-step', data), chains('UserPromptSubmit'), agent)
+          return next()
+        }),
+      )
+    }
+
+    if (chains('PermissionRequest').length > 0) {
+      mount(() =>
+        target.on('approval/request', async (request: any, next: () => Promise<unknown>) => {
+          const agent = request?.agent
+          const fields = agentFields(agent)
+          const data = {
+            hook_event_name: 'PermissionRequest',
+            cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+            ...fields,
+            ...(typeof request?.toolName === 'string' ? { tool_name: request.toolName } : {}),
+            ...(request?.callId === undefined ? {} : { tool_use_id: String(request.callId) }),
+          }
+          reportGap('PermissionRequest', 'tool_input', 'approval/request carries {agent, toolName, callId, signal} only; the arguments are not on this seam, so a tool_input matcher is skipped')
+          reportGap('PermissionRequest', 'permission_suggestions', 'this host has no permission-suggestion source')
+          // Report-only by contract (D19): this seam observes the request and
+          // never answers it, so no decision can approve or deny a tool.
+          await runKernel(chainEventFor('PermissionRequest', 'approval/request', data), chains('PermissionRequest'), agent)
+          return next()
+        }),
+      )
+    }
+
+    if (chains('PostToolUseFailure').length > 0) {
+      mount(() =>
+        target.on('tools/post-execute', async (exec: ExecView, result: unknown, next: () => Promise<PostDecision>) => {
+          const decision = await next()
+          if (!isFailedResult(result)) return decision
+          if (deniedCalls.has(String(exec.callId))) return decision
+          const fields = agentFields(exec.agent)
+          const error = failureText(result)
+          if (error === undefined) {
+            reportGap('PostToolUseFailure', 'error', 'the host failed result carries no error.message; the failure is reported without a message')
+          }
+          reportGap('PostToolUseFailure', 'is_interrupt', 'the host reports a failed result, not whether it was interrupted')
+          reportGap('PostToolUseFailure', 'duration_ms', 'the host does not time an individual tool call')
+          const data = {
+            ...buildHookPayload('PostToolUseFailure', {
+              toolName: exec.name,
+              toolInput: exec.arguments,
+              toolUseId: String(exec.callId),
+              cwd: typeof fields.cwd === 'string' ? fields.cwd : undefined,
+            }),
+            ...fields,
+            ...(error === undefined ? {} : { error }),
+          }
+          // A failed result's value cannot be replaced (D19), so the failure
+          // chain reports and the host result stands unchanged.
+          await runKernel(chainEventFor('PostToolUseFailure', 'tools/post-execute', data), chains('PostToolUseFailure'), exec.agent)
+          return decision
+        }),
+      )
+    }
+
+    if (chains('FileChanged').length > 0) {
+      mount(() =>
+        target.on('fs/observed', async (target_: any, observation: any, exec: any) => {
+          if (!MUTATION_TOOLS.has(exec?.name) || observation?.kind !== 'present') return
+          const displayPath = target_?.displayPath
+          if (typeof displayPath !== 'string') return
+          const fields = agentFields(exec?.agent)
+          reportGap('FileChanged', 'event', 'fs/observed reports present/absent only, not the upstream add/change/unlink value; a matcher on it is skipped')
+          const data = {
+            hook_event_name: 'FileChanged',
+            cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+            ...fields,
+            file_path: displayPath,
+          }
+          await runKernel(chainEventFor('FileChanged', 'fs/observed', data), chains('FileChanged'), exec.agent)
+        }),
+      )
+    }
+  }
+
+  /**
+   * The five notification records. They are session- or settings-scoped, not
+   * agent-scoped: one listener on the plugin channel, and the record's own ids
+   * correlate back to the operation that produced it.
+   */
+  const mountNotificationSeams = (
+    target: any,
+    mount: MountSeam,
+    chains: (event: string) => HandlerRegistration[],
+  ): void => {
+    const approvalCalls = new Map<string, { toolName?: string; callId?: string }>()
+    // session/event and settings/document-updated are emit, not waterfall:
+    // the host does not await the listener. A plugin's hooks still run one
+    // operation at a time, so each record is queued behind the previous one
+    // and the log keeps the record order the host produced.
+    let tail: Promise<unknown> = Promise.resolve()
+    const serialize = (work: () => Promise<unknown>): Promise<unknown> => {
+      const next = tail.then(work, work)
+      tail = next.catch(() => undefined)
+      return next
+    }
+    if (['PreCompact', 'PostCompact', 'PermissionDenied', 'CwdChanged'].some((event) => chains(event).length > 0)) {
+      const onSessionEvent = async (session: unknown, event: any) => {
+          const type = event?.type
+          const data = (event?.data ?? {}) as Record<string, unknown>
+          const fields = sessionFields(session)
+          if (type === 'approval/asked') {
+            if (data.id === undefined) return
+            approvalCalls.set(String(data.id), {
+              ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
+              ...(data.callId === undefined ? {} : { callId: String(data.callId) }),
+            })
+            return
+          }
+          if (type === 'approval/decided') {
+            // PermissionDenied is the non-grant slice: an allowed call is not
+            // a denial, and the harness records the outcome, not a reason.
+            if (data.outcome === 'allowed-once') return
+            const ask = data.id === undefined ? undefined : approvalCalls.get(String(data.id))
+            if (data.id !== undefined) approvalCalls.delete(String(data.id))
+            if (ask?.callId !== undefined) deniedCalls.add(ask.callId)
+            const payload = {
+              hook_event_name: 'PermissionDenied',
+              cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+              ...fields,
+              ...(ask?.toolName === undefined ? {} : { tool_name: ask.toolName }),
+              ...(ask?.callId === undefined ? {} : { tool_use_id: ask.callId }),
+              ...(typeof data.outcome === 'string' ? { outcome: data.outcome } : {}),
+            }
+            reportGap('PermissionDenied', 'tool_input', 'approval/decided carries {id, outcome} and the correlated approval/asked carries {toolName, callId} only; the arguments are never logged')
+            reportGap('PermissionDenied', 'reason', 'the harness records an outcome enum, not a denial reason text')
+            await runKernel(chainEventFor('PermissionDenied', 'approval/decided', payload), chains('PermissionDenied'))
+            return
+          }
+          if (type === 'compaction/start' || type === 'compaction/end') {
+            const hookEvent = type === 'compaction/start' ? 'PreCompact' : 'PostCompact'
+            const payload = {
+              hook_event_name: hookEvent,
+              cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+              ...fields,
+              ...(data.compactionId === undefined ? {} : { compaction_id: String(data.compactionId) }),
+              ...(data.turn === undefined || data.turn === null ? {} : { turn: data.turn }),
+            }
+            reportGap(hookEvent, 'trigger', 'compaction/start and compaction/end carry the id and turn only; the manual/auto trigger is not on the record, so a trigger matcher is skipped')
+            if (hookEvent === 'PreCompact') {
+              reportGap('PreCompact', 'custom_instructions', 'the host compaction record has no custom-instruction field')
+            } else {
+              reportGap('PostCompact', 'compact_summary', 'the summary is a separate compaction/summary record; this mount does not read the session log')
+            }
+            await runKernel(chainEventFor(hookEvent, 'session/event', payload), chains(hookEvent))
+            return
+          }
+          if (type === 'working-directory/change') {
+            if (typeof data.cwd !== 'string') return
+            const payload = {
+              hook_event_name: 'CwdChanged',
+              // The record names the new directory, which is what upstream's
+              // cwd means; carrying it once is honest, guessing the old
+              // directory or duplicating new_cwd is not.
+              cwd: data.cwd,
+              ...(typeof fields.session_id === 'string' ? { session_id: fields.session_id } : {}),
+            }
+            reportGap('CwdChanged', 'old_cwd', 'working-directory/change carries the new directory only, so old_cwd is omitted')
+            reportGap('CwdChanged', 'new_cwd', 'the new directory is carried as cwd, matching the upstream meaning; the duplicate new_cwd field is omitted')
+            await runKernel(chainEventFor('CwdChanged', 'working-directory/change', payload), chains('CwdChanged'))
+          }
+      }
+      mount(() =>
+        target.on('session/event', (session: unknown, event: any) =>
+          serialize(() => onSessionEvent(session, event)),
+        ),
+      )
+    }
+
+    if (chains('ConfigChange').length > 0) {
+      const onSettings = async (namespace: unknown, revision: unknown) => {
+          const payload = {
+            hook_event_name: 'ConfigChange',
+            // settings/document-updated carries no session; the process
+            // directory is the only cwd this seam can name.
+            cwd: process.cwd(),
+            ...(typeof namespace === 'string' ? { namespace } : {}),
+            ...(typeof revision === 'number' ? { revision } : {}),
+          }
+          reportGap('ConfigChange', 'source', 'settings/document-updated names the namespace and revision, not which settings file changed')
+          reportGap('ConfigChange', 'file_path', 'this host does not expose a settings file path on this event')
+          reportGap('ConfigChange', 'session_id', 'the settings event is plugin-global and carries no session')
+          await runKernel(chainEventFor('ConfigChange', 'settings/document-updated', payload), chains('ConfigChange'))
+      }
+      mount(() =>
+        target.on('settings/document-updated', (namespace: unknown, revision: unknown) =>
+          serialize(() => onSettings(namespace, revision)),
+        ),
+      )
+    }
+  }
+
+  let chainsForSeams: (event: string) => HandlerRegistration[] = (event) =>
+    lifecycleRegistrations.get(event) ?? []
+
   if (modsMode) {
     const classicByEvent = (event: string): HandlerRegistration[] => {
       if (event === 'PreToolUse') return preRegistrations
@@ -842,6 +1174,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       ...(modByEvent.get(event) ?? []),
       ...classicByEvent(event),
     ]
+    chainsForSeams = combined
 
     const createSeat = (agent: any): void => {
       const header = agent?.session?.header
@@ -927,6 +1260,11 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           return { ...decision, additionalContexts: contexts }
         }),
       )
+
+      // The four listener seams are agent events too: in a seat they run on the
+      // agent's own context with the combined chain, never on the plugin one
+      // (D32's "the plugin-entry context is never used for agent events").
+      mountAgentSeams(agentCtx, (register) => mount(register), combined)
 
       mount(() =>
         agentCtx.on('agent/turn-stopping', async (value: RootAgentEvent) => {
@@ -1035,7 +1373,21 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     )
   }
 
-  const mounted = new Set<string>(['PreToolUse', 'PostToolUse', ...LIFECYCLE_EVENTS])
+  // The classic arm mounts the four listener seams on the plugin entry; with
+  // mods loaded the seat above already owns them, so only the notification
+  // records are mounted here (they are session- and settings-scoped).
+  if (!modsMode) {
+    mountAgentSeams(ctx, (register) => { ctx.effect(register) }, chainsForSeams)
+  }
+  mountNotificationSeams(ctx, (register) => { ctx.effect(register) }, chainsForSeams)
+
+  const mounted = new Set<string>([
+    'PreToolUse',
+    'PostToolUse',
+    ...LIFECYCLE_EVENTS,
+    ...SEAM_EVENTS,
+    ...NOTIFICATION_EVENTS,
+  ])
   const unmounted = hooks.filter((hook) => !mounted.has(hook.event))
   for (const hook of unmounted) {
     warn(`anyplugin hook ${hook.event}: no host event fires here; not mounted (${textify(hook.matcher ?? '*')})`)
