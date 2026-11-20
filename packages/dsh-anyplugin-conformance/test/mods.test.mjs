@@ -17,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { classicEvent, modRegistrationsToKernel } from '../../dsh-anyplugin-intercept/src/index.ts'
 import { apply as applyMaterializer, applyToolInputRewrite } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
 import { createModBridge, loadMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
-import { DIFF_MOD_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
+import { DIFF_MOD_PIN, UPSTREAM_MODS_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
 import { scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
 import { hashManifest } from '../../dsh-anyplugin-trust/src/index.ts'
 import { probeLifecycleWithDsh } from '../src/oracles/dsh.ts'
@@ -950,4 +950,117 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
   }
 
   assert.equal(sha256(entry), before, 'the fixture load must not touch the authored bytes')
+})
+
+// Issue #68, end to end: a guard hook must actually guard.
+//
+// At the pin, sec-default's `classic.*` registration is `next.to(e, 'append')`
+// (mods/sec-default/hooks/register.ts:30): it is org security keeping
+// user-installed classic hooks out of the org's chain, not a tool deny. So the
+// turn to assert is the bypass: without the mod, the same user-tier deny hook
+// denies the call; with it, the hook is skipped, the tool runs, and the skip is
+// in the trace with the pinned reason.
+test('sec-default\'s guard skips a user classic hook; unloaded, the same hook denies the call', async (t) => {
+  if (skip) return t.skip(skip)
+  const modsTree = process.env.ANYPLUGIN_MODS_TREE
+    ? resolve(process.env.ANYPLUGIN_MODS_TREE)
+    : join(repoRoot, '.mods', UPSTREAM_MODS_PIN.commit)
+  const modRoot = join(modsTree, 'mods', 'sec-default')
+  if (!existsSync(join(modRoot, 'hooks', 'register.ts'))) {
+    const reason =
+      `ANYPLUGIN_MODS_TREE is unset or ${modsTree} has no mods/sec-default/; ` +
+      'run `node scripts/fetch-mod.mjs` and set ANYPLUGIN_MODS_TREE to the printed root'
+    if (isCI) assert.fail(`CI must fetch the pinned upstream mods before npm test: ${reason}`)
+    return t.skip(reason)
+  }
+
+  const denyHook = {
+    event: 'PreToolUse',
+    index: 0,
+    matcher: 'Bash',
+    command:
+      `printf '%s' '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"user hook denied"}}'`,
+  }
+
+  const turn = async (mods) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-sec-default-'))
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    try {
+      await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        entry: modsEntry(dataDir, traceFile, {
+          plugin: 'sec-default',
+          pluginRoot: modRoot,
+          mods,
+          hooks: [pinned(denyHook)],
+        }),
+        expected: [],
+        tool: bashTool(calls),
+        toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+        timeoutMs: 20_000,
+      })
+      return { calls, trace: readTrace(traceFile) }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  }
+
+  const loaded = await turn([{ entry: 'hooks/register.ts', tier: 'prepend' }])
+  const loadedPre = loaded.trace.filter((record) => record.event === 'PreToolUse')
+  assert.equal(loadedPre.length, 1)
+  assert.equal(loadedPre[0].decision.kind, 'continue', 'the bypassed hook no longer decides')
+  assert.deepEqual(loaded.calls, [{ command: 'ls' }], 'the tool call proceeded')
+  const guardStep = loadedPre[0].trace.find((step) => step.source.includes('sec-default/hooks/register.ts'))
+  assert.equal(guardStep.status, 'ran', JSON.stringify(loadedPre[0]))
+  const skipped = loadedPre[0].trace.find((step) => step.source === 'PreToolUse#0')
+  assert.equal(skipped.tier, 'user')
+  assert.equal(skipped.status, 'skipped')
+  assert.equal(skipped.detail, 'bypassed by sec-default')
+
+  const unloaded = await turn([])
+  const unloadedPre = unloaded.trace.filter((record) => record.event === 'PreToolUse')
+  assert.equal(unloadedPre.length, 1)
+  assert.deepEqual(unloaded.calls, [], 'without the mod the same hook denies the call')
+  assert.deepEqual(unloadedPre[0].decision, { kind: 'deny', reason: 'user hook denied' })
+  assert.equal(unloadedPre[0].trace.find((step) => step.source === 'PreToolUse#0').status, 'ran')
+})
+
+// The direct deny/unloaded contrast, in a real turn: a mod that authorises one
+// tool really stops the call, and the same turn without the mod runs it.
+test('a loaded guard mod denies the tool call; unloaded, the same turn proceeds', async (t) => {
+  if (skip) return t.skip(skip)
+  const guardRoot = join(repoRoot, 'fixtures', 'mods', 'guard')
+  const turn = async (mods) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-guard-'))
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    try {
+      await probeLifecycleWithDsh({
+        harnessDir: harness.harnessDir,
+        // The classic hook keeps a chain in the unloaded turn too, so the trace
+        // records a real PreToolUse decision rather than an empty seat.
+        entry: modsEntry(dataDir, traceFile, { plugin: 'guard', pluginRoot: guardRoot, mods, hooks: [pinned(commandHook)] }),
+        expected: [],
+        tool: bashTool(calls),
+        toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+        timeoutMs: 20_000,
+      })
+      return { calls, trace: readTrace(traceFile) }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  }
+
+  const denied = await turn([{ entry: 'register.ts' }])
+  const deniedPre = denied.trace.filter((record) => record.event === 'PreToolUse')
+  assert.equal(deniedPre.length, 1)
+  assert.deepEqual(deniedPre[0].decision, { kind: 'deny', reason: 'the guard mod does not allow Bash' })
+  assert.deepEqual(denied.calls, [], 'the denied call never executes')
+
+  const allowed = await turn([])
+  const allowedPre = allowed.trace.filter((record) => record.event === 'PreToolUse')
+  assert.equal(allowedPre.length, 1)
+  assert.deepEqual(allowedPre[0].decision, { kind: 'continue' })
+  assert.deepEqual(allowed.calls, [{ command: 'ls' }], 'without the mod the same call runs')
 })
