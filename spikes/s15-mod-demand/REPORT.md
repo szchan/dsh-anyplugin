@@ -242,33 +242,33 @@ is a deliberate behavior for some events, but it makes this bug invisible unless
 the trace is read.
 
 **Fixed after the spike (#68).** The mod-visible `next` is now the kernel's own
-continuation with the pinned seven members projected onto it: `to` reuses the
+continuation with the pinned seven members projected onto it. `next` is eager
+and call-scoped: each call continues the chain from the calling link with that
+call's `to` target, a second call runs the remainder a second time, and the
+latest trip is the one the hook's return and `trace` describe. `to` reuses the
 kernel's tier order and records every passed-over link as `skipped` with
 `bypassed by <plugin>`; a jump is computed by tier rank, so a same-tier sibling
 still runs, the landing is inclusive of the named target (a direct jump runs
-it), a named tier with no link left falls forward, and a first-decision
-continuation is returned rather than re-entered. A second `next` or a
-backwards `next.to` is refused by name instead of silently reusing the first
-result or resolving without running. `signal` is the handler's controller, fired by its timeout and
-linked to `ChainOptions.signal` (the materializer passes `ToolExecution.signal`
-for PreToolUse/PostToolUse); `origin` is the host raiser `{plugin:"engine",
-tier:"core"}`; `budget` is live and pauses during `next` and `$` (via
-`pauseWhilePending`), while classic hooks keep their entry snapshot; `trace`
-serves the pinned `TraceEntry` subset (`index`, `plugin`, `tier`, `event`,
-`outcome`, `reason` — `ms`/`chunks`/`received`/`returned` are not invented).
-A throwing link is `rejected` with the throw as its reason; a matcher skip never
-ran and is not projected. The subset is continuation-specific: first-decision
-sees the settled links beneath the call, whereas fan-out is empty after
-`await next(e)` and holds the pass-over after `next.to`. The `TargetTier`
-contract is enforced: `prepend`/`user` refuse, and `core` refuses with a reason
-because this chain's innermost link is `builtin`.
+it), and a named tier with no link left falls forward. A backwards `next.to` is
+refused by name; `core` is a declared fidelity gap (the pin's `TargetTier`
+allows it, this chain has no core link, so naming it would skip `builtin`
+without running it). `signal` is the handler's controller, fired by its timeout
+and linked to `ChainOptions.signal` (the materializer passes
+`ToolExecution.signal` for PreToolUse/PostToolUse); `origin` is the host raiser
+`{plugin:"engine", tier:"core"}`; `budget` is live and pauses during `next` and
+`$` (via `pauseWhilePending`), while classic hooks keep their entry snapshot;
+`trace` serves the pinned `TraceEntry` subset (`index`, `plugin`, `tier`,
+`event`, `outcome`, `reason` — `ms`/`chunks`/`received`/`returned` are not
+invented) and describes the latest trip only. A throwing link is `rejected`
+with the throw as its reason; a matcher skip never ran and is not projected.
+`prepend`/`user` refuse as target tiers because the pin's type excludes them.
 
 Tests: `packages/dsh-anyplugin-intercept/test/mods.test.mjs` pins the member
 semantics (skip + forward-only, direct-target and missing-tier landings,
 first-decision `next`/`to` single-run, fan-out same-tier sibling,
-repeated-`next` refusal, backward-`to` refusal, matcher-skip exclusion,
+repeated-`next` trips, backward-`to` refusal, matcher-skip exclusion,
 `rejected`, budget arithmetic and pause across `next` and `$`, classic budget
-snapshot, timeout abort, empty fan-out subset, signal,
+snapshot, timeout abort, latest-trip subset, signal,
 `is`/`event`/`origin`/`budget`, tier refusal);
 `packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` pins the
 deny-only guard/unloaded contrast with `fixtures/mods/guard/`; and

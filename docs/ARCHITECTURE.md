@@ -611,9 +611,10 @@ being aliased.
 
 A mixed chain still runs one `runChain`: the classic registration declares
 fan-out, so a `[mod, classic, mod]` chain with no explicit continuation runs
-all three. In **fan-out** a mod's `next(e)` only rewrites the event for later
-registrations; it does not run the classic arm itself, and it resolves the
-kernel's continue, not `ClassicResultOf`. A **mod-only** chain is
+all three. In **fan-out** a mod's `next(e)` runs the rest of the chain as an eager trip
+and that trip's decisions are collected, but the call resolves the kernel's
+continue, not `ClassicResultOf` (D32 §6's return rule; the eager trip is the
+#68 model change). A **mod-only** chain is
 `first-decision`: `next(e)` runs the chain beneath and resolves that event's
 `ClassicResultOf` (`{cwd}` for `session.start`). D13's "a mod that declines
 `next()` owns the rest of the chain" is therefore a `first-decision` statement;
@@ -626,20 +627,26 @@ not collapsed: `additionalContext` becomes the kernel's `text` channel,
 The mod-visible `next` is that same continuation with the pinned members
 projected onto it (`claude-code.d.ts:5271-5352`, issue #68): `to(e, tier)` calls
 the kernel `Next` with the tier argument the kernel already understands, so
-tier order, matcher skipping and trace recording stay in one place. A jump is
-computed by tier rank, not by index: only links strictly between the caller's
-tier and the target tier are passed over and recorded as `skipped` with
+tier order, matcher skipping and trace recording stay in one place. `next` is
+eager and call-scoped: each call immediately continues the chain from the
+calling link and returns that trip, with that call's `to` target. A hook that
+calls `next` twice runs the remainder twice (its choice); the latest trip is
+the one its return decides with and the one `trace` describes, and a sibling's
+later call can never inherit or be blamed for someone else's jump. Both
+continuations follow the same rule: fan-out runs an eager fan-out trip and
+still collects its decisions, but a mod's `next` resolves the kernel's
+continue, not the classic arm's result (D32 §6). A jump is computed by tier
+rank, not by index: only links strictly between the caller's tier and the
+target tier are passed over and recorded as `skipped` with
 `bypassed by <plugin>`, while a same-tier sibling still runs. The landing is
 inclusive of the named target, including a direct jump with no link in
 between; a named tier with no link left falls forward to the next tier that
-has one rather than dropping the rest of the chain. In first-decision the
-remainder is owned by the recursive continuation and the caller's loop returns
-it, so no link runs twice; in fan-out the jump waits until the caller's tier is
-left, so peers are not skipped. `to` refuses a target tier that has already
-run (the pin only moves outward, `claude-code.d.ts:5281-5289`), and a second
-`next`/`next.to` is refused by name instead of silently reusing the first
-result: this host serves one continuation per handler, and the pin's "latest
-call" wording (`:5325-5338`) does not license running the remainder twice. `signal` is the handler's own
+has one rather than dropping the rest of the chain. `to` refuses a target tier
+that has already run (the pin only moves outward, `claude-code.d.ts:5281-5289`).
+`core` is a declared fidelity gap: the pin's `TargetTier` allows it, but this
+chain has no core link, and naming it would skip the `builtin` tier without
+running it, so the member refuses with a reason naming the gap instead of
+resolving. `signal` is the handler's own
 `AbortController`, fired by the handler's timeout and linked to
 `ChainOptions.signal`; the materializer passes `ToolExecution.signal` for
 PreToolUse/PostToolUse, so a host-abandoned call aborts the mod's signal too.
@@ -653,24 +660,21 @@ accounting path), and classic hooks keep their entry snapshot so T3 holds.
 `TraceEntry` subset (`index`, `plugin`, `tier`, `event`, `outcome`, `reason`;
 `ms`, `chunks`, `received` and `returned` are not invented). `plugin` is a host
 label: the owning plugin when the registration carries one, else the
-registration source. The subset is continuation-specific: first-decision sees
-the settled links beneath the call (`passed`, `returned`, `expired`,
-`rejected`, or `skipped` with the reason); fan-out sees only what the caller
-itself recorded, so it is empty after `await next(e)` and holds the pass-over
-after `next.to`. A matcher skip never ran and is not projected (it stays in the
-kernel trace as `skipped-matcher`); a throwing link is `rejected` with the
-throw message as the reason. `TargetTier` is enforced: `prepend`/`user` are
-refused because the pin's type excludes them, and `core` refuses with a reason
-because this chain's innermost link is `builtin`.
+registration source. The subset is the latest trip: every link that settled
+beneath the call during it (first-decision and fan-out alike), plus the
+pass-over entries a `to` recorded when it was called; a second `next` starts a
+new slice, so the earlier trip's steps leave. A matcher skip never ran and is
+not projected (it stays in the kernel trace as `skipped-matcher`); a throwing
+link is `rejected` with the throw message as the reason. `TargetTier` is
+enforced: `prepend`/`user` are refused because the pin's type excludes them,
+and `core` refuses as the declared gap above.
 Covered by `packages/dsh-anyplugin-intercept/test/mods.test.mjs` (`to` skip and
 forward-only, direct-target and missing-tier landings, first-decision
-`next`/`to` single-run, fan-out same-tier sibling, repeated-`next` refusal,
-backward-`to` refusal, matcher-skip exclusion, `rejected`, budget arithmetic
-and pause across `next` and `$`, classic budget snapshot, timeout abort, empty
-fan-out subset, `signal`, tier refusal),
-`packages/dsh-anyplugin-mod-host/test/kernel-bridge.test.mjs` (deny-only guard
-denies; unloaded, the same call continues) and the sec-default turn in
-`packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
+`next`/`to` single-run, fan-out same-tier sibling, two same-tier jumps,
+repeated-`next` trips in both continuations, backward-`to` refusal,
+matcher-skip exclusion, `rejected`, budget arithmetic and pause across `next`
+and `$`, classic budget snapshot, timeout abort, latest-trip subset, `signal`,
+tier refusal).
 
 The skeleton had to add two orthogonal choices beyond the plan. The first is a
 **mode**: the two front-ends need opposite continuation rules, and encoding only
