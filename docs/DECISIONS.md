@@ -1911,3 +1911,50 @@ empty, so a typo in a mod is the only way it can reappear.
 engine table, 75/167/150 counts, category totals), the `vcs.detect` removal
 mutation that reddens three tests, and the S15 run reporting 11 invocations /
 16 `$` calls / 0 handler errors. Merge `ac46bf2`.
+
+## D41 — A tool result we cannot install fails the call closed, and says why
+
+A `tool.call` handler may answer with `{deny}`, `{result}`, or `{isError}`
+(`claude-code.d.ts`, `ToolCallResult`, 2.1.329 pin). The host seam it maps onto —
+`tools/pre-execute` — has a denial channel and a rewrite channel for the
+*arguments*, but no channel that installs a replacement **result**: that value
+arrives only after execution (`tools/post-execute`'s `{kind:'accept', value}`),
+which is too late to be the mod's answer to "what will this call return".
+
+So `{result}` and `{isError}` are typed `unsupported` with `hard: true`, and the
+mount converts that into a real deny instead of running the call with the mod's
+answer dropped.
+
+**Why deny, and not "run the call and report the gap".** Both alternatives were
+measured on the pinned `tool-call-result` fixture (PR #74 body):
+
+- *Deny*: the Bash call does not execute (`calls: []`), the trace records
+  `unsupported.field: 'result'`, and the model receives the deny text naming the
+  gap.
+- *Proceed*: the call executes and the model receives the **raw** tool output
+  (`{content:[{type:'text',text:'ran'}], isError:false}`) while the mod's
+  replacement exists only on the trace.
+
+Proceed is rejected because the plausible use of a returned result is output
+sanitisation or redaction — the mod is the only party that knows what the
+replacement means — and a silent proceed delivers the unsanitised output to the
+model and to the transcript, where nobody can detect the omission afterwards. A
+deny is visible, names its reason, and is recoverable by the user; an
+unsanitised result is not.
+
+**Consequences.** A `tool.call` mod that only *annotates* output now blocks the
+call on this seam; that is the accepted cost, and the reason string says so.
+`{deny}` remains a plain deny, unaffected. If DSH ever grows a pre-execute value
+channel, the same code path switches from deny to "replacement served" and this
+entry is superseded, not rewritten.
+
+`tool.check` stays a **measured refusal** (not this rule): it is the engine's
+post-`PreToolUse` permission verdict, and `next.origin`, `trace`, `settings`,
+`op` and `ceiling` are not representable at `tools/pre-execute`; the load path
+warns with that difference and no `tool.check` invocation occurs.
+
+**Evidence.** `packages/dsh-anyplugin-intercept/src/index.ts` (the `unsupported`
+decision), `packages/dsh-anyplugin-materialize-hook/src/index.ts` (the deny
+conversion and its model-facing text), `test/mods.test.mjs` (deny text asserted,
+run-unchanged measured), the two route-rename mutations, and 463/463 with zero
+skips on both DSH pins. Merge `c42b234`.
