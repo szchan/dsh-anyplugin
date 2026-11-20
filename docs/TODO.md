@@ -119,13 +119,16 @@ own work while `next`/`$` still pause.
   sec-default's `classic.*` guard bypasses user hooks; it does not deny a
   tool call. At 2.1.329 the D39 resolver fallback seats the same mod (45
   registrations), and the guard behavior above is the measured behavior at
-  that pin too.
+  that pin too. The pre-fix defect was reported at the 2.1.322 line numbers
+  (`claude-code.d.ts:4236`); at 2.1.329 `GlobNext.to` is line 6666.
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
   caller-supplied seating, source order preserved) so mods and classic hooks
   share one chain. `mod-events.ts` pins the mapping as data (17 live routes:
-  16 classic plus `session.start`, 147 unmapped names with reasons
+  16 classic plus `session.start`, 150 unmapped names with reasons and
+  categories (`missing bridge` / `no host event` / `not in spec`; the table
+  also enumerates `EngineEventOf`, `ClassicEventOf`, and `OpEventOf`)
   from S9), `on()` patterns (`classic.*`, `*`, negations) expand instead of
   being dropped, classic results are translated (`additionalContext`,
   `updatedInput`) or typed `unsupported`, and the fan-out `next()` divergence
@@ -213,10 +216,11 @@ own work while `next`/`$` still pause.
   fetched, resolved through `CLAUDE_BIN`/PATH, version-guarded; a decoy in the
   fixtures test proves the probe uses the binary it was handed.
 - Upstream mods at 2.1.329 (D14; closes the 2.1.322-pin item): the table now
-  carries all seven mods, with `easel` and `hipaa-default` measured. At this
-  pin `sec-default` becomes a typed `ERR_MOD_HOST_MISSING` refusal because its
-  author added extensionless *file* imports; D30's three resolver behaviors do
-  not serve them, and the table records the refusal instead of faking a load.
+  carries all seven mods, with `easel` and `hipaa-default` measured, and all
+  seven load. `sec-default`'s author added extensionless *file* imports; the
+  D39 resolver fallback (file before directory) serves them, so the table
+  records 45 registrations and no refusal. Its eight classic invocations are
+  live and hit the `next.to` defect above.
 - Mod capability scanner (`dsh-anyplugin-mod-scan`): a lexical read of a mod's
   `register.ts` yields the event sites and `$.` calls an install grant would
   display, without vendoring or executing the mod (D21).

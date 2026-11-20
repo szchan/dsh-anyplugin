@@ -1,5 +1,5 @@
 /**
- * D30's resolver, extended by the D38 proposal: an extensionless relative
+ * D30's resolver, extended by the D39 proposal: an extensionless relative
  * import tries the file form before the directory form.
  *
  * The pinned `diff` graph (S13) uses four specifier shapes:
@@ -46,7 +46,7 @@ export interface ResolveModSpecifierOptions {
 export interface ResolvedModSpecifier {
   /** The existing file the specifier denotes, absolute. */
   readonly file: string
-  /** Which D30/D38 behavior proved it. */
+  /** Which D30/D39 behavior proved it. */
   readonly behavior: ModResolutionBehavior
 }
 

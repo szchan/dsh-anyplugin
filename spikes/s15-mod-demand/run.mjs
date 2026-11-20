@@ -243,7 +243,7 @@ if (byMod.get('privacy').length !== 0) {
 
 // 2. The turn really reached the tool: both classic chains ran, unless
 //    sec-default is refused at load. At 2.1.329 upstream added extensionless
-//    *file* imports; the D38 resolver fallback now serves them, so the mod
+//    *file* imports; the D39 resolver fallback now serves them, so the mod
 //    seats and the chains run. The conditional keeps a future refusal honest:
 //    a refused load is data, and the report names the exact resolver gap; it
 //    must not be mistaken for "the chain silently vanished".

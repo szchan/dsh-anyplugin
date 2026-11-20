@@ -12,12 +12,15 @@ import {
   MOD_ENGINE_EVENTS,
   MOD_EVENT_ROUTES,
   MOD_NONEXISTENT_GUESSES,
+  MOD_OP_EVENTS,
   MOD_PINNED_EVENTS,
+  MOD_UNMAPPED_CATEGORIES,
   MOD_UNMAPPED_REASONS,
   classicEvent,
   classicHookRegistration,
   describeTrace,
   modRegistrationsToKernel,
+  modUnmappedCategory,
   pauseWhilePending,
   runChain,
 } from '../src/index.ts'
@@ -27,11 +30,73 @@ const mod = (event, handler, matcher = undefined) => ({ event, matcher, handler 
 const adapt = (registrations, options = {}) =>
   modRegistrationsToKernel(registrations, { plugin: 'synthetic', entry: 'kernel.ts', ...options })
 
+const ENGINE_AT_2_1_329 = [
+  'tool.call',
+  'tool.check',
+  'tool.judge',
+  'tool.run',
+  'ui.render',
+  'ui.resolve',
+  'ui.press',
+  'ui.input',
+  'ui.select',
+  'ui.message',
+  'ui.fault',
+  'ui.pointer',
+  'ui.scroll',
+  'ui.focus',
+  'agent.offer',
+  'agent.spawn',
+  'agent.report',
+  'prompt.submit',
+  'prompt.fill',
+  'prompt.suggest',
+  'prompt.edit',
+  'prompt.change',
+  'prompt.autocomplete',
+  'prompt.section',
+  'prompt.context',
+  'prompt.compose',
+  'prompt.attachment',
+  'prompt.mention',
+  'tool.describe',
+  'tool.offer',
+  'command.run',
+  'command.describe',
+  'config.set',
+  'config.describe',
+  'telemetry.log',
+  'telemetry.mark',
+  'skill.prompt',
+  'attribution.text',
+  'vcs.detect',
+  'vcs.diff',
+  'vcs.isolate',
+  'vcs.list',
+  'vcs.status',
+  'vcs.release',
+  'session.start',
+  'session.receive',
+  'session.append',
+  'session.send',
+  'session.compact',
+  'session.attach',
+  'session.detach',
+  'session.measure',
+  'session.stop',
+  'session.end',
+  'plugin.register',
+  'turn.start',
+  'turn.step',
+  'turn.complete',
+  'engine.create',
+]
+
 test('every pinned mod event is routed or unmapped with a reason', () => {
   assert.equal(MOD_CLASSIC_EVENTS.length, 33)
-  assert.equal(MOD_ENGINE_EVENTS.length, 40)
+  assert.deepEqual(MOD_ENGINE_EVENTS, ENGINE_AT_2_1_329)
   assert.equal(MOD_EVENT_ROUTES.length, 17)
-  assert.equal(Object.keys(MOD_UNMAPPED_REASONS).length, 56)
+  assert.equal(Object.keys(MOD_UNMAPPED_REASONS).length, 150)
 
   const routed = new Set(MOD_EVENT_ROUTES.map((route) => route.modEvent))
   for (const event of MOD_CLASSIC_EVENTS) {
@@ -39,10 +104,11 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
     assert.ok(routed.has(name) || MOD_UNMAPPED_REASONS[name] !== undefined, `${name} is missing from the mapping`)
     assert.ok(!(routed.has(name) && MOD_UNMAPPED_REASONS[name] !== undefined), `${name} is both routed and unmapped`)
   }
-  for (const event of MOD_ENGINE_EVENTS) {
+  for (const event of MOD_PINNED_EVENTS) {
     assert.ok(routed.has(event) || MOD_UNMAPPED_REASONS[event] !== undefined, `${event} is missing from the mapping`)
     assert.ok(!(routed.has(event) && MOD_UNMAPPED_REASONS[event] !== undefined), `${event} is both routed and unmapped`)
   }
+  assert.equal(MOD_OP_EVENTS.length, 75)
   for (const route of MOD_EVENT_ROUTES) {
     assert.ok(route.kernelEvent.length > 0, route.modEvent)
     assert.ok(route.hostSeam.length > 0, route.modEvent)
@@ -58,8 +124,8 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
   assert.equal(start.hostSeam, 'mod-host/load')
   assert.equal(start.status, 'live')
   assert.equal(start.reason, undefined)
-  assert.equal(MOD_PINNED_EVENTS.length, 73)
-  assert.equal(new Set(MOD_PINNED_EVENTS).size, 73)
+  assert.equal(MOD_PINNED_EVENTS.length, 167)
+  assert.equal(new Set(MOD_PINNED_EVENTS).size, 167)
   // The two partial classic payloads record the S9 caveat.
   const permissionRequest = MOD_EVENT_ROUTES.find((route) => route.kernelEvent === 'PermissionRequest')
   const permissionDenied = MOD_EVENT_ROUTES.find((route) => route.kernelEvent === 'PermissionDenied')
@@ -68,6 +134,52 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
   // MF5: tool.call's reason is a protocol mismatch, not a double-fire.
   assert.match(MOD_UNMAPPED_REASONS['tool.call'], /Protocol mismatch/)
   assert.doesNotMatch(MOD_UNMAPPED_REASONS['tool.call'], /double-fire/)
+})
+
+test('the 19 engine events added at 2.1.329 carry an explicit category', () => {
+  const added = {
+    'tool.judge': 'no host event',
+    'tool.run': 'no host event',
+    'ui.fault': 'no host event',
+    'ui.pointer': 'no host event',
+    'agent.report': 'no host event',
+    'prompt.change': 'no host event',
+    'prompt.autocomplete': 'no host event',
+    'prompt.mention': 'no host event',
+    'tool.offer': 'no host event',
+    'telemetry.log': 'no host event',
+    'telemetry.mark': 'no host event',
+    'vcs.detect': 'missing bridge',
+    'vcs.diff': 'missing bridge',
+    'vcs.isolate': 'missing bridge',
+    'vcs.list': 'missing bridge',
+    'vcs.status': 'missing bridge',
+    'vcs.release': 'missing bridge',
+    'session.send': 'no host event',
+    'session.stop': 'no host event',
+  }
+  assert.equal(Object.keys(added).length, 19)
+  for (const [event, category] of Object.entries(added)) {
+    assert.equal(modUnmappedCategory(event), category, event)
+    assert.ok(MOD_UNMAPPED_REASONS[event], `${event} has no reason`)
+    assert.doesNotMatch(MOD_UNMAPPED_REASONS[event], /not an event/, `${event} must name a host gap, not "not in spec"`)
+  }
+  for (const event of ['vcs.detect', 'vcs.diff', 'vcs.isolate', 'vcs.list', 'vcs.status', 'vcs.release']) {
+    assert.match(MOD_UNMAPPED_REASONS[event], /createModBridge/)
+    assert.match(MOD_UNMAPPED_REASONS[event], /missing/)
+  }
+  for (const event of MOD_OP_EVENTS) {
+    assert.equal(modUnmappedCategory(event), 'no host event', event)
+    assert.match(MOD_UNMAPPED_REASONS[event], /OpEventOf/)
+  }
+  // Every pinned-but-unmapped name is classified; only names outside the pin
+  // are `not in spec`, so a typo in a mod does not read like a host gap.
+  for (const event of Object.keys(MOD_UNMAPPED_REASONS)) {
+    assert.notEqual(modUnmappedCategory(event), 'not in spec', event)
+  }
+  assert.equal(Object.keys(MOD_UNMAPPED_CATEGORIES).length, 150)
+  assert.equal(modUnmappedCategory('made.up'), 'not in spec')
+  assert.equal(modUnmappedCategory('post.tool.use'), 'not in spec')
 })
 
 test('the ticket prose names are reported as absent, pointing at the pin', () => {
@@ -138,7 +250,9 @@ test('an unmapped event and an unbridgeable matcher are reported, never dropped'
     'classic.PostToolUse',
   ])
   assert.match(result.unmapped[0].reason, /UI lifecycle/)
-  assert.match(result.unmapped[1].reason, /not an event in the pinned claude-code\.d\.ts/)
+  assert.match(result.unmapped[1].reason, /not an event in EngineEventOf\/ClassicEventOf at the 2\.1\.329 pin/)
+  assert.equal(result.unmapped[1].category, 'not in spec')
+  assert.equal(result.unmapped[0].category, 'no host event')
   assert.match(result.unmapped[2].reason, /structural matcher/)
   assert.match(result.unmapped[3].reason, /RegExp flags/)
   assert.match(result.unmapped[4].reason, /null/)
@@ -281,31 +395,40 @@ test('a classic.* pattern expands to the 16 live classic routes and reports the 
   assert.ok(!registrations.some((registration) => registration.event === 'session.start'))
 })
 
-test('a * pattern expands to every routed name and reports the 56 without a route', () => {
+test('a * pattern expands to every routed name and reports the 150 without a route', () => {
   const { registrations, unmapped } = adapt([mod('*', () => undefined)])
   assert.equal(registrations.length, 17)
-  assert.equal(unmapped.length, 56)
+  assert.equal(unmapped.length, 150)
   assert.ok(registrations.some((registration) => registration.event === 'session.start'))
   assert.ok(unmapped.some((entry) => entry.event === 'ui.render'))
 })
 
-test('tool.* reaches the three engine tool events, each with its pinned reason', () => {
+test('tool.* reaches the eight tool events, each with its pinned reason', () => {
   const { registrations, unmapped } = adapt([mod('tool.*', () => undefined)])
   assert.equal(registrations.length, 0)
-  assert.deepEqual(unmapped.map((entry) => entry.event), ['tool.call', 'tool.check', 'tool.describe'])
+  assert.deepEqual(unmapped.map((entry) => entry.event), [
+    'tool.call',
+    'tool.check',
+    'tool.judge',
+    'tool.run',
+    'tool.describe',
+    'tool.offer',
+    'tool.list',
+    'tool.register',
+  ])
   assert.ok(unmapped.every((entry) => entry.reason.length > 0))
 })
 
 test('a negation selects the complement: !tool.* excludes every tool route', () => {
   const { registrations, unmapped } = adapt([mod('!tool.*', () => undefined)])
   assert.equal(registrations.length, 17)
-  assert.equal(unmapped.length, 53)
+  assert.equal(unmapped.length, 142)
   assert.ok(registrations.every((registration) => !registration.event.startsWith('tool.')))
   assert.ok(!unmapped.some((entry) => entry.event.startsWith('tool.')))
   const engineOnly = adapt([mod('!classic.*', () => undefined)])
   assert.equal(engineOnly.registrations.length, 1)
   assert.equal(engineOnly.registrations[0].event, 'session.start')
-  assert.equal(engineOnly.unmapped.length, 39)
+  assert.equal(engineOnly.unmapped.length, 133)
 })
 
 test('a pattern that cannot be expanded gets its own reason, not "not an event"', () => {

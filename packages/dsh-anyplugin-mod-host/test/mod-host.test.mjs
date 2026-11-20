@@ -180,7 +180,7 @@ test('falls back to clock.now when usage() returns undefined', async () => {
   )
 })
 
-test('resolveModSpecifier implements the D30/D38 behaviors in candidate order', () => {
+test('resolveModSpecifier implements the D30/D39 behaviors in candidate order', () => {
   assert.deepEqual(resolveModSpecifier({ specifier: '.', parent: ASK_INDEX, root: ROOT }), {
     file: ASK_INDEX,
     behavior: 'directory-index',

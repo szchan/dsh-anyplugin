@@ -2,11 +2,12 @@
  * The mod-event → kernel-event mapping, as data (D13, D32).
  *
  * The specification is the pinned `claude-code.d.ts` written by Claude Code
- * 2.1.322 (tag v2.1.322, commit 6e1e44f6433bfa17d198e932bff53373aa229eea), not
+ * 2.1.329 (tag v2.1.329, commit f9e4d1e5753ccffcffdd832f047d72be000396a6), not
  * the prose. (The file's own header says 2.1.277; the commit is the pin.) A
- * mod's `on()` names are exactly the keys of `EngineEventOf` plus the
- * `classic.<Event>` names of `ClassicEventOf` (d.ts:951-953); there is no
- * separate mod vocabulary.
+ * mod's `on()` names are the keys of `EventOf`: `EngineEventOf` (59 at this pin,
+ * d.ts:4940-5939), the `classic.<Event>` names of `ClassicEventOf`
+ * (d.ts:951-953), and the `$`-op names of `OpEventOf` (72, d.ts:8646), plus
+ * each plugin's own `NounEventOf` (per-plugin, so not enumerable here).
  *
  * A route is a mod name that the host can fire today, the kernel event it
  * shares with the classic front-end, the S9 host seam, and the payload shape
@@ -21,6 +22,12 @@
 
 /** How the host event at `hostSeam` carries a mod handler's `e`. */
 export type ModEventPayload = 'classic' | 'tool-call-envelope' | 'engine'
+
+/** Why a pinned event is not adapted, in the report's own vocabulary. */
+export type ModUnmappedCategory = 'missing bridge' | 'no host event' | 'not in spec'
+
+/** The spec a warning names. Kept here so no warning can drift from the pin. */
+export const MOD_SPEC_LABEL = 'claude-code 2.1.329 (f9e4d1e)'
 
 export interface ModEventRoute {
   /** The name a mod passes to `on()`. */
@@ -229,51 +236,155 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
 ])
 
 /**
- * The pinned engine events, in d.ts order (EngineEventOf, d.ts:3267-3698).
- * Kept as a list so a test can prove that every name in the pin is either
- * routed or unmapped with a reason when the pin moves.
+ * The pinned engine events, in d.ts order (EngineEventOf, d.ts:4940-5939,
+ * 59 names at 2.1.329). Kept as a list so a test can prove that every name in
+ * the pin is either routed or unmapped with a reason when the pin moves.
  */
 export const MOD_ENGINE_EVENTS: readonly string[] = Object.freeze([
   'tool.call',
   'tool.check',
+  'tool.judge',
+  'tool.run',
   'ui.render',
   'ui.resolve',
   'ui.press',
   'ui.input',
   'ui.select',
   'ui.message',
+  'ui.fault',
+  'ui.pointer',
   'ui.scroll',
   'ui.focus',
   'agent.offer',
   'agent.spawn',
+  'agent.report',
   'prompt.submit',
   'prompt.fill',
   'prompt.suggest',
   'prompt.edit',
+  'prompt.change',
+  'prompt.autocomplete',
   'prompt.section',
   'prompt.context',
   'prompt.compose',
   'prompt.attachment',
+  'prompt.mention',
   'tool.describe',
+  'tool.offer',
   'command.run',
   'command.describe',
   'config.set',
   'config.describe',
+  'telemetry.log',
+  'telemetry.mark',
   'skill.prompt',
   'attribution.text',
+  'vcs.detect',
+  'vcs.diff',
+  'vcs.isolate',
+  'vcs.list',
+  'vcs.status',
+  'vcs.release',
   'session.start',
   'session.receive',
   'session.append',
+  'session.send',
   'session.compact',
   'session.attach',
   'session.detach',
   'session.measure',
+  'session.stop',
   'session.end',
   'plugin.register',
   'turn.start',
   'turn.step',
   'turn.complete',
   'engine.create',
+])
+
+/**
+ * The `$`-op hook names in `OpEventOf` (d.ts:8646), sorted. `On` accepts them
+ * because `EventName = keyof EventOf`, and `EventOf` is `CoreEventOf` (engine,
+ * classic, op) intersected with the per-plugin nouns. A mod can hook an op even
+ * though DSH's bridge has no op-hook route; the table records that rather than
+ * calling the name absent from the spec.
+ */
+export const MOD_OP_EVENTS: readonly string[] = Object.freeze([
+  'agent.call',
+  'agent.limits',
+  'agent.list',
+  'agent.register',
+  'audio.play',
+  'audio.speak',
+  'clock.after',
+  'clock.every',
+  'clock.now',
+  'clock.sleep',
+  'command.list',
+  'command.register',
+  'config.list',
+  'env.get',
+  'env.set',
+  'fs.ancestors',
+  'fs.exists',
+  'fs.list',
+  'fs.read',
+  'fs.stat',
+  'fs.write',
+  'http.fetch',
+  'mcp.call',
+  'mcp.connect',
+  'model.classify',
+  'model.complete',
+  'model.fork',
+  'process.hookEnv',
+  'process.run',
+  'process.spawn',
+  'prompt.paint',
+  'prompt.read',
+  'session.authorize',
+  'session.cwd',
+  'session.id',
+  'session.identity',
+  'session.info',
+  'session.machine',
+  'session.messages',
+  'session.model',
+  'session.repo',
+  'session.root',
+  'session.surface',
+  'session.surfaces',
+  'session.turns',
+  'session.usage',
+  'session.version',
+  'settings.read',
+  'state.get',
+  'state.set',
+  'store.delete',
+  'store.get',
+  'store.keys',
+  'store.set',
+  'theme.clear',
+  'theme.set',
+  'tool.list',
+  'tool.register',
+  'turn.abort',
+  'ui.blit',
+  'ui.cancelNotify',
+  'ui.close',
+  'ui.copy',
+  'ui.invalidate',
+  'ui.log',
+  'ui.notice',
+  'ui.notify',
+  'ui.open',
+  'ui.panes',
+  'ui.place',
+  'ui.selection',
+  'ui.status',
+  'ui.toast',
+  'ui.view',
+  'wasm.compile',
 ])
 
 /**
@@ -389,6 +500,47 @@ const SESSION_NO_SEAM_EVENTS = [
   'session.measure',
 ]
 
+const VCS_EVENTS = ['vcs.detect', 'vcs.diff', 'vcs.isolate', 'vcs.list', 'vcs.status', 'vcs.release']
+
+/**
+ * Engine events added by the 2.1.329 pin that have no DSH event firing at their
+ * point. Each reason names the absent host event or bridge member, so the
+ * warning can distinguish "we have no seam" from "this is not in the spec".
+ */
+const NEW_NO_HOST_EVENTS: Readonly<Record<string, string>> = Object.freeze({
+  'tool.judge':
+    'No DSH host event fires at the auto-mode classifier point; the bridge also exposes no tool.judge member.',
+  'tool.run':
+    'No DSH host event fires after an allowed call is about to run; tools/pre-execute is the pre-execution seam, not this run boundary.',
+  'ui.fault':
+    'No DSH UI channel fires for a client fault; the element runtime is out of scope (D31).',
+  'ui.pointer':
+    'No DSH UI channel fires for a backdrop pointer event; the element runtime is out of scope (D31).',
+  'agent.report':
+    'No DSH host event fires before an agent report reaches its parent, and the bridge has no agent.report member.',
+  'prompt.change':
+    'No DSH host event fires when the interactive prompt box changes; the bridge has no prompt-box channel.',
+  'prompt.autocomplete':
+    'No DSH host event fires for interactive prompt typeahead; the bridge has no prompt-box channel.',
+  'prompt.mention':
+    'No DSH host event fires when a prompt mentions a path; the bridge has no prompt-box channel.',
+  'tool.offer':
+    'No DSH host event fires when a tool is offered to a loop model, and the bridge has no tool.offer member.',
+  'telemetry.log':
+    'The bridge serves $.telemetry.log as a call, but DSH fires no telemetry.log event for a mod to observe; there is no host seam.',
+  'telemetry.mark':
+    'The bridge serves $.telemetry.mark as a call, but DSH fires no telemetry.mark event for a mod to observe; there is no host seam.',
+  'session.send':
+    'No DSH host event fires for an outbound session message, and the bridge session surface has no send member.',
+  'session.stop':
+    'No DSH host event fires for the person pressing Stop; the classic Stop point maps to agent/turn-stopping (D32).',
+})
+
+const NEW_ENGINE_CATEGORIES: Readonly<Record<string, ModUnmappedCategory>> = Object.freeze({
+  ...Object.fromEntries(VCS_EVENTS.map((event) => [event, 'missing bridge' as const])),
+  ...Object.fromEntries(Object.keys(NEW_NO_HOST_EVENTS).map((event) => [event, 'no host event' as const])),
+})
+
 const ENGINE_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
   ...reasons(
     UI_EVENTS,
@@ -403,6 +555,11 @@ const ENGINE_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
     SESSION_NO_SEAM_EVENTS,
     'No S9 host seam. session.compact is the engine’s compaction point; the classic PreCompact/PostCompact records are the notification-only seam (S9 1281-1282).',
   ),
+  ...reasons(
+    VCS_EVENTS,
+    'createModBridge defines no vcs namespace, so $.vcs.* cannot resolve; the engine events have no host route either. Recorded missing at 2.1.329, not refused.',
+  ),
+  ...NEW_NO_HOST_EVENTS,
   'tool.call':
     'Protocol mismatch: tools/pre-execute carries the classic PreToolUse protocol, while tool.call returns the engine result { deny } / { result } (d.ts:3270-3276). Routing it through that waterfall would translate one protocol into the other, not share one chain; leave the native engine event to its own subscription (D32).',
   'tool.check':
@@ -424,17 +581,48 @@ const ENGINE_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
     'Constructs a `$`; there is no host event to attach it to, and D31 keeps the engine fold out of the mod adapter.',
 })
 
-/** Every pinned event name: the classic names plus the engine names. */
+/** Every pinned event name: classic, engine, and the `$`-op hooks. */
 export const MOD_PINNED_EVENTS: readonly string[] = Object.freeze([
   ...MOD_CLASSIC_EVENTS.map((event) => `classic.${event}`),
   ...MOD_ENGINE_EVENTS,
+  ...MOD_OP_EVENTS,
 ])
+
+const OP_UNMAPPED: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    MOD_OP_EVENTS.map((event) => [
+      event,
+      'OpEventOf hook: the bridge exposes this as a $ call where it is served, but DSH fires no event at the op and has no op-hook route; recorded missing, not refused (D32/D39).',
+    ]),
+  ),
+)
 
 /** Every pinned name that is not routed, with the S9/D31 reason it is not. */
 export const MOD_UNMAPPED_REASONS: Readonly<Record<string, string>> = Object.freeze({
   ...CLASSIC_UNMAPPED,
   ...ENGINE_UNMAPPED,
+  ...OP_UNMAPPED,
 })
+
+/**
+ * The category that goes into a warning. Pinned names have a host-side reason
+ * (`no host event`) unless the report already classified them more precisely
+ * (`missing bridge`); names outside the pin are `not in spec` so a typo in a
+ * mod does not read like a host gap.
+ */
+export const MOD_UNMAPPED_CATEGORIES: Readonly<Record<string, ModUnmappedCategory>> = Object.freeze({
+  ...Object.fromEntries(Object.keys(CLASSIC_UNMAPPED).map((event) => [event, 'no host event' as const])),
+  ...Object.fromEntries(Object.keys(ENGINE_UNMAPPED).map((event) => [event, 'no host event' as const])),
+  ...Object.fromEntries(MOD_OP_EVENTS.map((event) => [event, 'no host event' as const])),
+  ...NEW_ENGINE_CATEGORIES,
+})
+
+/** Classify an event for the report and the runtime warning. */
+export function modUnmappedCategory(event: string): ModUnmappedCategory {
+  const explicit = MOD_UNMAPPED_CATEGORIES[event]
+  if (explicit !== undefined) return explicit
+  return 'not in spec'
+}
 
 /**
  * Names that appeared in the ticket's prose but not in the pin. Kept as data
@@ -462,5 +650,5 @@ export function modUnmappedReason(event: string): string {
   if (pinned !== undefined) {
     return pinned
   }
-  return 'not an event in the pinned claude-code.d.ts (EngineEventOf/ClassicEventOf); plugin-declared noun events are not hostable yet (D32).'
+  return 'not an event in EngineEventOf/ClassicEventOf at the 2.1.329 pin; plugin-declared noun events are not hostable yet (D32).'
 }

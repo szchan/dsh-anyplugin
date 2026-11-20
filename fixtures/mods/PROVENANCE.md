@@ -30,14 +30,14 @@ The scanner's ticket (issue #2) and ARCHITECTURE §7.3 call the diff file
 under `hooks/`. The tests pin the real path above. Anything that re-pins must
 check the path again rather than trusting the ticket text.
 
-At 2.1.329 `sec-default` **loads** after the D38 resolver fallback:
+At 2.1.329 `sec-default` **loads** after the D39 resolver fallback:
 `policy/names-org-tool.ts` and
 `policy/managed-tools-restored/managed-tools-restored.ts` import
 `./reads-as-org-tool` without an extension, and that path is a *file*. D30's
 resolver served only a directory index, so the host refused with
 `ERR_MOD_HOST_MISSING` — our gap, since upstream's loader serves the file.
 The host now tries `<spec>.ts`, `<spec>.tsx`, `<spec>/index.ts`,
-`<spec>/index.tsx` in that order (file before directory; D38 proposal), and
+`<spec>/index.tsx` in that order (file before directory; D39 proposal), and
 the row records the observed **45 registrations**. No row is refused at this
 pin.
 

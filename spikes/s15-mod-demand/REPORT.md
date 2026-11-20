@@ -24,14 +24,15 @@ change moved the load surface, and the host resolver caught up with it:
   extension. D30's resolver served only the directory form, so the mod refused
   at load until the host adopted Node's file-then-directory order
   (`<spec>.ts`, `<spec>.tsx`, `<spec>/index.ts`, `<spec>/index.tsx`;
-  D38 proposal). It now loads with **45 registrations**, including one
+  D39 proposal). It now loads with **45 registrations**, including one
   `classic.*` wildcard.
-- The turn is back to **11 handler invocations** and 5 `$` calls. The eight
-  routed classic events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`,
-  `PostToolUse`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`)
-  invoke sec-default's handler and **all eight throw
-  `TypeError: next.to is not a function`** — the host bug in §6 is live again,
-  not latent.
+- The turn is back to **11 handler invocations** and 16 `$` calls, with
+  **0 handler errors**. The eight routed classic events (`SessionStart`,
+  `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
+  `SubagentStop`, `SessionEnd`) invoke sec-default's handler, and its
+  `next.to(e, 'append')` is served by the kernel's own continuation (#68):
+  the guard runs and bypasses the `user` tier. The host bug in §6 is fixed at
+  this pin, not latent.
 - Authored demand over the same five mods: **69 call sites / 30
   `namespace.method` pairs / 11 namespaces**. The 30 pairs partition exactly:
   **16 served + 8 typed refusals + 6 absent = 30**.
@@ -50,13 +51,13 @@ change moved the load surface, and the host resolver caught up with it:
   the pin (`mods/diff/hooks/register.ts:962-963`). The old status heuristic
   labelled every unknown name "served"; the spike now classifies against the
   bridge's exact member table.
-- `$` calls on the executed path: 5 (agents-md 1, diff 4), all resolved; 0
-  typed refusals reached.
+- `$` calls on the executed path: 16 across 11 invocation groups (sec-default's
+  eight classic calls add `session.cwd` on each event), all resolved; 0 typed
+  refusals reached.
 - Output tail: `tool: 1 Bash call; child agent: started; SubagentStart chain:
-  observed`; `session.start: 3 handler invocation(s)`; `trace: 104 lines;
-  invocations: 11; $ groups: 11; $ calls: 5`; `handler errors: 8 (sec-default:
-  TypeError: next.to is not a function)`; `result: OK (turn assertions passed;
-  handler errors are recorded above)`.
+  observed`; `session.start: 3 handler invocation(s)`; `trace: 105 lines;
+  invocations: 11; $ groups: 11; $ calls: 16`; `handler errors: 0`;
+  `result: OK (turn assertions passed; handler errors are recorded above)`.
 
 ## 1. Run it
 

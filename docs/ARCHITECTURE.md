@@ -830,7 +830,7 @@ that report and that caveat, not the list alone.
 | Terminal-only elements (`Raster`, `Image`, `AbovePrompt` band on terminal) | `derived` — DSH renders web; terminal panel only |
 | `Client` second file (animation / pointer half) — bundling and props are undocumented | `planned`, needs hands-on probing |
 | `.tsx` / JSX mods | **host landed** (D34): a `.tsx` module declaring the classic pragma (`@jsxRuntime classic`, `@jsx h`, `@jsxFrag Fragment`) loads through one narrow in-memory transform with `h`/`Fragment` as realm globals; all 21 pinned `.tsx` load (S14, 122/122). No pragma, a foreign pragma/runtime, direct `.tsx` specifiers and rendering stay unsupported/`planned` |
-| Authored specifier conventions (`'./ask'`, `'./reads-as-org-tool'` for the sibling `.ts`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33/#58) — extensionless imports try the file form (`<spec>.ts`, `<spec>.tsx`) before the directory form (`<spec>/index.ts`, `<spec>/index.tsx`), preserving `.js`→`.ts`, `.jsx`→`.tsx` and bare/dot→`index.ts`; our host obligation, not an upstream specification; stock Node ESM refuses these shapes; resolution changes no bytes (S13, D30, D38, §7.7) |
+| Authored specifier conventions (`'./ask'`, `'./reads-as-org-tool'` for the sibling `.ts`, `'./x.js'` for `x.ts`, `'.'` self-import) | **host landed** (`dsh-anyplugin-mod-host`, #33/#58) — extensionless imports try the file form (`<spec>.ts`, `<spec>.tsx`) before the directory form (`<spec>/index.ts`, `<spec>/index.tsx`), preserving `.js`→`.ts`, `.jsx`→`.tsx` and bare/dot→`index.ts`; our host obligation, not an upstream specification; stock Node ESM refuses these shapes; resolution changes no bytes (S13, D30, D39, §7.7) |
 | Cross-mod pane ownership (`$.ui.open({id})` collisions) | must be reproduced, bug reports already exist upstream |
 | Version drift (`$.ui.backdrop` removed in 2.1.319; `AbovePromptList` needs 2.1.323) | pin the release; regenerate the symbol table per pin |
 
@@ -864,7 +864,7 @@ imports inside the `.tsx` modules the stubs did not have, not new modules). No
 exact-file fallback is used at this pin, and the resolver carries no other
 candidate branches. The 2.1.329 pin adds a fifth shape — extensionless sibling
 file imports such as `./reads-as-org-tool` — that this graph does not contain;
-D38 adds it with the same file-before-directory order. These are **our host
+D39 adds it with the same file-before-directory order. These are **our host
 obligation**, not an upstream specification. `module.stripTypeScriptTypes(source, { mode: 'strip' })` is the
 only transform applied to `.ts`; it replaces type syntax with whitespace, so
 byte length and line numbers are preserved for `.ts` (the scanner's line
@@ -1518,11 +1518,11 @@ the 16 classic events were not exercised by this turn. The load-time
 `session.start` has no session: `usage()`/`messages()` return empty shapes and
 `session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
 
-**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations** and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: **16 served**, **8 typed refusals**, **6 absent** — the original three plus `ui.ask`, `vcs.detect` and `vcs.diff`. `ui.ask` and `vcs.*` are absent members, not refusals: `createModBridge` never defines them, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
+**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations**, **16 `$` calls**, and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: **16 served**, **8 typed refusals**, **6 absent** — the original three plus `ui.ask`, `vcs.detect` and `vcs.diff`. `ui.ask` and `vcs.*` are absent members, not refusals: `createModBridge` never defines them, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
 
 **Host bug found, now fixed (#68).** `next.to`, declared by the pin
-(`claude-code.d.ts:5271-5352`; the same seven members appear as `GlobNext` at
-`:4236`) and claimed by the host's `copyNextSurface`
+(`claude-code.d.ts:5271-5352`; at the 2.1.322 line numbers the same seven
+members appear as `GlobNext` at `:4236`; at 2.1.329 `GlobNext.to` is line 6666) and claimed by the host's `copyNextSurface`
 (`dsh-anyplugin-mod-host/src/index.ts:214`), was absent from the mod-visible
 continuation: the kernel's `Next` had no `to`; `runModHandler` built a fresh
 bare function. `sec-default`'s `classic.*` handler therefore threw

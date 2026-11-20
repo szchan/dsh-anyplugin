@@ -13,7 +13,14 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-import { MOD_EVENT_ROUTES, MOD_PINNED_EVENTS, modUnmappedReason, type ModEventRoute } from './mod-events.ts'
+import {
+  MOD_EVENT_ROUTES,
+  MOD_PINNED_EVENTS,
+  modUnmappedCategory,
+  modUnmappedReason,
+  type ModEventRoute,
+  type ModUnmappedCategory,
+} from './mod-events.ts'
 
 export * from './mod-events.ts'
 
@@ -425,6 +432,8 @@ export interface ModKernelUnmapped {
   source: string
   /** Why it was not adapted; never an empty string. */
   reason: string
+  /** What kind of gap this is: bridge, host event, or not in the pin. */
+  category?: ModUnmappedCategory
 }
 
 export interface ModKernelRoute {
@@ -1111,7 +1120,13 @@ export function modRegistrationsToKernel(
       const source = selectedEvent === authoredEvent ? baseSource : `${baseSource}[${selectedEvent}]`
       const route = ROUTES_BY_MOD_EVENT.get(selectedEvent)
       if (route === undefined) {
-        unmapped.push({ event: selectedEvent, index, source, reason: modUnmappedReason(selectedEvent) })
+        unmapped.push({
+          event: selectedEvent,
+          index,
+          source,
+          reason: modUnmappedReason(selectedEvent),
+          category: modUnmappedCategory(selectedEvent),
+        })
         continue
       }
       if ('reason' in matcher) {

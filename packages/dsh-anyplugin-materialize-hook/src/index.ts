@@ -55,6 +55,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import {
   CONTINUE,
+  MOD_SPEC_LABEL,
   classicEvent,
   classicHookRegistration,
   modRegistrationsToKernel,
@@ -1188,7 +1189,8 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         else bucket.push(registration)
       }
       for (const row of adapted.unmapped) {
-        warn(`anyplugin mod ${row.source}: ${row.reason}`)
+        const where = row.category === undefined ? '' : `${row.category} at ${MOD_SPEC_LABEL}: `
+        warn(`anyplugin mod ${row.source}: ${where}${row.reason}`)
       }
     }
 
