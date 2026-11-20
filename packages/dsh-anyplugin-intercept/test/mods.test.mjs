@@ -195,8 +195,10 @@ test('one chain: a mod (prepend/wrap) and a classic hook (user/observe/fan-out) 
   assert.deepEqual(
     result.trace.map((entry) => [entry.index, entry.tier, entry.source, entry.status]),
     [
-      [0, 'prepend', 'synthetic/kernel.ts#0', 'ran'],
+      // `next` runs the remainder: the classic link settles inside the mod's
+      // call and is recorded before the caller's own step.
       [1, 'user', 'hook#0', 'ran'],
+      [0, 'prepend', 'synthetic/kernel.ts#0', 'ran'],
     ],
   )
   assert.deepEqual(result.decisions, [])
@@ -345,13 +347,14 @@ test('without an explicit continuation a [mod, classic, mod] chain takes fan-out
     [registrations[0], classic, registrations[1]],
   )
   t.diagnostic(describeTrace(result.trace).join('\n'))
-  // In fan-out, next(e) only rewrites for later registrations; it does not
-  // run the classic arm and resolves the kernel's continue, not ClassicResultOf.
+  // In fan-out next(e) runs the remainder eagerly, but it still resolves the
+  // kernel's continue, not ClassicResultOf: the mod does not re-decide the
+  // classic arm's decision (D32 §6).
   assert.equal(fanOutNext, undefined)
   assert.deepEqual(order, ['mod-first', 'classic', 'mod-last'])
   assert.deepEqual(
     result.trace.map((entry) => [entry.source, entry.status]),
-    [['synthetic/kernel.ts#0', 'ran'], ['hook#0', 'ran'], ['synthetic/kernel.ts#1', 'ran']],
+    [['hook#0', 'ran'], ['synthetic/kernel.ts#1', 'ran'], ['synthetic/kernel.ts#0', 'ran']],
   )
   assert.deepEqual(result.decisions, [{ kind: 'text', text: 'classic decision' }])
   assert.deepEqual(result.decision, { kind: 'text', text: 'classic decision' })
@@ -509,12 +512,19 @@ test('next.to(e, "append") from prepend skips a user classic hook, runs append, 
       outcome: 'skipped',
       reason: 'bypassed by synthetic',
     },
+    {
+      index: 2,
+      plugin: 'append#0',
+      tier: 'append',
+      event: 'classic.PreToolUse',
+      outcome: 'passed',
+    },
   ])
   assert.equal(Object.isFrozen(seenBeneath), true)
   assert.equal(Object.isFrozen(seenBeneath[0]), true)
-  // The append link is recorded after the prepend hook unsets, so the mod's own
-  // view is short of it — nothing it never saw leaves, nothing it never ran joins.
-  assert.deepEqual(result.trace.map((entry) => [entry.index, entry.status]), [[1, 'skipped'], [0, 'ran'], [2, 'ran']])
+  // The append link ran inside the mod's next call, so it is recorded before
+  // the prepend hook's own step; nothing it never saw leaves.
+  assert.deepEqual(result.trace.map((entry) => [entry.index, entry.status]), [[1, 'skipped'], [2, 'ran'], [0, 'ran']])
   assert.equal(result.decision.kind, 'continue')
 })
 
@@ -744,7 +754,9 @@ test('fan-out: next.to passes over the tiers beneath the caller, not a same-tier
     }),
   )
   const result = await runChain(guardedCall(), [first, second, user, append], { continuation: 'fan-out' })
-  assert.deepEqual(ran, ['first', 'second', 'append'])
+  // The caller's `next.to` runs the sibling and the append trip inside the
+  // call, so the caller pushes its marker last.
+  assert.deepEqual(ran, ['second', 'append', 'first'])
   const skipped = result.trace.find((entry) => entry.source === 'user#0')
   assert.equal(skipped.status, 'skipped')
   assert.equal(skipped.detail, 'bypassed by synthetic')
@@ -911,7 +923,7 @@ test('a timed-out handler sees its own signal aborted', async () => {
   assert.equal(await saw, true)
 })
 
-test('fan-out: next.trace is empty while the kernel owns the remainder', async () => {
+test('fan-out: next.trace reports the trip the call just ran', async () => {
   let beneath
   const prepend = at(
     'prepend',
@@ -926,12 +938,11 @@ test('fan-out: next.trace is empty while the kernel owns the remainder', async (
     run: () => {},
   })
   const result = await runChain(guardedCall(), [prepend, user])
-  // In fan-out the kernel, not the hook, runs the links beneath: nothing has
-  // settled when `next` resolves, so the projection is empty. Pinned so the
-  // documented subset cannot silently start inventing steps.
-  assert.deepEqual(beneath, [])
+  // The call ran the remainder eagerly, so the classic link beneath it has
+  // settled and is reported; the caller's own step is recorded after it returns.
+  assert.deepEqual(beneath.map((entry) => [entry.tier, entry.outcome]), [['user', 'passed']])
   assert.equal(Object.isFrozen(beneath), true)
-  assert.deepEqual(result.trace.map((entry) => entry.status), ['ran', 'ran'])
+  assert.deepEqual(result.trace.map((entry) => [entry.source, entry.status]), [['user#0', 'ran'], ['synthetic/kernel.ts#0', 'ran']])
 })
 
 // Round-3 review (M1): a deferred jump must land ON the named target, and a
@@ -1050,22 +1061,20 @@ test('fan-out: next.to skips only strictly beneath tiers, never a direct same-ti
     }),
   )
   const result = await runChain(guardedCall(), [guard, sibling, append], { continuation: 'fan-out' })
-  assert.deepEqual(ran, ['guard', 'sibling', 'append'])
+  // The guard's eager jump runs the sibling and append inside the call.
+  assert.deepEqual(ran, ['sibling', 'append', 'guard'])
   assert.deepEqual(result.trace.filter((entry) => entry.tier === 'prepend').map((entry) => entry.status), ['ran', 'ran'])
 })
 
-test('a second next call is refused by name instead of silently reusing the first', async () => {
+test('a second next call starts a second trip; the latest trip is the one it sees', async () => {
   const seen = []
-  let secondCall
+  let beneath
   const prepend = at(
     'prepend',
     mod('classic.PreToolUse', async (event, next) => {
       await next({ ...event, command: 'First' })
-      try {
-        await next({ ...event, command: 'Second' })
-      } catch (error) {
-        secondCall = error
-      }
+      await next({ ...event, command: 'Second' })
+      beneath = next.trace
     }),
   )
   const user = at(
@@ -1075,11 +1084,83 @@ test('a second next call is refused by name instead of silently reusing the firs
       return next(event)
     }),
   )
-  await runChain(guardedCall(), [prepend, user])
-  assert.equal(seen.length, 1, 'the chain ran once, not twice')
-  assert.deepEqual(seen, ['First'], 'the first call is the one that ran')
-  assert.match(secondCall.message, /called twice/)
-  assert.match(secondCall.message, /5325-5338/)
+  const result = await runChain(guardedCall(), [prepend, user])
+  assert.deepEqual(seen, ['First', 'Second'], 'each call runs the remainder')
+  // The kernel trace keeps both trips; the mod projection describes the latest
+  // one only, as the pin says (`trace` is "its latest next() call").
+  assert.deepEqual(result.trace.map((entry) => [entry.tier, entry.status]), [
+    ['user', 'ran'],
+    ['user', 'ran'],
+    ['prepend', 'ran'],
+  ])
+  assert.deepEqual(beneath.map((entry) => [entry.index, entry.tier]), [[1, 'user']])
+})
+
+test('fan-out: a second next call also runs the remainder a second time', async () => {
+  const seen = []
+  const caller = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next({ ...event, command: 'First' })
+      await next({ ...event, command: 'Second' })
+    }),
+  )
+  const user = at(
+    'user',
+    mod('classic.PreToolUse', (event, next) => {
+      seen.push(event.command)
+      return next(event)
+    }),
+  )
+  const result = await runChain(guardedCall(), [caller, user], { continuation: 'fan-out' })
+  assert.deepEqual(seen, ['First', 'Second'])
+  assert.deepEqual(result.trace.map((entry) => [entry.tier, entry.status]), [
+    ['user', 'ran'],
+    ['user', 'ran'],
+    ['prepend', 'ran'],
+  ])
+})
+
+test('two same-tier handlers that both jump: each to owns its own trip', async () => {
+  for (const continuation of ['first-decision', 'fan-out']) {
+    const ran = []
+    const guard = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        await next.to(event, 'append')
+        ran.push('guard')
+      }),
+    )
+    const sibling = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        ran.push('sibling')
+        // The sibling's own target belongs to the trip it starts; it is not
+        // attributed to the guard's call above it.
+        await next.to(event, 'append')
+      }),
+    )
+    const append = at(
+      'append',
+      mod('classic.PreToolUse', async (event, next) => {
+        ran.push('append')
+        return next(event)
+      }),
+    )
+    const builtin = at(
+      'builtin',
+      mod('classic.PreToolUse', async (event, next) => {
+        ran.push('builtin')
+        return next(event)
+      }),
+    )
+    const result = await runChain(guardedCall(), [guard, sibling, append, builtin], { continuation })
+    assert.deepEqual(ran, ['sibling', 'append', 'builtin', 'guard'], continuation)
+    assert.equal(result.decision.kind, 'continue')
+    // append ran once, builtin ran once: the guard's jump did not drop them.
+    assert.equal(result.trace.filter((entry) => entry.tier === 'append').length, 1)
+    assert.equal(result.trace.filter((entry) => entry.tier === 'builtin').length, 1)
+  }
 })
 
 test('budget accounts for own work and stands still across next', async () => {

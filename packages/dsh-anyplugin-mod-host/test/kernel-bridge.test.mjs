@@ -89,8 +89,9 @@ test('one runChain trace: a loaded mod (prepend/wrap) and a classic hook (user/o
   assert.deepEqual(
     result.trace.map((entry) => [entry.index, entry.tier, entry.source, entry.status]),
     [
-      [0, 'prepend', 'synthetic/kernel.ts#0', 'ran'],
+      // next runs the remainder, so the classic link settles first.
       [1, 'user', 'hook#0', 'ran'],
+      [0, 'prepend', 'synthetic/kernel.ts#0', 'ran'],
     ],
   )
   assert.deepEqual(result.decision, { kind: 'text', text: 'hook-allowed' })
@@ -114,7 +115,7 @@ test('one runChain trace: a loaded mod (prepend/wrap) and a classic hook (user/o
     { continuation: 'fan-out' },
   )
   t.diagnostic(describeTrace(second.trace).join('\n'))
-  assert.deepEqual(second.trace.map((entry) => entry.tier), ['prepend', 'user'])
+  assert.deepEqual(second.trace.map((entry) => entry.tier), ['user', 'prepend'])
   assert.equal(recorderHost.built(), 2)
   assert.deepEqual(recorderHost.calls, ['clock.now', 'session.messages'])
 })
