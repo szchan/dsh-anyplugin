@@ -281,7 +281,8 @@ set per fixture. Today (CI re-runs it against `0.2.2-rc.5` and `0.2.2-rc.2`):
 
 The Codex portable fixture has its own hand-authored golden (no offline
 `codex plugin details` oracle exists), so it is reported beside this table, not
-folded into it: `codex-portable` declares 3 components and matches 3. See
+folded into it: `codex-portable` declares 3 components and matches 3 (one
+portable skill, one root `SKILL.md` compatibility skill, one MCP server). See
 `packages/dsh-anyplugin-conformance/test/codex.test.mjs`.
 
 A test that only went green would tell you nothing about the missing

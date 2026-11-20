@@ -1073,7 +1073,10 @@ plugin is not silently read as a Claude one. The Codex fixture's golden is
 **hand-authored** from the 1.0.0 schemas and the Codex hook documentation —
 there is no offline `codex plugin details` to capture from — so it is excluded
 from the upstream-observed totals below and carries that provenance in its
-`notes`.
+`notes`. Portable 1.0.0 discovers skills only under `skills/`; the root
+`SKILL.md` this dialect still reads is a ticket/Claude-layout compatibility
+extra, counted as compatibility (the fixture is 2 portable components + 1
+compatibility skill), not as portable evidence.
 
 The loader anchors entry-name resolution at its `baseUrl`: the `dsh` package in
 a Desktop tree, the install root in a fetched tree (whose `package.json` is
@@ -1127,7 +1130,7 @@ not an upstream observation:
 
 | Fixture | Declared | Matched | Missing | Refused | What the gap needs |
 | --- | --- | --- | --- | --- | --- |
-| `codex-portable` | 3 | 3 | 0 | 0 | two skills and the `mcp__probe__` server; hooks are exec-gated separately (D25) |
+| `codex-portable` | 3 | 3 | 0 | 0 | one portable skill, one root `SKILL.md` compatibility skill, and the `mcp__probe__` server; hooks are exec-gated separately (D25) |
 
 Adding that row to the Claude totals would make a hand-authored surface look
 observed, so the total above stays Claude-only.

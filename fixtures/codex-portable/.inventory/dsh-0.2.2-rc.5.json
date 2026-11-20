@@ -25,6 +25,6 @@
   },
   "notes": [
     "Hand-authored, not observed: there is no offline `codex plugin details` equivalent, so this golden is the fixture's declared surface, derived from the Agent Plugins 1.0.0 schemas and the Codex hooks documentation.",
-    "Only components DSH can observe are listed: two skills and one MCP server. Hooks are absent because exec grants are default-off (D25); interface/assets/apps/onboardingSkill have no DSH inventory surface."
+    "Only components DSH can observe are listed: one portable skill under `skills/`, one root `SKILL.md` compatibility extra (not a 1.0.0 component), and one MCP server. Hooks are absent because exec grants are default-off (D25); interface/assets/apps/onboardingSkill have no DSH inventory surface."
   ]
 }

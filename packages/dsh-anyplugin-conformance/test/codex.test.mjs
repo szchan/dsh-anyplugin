@@ -9,13 +9,13 @@
 // reader cannot mistake the golden for a capture.
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import { readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
+import { PORTABLE_MCP_SCHEMA, PORTABLE_PLUGIN_SCHEMA, readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
 import { summarizeIr, validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories } from '../src/inventory.ts'
@@ -87,6 +87,228 @@ test('a Codex server whose shortest tool would exceed 64 characters is refused w
     assert.match(row?.annotation.reason ?? '', /65 characters/)
     assert.match(row?.annotation.reason ?? '', /64-character limit/)
     assert.match(row?.annotation.reason ?? '', /refused rather than truncated/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+function tempPlugin(prefix) {
+  return mkdtempSync(join(tmpdir(), prefix))
+}
+
+function writePortableManifest(dir, manifest = {}) {
+  writeFileSync(
+    join(dir, 'plugin.json'),
+    JSON.stringify({
+      $schema: PORTABLE_PLUGIN_SCHEMA,
+      name: 'codex-test',
+      version: '1.0.0',
+      ...manifest,
+    }),
+  )
+}
+
+function writePortableMcp(dir, servers, file = 'mcp.json') {
+  writeFileSync(
+    join(dir, file),
+    JSON.stringify({
+      $schema: PORTABLE_MCP_SCHEMA,
+      mcpServers: servers,
+    }),
+  )
+}
+
+test('every equivalent hook event states its own decision-channel limit', () => {
+  const dir = tempPlugin('anyplugin-codex-hook-reasons-')
+  const events = ['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd', 'Stop', 'SubagentStart', 'SubagentStop']
+  try {
+    writePortableManifest(dir, { extensions: { 'com.openai': { hooks: './events.json' } } })
+    writeFileSync(
+      join(dir, 'events.json'),
+      JSON.stringify({
+        hooks: Object.fromEntries(events.map((event) => [event, [{ hooks: [{ type: 'command', command: './hook.sh' }] }]])),
+      }),
+    )
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.hooks.length, 7)
+    const byEvent = new Map(ir.hooks.map((hook) => [hook.event, hook]))
+    assert.match(byEvent.get('PreToolUse')?.annotation.reason ?? '', /continue:false/)
+    assert.match(byEvent.get('PostToolUse')?.annotation.reason ?? '', /cannot undo the call/)
+    assert.match(byEvent.get('SessionStart')?.annotation.reason ?? '', /additionalContext.*reported with a warning, not delivered/)
+    assert.match(byEvent.get('Stop')?.annotation.reason ?? '', /cannot continue a turn/)
+    assert.match(byEvent.get('SessionEnd')?.annotation.reason ?? '', /advisory/)
+    assert.match(byEvent.get('SubagentStart')?.annotation.reason ?? '', /cannot stop the child/)
+    assert.match(byEvent.get('SubagentStop')?.annotation.reason ?? '', /cannot continue a child/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a stdio command that escapes the root is refused, not spawned', () => {
+  const dir = tempPlugin('anyplugin-codex-command-escape-')
+  try {
+    writePortableManifest(dir)
+    writePortableMcp(dir, { bad: { type: 'stdio', command: '../bin/server' } })
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.mcpServers.length, 0)
+    const row = ir.unsupported.find((entry) => entry.name === 'bad')
+    assert.match(row?.annotation.reason ?? '', /bare executable token|inside the plugin root/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a cwd that escapes after PLUGIN_ROOT expansion is refused', () => {
+  const dir = tempPlugin('anyplugin-codex-cwd-root-')
+  try {
+    writePortableManifest(dir)
+    writePortableMcp(dir, { bad: { type: 'stdio', command: 'node', cwd: '${PLUGIN_ROOT}/..' } })
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.mcpServers.length, 0)
+    assert.match(ir.unsupported.find((entry) => entry.name === 'bad')?.annotation.reason ?? '', /must stay inside/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a ./.. cwd that escapes the root is refused', () => {
+  const dir = tempPlugin('anyplugin-codex-cwd-dotdot-')
+  try {
+    writePortableManifest(dir)
+    writePortableMcp(dir, { bad: { type: 'stdio', command: 'node', cwd: './../..' } })
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.mcpServers.length, 0)
+    assert.match(ir.unsupported.find((entry) => entry.name === 'bad')?.annotation.reason ?? '', /must stay inside/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('portable http is schema-invalid; only .mcp.json may use it', () => {
+  const portableDir = tempPlugin('anyplugin-codex-http-portable-')
+  const compatDir = tempPlugin('anyplugin-codex-http-compat-')
+  try {
+    writePortableManifest(portableDir)
+    writePortableMcp(portableDir, { remote: { type: 'http', url: 'https://example.com/mcp' } })
+    const portable = readCodexPlugin(portableDir)
+    assert.equal(portable.mcpServers.length, 0)
+    assert.match(
+      portable.unsupported.find((entry) => entry.name === 'remote')?.annotation.reason ?? '',
+      /accepted only from \`.mcp.json\`/,
+    )
+
+    writePortableManifest(compatDir)
+    writePortableMcp(compatDir, { remote: { type: 'http', url: 'https://example.com/mcp' } }, '.mcp.json')
+    const compat = readCodexPlugin(compatDir)
+    assert.equal(compat.mcpServers[0]?.transport, 'http')
+    assert.match(compat.mcpServers[0]?.annotation.reason ?? '', /compatibility spelling/)
+  } finally {
+    rmSync(portableDir, { recursive: true, force: true })
+    rmSync(compatDir, { recursive: true, force: true })
+  }
+})
+
+test('the documented auth extension is recorded and not carried', () => {
+  const dir = tempPlugin('anyplugin-codex-auth-')
+  try {
+    writePortableManifest(dir)
+    writePortableMcp(dir, {
+      probe: {
+        type: 'stdio',
+        command: 'node',
+        extensions: { 'com.openai': { auth: { clientId: 'fixture' } } },
+      },
+    })
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.mcpServers.length, 1)
+    assert.equal('extensions' in ir.mcpServers[0], false)
+    assert.match(
+      ir.unsupported.find((entry) => entry.name === 'probe.extensions.com.openai.auth')?.annotation.reason ?? '',
+      /OAuth/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unknown server field gets its own unsupported row', () => {
+  const dir = tempPlugin('anyplugin-codex-unknown-server-')
+  try {
+    writePortableManifest(dir)
+    writePortableMcp(dir, { probe: { type: 'stdio', command: 'node', mystery: true } })
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.mcpServers.length, 1)
+    assert.match(
+      ir.unsupported.find((entry) => entry.name === 'probe.mystery')?.annotation.reason ?? '',
+      /not part of the closed 1\.0\.0/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('unknown extensions.com.openai keys get a row each', () => {
+  const dir = tempPlugin('anyplugin-codex-extension-unknown-')
+  try {
+    writePortableManifest(dir, { extensions: { 'com.openai': { mystery: true, another: 'value' } } })
+    const ir = readCodexPlugin(dir)
+    assert.ok(ir.pending.some((entry) => entry.name === 'com.openai.mystery'))
+    assert.ok(ir.pending.some((entry) => entry.name === 'com.openai.another'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a malformed extensions.com.openai is recorded and does not resurrect the overlay', () => {
+  const dir = tempPlugin('anyplugin-codex-extension-malformed-')
+  try {
+    writePortableManifest(dir, { extensions: { 'com.openai': 'not-an-object' } })
+    mkdirSync(join(dir, '.codex-plugin'), { recursive: true })
+    writeFileSync(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify({ hooks: './overlay-hooks.json' }))
+    writeFileSync(
+      join(dir, 'overlay-hooks.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: './hook.sh' }] }] } }),
+    )
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.hooks.length, 0)
+    assert.ok(ir.unsupported.some((entry) => entry.name === 'extensions.com.openai'))
+    assert.ok(ir.unsupported.some((entry) => entry.name === '.codex-plugin/plugin.json#hooks'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an explicit hook path without ./ is refused', () => {
+  const dir = tempPlugin('anyplugin-codex-hook-path-')
+  try {
+    writePortableManifest(dir, { extensions: { 'com.openai': { hooks: 'events.json' } } })
+    writeFileSync(join(dir, 'events.json'), JSON.stringify({ hooks: {} }))
+    const ir = readCodexPlugin(dir)
+    assert.equal(ir.hooks.length, 0)
+    assert.match(ir.unsupported.find((entry) => entry.name === 'events.json')?.annotation.reason ?? '', /must start with/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a missing schema and invalid name are recorded as fatal-but-diagnostic', () => {
+  const dir = tempPlugin('anyplugin-codex-manifest-invalid-')
+  try {
+    writeFileSync(join(dir, 'plugin.json'), JSON.stringify({ name: 'Bad_Name', version: '1.0.0' }))
+    writeFileSync(
+      join(dir, 'SKILL.md'),
+      `---
+name: still-read
+description: diagnostic skill
+---
+body
+`,
+    )
+    const ir = readCodexPlugin(dir)
+    assert.ok(ir.skills.some((skill) => skill.name === 'still-read'))
+    assert.match(ir.unsupported.find((entry) => entry.name === '$schema')?.annotation.reason ?? '', /fatal/)
+    assert.match(ir.unsupported.find((entry) => entry.name === 'name')?.annotation.reason ?? '', /fatal/)
+    assert.match(ir.plugin.source, /^codex:/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -191,6 +191,12 @@ const SKILL_EQUIVALENT: Annotation = {
     'Body is preserved byte for byte. DSH wraps a skill in <skill_content>/<skill_instructions>; the Codex envelope was not observed (there is no offline oracle for it), so equivalence is claimed from the format contract, not from a diff. Frontmatter name/description are carried; no argument placeholders are substituted (D17).',
 }
 
+const ROOT_SKILL_COMPAT: Annotation = {
+  fidelity: 'equivalent',
+  reason:
+    'Read as a compatibility extra: a root `SKILL.md` is the ticket/Claude-layout convenience, not a 1.0.0 component (skills are discovered under `skills/`). The body is preserved byte for byte, but this skill is counted as compatibility, not as portable evidence. DSH wraps a skill in <skill_content>/<skill_instructions>; the Codex envelope was not observed because there is no offline oracle for it (D17).',
+}
+
 const MCP_EQUIVALENT: Annotation = {
   fidelity: 'equivalent',
   reason:
@@ -203,14 +209,42 @@ const MCP_UNRESOLVED: Annotation = {
     'The server configuration references `${PLUGIN_DATA}`, which is resolved by the loading host and has no value at read time; carrying it needs the install-time-to-load-time context handoff owned by the scope layer (D2).',
 }
 
-const HOOK_EQUIVALENT: Record<string, string> = {
-  PreToolUse: 'tools/pre-execute',
-  PostToolUse: 'tools/post-execute',
-  SessionStart: 'agent/created',
-  SessionEnd: 'agent/disposed',
-  Stop: 'agent/turn-stopping',
-  SubagentStart: 'subagent/start',
-  SubagentStop: 'subagent/end',
+const HOOK_EQUIVALENT: Record<string, { seam: string; reason: string }> = {
+  PreToolUse: {
+    seam: 'tools/pre-execute',
+    reason:
+      'Rides DSH `tools/pre-execute` (S9/D32). The payload carries tool_name, tool_input, tool_use_id and cwd; it omits session_id, transcript_path, permission_mode and effort, which this host has no source for. The waterfall honours a block decision; `continue:false` has no equivalent and is ignored with a warning.',
+  },
+  PostToolUse: {
+    seam: 'tools/post-execute',
+    reason:
+      'Rides DSH `tools/post-execute` (S9/D32). The payload carries tool_name, tool_input, tool_use_id and cwd; it omits session_id, transcript_path, permission_mode and effort, which this host has no source for. The hook runs after the tool, so it cannot undo the call; `continue:false` has no equivalent and is ignored with a warning.',
+  },
+  SessionStart: {
+    seam: 'agent/created',
+    reason:
+      'Rides DSH `agent/created` for the root agent only (S9/D32); a child creation takes SubagentStart. The payload carries hook_event_name, cwd, session_id, source and model when named; it omits transcript_path. `additionalContext` is reported with a warning, not delivered into the first model step.',
+  },
+  SessionEnd: {
+    seam: 'agent/disposed',
+    reason:
+      'Rides DSH `agent/disposed` for the root agent only (S9/D32); a child disposal takes SubagentStop. The payload has no reason, so a reason matcher cannot be evaluated and is skipped with a warning. Upstream has no decision channel here either, so the handler is advisory.',
+  },
+  Stop: {
+    seam: 'agent/turn-stopping',
+    reason:
+      'Rides DSH `agent/turn-stopping` for the root agent only (S9/D32); a child\'s last turn takes SubagentStop. The event carries only the agent, turn number and abort signal, so last_assistant_message and stop_hook_active have no source. It cannot continue a turn, so a block decision is reported with a warning instead of obeyed.',
+  },
+  SubagentStart: {
+    seam: 'subagent/start',
+    reason:
+      'Rides DSH `subagent/start` for a child activation only (S9/D32). The payload carries session_id, agent_id and cwd; it omits agent_type, so a matcher on it cannot be evaluated and is skipped with a warning. `additionalContext` is reported with a warning, not delivered, and the hook cannot stop the child.',
+  },
+  SubagentStop: {
+    seam: 'subagent/end',
+    reason:
+      'Rides DSH `subagent/end` for a child completion only (S9/D32). The payload carries session_id, agent_id, cwd and last_assistant_message; it omits agent_type, stop_hook_active and the child transcript. The emit cannot continue a child, so a block decision is reported with a warning instead of obeyed.',
+  },
 }
 
 const HOOK_PLANNED: Record<string, string> = {
@@ -237,7 +271,7 @@ function hookAnnotation(
   handler: Record<string, unknown>,
   options: { matcherDropped?: boolean; timeoutDefaulted?: boolean; timeoutSeconds?: number; timeoutCappedFrom?: number } = {},
 ): Annotation {
-  const seam = HOOK_EQUIVALENT[event]
+  const equivalent = HOOK_EQUIVALENT[event]
   const async = handler.async === true
   const dataCommand = typeof handler.command === 'string' && handler.command.includes('${PLUGIN_DATA}')
   const extra: string[] = []
@@ -252,7 +286,7 @@ function hookAnnotation(
   if (options.matcherDropped) {
     extra.push('Codex ignores `matcher` for this event, so it is dropped rather than filtering where Codex would run every match')
   }
-  if (options.timeoutDefaulted && seam !== undefined) {
+  if (options.timeoutDefaulted && equivalent !== undefined) {
     extra.push(
       `No timeout was declared, so Codex's ${String(options.timeoutSeconds)}s default is carried explicitly; DSH's own default would be 60s`,
     )
@@ -276,12 +310,10 @@ function hookAnnotation(
         `\`${event}\` handler sets \`async: true\`. DSH's hook chain is synchronous: the command would block the turn where Codex would let it run behind the event, so running it would change behaviour. Planned, not run (S9/D32).`,
     }
   }
-  if (seam !== undefined) {
+  if (equivalent !== undefined) {
     return {
       fidelity: 'equivalent',
-      reason:
-        `\`${event}\` maps to DSH \`${seam}\` (S9/D32). The command receives the event payload on stdin and returns the same continue/block contract; the host's timeout is the declared one, or Codex's default when none was declared.` +
-        (extra.length > 0 ? ` ${extra.join('; ')}.` : ''),
+      reason: equivalent.reason + (extra.length > 0 ? ` ${extra.join('; ')}.` : ''),
     }
   }
   const planned = HOOK_PLANNED[event]
@@ -292,6 +324,7 @@ function hookAnnotation(
       `\`${event}\` is not in Codex's published hook vocabulary (or has no DSH host event); no mapping is invented. Recorded so the gap is visible.`,
   }
 }
+
 
 function normalizeHookCommand(command: string): string {
   // Codex injects both spellings; the trust pin understands only Claude's.
@@ -333,6 +366,18 @@ function readHookDocuments(
   }
 
   const addPath = (raw: string, sourcePath: string): void => {
+    if (!raw.startsWith('./')) {
+      unsupported.push({
+        surface: 'hooks',
+        name: raw,
+        sourcePath,
+        annotation: {
+          fidelity: 'unsupported',
+          reason: 'An explicit hook path must start with `./` (the documented root-relative form); a bare or absolute path is refused rather than resolved against an implicit base.',
+        },
+      })
+      return
+    }
     const abs = resolvePath(root, raw)
     if (abs === undefined) {
       unsupported.push({
@@ -611,7 +656,7 @@ function readSkills(root: string): { skills: IrSkill[]; pending: IrUnmaterialize
       origin,
       sourcePath: rel,
       resourceDir,
-      annotation: SKILL_EQUIVALENT,
+      annotation: origin === 'root-skill' ? ROOT_SKILL_COMPAT : SKILL_EQUIVALENT,
     }
   }
 
@@ -659,6 +704,104 @@ function readSkills(root: string): { skills: IrSkill[]; pending: IrUnmaterialize
   return { skills, pending, unsupported }
 }
 
+function commandProblem(root: string, command: string): string | undefined {
+  if (command.includes('${')) {
+    return 'The 1.0.0 schema forbids placeholder expansion in `command` (only `args`, `env`, `cwd` expand `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`); a placeholder here would be passed literally to exec and could not resolve.'
+  }
+  if (/\s/.test(command)) {
+    return 'A stdio `command` is one executable token, not a shell command line; whitespace means it would not be executed as authored.'
+  }
+  if (command.startsWith('./')) {
+    return resolvePath(root, command) === undefined
+      ? 'The `./`-relative `command` resolves outside the plugin root; containment is required so the spawned bytes are inside the artifact the trust hash covers.'
+      : undefined
+  }
+  if (command.includes('/')) {
+    return 'A stdio `command` must be a bare executable token or a `./`-relative path; `../…` and absolute paths are refused because they spawn outside the plugin root and outside the artifact the trust hash covers.'
+  }
+  return undefined
+}
+
+function cwdProblem(
+  root: string,
+  value: string,
+): { cwd?: string; data?: boolean; problem?: string } {
+  let base = root
+  let rest = ''
+  let data = false
+  if (value === './') {
+    rest = ''
+  } else if (value.startsWith('./')) {
+    rest = value.slice(2)
+  } else if (value === '${PLUGIN_ROOT}') {
+    rest = ''
+  } else if (value.startsWith('${PLUGIN_ROOT}/')) {
+    rest = value.slice('${PLUGIN_ROOT}/'.length)
+  } else if (value === '${PLUGIN_DATA}') {
+    data = true
+    base = join(root, '.plugin-data')
+    rest = ''
+  } else if (value.startsWith('${PLUGIN_DATA}/')) {
+    data = true
+    base = join(root, '.plugin-data')
+    rest = value.slice('${PLUGIN_DATA}/'.length)
+  } else {
+    return {
+      problem:
+        'Portable `cwd` must be `./` or `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`-rooted; absolute paths and other spellings could leave the plugin root.',
+    }
+  }
+  const abs = resolve(base, rest === '' ? '.' : rest)
+  if (!insideRoot(base, abs)) {
+    return {
+      problem:
+        'Portable `cwd` must stay inside its `./` / `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` root after expansion; `..` segments that escape it are refused rather than clamped.',
+    }
+  }
+  return data ? { data: true } : { cwd: abs }
+}
+
+function serverUnknownFields(name: string, entry: Record<string, unknown>, type: string | undefined, sourcePath: string) {
+  const known = new Set(
+    type === 'stdio'
+      ? ['type', 'command', 'args', 'env', 'cwd']
+      : type === 'streamable-http' || type === 'http' || type === 'sse'
+        ? ['type', 'url', 'headers']
+        : ['type'],
+  )
+  const fields = Object.keys(entry).filter((key) => !known.has(key))
+  const rows: IrUnmaterialized[] = []
+  for (const field of fields) {
+    if (field === 'extensions') {
+      const extensions = asObject(entry.extensions)
+      const openai = extensions === undefined ? undefined : asObject(extensions['com.openai'])
+      const hasAuth = openai !== undefined && openai.auth !== undefined
+      rows.push({
+        surface: 'mcpServers',
+        name: hasAuth ? `${name}.extensions.com.openai.auth` : `${name}.extensions`,
+        sourcePath,
+        annotation: {
+          fidelity: 'unsupported',
+          reason: hasAuth
+            ? 'The documented `extensions["com.openai"].auth` block carries host-managed OAuth client metadata; DSH has no OAuth flow for a plugin-carried MCP server, so it is recorded and not carried (D12).'
+            : 'Server-level `extensions` is not part of the closed 1.0.0 server variant and has no DSH seam; recorded and not carried.',
+        },
+      })
+      continue
+    }
+    rows.push({
+      surface: 'mcpServers',
+      name: `${name}.${field}`,
+      sourcePath,
+      annotation: {
+        fidelity: 'unsupported',
+        reason: `Server field ${JSON.stringify(field)} is not part of the closed 1.0.0 ${type ?? 'server'} variant; the schema says the entry is invalid, so it is recorded and not carried.`,
+      },
+    })
+  }
+  return rows
+}
+
 function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmaterialized[]; unsupported: IrUnmaterialized[] } {
   const servers: IrMcpServer[] = []
   const pending: IrUnmaterialized[] = []
@@ -669,7 +812,8 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
   const path = readIfFile(portablePath) !== undefined ? portablePath : readIfFile(compatibilityPath) !== undefined ? compatibilityPath : undefined
   if (path === undefined) return { servers, pending, unsupported }
   const sourcePath = relPath(root, path)
-  if (path === compatibilityPath) {
+  const compatibility = path === compatibilityPath
+  if (compatibility) {
     pending.push({
       surface: 'mcpServers',
       name: 'mcp.json',
@@ -752,7 +896,6 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
   }
 
   const substituteRoot = (value: string): string => value.replaceAll('${PLUGIN_ROOT}', root)
-  const unresolvedData = (value: string): boolean => value.includes('${PLUGIN_DATA}')
 
   for (const [name, raw] of Object.entries(table)) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -774,6 +917,30 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
       })
       continue
     }
+    const type = stringField(entry, 'type')
+    unsupported.push(...serverUnknownFields(name, entry, type, sourcePath))
+
+    const stdioCwd = type === 'stdio' && typeof entry.cwd === 'string' ? cwdProblem(root, entry.cwd) : undefined
+    if (stdioCwd?.problem !== undefined) {
+      unsupported.push({
+        surface: 'mcpServers',
+        name,
+        sourcePath,
+        annotation: { fidelity: 'unsupported', reason: stdioCwd.problem },
+      })
+      continue
+    }
+    const stdioCommand = type === 'stdio' && typeof entry.command === 'string' ? commandProblem(root, entry.command) : undefined
+    if (stdioCommand !== undefined) {
+      unsupported.push({
+        surface: 'mcpServers',
+        name,
+        sourcePath,
+        annotation: { fidelity: 'unsupported', reason: stdioCommand },
+      })
+      continue
+    }
+
     const serialized = JSON.stringify(entry)
     if (serialized.includes('${PLUGIN_DATA}')) {
       pending.push({ surface: 'mcpServers', name, sourcePath, annotation: MCP_UNRESOLVED })
@@ -796,7 +963,6 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
       continue
     }
 
-    const type = stringField(entry, 'type')
     if (type === undefined) {
       unsupported.push({
         surface: 'mcpServers',
@@ -818,19 +984,6 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
           name,
           sourcePath,
           annotation: { fidelity: 'unsupported', reason: 'A stdio server needs a `command`; without one it cannot start.' },
-        })
-        continue
-      }
-      if (command.includes('${')) {
-        unsupported.push({
-          surface: 'mcpServers',
-          name,
-          sourcePath,
-          annotation: {
-            fidelity: 'unsupported',
-            reason:
-              'The 1.0.0 schema forbids placeholder expansion in `command` (only `args`, `env`, `cwd` expand `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`); a placeholder here would be passed literally to exec and could not resolve.',
-          },
         })
         continue
       }
@@ -866,37 +1019,16 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
         })
         continue
       }
-      let cwd: string | undefined
-      if (entry.cwd !== undefined) {
-        if (typeof entry.cwd !== 'string') {
-          unsupported.push({
-            surface: 'mcpServers',
-            name,
-            sourcePath,
-            annotation: { fidelity: 'unsupported', reason: '`cwd` must be a string.' },
-          })
-          continue
-        }
-        const value = entry.cwd
-        const allowed =
-          value === '.' ||
-          value.startsWith('./') ||
-          value.startsWith('${PLUGIN_ROOT}') ||
-          value.startsWith('${PLUGIN_DATA}')
-        if (!allowed) {
-          unsupported.push({
-            surface: 'mcpServers',
-            name,
-            sourcePath,
-            annotation: {
-              fidelity: 'unsupported',
-              reason: '`cwd` must be `./…`, `${PLUGIN_ROOT}…`, or `${PLUGIN_DATA}…`; an absolute or escaping path could leave the plugin root.',
-            },
-          })
-          continue
-        }
-        cwd = value === '.' ? root : substituteRoot(value)
+      if (entry.cwd !== undefined && typeof entry.cwd !== 'string') {
+        unsupported.push({
+          surface: 'mcpServers',
+          name,
+          sourcePath,
+          annotation: { fidelity: 'unsupported', reason: '`cwd` must be a string.' },
+        })
+        continue
       }
+      const cwd = stdioCwd?.cwd
       servers.push({
         kind: 'mcp-server',
         name,
@@ -909,6 +1041,20 @@ function readMcp(root: string): { servers: IrMcpServer[]; pending: IrUnmateriali
         pluginRoot: root,
         sourcePath,
         annotation: MCP_EQUIVALENT,
+      })
+      continue
+    }
+
+    if (type === 'http' && !compatibility) {
+      unsupported.push({
+        surface: 'mcpServers',
+        name,
+        sourcePath,
+        annotation: {
+          fidelity: 'unsupported',
+          reason:
+            '`http` is the Codex compatibility spelling and is accepted only from `.mcp.json`; the portable 1.0.0 schema requires `streamable-http`, so a portable server declaring `http` is refused rather than silently renamed.',
+        },
       })
       continue
     }
@@ -1098,17 +1244,35 @@ function readExtensionSurfaces(
     if (extensions['com.openai'] !== undefined) {
       if (isObject(extensions['com.openai'])) {
         openai = extensions['com.openai']
+        const known = new Set(['hooks', 'interface', 'apps', 'onboardingSkill', 'skills', 'mcpServers'])
+        for (const key of Object.keys(openai)) {
+          if (known.has(key)) continue
+          pending.push({
+            surface: 'extensions',
+            name: `com.openai.${key}`,
+            sourcePath: manifestSource,
+            annotation: {
+              fidelity: 'planned',
+              reason: `Unknown \`extensions.com.openai\` key ${JSON.stringify(key)}: it is not a documented OpenAI setting this reader knows, and no DSH seam exists; recorded only, never guessed at.`,
+            },
+          })
+        }
       } else {
         unsupported.push({
           surface: 'manifest',
           name: 'extensions.com.openai',
           sourcePath: manifestSource,
-          annotation: { fidelity: 'unsupported', reason: '`extensions.com.openai` must be an object; a scalar cannot supply hooks, interface, apps, or onboardingSkill.' },
+          annotation: {
+            fidelity: 'unsupported',
+            reason:
+              '`extensions.com.openai` is present but not an object. It cannot supply hooks, interface, apps, or onboardingSkill, and because it is *present* the documented overlay fallback does not apply; the overlay is not read.',
+          },
         })
       }
     }
   }
 
+  const openaiPresent = extensions !== undefined && extensions['com.openai'] !== undefined
   if (openai !== undefined) {
     // Replacement, not merge. Every overlay key that the root extension could
     // have supplied is dead data, and the report says which one.
@@ -1126,9 +1290,23 @@ function readExtensionSurfaces(
         },
       })
     }
-  } else if (overlay !== undefined) {
+  } else if (!openaiPresent && overlay !== undefined) {
     openai = overlay
     openaiSource = CODEX_MANIFEST
+  } else if (openaiPresent && overlay !== undefined) {
+    const owned = ['hooks', 'interface', 'apps', 'onboardingSkill', 'skills', 'mcpServers']
+    for (const key of owned) {
+      if (overlay[key] === undefined) continue
+      unsupported.push({
+        surface: `manifest.${key}`,
+        name: `${CODEX_MANIFEST}#${key}`,
+        sourcePath: CODEX_MANIFEST,
+        annotation: {
+          fidelity: 'unsupported',
+          reason: `Not used: \`extensions.com.openai\` is present but malformed, so the documented overlay fallback (which applies only when the object is absent) does not apply. The overlay's ${JSON.stringify(key)} is not read.`,
+        },
+      })
+    }
   }
 
   if (openai?.interface !== undefined) {
@@ -1268,7 +1446,7 @@ export function readCodexPlugin(root: string, options: ReadOptions = {}): Claude
         sourcePath: 'plugin.json',
         annotation: {
           fidelity: 'unsupported',
-          reason: `A portable plugin.json must declare \`$schema: ${PORTABLE_PLUGIN_SCHEMA}\`; without it the file is not a 1.0.0 manifest. The remaining fields are read for diagnosis only.`,
+          reason: `A portable plugin.json must declare \`$schema: ${PORTABLE_PLUGIN_SCHEMA}\`; without it the file is not a 1.0.0 manifest. Spec §5.2 makes a required-schema violation fatal; this reader continues only for diagnosis, so components read from this file are diagnostic, not 1.0.0 evidence.`,
         },
       })
     } else if (schema !== PORTABLE_PLUGIN_SCHEMA) {
@@ -1278,7 +1456,7 @@ export function readCodexPlugin(root: string, options: ReadOptions = {}): Claude
         sourcePath: 'plugin.json',
         annotation: {
           fidelity: 'unsupported',
-          reason: `plugin.json declares ${JSON.stringify(schema)}; the only portable schema accepted here is ${PORTABLE_PLUGIN_SCHEMA}.`,
+          reason: `plugin.json declares ${JSON.stringify(schema)}; the only portable schema accepted here is ${PORTABLE_PLUGIN_SCHEMA}. Spec §5.2 makes this fatal; this reader keeps reading for diagnosis, and any component it finds is diagnostic, not evidence that the plugin is 1.0.0-conformant.`,
         },
       })
     }
@@ -1292,7 +1470,7 @@ export function readCodexPlugin(root: string, options: ReadOptions = {}): Claude
       sourcePath: 'plugin.json',
       annotation: {
         fidelity: 'unsupported',
-        reason: 'The portable schema requires a `name` (1–64 chars, lowercase, digits, dots, hyphens); identity falls back to the directory name so the report still has a plugin.',
+        reason: 'The portable schema requires a `name` (1–64 chars, lowercase, digits, dots, hyphens); spec §5.2 makes a missing required field fatal, but this reader continues for diagnosis. Identity falls back to the directory name so the report still has a plugin, and components read from this file are diagnostic only.',
       },
     })
   } else if (declaredName !== undefined && manifestRead.portable && !PORTABLE_NAME.test(declaredName)) {
@@ -1302,7 +1480,7 @@ export function readCodexPlugin(root: string, options: ReadOptions = {}): Claude
       sourcePath: manifestSource,
       annotation: {
         fidelity: 'unsupported',
-        reason: `Manifest name ${JSON.stringify(declaredName)} does not match the portable grammar (1–64 chars, lowercase, digits, dots, hyphens, no \`--\` or \`..\`); the name is used as authored so nothing is silently rewritten.`,
+        reason: `Manifest name ${JSON.stringify(declaredName)} does not match the portable grammar (1–64 chars, lowercase, digits, dots, hyphens, no \`--\` or \`..\`); spec §5.2 makes an invalid name fatal, but this reader continues for diagnosis. The name is used as authored so nothing is silently rewritten, and components read from this file are diagnostic only.`,
       },
     })
   }
@@ -1353,7 +1531,7 @@ export function readCodexPlugin(root: string, options: ReadOptions = {}): Claude
       name,
       ...(version === undefined ? {} : { version }),
       ...(description === undefined ? {} : { description }),
-      source: options.source ?? `plugin-dir:${absoluteRoot}`,
+      source: options.source ?? `codex:${absoluteRoot}`,
       root: absoluteRoot,
     },
     pin: options.pin ?? AGENT_PLUGINS_PIN,
