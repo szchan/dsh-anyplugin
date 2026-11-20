@@ -1091,9 +1091,9 @@ goldens, matched by the DSH oracle). CI measures the same rows against both
 `0.2.2-rc.5` and `0.2.2-rc.2`; a skipped row is a failed job there. The other nine
 fixtures boot the loader with `probeWithDsh`; the lifecycle fixture
 boots a real turn graph with `probeLifecycleWithDsh` (§10 S9), because its rows
-exist only as lines the handlers wrote. The turn graph needs the extra pins
-from the S9 recipe above; CI installs them at each fetched version before
-`verify`:
+exist only as lines the handlers wrote. The turn graph is part of the fetched
+union (`HARNESS_PACKAGES` in `scripts/fetch-harness.mjs`), so one fetch is
+enough before `verify`; CI fetches each pin once and installs nothing else:
 
 | Fixture | Declared | Matched | Missing | Refused | What the gap needs |
 | --- | --- | --- | --- | --- | --- |
@@ -1404,22 +1404,6 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   ```bash
   node scripts/fetch-harness.mjs 0.2.2-rc.5
-  npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
-    --cache "$PWD/.npm-cache" @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-    @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-    @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
-    @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
-    @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
-    @deepseek-ai/dsh-agent-team@0.2.2-rc.5 \
-    @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-    @deepseek-ai/dsh-tool-fs@0.2.2-rc.5 \
-    @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
-    @deepseek-ai/dsh-fs-observation-policy@0.2.2-rc.5 \
-    @deepseek-ai/dsh-user-questions@0.2.2-rc.5 \
-    @deepseek-ai/dsh-settings@0.2.2-rc.5 \
-    @deepseek-ai/dsh-experimental-worktree@0.2.2-rc.5 \
-    @deepseek-ai/dsh-agent-instructions@0.2.2-rc.5 \
-    @deepseek-ai/dsh-tool-fs-search@0.2.2-rc.5
   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
     npm run spike:s9
   ```
@@ -1602,14 +1586,6 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   ```bash
   node scripts/fetch-harness.mjs 0.2.2-rc.5
-  npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
-    --cache "$PWD/.npm-cache" @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-    @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-    @deepseek-ai/dsh-subagent-spawn-in-process@0.2.2-rc.5 \
-    @deepseek-ai/dsh-tool-subagent@0.2.2-rc.5 \
-    @deepseek-ai/dsh-session-persistence-jsonl@0.2.2-rc.5 \
-    @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-    @deepseek-ai/dsh-fs-local@0.2.2-rc.5
   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
     npm run spike:s10
   ```
@@ -1684,23 +1660,6 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   ```bash
   node scripts/fetch-harness.mjs 0.2.2-rc.5
-  npm install --prefix .harness/0.2.2-rc.5 --no-save --ignore-scripts \
-    --cache "$PWD/.npm-cache" \
-    @deepseek-ai/dsh-agent-loop@0.2.2-rc.5 \
-    @deepseek-ai/dsh-subagent@0.2.2-rc.5 \
-    @deepseek-ai/dsh-subagent-fork-in-process@0.2.2-rc.5 \
-    @deepseek-ai/dsh-fs-local@0.2.2-rc.5 \
-    @deepseek-ai/dsh-working-directory@0.2.2-rc.5 \
-    @deepseek-ai/dsh-llm@0.2.2-rc.5 \
-    @deepseek-ai/dsh-session@0.2.2-rc.5 \
-    @deepseek-ai/dsh-session-projection@0.2.2-rc.5 \
-    @deepseek-ai/dsh-agent@0.2.2-rc.5 \
-    @deepseek-ai/dsh-commands@0.2.2-rc.5 \
-    @deepseek-ai/dsh-compaction-basic@0.2.2-rc.5 \
-    @deepseek-ai/dsh-token-meter@0.2.2-rc.5 \
-    @deepseek-ai/dsh-persona@0.2.2-rc.5 \
-    @deepseek-ai/dsh-agent-preset@0.2.2-rc.5 \
-    @deepseek-ai/dsh-agent-preset-registry@0.2.2-rc.5
   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
     npm run spike:s11
   ```
