@@ -1,0 +1,163 @@
+{
+  "pin": {
+    "version": "2.1.322",
+    "commit": "6e1e44f6433bfa17d198e932bff53373aa229eea",
+    "treeSha256": "a69aa16e92d936dd2026812debd7615d7d8ad9296fd628213fd78b65d4e9d3dc"
+  },
+  "mods": [
+    {
+      "name": "agents-md",
+      "pin": "6e1e44f6433bfa17d198e932bff53373aa229eea",
+      "entry": "mods/agents-md/hooks/register.ts",
+      "entrySha256": "b095abea27ece42ac37c613cc3f06a7a45380d80cc028c5c7a4fabbaeea7c153",
+      "scan": {
+        "sites": 5,
+        "events": 4,
+        "calls": 18,
+        "dynamic": 0
+      },
+      "outcome": "refused",
+      "code": "TypeError",
+      "path": "mods/agents-md/hooks/register.ts:41:38",
+      "message": "Cannot read properties of undefined (reading 'instructionFiles')"
+    },
+    {
+      "name": "diff",
+      "pin": "6e1e44f6433bfa17d198e932bff53373aa229eea",
+      "entry": "mods/diff/hooks/register.ts",
+      "entrySha256": "cce8adf7b3218f33347707ffbfb25ff3294c184d440dfb49fa540656146debab",
+      "scan": {
+        "sites": 10,
+        "events": 8,
+        "calls": 23,
+        "dynamic": 0
+      },
+      "outcome": "loaded",
+      "registrations": [
+        {
+          "event": "session.start"
+        },
+        {
+          "event": "ui.render",
+          "matcher": {
+            "component": "PromptHint"
+          }
+        },
+        {
+          "event": "ui.render",
+          "matcher": {
+            "component": "Pane"
+          }
+        },
+        {
+          "event": "command.run",
+          "matcher": {
+            "command": "diff"
+          }
+        },
+        {
+          "event": "ui.close",
+          "matcher": {
+            "id": "diff"
+          }
+        },
+        {
+          "event": "ui.focus",
+          "matcher": {
+            "plugin": [
+              "diff",
+              "cc-plugin-diff"
+            ]
+          }
+        },
+        {
+          "event": "ui.scroll",
+          "matcher": {
+            "requestId": "diff"
+          }
+        },
+        {
+          "event": "command.run",
+          "matcher": {
+            "command": [
+              "clear",
+              "resume"
+            ]
+          }
+        },
+        {
+          "event": "tool.call",
+          "matcher": {
+            "tool": [
+              "Edit",
+              "Write",
+              "NotebookEdit",
+              "Bash",
+              "PowerShell"
+            ]
+          }
+        },
+        {
+          "event": "prompt.submit"
+        }
+      ]
+    },
+    {
+      "name": "privacy",
+      "pin": "6e1e44f6433bfa17d198e932bff53373aa229eea",
+      "entry": "mods/privacy/hooks/register.ts",
+      "entrySha256": "ba6190b0bc99e997d9dd08ec042ec5220788fcc1bb8d25fca4ebae8040bdf01d",
+      "scan": {
+        "sites": 1,
+        "events": 1,
+        "calls": 1,
+        "dynamic": 0
+      },
+      "outcome": "loaded",
+      "registrations": [
+        {
+          "event": "tool.check",
+          "matcher": {
+            "tool": [
+              "Bash",
+              "Monitor",
+              "PowerShell"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "sec-default",
+      "pin": "6e1e44f6433bfa17d198e932bff53373aa229eea",
+      "entry": "mods/sec-default/hooks/register.ts",
+      "entrySha256": "4e599a4ba86b0133c25ec473293014e85ed874fdf5fafdef961f11196dafeb2c",
+      "scan": {
+        "sites": 25,
+        "events": 21,
+        "calls": 8,
+        "dynamic": 0
+      },
+      "outcome": "refused",
+      "code": "TypeError",
+      "path": "mods/sec-default/hooks/register.ts:151:5",
+      "message": "Cannot read properties of undefined (reading 'catch')"
+    },
+    {
+      "name": "telemetry",
+      "pin": "6e1e44f6433bfa17d198e932bff53373aa229eea",
+      "entry": "mods/telemetry/hooks/register.ts",
+      "entrySha256": "15ab988c2490c1d0cbe0f82b8fdc1f460b9e868655ebd2a3e27be47e4a3bff91",
+      "scan": {
+        "sites": 6,
+        "events": 6,
+        "calls": 0,
+        "dynamic": 0
+      },
+      "outcome": "refused",
+      "code": "TypeError",
+      "path": "mods/telemetry/hooks/register.ts:27:59",
+      "message": "Cannot read properties of undefined (reading 'catch')"
+    }
+  ]
+}

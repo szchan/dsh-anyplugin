@@ -13,12 +13,13 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Now
 
-- [ ] **Remaining upstream mods as fixtures** (D14). `diff` is in:
-      `fixtures/mods/diff/` fetches it at test time (never vendored), loads it
-      through D34's classic transform, and asserts the scanner's 10 `on()`
-      sites / 8 unique events / 23 `$.` calls / 0 dynamic (S14, 122/122). The
-      other six mods under `mods/` are not fixtures yet. Done when all seven
-      load at the pin, each fetched rather than vendored.
+- [ ] **Remaining upstream mods as fixtures** (D14). `fixtures/mods/upstream.json`
+      fetches the whole `mods/` tree at the `2.1.322` pin (never vendored),
+      scans and loads every mod, and asserts one honest row per mod: `diff` and
+      `privacy` load; `sec-default`, `agents-md` and `telemetry` refuse until
+      the host returns `Registration`'s `catch` handle and passes
+      `register(on, options)`. Done when those host gaps close and every row
+      loads at the pin.
 
 ## Next
 
@@ -67,6 +68,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
       chain engine → element runtime → the remaining namespace bridges → type
       generation from the pinned `claude-code.d.ts`. Coverage is
       `covered / total` against that file, and it only moves up.
+- [ ] **Upstream mods at a newer pin** (D14). The `2.1.322` pin predates
+      `hipaa-default` (first commit `ec4d337`) and `easel` (`9cf919a`).
+      Unblocked by bumping the Claude Code pin to a release that contains
+      both, then adding their rows to `fixtures/mods/upstream.json`.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; delegate to the real host or
       annotate `unsupported`.

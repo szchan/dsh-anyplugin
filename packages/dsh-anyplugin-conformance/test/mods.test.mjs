@@ -8,7 +8,7 @@
 // ordering because apply settles before the loader reports success.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -757,7 +757,12 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
   assert.equal(diffFixture.pin.commit, DIFF_MOD_PIN.commit)
   assert.equal(diffFixture.entry, DIFF_MOD_PIN.entry)
 
-  const root = resolve(tree)
+  // `scripts/fetch-mod.mjs` prints the root of the whole pinned `mods/` tree;
+  // accept that root as well as the diff hooks root itself.
+  const fetched = resolve(tree)
+  const root = existsSync(join(fetched, diffFixture.entry))
+    ? fetched
+    : join(fetched, 'mods', 'diff', 'hooks')
   const entry = join(root, diffFixture.entry)
   const before = sha256(entry)
   assert.equal(sha256(entry), DIFF_MOD_PIN.entrySha256, 'the fetched entry must be the pinned artifact')
