@@ -1590,3 +1590,71 @@ order equal to the scanner's 10 sites/8 events, and `divider()` returns the
 `h` descriptor. The mod-host tests cover the minimal graph, the Fragment
 descriptor and the three refusals; `fixtures/mods/diff` and the conformance
 mods test cover the fetched graph and the kernel mapping.
+
+---
+
+## D35 — A per-step watermark stands in for a prompt event; a notification is reported, not obeyed
+
+**Date:** 2026-11-19. **Status:** ratified. **Supersedes nothing; completes S9's
+installable half.**
+
+**Decision.** Four more classic hook events and five notification records ride
+host events that S9 observed on a real headless turn. Three rules make the
+translation honest:
+
+1. **`UserPromptSubmit` rides `agent/pre-step` with a watermark.** That
+   waterfall fires once per model step; the mount runs the hook only when
+   `step === 1` and the newest message whose `source.kind` is `user` yields
+   text. The filter lives in the mount because the kernel sees a chain event,
+   not a conversation. A turn that begins without a user message — a
+   compaction step, for example — fires no `UserPromptSubmit`, matching
+   upstream.
+2. **A notification-only record is reported, not obeyed.** `compaction/start`,
+   `compaction/end`, `approval/decided`, `working-directory/change` and
+   `settings/document-updated` have no decision channel. The hook runs for its
+   side effects after the operation committed; a `decision` or
+   `additionalContext` is reported with a warning and never applied.
+3. **A gate denial is not a tool failure.** A call denied at the gate is
+   excluded from the `PostToolUseFailure` slice by `callId`, so one call
+   produces at most one of `PermissionDenied` or `PostToolUseFailure`, as
+   upstream does.
+
+`PermissionRequest` is **report-only by construction**: `approval/request`
+carries `{agent, toolName, callId, signal}` and no `tool_input`, and the mount
+never returns a decision, so it cannot approve or deny. A field the host event
+does not carry is omitted and reported once through `reportUnsupported`; no
+field is ever synthesized.
+
+**Why this and not a new seam.** Each of the nine rows already has a host
+event that fires at the right moment (S9); what was missing was a consumer.
+Adding nine synthetic event points would have created a second event path
+(AGENTS §3.6) and would still not have carried the missing fields.
+
+**Why `equivalent` and not `exact`.** The host event carries less than Claude's
+payload — no `transcript_path` or `permission_mode` on the prompt seam, no
+`tool_input` on the approval seam, no `is_interrupt`/`duration_ms` on the
+failure seam, no `add`/`change`/`unlink` on the file seam, no `old_cwd`/`new_cwd`
+on the directory seam, no `source`/`file_path` on the settings seam — and four
+of the nine have no decision channel. Every dialect reason names the seam, the
+fields that survive, and each field or channel that does not.
+
+**Consequences:**
+
+- Nine rows in `fixtures/claude-hooks-seams` are earned by the log lines one
+  real turn produced, not by a registration table. A row counts only when its
+  handler's own text came back; the fixture's upstream inventory is captured
+  from `claude --plugin-dir … plugin details` at the pin.
+- `apply_patch` is wired (the host emits for it) but no fixture turn exercises
+  it: that is declared, not claimed.
+- A `FileChanged` `event` matcher and a `PreCompact` `trigger` matcher cannot be
+  evaluated, so they are skipped with a warning rather than guessed.
+- Compaction is host-driven (two operations on the probe turn), so "once per
+  operation" is asserted as `compaction/start`/`end` pairing per
+  `compaction_id`, not as a fixed line count.
+
+**Evidence.** `fixtures/claude-hooks-seams` on `0.2.2-rc.5`: one turn, three
+prompts, one gated-allow and one gated-reject call, one failing tool, one write
+and one read of the same path, two compactions, one settings change. Marker
+order asserted; mutation counts with and without each filter (3 vs 8 steps for
+the prompt seam, 1 vs 2 approval demands, 1 vs 2 failed results, 1 vs 2 present
+observations). Coverage: 25 declared / 24 matched / 0 missing / 1 refused.
