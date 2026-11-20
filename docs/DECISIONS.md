@@ -1204,3 +1204,60 @@ is a `planned` row. Four gaps keep it from being carried today:
 - Evidence: `spikes/s11-prompt-scope` (18 checks, in CI) dumping
   `options.messages[0]` for each path, including the exact `complete` prompt
   and sibling isolation.
+
+## D30 — Mods load as authored; type stripping is the only sanctioned transform; `.tsx` remains `planned`
+
+**Status:** ratified 2026-11-19 (ticket #30, spike S13).
+
+A mod's `.ts`/`.js`/`.mjs` source is loaded without transpilation, bundling,
+minification or rewriting, and the static scanner must continue to see the
+authored `on('event')` / `$.ns.method` call sites. For `.ts`,
+`module.stripTypeScriptTypes(source, { mode: 'strip' })` is the only sanctioned
+transform. It is in-memory and position-preserving; it does not edit the
+artifact or feed the scanner. The name-preserving `.tsx` stubs used by S13 are
+probe scaffolding, not a host mechanism and not a sanctioned transform.
+
+The host **must** resolve the authored graph's specifier conventions:
+extensionless directory imports (including `'.'`) via `index.ts`, `.js`
+specifiers to `.ts` files, and `.jsx` specifiers to `.tsx` files. These are
+resolution rules, not source rewrites; they change no on-disk bytes. They are
+our host obligation, not an upstream specification. The pinned graph exercises
+three resolution behaviors (four specifier shapes); the resolver's other
+candidate fallbacks are probe-only. `.jsx`→`.tsx` reaches a `.tsx` module but
+does not make JSX runnable.
+
+`.tsx` remains `planned`. Stock Node refuses the extension with
+`ERR_UNKNOWN_FILE_EXTENSION`. At this pin, 20 of 21 `.tsx` modules fail
+`stripTypeScriptTypes` in both modes: 19 with `Expected '>', got 'ident'`, one
+with `Expected ',', got '.'`. The one JSX-free module
+(`views/body/list-block-of.tsx`) strips, but the extension is still not
+loadable by stock Node. JSX is not type stripping: it is a second transform
+producing a different program and needs a factory (`h`/`Fragment`) and a
+separate decision. A module that reaches JSX is not claimed runnable.
+
+The mod host will evaluate each mod in a per-mod `node:vm`
+`SourceTextModule` context, requiring `--experimental-vm-modules` (create →
+`link()` once → `evaluate()`), because it is the tested route whose context
+lacks `process`, `URL` and `$`; a same-thread import exposes Node globals.
+This is a fidelity and layering choice, **not a security boundary**: it does
+not contain timers, promises, memory, or the mod's permissions. D6 is
+unchanged: mods are hosted in-process and unsandboxed, with the equivalent
+guard layer and hash-pinned grants. `$` is passed to each handler as its first
+argument, not installed as a global; module-level code that touches `$` fails.
+
+S13 proves the `.ts` spine loads, the registration surface matches the
+scanner, and `session.start` runs with a per-handler `$`; it does not establish
+a host, materializer, emit path, IR change, `.tsx` or JSX support, element
+runtime, `$.ui`, longer hooks, or containment. No artifact is vendored (D14);
+the fetched tree lives under `out/` and is gitignored.
+
+**Consequences:**
+
+- The host ships a resolver and a linker before any mod can be loaded; they are
+  prerequisites, not new subsystems (§7.3 is unchanged).
+- A JSX transform, if ever adopted, needs its own decision entry; it cannot be
+  smuggled in as "type stripping".
+- Any mod whose reachable graph contains JSX is `planned`, not `unsupported`:
+  the blocking transform is named and scoped.
+- The spike's evidence contract is the citation for "0 checks exits 1"
+  (`docs/ARCHITECTURE.md` §10, S9 note), not D19.
