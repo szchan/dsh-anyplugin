@@ -1230,3 +1230,157 @@ test('next.to refuses a target tier that already ran, naming the direction and p
   )
   assert.match(sameTier.message, /would move backwards/)
 })
+
+test('fan-out: an unawaited next runs the remainder exactly once', async () => {
+  for (const continuation of ['first-decision', 'fan-out']) {
+    const seen = []
+    const guard = at(
+      'prepend',
+      mod('classic.PreToolUse', (event, next) => {
+        // Deliberately not awaited: the host must still join the trip once.
+        void next(event)
+      }),
+    )
+    const user = classicHookRegistration({
+      event: 'PreToolUse',
+      source: 'user#0',
+      run: () => {
+        seen.push('user')
+      },
+    })
+    const append = observeAt('append', () => {
+      seen.push('append')
+    })
+    const result = await runChain(guardedCall(), [guard, user, append], { continuation })
+    assert.deepEqual(seen, ['user', 'append'], continuation)
+    assert.equal(result.decision.kind, 'continue')
+  }
+})
+
+test('a second trip can name a different target tier', async () => {
+  for (const continuation of ['first-decision', 'fan-out']) {
+    const runs = { append: 0, builtin: 0 }
+    const caller = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        await next.to(event, 'append')
+        await next.to(event, 'builtin')
+      }),
+    )
+    const append = at(
+      'append',
+      mod('classic.PreToolUse', (event, next) => {
+        runs.append += 1
+        return next(event)
+      }),
+    )
+    const builtin = at(
+      'builtin',
+      mod('classic.PreToolUse', (event, next) => {
+        runs.builtin += 1
+        return next(event)
+      }),
+    )
+    const result = await runChain(guardedCall(), [caller, append, builtin], { continuation })
+    assert.deepEqual(runs, { append: 1, builtin: 2 }, continuation)
+    assert.equal(result.decision.kind, 'continue')
+  }
+})
+
+test('fan-out: next resolves continue while a classic deny/text stays the host decision', async () => {
+  for (const classicDecision of [
+    { kind: 'deny', reason: 'no' },
+    { kind: 'text', text: 'note' },
+  ]) {
+    let seen = 'unset'
+    const caller = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        seen = await next(event)
+      }),
+    )
+    const classic = classicHookRegistration({
+      event: 'PreToolUse',
+      source: 'user#0',
+      run: () => classicDecision,
+    })
+    const result = await runChain(guardedCall(), [caller, classic], { continuation: 'fan-out' })
+    // D32 §6: a fan-out mod's next() resolves the kernel's continue, not the
+    // classic arm's result; the host still keeps the classic decision.
+    assert.equal(seen, undefined)
+    assert.deepEqual(result.decision, classicDecision)
+  }
+})
+
+test('budget: the caller meter stands still across two trips', async () => {
+  const readings = []
+  const caller = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      readings.push(next.budget.remainingMs)
+      await next(event)
+      readings.push(next.budget.remainingMs)
+      await next(event)
+      readings.push(next.budget.remainingMs)
+    }),
+    { timeoutMs: 500 },
+  )
+  const downstream = at(
+    'user',
+    mod('classic.PreToolUse', async (event, next) => {
+      await sleep(50)
+      return next(event)
+    }),
+    { timeoutMs: 1_000 },
+  )
+  await runChain(guardedCall(), [caller, downstream], { deadlineMs: 5_000 })
+  const [first, second, third] = readings
+  assert.ok(
+    Math.abs(first - second) <= 30 && Math.abs(second - third) <= 30,
+    `readings ${readings.join(', ')}`,
+  )
+})
+
+test('same-tier named jumps: the nested target wins over the outer one', async () => {
+  for (const continuation of ['first-decision', 'fan-out']) {
+    const ran = []
+    const guard = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        await next.to(event, 'append')
+        ran.push('guard')
+      }),
+    )
+    const sibling = at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        ran.push('sibling')
+        // The innermost named target decides where the remainder continues;
+        // the outer target is never reached and must not run it as well.
+        await next.to(event, 'builtin')
+      }),
+    )
+    const append = at(
+      'append',
+      mod('classic.PreToolUse', (event, next) => {
+        ran.push('append')
+        return next(event)
+      }),
+    )
+    const builtin = at(
+      'builtin',
+      mod('classic.PreToolUse', (event, next) => {
+        ran.push('builtin')
+        return next(event)
+      }),
+    )
+    const result = await runChain(guardedCall(), [guard, sibling, append, builtin], { continuation })
+    assert.deepEqual(ran, ['sibling', 'builtin', 'guard'], continuation)
+    assert.equal(result.decision.kind, 'continue')
+    assert.equal(
+      result.trace.some((entry) => entry.tier === 'append' && entry.status === 'skipped'),
+      true,
+      continuation,
+    )
+  }
+})
