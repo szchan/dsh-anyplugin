@@ -867,10 +867,11 @@ function toModTraceEntry(route: ModEventRoute, step: TraceStep): ModTraceEntry {
 /**
  * `TargetTier = Exclude<Tier, 'prepend' | 'user'>` (d.ts:9938). The kernel
  * serves `append` and `builtin`; `core` is legal at the pin but there is no
- * core link in this chain, so naming it would silently run the builtin tier
- * instead of the engine. Refusing it is the honest degradation (D36).
+ * core link in this chain, so naming it would skip the builtin tier and
+ * resolve `continue` without ever consulting it. Refusing it is the honest
+ * degradation (D36).
  */
-function assertTargetTier(tier: unknown): asserts tier is 'append' | 'builtin' {
+function assertTargetTier(tier: unknown, callerTier: Tier): asserts tier is 'append' | 'builtin' {
   if (tier === 'core') {
     throw new TypeError(
       'next.to(e, "core") is not served: the kernel\'s innermost tier is "builtin" and there is no core link (TargetTier, claude-code.d.ts:9938)',
@@ -879,6 +880,17 @@ function assertTargetTier(tier: unknown): asserts tier is 'append' | 'builtin' {
   if (tier !== 'append' && tier !== 'builtin') {
     throw new TypeError(
       `next.to(e, tier) takes "append" or "builtin" (TargetTier, claude-code.d.ts:9938); received ${JSON.stringify(tier)}`,
+    )
+  }
+  const targetRank = TIER_ORDER.indexOf(tier)
+  const callerRank = TIER_ORDER.indexOf(callerTier)
+  if (targetRank <= callerRank) {
+    // The pin's `to` only moves outward: prepend may name append/builtin/core,
+    // append may name core (claude-code.d.ts:5281-5289). A backward jump would
+    // re-enter a tier that already ran, so it is refused instead of resolving
+    // and doing nothing.
+    throw new TypeError(
+      `next.to(e, "${tier}") from the "${callerTier}" tier would move backwards; the pin only moves outward (prepend -> append/builtin/core, append -> core; claude-code.d.ts:5281-5289)`,
     )
   }
 }
@@ -893,43 +905,18 @@ async function runModHandler(
   const modEvent = toModEvent(route, event)
 
   // `budget` is read fresh on each access and stands still while `next` is in
-  // flight (d.ts:5335-5341). The kernel's budget is already live; this adds
-  // the paused time the pin asks for. `$` calls are the host's, not the
-  // kernel's, so time spent in `$` is served by the host's own budget if it
-  // exposes one — a documented subset.
-  let pausedMs = 0
-  let frozen: ModNextBudget | undefined
-  let flightStarted = 0
-
-  const readBudget = (): ModNextBudget => {
-    if (frozen !== undefined) return frozen
-    const live = context.budget
-    return {
-      ms: live.ms,
-      remainingMs: Math.max(0, Math.min(live.ms, live.remainingMs + pausedMs)),
-    }
-  }
-
-  const freeze = (): void => {
-    frozen = readBudget()
-    flightStarted = Date.now()
-  }
-
-  const unfreeze = (): void => {
-    if (frozen === undefined) return
-    pausedMs = Math.min(context.budget.ms, pausedMs + (Date.now() - flightStarted))
-    frozen = undefined
-  }
+  // flight (d.ts:5335-5341). The kernel's meter already pauses across `next`,
+  // and the host pauses it across `$` through `pauseWhilePending`, so this
+  // projection must not add a second accounting layer: it forwards the one
+  // clock the kernel owns.
+  const readBudget = (): ModNextBudget => ({
+    ms: context.budget.ms,
+    remainingMs: Math.max(0, Math.min(context.budget.ms, context.budget.remainingMs)),
+  })
 
   const continueWith = async (rewritten: unknown, tier?: Tier): Promise<unknown> => {
     const nextEvent = rewritten === undefined ? undefined : fromModEvent(route, event, rewritten)
-    freeze()
-    let resolved: Decision
-    try {
-      resolved = await next(nextEvent, tier)
-    } finally {
-      unfreeze()
-    }
+    const resolved = await next(nextEvent, tier)
     // `session.start`'s `next(e)` is `{ cwd }` (d.ts:3568-3578), not a decision.
     if (route.modEvent === 'session.start') {
       return { cwd: (nextEvent ?? event).data.cwd }
@@ -948,7 +935,7 @@ async function runModHandler(
       enumerable: true,
       configurable: true,
       value: async (rewritten: unknown, tier: unknown): Promise<unknown> => {
-        assertTargetTier(tier)
+        assertTargetTier(tier, context.tier)
         return continueWith(rewritten, tier)
       },
     },
@@ -966,7 +953,11 @@ async function runModHandler(
       get: (): readonly ModTraceEntry[] => {
         // Only what settled beneath this hook, nearest first (its own `next`
         // call is the only continuation it ever gets). Frozen: the pin says the
-        // data is frozen and nothing listed may leave.
+        // data is frozen and nothing listed may leave. Fan-out records each
+        // link when its own handler returns, so after `await next(e)` the
+        // kernel still owns the remainder and nothing beneath has settled:
+        // the subset is empty there by construction, which is why the
+        // materializer path (always fan-out) mostly reports an empty list.
         const settled = (context.trace?.() ?? [])
           // `skipped-matcher` is a kernel diagnostic: the registration never
           // ran, so it is not a link beneath this call (M3).
@@ -1331,11 +1322,17 @@ export async function runChain(
   const continuation = options.continuation ?? declaredContinuation(registrations)
   let deepest = event
 
-  const tierStart = (tier: Tier, at: number): number => {
-    const found = ordered.findIndex((entry) => entry.registration.tier === tier)
-    // A tier that already ran cannot be re-entered backwards; asking for it
-    // resumes at the next handler instead of looping.
-    return found === -1 ? ordered.length : found > at ? found : at + 1
+  // Where a `to` continuation lands: the named tier when a link of that tier
+  // (or a deeper one) sits at or after `at`, otherwise the next tier with a
+  // link. Inclusive of a link exactly at `at`, the common case for a direct
+  // target; a missing tier falls forward rather than dropping the rest of the
+  // chain (the pin never skips a tier with more authority, d.ts:5281-5289).
+  const jumpStart = (tier: Tier, at: number): number => {
+    const targetRank = tierRank(tier)
+    for (let index = at; index < ordered.length; index += 1) {
+      if (tierRank(ordered[index].registration.tier) >= targetRank) return index
+    }
+    return ordered.length
   }
 
   const record = (registration: HandlerRegistration, index: number, status: StepStatus, extra: Partial<TraceStep> = {}): void => {
@@ -1480,7 +1477,7 @@ export async function runChain(
       // The caller's tier is finished once a link of a deeper tier is reached.
       // Only then does its `to` take effect; same-tier siblings ran first.
       if (pending !== undefined && rank > pending.callerRank) {
-        const target = tierStart(pending.target, at)
+        const target = jumpStart(pending.target, at)
         recordBypassed(at, target, pending.by, current, pending.callerRank, tierRank(pending.target))
         at = target
         pending = undefined
@@ -1503,9 +1500,15 @@ export async function runChain(
       let resumed: Promise<Decision> | undefined
 
       const next: Next = (nextEvent, tier) => {
-        // One continuation per handler: a second call would run the remainder
-        // of the chain twice.
-        if (resumed !== undefined) return resumed
+        // One continuation per handler: the chain cannot run the remainder
+        // twice, and the pin describes the latest `next` call rather than a
+        // silently reused first one (claude-code.d.ts:5325-5338). Refuse the
+        // second call by name instead of discarding its rewrite.
+        if (resumed !== undefined) {
+          throw new TypeError(
+            'next() was called twice for one dispatch: this host serves one continuation per handler, and refusing the second call is safer than silently keeping the first (claude-code.d.ts:5325-5338)',
+          )
+        }
         if (nextEvent !== undefined) {
           deepest = nextEvent
           current = nextEvent
@@ -1582,7 +1585,7 @@ export async function runChain(
       if (pending !== undefined && rank > pending.callerRank) {
         // The pass-over was recorded when `to` was called, so the hook can
         // read it while it still runs; only the jump is deferred.
-        at = tierStart(pending.target, at)
+        at = jumpStart(pending.target, at)
         pending = undefined
         continue
       }
@@ -1603,13 +1606,18 @@ export async function runChain(
           deepest = nextEvent
           current = nextEvent
         }
-        if (tier !== undefined && tierRank(tier) > rank && pending === undefined) {
+        if (tier !== undefined && tierRank(tier) > rank) {
+          if (pending !== undefined) {
+            throw new TypeError(
+              'next.to() was called twice for one dispatch: the first jump already owns the remainder; refusing the second rather than silently keeping the first (claude-code.d.ts:5325-5338)',
+            )
+          }
           pending = { target: tier, callerRank: rank, by: pluginOf(registration) }
           // Record now: `await next.to(e, tier)` must resolve with the skipped
           // links already in `next.trace`, as the pin describes. Only links
           // strictly between the two tiers are named, so a same-tier sibling is
           // not mislabelled as skipped.
-          recordBypassed(at + 1, tierStart(tier, at), pending.by, current, rank, tierRank(tier))
+          recordBypassed(at + 1, jumpStart(tier, at + 1), pending.by, current, rank, tierRank(tier))
         }
         return CONTINUE
       }
