@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-portable",
+  "version": "1.0.0",
+  "description": "Hand-authored portable plugin fixture for the Codex dialect: skills, MCP, hooks, and extension surfaces.",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Codex Portable",
+        "shortDescription": "Fixture for the Codex dialect",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      },
+      "hooks": "./codex-hooks.json",
+      "apps": "./apps.json",
+      "onboardingSkill": "portable-skill"
+    }
+  }
+}

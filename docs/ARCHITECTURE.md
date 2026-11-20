@@ -1062,6 +1062,22 @@ dialect → IR → emit (group entry, pure data) → Loader → materializer
         → ctx.skills.register → ctx.skills.list() → inventory
 ```
 
+Two dialects feed that pipeline. `.claude-plugin/plugin.json` selects
+`dsh-anyplugin-dialect-claude-code`; any root `plugin.json` (the portable
+layout, whose `$schema` must be
+`https://agent-plugins.org/schemas/1.0.0/plugin.schema.json`), or a
+`.codex-plugin/plugin.json` when there is no Claude manifest, selects
+`dsh-anyplugin-dialect-codex`. Both return the same `ClaudePluginIr`; the rig's
+`report`, `grant` and `revoke` commands use the same detection, so a Codex
+plugin is not silently read as a Claude one. The Codex fixture's golden is
+**hand-authored** from the 1.0.0 schemas and the Codex hook documentation —
+there is no offline `codex plugin details` to capture from — so it is excluded
+from the upstream-observed totals below and carries that provenance in its
+`notes`. Portable 1.0.0 discovers skills only under `skills/`; the root
+`SKILL.md` this dialect still reads is a ticket/Claude-layout compatibility
+extra, counted as compatibility (the fixture is 2 portable components + 1
+compatibility skill), not as portable evidence.
+
 The loader anchors entry-name resolution at its `baseUrl`: the `dsh` package in
 a Desktop tree, the install root in a fetched tree (whose `package.json` is
 written by `fetch-harness.mjs` so the loader's scope resolver finds a manifest).
@@ -1108,6 +1124,16 @@ enough before `verify`; CI fetches each pin once and installs nothing else:
 | `claude-mcp-tool-budget` | 1 | 1 | 0 | 0 | one fitting tool registers, one over-budget tool is skipped |
 | `claude-mcp-budget` | 1 | 0 | 0 | 1 | prefix alone is 66 characters; refused at plan time (D11) |
 | **total** | **16** | **15** | **0** | **1** | |
+
+The Codex fixture is reported separately because its golden is a declaration,
+not an upstream observation:
+
+| Fixture | Declared | Matched | Missing | Refused | What the gap needs |
+| --- | --- | --- | --- | --- | --- |
+| `codex-portable` | 3 | 3 | 0 | 0 | one portable skill, one root `SKILL.md` compatibility skill, and the `mcp__probe__` server; hooks are exec-gated separately (D25) |
+
+Adding that row to the Claude totals would make a hand-authored surface look
+observed, so the total above stays Claude-only.
 
 `claude-commands-flat` moved from 0 to 2 on its **model face alone**. A command
 is one artifact with two observable faces — the catalog entry the model sees,

@@ -1429,3 +1429,23 @@ makes the classic arm error in the same trace; caching `$` fails four tests.
 - `session.start` and production wiring are the next ticket; until then a mod's
   `session.start` handler does not run in a real session, and `updatedInput`
   rewrites stop at the adapter.
+
+## D33 — The Codex/portable dialect claims only what it can state; its budgets and caveats are Codex's.
+
+**Status:** ratified 2026-11-19 (issue #40, PR #43).
+
+The Codex dialect targets Agent Plugins 1.0.0 and the Codex compatibility layout. It is a compile-path dialect and adds no DSH host seam. Its guarantee is limited to the declared portable surface: skills under `skills/`, `mcp.json` servers, and command hooks that have an established S9/D32 host seam and a pinned exec grant. Everything else is `planned` or `unsupported` with a reason naming the surface or event.
+
+There is no offline `codex plugin details` oracle. The `codex-portable` golden is hand-authored from the 1.0.0 schemas and the Codex hook documentation; it is a declaration, not an observation, and is excluded from totals described as upstream-observed. The DSH side remains an observation.
+
+The published 1.0.0 `mcp.json` schema requires the top-level `mcpServers` wrapper; a flat map is treated only as a recorded non-portable compatibility extension. Before a server is carried, its entry is checked against the closed 1.0.0 variants: `command` is a bare token or `./`-relative and contained in the root; `cwd` is `./`, `${PLUGIN_ROOT}`- or `${PLUGIN_DATA}`-rooted and contained after expansion; unknown fields (including a documented `extensions["com.openai"].auth` block) are recorded as unsupported and not carried; `http` is accepted only from the `.mcp.json` compatibility location, never in portable `mcp.json`; `sse` is schema-valid but has no DSH materializer and is refused with a reason. A root `SKILL.md` is read only as a compatibility extra; it is not a 1.0.0 component and is not counted as one.
+
+Codex names tools `mcp__<server>__<tool>`. The budget is `5 + len(server) + 2 + len(tool) <= 64`, i.e. `len(server) + len(tool) <= 57`; with a one-character tool this is `len(server) <= 56`. The dialect refuses a server whose shortest possible name exceeds 64, stating the prefix length, the shortest name and the limit, and never truncates or renames. There is no `plugin` segment and no DSH server-name budget in this path: the MCP materializer connects directly rather than through `dsh-mcp-client` (D12), so the 32-character `plugin_<plugin>_<server>` constraint that binds Claude does not apply. The prefix is carried as data on `IrMcpServer.toolNamePrefix`; absent means Claude's composition, and no Claude path sets it.
+
+Replacement is not merge: an object `extensions.com.openai` is the sole source of OpenAI settings and the overlay's equivalents are recorded as replaced; an explicit `extensions.com.openai.hooks` replaces default `hooks/hooks.json` discovery, and the shadowed file is recorded. The overlay fallback applies only when the object is absent; a malformed value is recorded and does not resurrect the overlay.
+
+Hook faithfulness reuses the single S9/D32 seam table; no second route is introduced. `equivalent` is claimed with each seam's own caveats, not a generic "same contract": the materializer feeds the Claude-shaped payload, so fields the host lacks are omitted and reported with a warning; `Stop` and `SubagentStop` cannot continue a turn or child, so a block is reported with a warning instead of obeyed; `SessionEnd` is advisory; `SubagentStart` cannot stop the child; `SessionStart` `additionalContext` is reported, not delivered. `matcher` is dropped only for the five events Codex ignores; undeclared timeouts use Codex's 600 s default (1 s for `SessionEnd`/`Interrupt`, capped at 3 s); a `${PLUGIN_DATA}` command is `planned` because trust cannot pin host-created data; `${PLUGIN_ROOT}` is stored as `${CLAUDE_PLUGIN_ROOT}` because trust resolves only that spelling, and the hook materializer exports both names at spawn.
+
+A manifest whose `$schema` is missing or foreign, or whose `name` is invalid, is recorded as unsupported and the file is still read for diagnosis. This differs from spec §5.2, which makes a required-schema violation fatal; components read from such a file are diagnostic, not evidence that the plugin is 1.0.0-conformant. Because the IR has no dialect field, the plugin `source` records `codex:<root>`.
+
+The dialect is not yet wired into `compileReport` (install remains Claude-only); that is a follow-up, not a claim made here.

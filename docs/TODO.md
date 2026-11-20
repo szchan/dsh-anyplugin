@@ -79,7 +79,6 @@ with the exact anchor so the proposal is reviewable without a checkout.
       chain engine → element runtime → ~21 namespace bridges → type generation
       from the pinned `claude-code.d.ts`. Coverage is `covered / total` against
       that file, and it only moves up.
-- [ ] **Codex dialect** (portable `plugin.json`), reusing the IR.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; delegate to the real host or
       annotate `unsupported`.

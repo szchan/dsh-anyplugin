@@ -154,6 +154,14 @@ export interface IrMcpServer {
   cwd?: string
   url?: string
   headers?: Record<string, string>
+  /**
+   * Exact prefix the host puts in front of every tool name, when it is not
+   * Claude's `mcp__plugin_<plugin>_<server>__`. Codex names tools
+   * `mcp__<server>__<tool>`; keeping the prefix on the IR node (rather than
+   * deriving it from the dialect at emit time) means the emitter and the DSH
+   * oracle read the same bytes the dialect decided (D11, D33).
+   */
+  toolNamePrefix?: string
   /** Absolute path that `${CLAUDE_PLUGIN_ROOT}` resolved to, kept for the report. */
   pluginRoot?: string
   sourcePath: string

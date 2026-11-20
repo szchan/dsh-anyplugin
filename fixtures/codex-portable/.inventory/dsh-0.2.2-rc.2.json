@@ -1,0 +1,30 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "codex-portable",
+    "version": "1.0.0",
+    "source": "plugin-dir:fixtures/codex-portable"
+  },
+  "components": [
+    {
+      "surface": "mcpServers",
+      "name": "probe"
+    },
+    {
+      "surface": "skills",
+      "name": "codex-root"
+    },
+    {
+      "surface": "skills",
+      "name": "portable-skill"
+    }
+  ],
+  "pin": {
+    "tool": "dsh",
+    "version": "0.2.2-rc.2"
+  },
+  "notes": [
+    "Hand-authored, not observed: there is no offline `codex plugin details` equivalent, so this golden is the fixture's declared surface, derived from the Agent Plugins 1.0.0 schemas and the Codex hooks documentation.",
+    "Only components DSH can observe are listed: one portable skill under `skills/`, one root `SKILL.md` compatibility extra (not a 1.0.0 component), and one MCP server. Hooks are absent because exec grants are default-off (D25); interface/assets/apps/onboardingSkill have no DSH inventory surface."
+  ]
+}

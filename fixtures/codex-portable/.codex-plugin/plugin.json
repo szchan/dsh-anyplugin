@@ -1,0 +1,7 @@
+{
+  "name": "overlay-that-is-replaced",
+  "interface": {
+    "displayName": "Overlay (must not be read when extensions.com.openai is an object)"
+  },
+  "hooks": "./overlay-hooks.json"
+}

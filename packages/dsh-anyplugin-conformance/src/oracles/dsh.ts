@@ -246,9 +246,13 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
       }
     }
     // A server is observable exactly when it contributes a tool: the inventory
-    // reports what the model can call, not what a config file declared.
+    // reports what the model can call, not what a config file declared. The
+    // dialect decided the prefix; an absent field means Claude's composition,
+    // so the Claude path keeps its exact bytes (D11, D33).
+    const toolPrefix = (server: { name: string; toolNamePrefix?: string }): string =>
+      server.toolNamePrefix ?? `mcp__plugin_${mcp!.plugin}_${server.name}__`
     const servers = (mcp?.servers ?? []).filter((server) =>
-      exposed.some((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)))
+      exposed.some((name) => name.startsWith(toolPrefix(server))))
     // An agent is observable only when a registered tool carries its name *and*
     // its description byte for byte. The IR's declaration is the claim; the
     // registry is the evidence (S10). A tool with the right name but different
@@ -277,7 +281,7 @@ export async function probeWithDsh(options: DshProbeOptions): Promise<DshProbeRe
       ...unobservedAgents.map(
         (agent) => `agents/${agent.name}: no registered tool with the declared name and description`,
       ),
-      ...servers.map((server) => `mcpServers/${server.name}: ${exposed.filter((name) => name.startsWith(`mcp__plugin_${mcp!.plugin}_${server.name}__`)).length} tool(s) registered`),
+      ...servers.map((server) => `mcpServers/${server.name}: ${exposed.filter((name) => name.startsWith(toolPrefix(server))).length} tool(s) registered`),
     ]
     return {
       inventory,
