@@ -74,12 +74,18 @@ with the exact anchor so the proposal is reviewable without a checkout.
 ## Done
 
 - `$` bridge (ticket #46): the 23 sites the pinned `diff` mod calls across 10
-  namespaces are served — clock, fs, store, settings, env, session, command,
-  telemetry — rooted at the plugin data dir and confined on `realpath`; `ui.*`
-  and `process.run` are typed refusals. `session.start` on a fresh `diff` load
+  namespaces are covered — clock, fs, store, settings, env, session, command,
+  telemetry. `fs` resolves against the invocation session's cwd (absolute as
+  written), `store` is rooted at the plugin data dir and confined on
+  `realpath`, and `settings.read` serves only a host merged snapshot. Fifteen
+  sites are served; `ui.*`, `process.run` and `settings.read` (no merged reader
+  on this host) are typed refusals. `session.messages()` carries the tool-result
+  turn in the pinned `toolResults` shape and `session.usage()` omits incomplete
+  token context; `command.register` uses the real registry when present and
+  refuses immediately when absent. `session.start` on a fresh `diff` load
   completes through four recorded calls (`session.usage → clock.now →
-  command.register → session.messages`); the static and dynamic ledgers live in
-  `packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
+  command.register → session.messages`); the static, dynamic and transcript
+  ledgers live in `packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,

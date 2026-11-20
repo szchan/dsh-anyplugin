@@ -684,8 +684,9 @@ What a faithful host needs, in dependency order:
    host-owned layout, focus routing, `invalidate` throttling;
 4. **namespace bridges** — the measured `$` surface of a real mod first:
    clock / fs / store / settings / env / session / command / telemetry (10
-   namespaces, 23 call sites, #46), with `ui.*` and `process.run` as typed
-   refusals; then http / mcp / model / agent / audio / theme … from the pinned
+   namespaces, 23 call sites, #46), with `ui.*`, `process.run` and — until a
+   host merged-snapshot reader exists — `settings.read` as typed refusals; then
+   http / mcp / model / agent / audio / theme … from the pinned
    `claude-code.d.ts`;
 5. **type generation** — a per-install `claude-code.d.ts`, because real mods
    typecheck against it.
@@ -881,27 +882,50 @@ runtime.
 `$.` call sites across 10 namespaces: clock (`now`, `after`, `every`), fs
 (`stat`, `list`, `read`), store (`get`, `set`), settings (`read`), env (`get`),
 session (`messages`, `id`, `usage`), command (`register`), telemetry (`mark`,
-`log`), plus `process.run` and the six `ui.*` methods as **typed refusals**.
-The static conformance ledger invokes the scanner's 23 sites in source order:
-every served site completes, and the seven refusal sites answer
-`ERR_MOD_HOST_EXEC_UNSUPPORTED` (D25's pinned-artifact / dynamic-exec rule) or
-`ERR_MOD_HOST_UI_UNSUPPORTED` (the element runtime is planned), never
-`undefined`.
+`log`), plus `process.run`, the six `ui.*` methods and `settings.read` (until a
+host merged-snapshot reader exists) as **typed refusals**. The static
+conformance ledger invokes the scanner's 23 sites in source order: 15 served
+sites complete, and eight refusal sites answer
+`ERR_MOD_HOST_EXEC_UNSUPPORTED` (D25's pinned-artifact / dynamic-exec rule),
+`ERR_MOD_HOST_UI_UNSUPPORTED` (the element runtime is planned), or
+`ERR_MOD_HOST_SETTINGS_UNAVAILABLE` (this host exposes no merged settings
+snapshot), never `undefined`. The ledger records the argument each row used:
+only `session.usage`, `clock.now`, `command.register` and `session.messages`
+are reached at load with diff's own arguments; the other served rows prove
+method availability with a representative argument, because diff's fs/store
+calls live in hook code the load does not run (`head-key-of.ts:52` is the
+documented `gitDir/HEAD` read).
 
 The bridge is built once per loaded mod and its `$` once per handler
 invocation (D31/D32), so a mod cannot observe another mod's timers, command
-registrations or report-once flags. `fs`, `store`, `settings` and `env` root at
-`config.pluginData`; a lexical `..` or absolute path outside the root, and a
-symlink whose real path leaves it, are `ERR_MOD_HOST_PATH_OUTSIDE` — confinement
-is checked on `realpath`, not on the spelling. `store` is a JSON file in that
-data dir written atomically, so it survives a reload. `session.messages()` is
-the agent's derived message list at that moment (`[]` before the first turn is
-correct, and asserted); `session.usage()` carries only observed fields
-(`startedAt` from the header, `context.tokens/window/percent` only when the
-session logged them) and each missing field is reported once per load, never
-zeroed. `command.register` reaches the host's real `ctx.commands` registry when
-the host context has one, is disposed with the mod, and a duplicate names the
-colliding mod as `ERR_MOD_HOST_COMMAND_DUPLICATE`.
+registrations or report-once flags. `fs` follows the pinned d.ts: a relative
+path resolves against the invocation session's working directory and an
+absolute path is used as written, with no plugin-data confinement — the mod
+runs in the user's session, under the same permission model as the user (D25).
+`store` stays rooted at `config.pluginData` (the pinned store is
+plugin-scoped): a lexical `..` or absolute path outside it, and a symlink whose
+real path leaves it, are `ERR_MOD_HOST_PATH_OUTSIDE`, checked on `realpath`.
+`store` is a JSON file in that data dir written atomically, so it survives a
+reload. `settings.read` serves a host merged snapshot only when the host
+supplies one; otherwise it is `ERR_MOD_HOST_SETTINGS_UNAVAILABLE`, never a
+plugin-data file pretending to be settings. `env` reads the host environment
+the materializer already builds (including the `CLAUDE_*`/`PLUGIN_*` names).
+
+`session.messages()` is the agent's derived message list at that moment (`[]`
+before the first turn is correct, and asserted). Tool results use the pinned
+`SessionMessage` shape: a DSH `role: 'tool'` message becomes a user message
+whose `toolResults` array carries the result, and the matching assistant
+`toolUses` entry carries the observed `text`/`isError`; the host appends the
+result after `tools/post-execute`, so PostToolUse sees the call without the
+result and Stop sees the completed carrier. `session.usage()` emits
+`context.tokens/window/percent` only when the session logged a window and all
+three token counts, never a zeroed or partial block; `startedAt` comes from the
+header and each missing field is reported once per load. `command.register`
+reaches the host's real `ctx.commands` registry when the host context has one,
+is disposed with the mod, and a duplicate names the colliding mod as
+`ERR_MOD_HOST_COMMAND_DUPLICATE`; with no registry it refuses
+`ERR_MOD_HOST_COMMAND_UNAVAILABLE` immediately rather than waiting for a
+service that may never mount.
 
 On a **fresh** load diff's `session.start` asks `$` for exactly four sites, in
 this order: `session.usage` (there is no session yet, so the view is empty and

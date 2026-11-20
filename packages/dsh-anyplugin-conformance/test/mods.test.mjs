@@ -15,7 +15,7 @@ import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { classicEvent, modRegistrationsToKernel } from '../../dsh-anyplugin-intercept/src/index.ts'
-import { applyToolInputRewrite } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
+import { apply as applyMaterializer, applyToolInputRewrite } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
 import { createModBridge, loadMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { DIFF_MOD_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
 import { scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
@@ -95,7 +95,10 @@ function bashTool(calls) {
       required: ['command'],
       additionalProperties: false,
     },
-    output: { schema: { type: 'string' }, render: () => [] },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
     execute: async (args) => {
       calls.push(args)
       return 'ran'
@@ -126,7 +129,7 @@ const SYNTHETIC_LEDGER = [
   'fs.read:ran',
   'store.get:ran',
   'store.set:ran',
-  'settings.read:ran',
+  'settings.read:refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE',
   'env.get:ran',
   'session.messages:ran',
   'ui.invalidate:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
@@ -512,6 +515,110 @@ test('a synthetic mod exercises all 23 $ sites, in scan order, with typed refusa
   }
 })
 
+test('the session transcript carries the tool-result turn in the pinned shape', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-transcript-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        mods: [{ entry: 'transcript-seat.ts' }],
+        hooks: [],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_transcript', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 30_000,
+    })
+
+    const assertTranscript = (label, messages, expectResult) => {
+      assert.ok(Array.isArray(messages), `${label} is an array`)
+      assert.ok(messages.length >= 2, `${label} is not empty`)
+      const assistant = messages.find((message) => message.role === 'assistant' && (message.toolUses ?? []).length > 0)
+      assert.ok(assistant, `${label} has the assistant tool call`)
+      const use = assistant.toolUses[0]
+      assert.equal(use.tool, 'Bash')
+      assert.deepEqual(use.input, { command: 'ls' })
+      // PostToolUse runs before the host appends the tool/result event (the
+      // seat's own ordering), so only Stop can assert the completed result.
+      if (!expectResult) return
+      assert.equal(use.text, 'ran', 'the tool result text is attached to the tool use')
+      const carrier = messages.find(
+        (message) => message.role === 'user' &&
+          (message.toolResults ?? []).some((result) => result.tool_use_id === use.tool_use_id),
+      )
+      assert.ok(carrier, `${label} has the user message carrying the tool result`)
+      const result = carrier.toolResults.find((entry) => entry.tool_use_id === use.tool_use_id)
+      assert.equal(result.text, 'ran')
+      assert.equal(result.isError, undefined)
+    }
+
+
+    const store = stored(dataDir)
+    assertTranscript('PostToolUse transcript', store['transcript-post'], false)
+    assertTranscript('Stop transcript', store['transcript-stop'], true)
+    assert.ok(store['transcript-stop'].length >= store['transcript-post'].length)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('a load without a commands service refuses command.register instead of waiting', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-nocommands-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    writeFileSync(join(dataDir, 'ledger.txt'), 'ledger\n')
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        commands: [],
+        mods: [{ entry: 'bridge-ledger.ts' }],
+        hooks: [],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 30_000,
+    })
+    const ledger = stored(dataDir)['bridge-ledger']
+    assert.ok(
+      ledger.includes('command.register:refused:ERR_MOD_HOST_COMMAND_UNAVAILABLE'),
+      'the typed refusal is observable, not a silent undefined',
+    )
+
+    // The old host slept up to 500 ms for a sibling service. Time the
+    // materializer's apply directly: a missing service must refuse now.
+    const directDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-nocommands-apply-'))
+    const disposers = []
+    try {
+      const ctx = {
+        logger: { warn() {} },
+        on: () => () => {},
+        effect(fn) { const dispose = fn(); disposers.push(dispose); return () => {} },
+        get(name) { return name === 'agents' ? { list: () => [] } : undefined },
+      }
+      const started = Date.now()
+      await applyMaterializer(ctx, {
+        pluginRoot: fixture,
+        pluginData: directDir,
+        plugin: 'nocommands',
+        mods: [{ entry: 'bridge-load.ts' }],
+        hooks: [],
+        traceFile: join(directDir, 'trace.jsonl'),
+      })
+      const elapsed = Date.now() - started
+      assert.ok(elapsed < 200, `the apply took ${elapsed} ms; a missing service must not sleep`)
+    } finally {
+      for (const dispose of disposers) await dispose?.()
+      rmSync(directDir, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
 test('command.register is live in the DSH registry, disposed on reload, and a duplicate names the mod', { skip }, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-command-'))
   const traceFile = join(dataDir, 'trace.jsonl')
@@ -554,29 +661,29 @@ const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest(
 // graph, in source order. `served` means the bridged namespace has the method;
 // `refused:<code>` means the call was made and the typed refusal came back.
 const DIFF_LEDGER = [
-  'clock.now:ran',
-  'clock.after:ran',
-  'clock.every:ran',
-  'process.run:refused:ERR_MOD_HOST_EXEC_UNSUPPORTED',
-  'fs.stat:ran',
-  'fs.list:ran',
-  'fs.read:ran',
-  'store.get:ran',
-  'store.set:ran',
-  'settings.read:ran',
-  'env.get:ran',
-  'session.messages:ran',
-  'ui.invalidate:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.status:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.log:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.open:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.close:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'command.register:ran',
-  'session.id:ran',
-  'session.usage:ran',
-  'telemetry.mark:ran',
-  'telemetry.log:ran',
-  'ui.resolve:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  { site: 'clock.now', result: 'ran', argument: 'session.start fallback', evidence: 'diff session.start' },
+  { site: 'clock.after', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'clock.every', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'process.run', result: 'refused:ERR_MOD_HOST_EXEC_UNSUPPORTED', argument: '[]', evidence: 'D25 refusal' },
+  { site: 'fs.stat', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads the git dir HEAD from hook code' },
+  { site: 'fs.list', result: 'ran', argument: '.', evidence: 'method availability; the fetched call reads entry kinds from hook code' },
+  { site: 'fs.read', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads registration.ts from hook code' },
+  { site: 'store.get', result: 'ran', argument: 'ledger', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'store.set', result: 'ran', argument: 'ledger = {from: diff}', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'settings.read', result: 'refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE', argument: 'no argument', evidence: 'no merged settings reader on this host; refused rather than served from plugin data' },
+  { site: 'env.get', result: 'ran', argument: 'PATH', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'session.messages', result: 'ran', argument: 'no argument', evidence: 'diff session.start openOnRestore' },
+  { site: 'ui.invalidate', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.status', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.log', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.open', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.close', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'command.register', result: 'ran', argument: '{ name: "diff", description }', evidence: 'diff session.start' },
+  { site: 'session.id', result: 'ran', argument: 'no argument', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'session.usage', result: 'ran', argument: 'no argument', evidence: 'diff session.start' },
+  { site: 'telemetry.mark', result: 'ran', argument: '{ from: "diff-ledger" }', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'telemetry.log', result: 'ran', argument: '{ from: "diff-ledger" }', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'ui.resolve', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
 ]
 
 // What the pinned `session.start` actually does through `$`: bind() asks
@@ -696,7 +803,7 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
       const namespace = bridge.dollar()[site.namespace]
       const method = namespace?.[site.method]
       if (typeof method !== 'function') {
-        capability.push(`${label}:missing`)
+        capability.push({ site: label, result: 'missing' })
         continue
       }
       try {
@@ -716,10 +823,10 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
             break
           }
           case 'fs.stat':
-            await method('ledger.txt')
+            await method('register.ts')
             break
           case 'fs.read':
-            await method('ledger.txt')
+            await method('register.ts')
             break
           case 'store.get':
             await method('ledger')
@@ -741,12 +848,16 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
             // process.run and the six ui.* sites: the call must refuse.
             await method()
         }
-        capability.push(`${label}:ran`)
+        capability.push({ site: label, result: 'ran' })
       } catch (error) {
-        capability.push(`${label}:refused:${error?.code ?? 'UNKNOWN'}`)
+        capability.push({ site: label, result: `refused:${error?.code ?? 'UNKNOWN'}` })
       }
     }
-    assert.deepEqual(capability, DIFF_LEDGER, 'every scanned site ran or refused with a typed code')
+    assert.deepEqual(
+      capability.map((row) => ({ site: row.site, result: row.result })),
+      DIFF_LEDGER.map((row) => ({ site: row.site, result: row.result })),
+      'every scanned site ran or refused with a typed code',
+    )
 
     const calls = []
     const load = await loadMod({

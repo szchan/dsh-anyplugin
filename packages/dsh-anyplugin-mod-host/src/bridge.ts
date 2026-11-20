@@ -18,15 +18,15 @@
  * - `process.run`: exec grants are pinned to artifact bytes (D25); a mod is
  *   content-class and cannot turn a `$` call into an unpinned exec.
  *
- * The three path-taking namespaces (`fs`, `store`, `settings`) are rooted at
- * the plugin's data directory, the directory the mod's own
- * `${CLAUDE_PLUGIN_DATA}` names. A relative path is resolved against that
- * root; every existing path is then checked by its **real** path, so a `..`
- * spelling and a symlink both refuse when they land outside. This is a
- * deliberate, declared confinement, narrower than the pinned d.ts's "session
- * working directory" rule: a mod is not a hook, and its data directory is the
- * only directory the host has granted it. `env.get` reads the environment the
- * host passes, never a path.
+ * `fs` follows the pinned d.ts: a relative path is resolved against the
+ * invocation's session working directory and an absolute path is taken as
+ * written. That is the directory the mod's own process would see upstream, and
+ * the fetched `diff` graph reads its git directory through it; a plugin-data
+ * root would silently answer a different file. `store` stays confined to the
+ * plugin data directory (the pinned store is plugin-scoped), and `settings` is
+ * read from the host's settings service when one supplies the merged snapshot;
+ * this host has no such reader, so it refuses with a typed code instead of
+ * serving a plugin-data file and calling it settings.
  *
  * Refusals are values a mod can observe: async call sites reject with
  * `ModBridgeError`, sync `ui` getters throw it. Nothing here swallows a
@@ -56,20 +56,22 @@ export type ModBridgeErrorCode =
   | 'ERR_MOD_HOST_EXEC_UNSUPPORTED'
   /** A path that is empty, not a string, or carries a NUL. */
   | 'ERR_MOD_HOST_PATH_INVALID'
-  /** A path whose lexical or resolved form leaves the plugin data directory. */
+  /** A store path whose lexical or resolved form leaves the plugin data directory. */
   | 'ERR_MOD_HOST_PATH_OUTSIDE'
   /** A path that does not exist (for `stat`, a broken link is `other`). */
   | 'ERR_MOD_HOST_PATH_MISSING'
   /** An OS refusal, a file too large to read, or a failed store write. */
   | 'ERR_MOD_HOST_FS'
-  /** The host has no plugin data directory to root a namespace at. */
+  /** The host has no plugin data directory to root the store at. */
   | 'ERR_MOD_HOST_DATA_DIR_MISSING'
   /** A store key/value the host cannot persist (not a key, not JSON, over 4 MiB). */
   | 'ERR_MOD_HOST_STORE_INVALID'
-  /** `settings.json` in the data directory is not a JSON object. */
+  /** The host settings reader returned something that is not an object. */
   | 'ERR_MOD_HOST_SETTINGS_INVALID'
   /** `settings.read({ source })` asks for a source this host cannot serve. */
   | 'ERR_MOD_HOST_SETTINGS_SOURCE'
+  /** No host settings reader supplies the merged snapshot `settings.read()` means. */
+  | 'ERR_MOD_HOST_SETTINGS_UNAVAILABLE'
   /** `env.get` was given a name that is not a non-empty string. */
   | 'ERR_MOD_HOST_ENV_INVALID'
   /** `session.id()` with no session on this invocation (D32 §4). */
@@ -146,16 +148,20 @@ export interface ModBridgeSession {
 export interface ModBridgeOptions {
   /** Plugin name; every refusal message is prefixed with it. */
   readonly plugin: string
-  /** `${CLAUDE_PLUGIN_DATA}`: the root of fs/store/settings. */
+  /** `${CLAUDE_PLUGIN_DATA}`: the durable store's root (the pinned store is plugin-scoped). */
   readonly dataDir?: string
+  /** The working directory `fs` resolves relative paths against; defaults to `process.cwd()`. */
+  readonly cwd?: string
   /**
    * DSH's command service, when the host context has one. A resolver is
    * re-read at each `command.register`, so an optional service that mounts
    * after this plugin's apply is still found for a later handler.
    */
   readonly commands?: ModBridgeCommandRegistry | (() => ModBridgeCommandRegistry | undefined | null)
-  /** Maps the invocation's agent to the session the `$` reads. */
-  readonly session?: (agent: unknown) => ModBridgeSession | undefined
+  /** Maps the invocation's agent to the session the `$` reads (raw DSH session or a view). */
+  readonly session?: (agent: unknown) => unknown
+  /** The host's merged settings snapshot; `settings.read()` refuses without one. */
+  readonly settings?: () => unknown | Promise<unknown>
   /** Environment visible to `$.env.get`; the materializer passes its own. */
   readonly env?: Readonly<Record<string, string | undefined>>
   /** Clock source; tests pin it, production uses `Date.now`. */
@@ -175,7 +181,6 @@ export interface ModBridge {
 
 const READ_LIMIT = 4 * 1024 * 1024
 const STORE_FILE = '.anyplugin-store.json'
-const SETTINGS_FILE = 'settings.json'
 const UI_METHODS = [
   'invalidate',
   'status',
@@ -207,13 +212,154 @@ const jsonText = (value: unknown): string => {
   }
 }
 
+const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+
+const textOf = (message: any): string => {
+  if (!Array.isArray(message?.content)) return ''
+  return message.content
+    .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block: any) => block.text)
+    .join('')
+}
+
+const inputOf = (raw: unknown): Record<string, unknown> => {
+  if (typeof raw !== 'string') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Adapt a raw DSH session to the pinned `SessionMessage` shape. The tool
+ * result turn is a **user** message carrying `toolResults` (d.ts:9260); the
+ * assistant's `toolUses` entry also gains the observed `text`/`isError`
+ * (d.ts:10515). A test view that already has `messages` passes through.
+ */
+export function sessionViewOf(value: unknown): ModBridgeSession | undefined {
+  const session = isRecord(value) ? value : undefined
+  if (session === undefined) return undefined
+  if (typeof session.deriveMessages !== 'function') {
+    if (!Array.isArray(session.messages)) return undefined
+    return {
+      ...(typeof session.id === 'string' ? { id: session.id } : {}),
+      ...(typeof session.cwd === 'string' ? { cwd: session.cwd } : {}),
+      messages: session.messages as readonly Record<string, unknown>[],
+      ...(isRecord(session.usage) ? { usage: session.usage } : {}),
+    }
+  }
+  const header = isRecord(session.header) ? session.header : undefined
+  if (header === undefined) return undefined
+  let derived: any[] = []
+  try {
+    derived = session.deriveMessages() as any[]
+  } catch {
+    derived = []
+  }
+  const messages: Array<Record<string, unknown>> = []
+  const toolUses = new Map<string, Record<string, unknown>>()
+  for (const message of derived) {
+    if (message?.role === 'user') {
+      messages.push({ role: 'user', text: textOf(message), toolUses: [] })
+    } else if (message?.role === 'assistant') {
+      const uses: Array<Record<string, unknown>> = []
+      if (Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (block?.type !== 'tool-call') continue
+          const use: Record<string, unknown> = {
+            tool_use_id: String(block.id),
+            tool: String(block.name),
+            input: inputOf(block.arguments),
+          }
+          uses.push(use)
+          toolUses.set(String(block.id), use)
+        }
+      }
+      messages.push({ role: 'assistant', text: textOf(message), toolUses: uses })
+    } else if (message?.role === 'tool') {
+      const toolUseId = String(message.toolCallId)
+      const resultText = textOf(message)
+      const use = toolUses.get(toolUseId)
+      if (use !== undefined) {
+        if (resultText !== '') use.text = resultText
+        if (message.isError === true) use.isError = true
+      }
+      messages.push({
+        role: 'user',
+        text: '',
+        toolUses: [],
+        toolResults: [{
+          tool_use_id: toolUseId,
+          ...(resultText === '' ? {} : { text: resultText }),
+          ...(message.isError === true ? { isError: true } : {}),
+        }],
+      })
+    }
+  }
+
+  const usage: Record<string, unknown> = {}
+  if (finite(header.createdAt)) usage.startedAt = header.createdAt
+  let events: any[] = []
+  if (typeof session.snapshotEvents === 'function') {
+    try {
+      events = session.snapshotEvents() as any[]
+    } catch {
+      events = []
+    }
+  }
+  let contextWindow: number | undefined
+  let lastUsage: any
+  for (const event of events) {
+    if (event?.type === 'request/context') {
+      const window = event.data?.contextWindow
+      if (finite(window) && window > 0) contextWindow = window
+    } else if (event?.type === 'assistant/message' && event.data?.usage !== undefined) {
+      lastUsage = event.data.usage
+    }
+  }
+  // The pinned usage never zeroes a figure the engine did not report. Only a
+  // complete token accounting (input + both cache fields) next to a window is
+  // a context block at all; a partial one is omitted and reported once.
+  if (lastUsage !== undefined && finite(lastUsage.inputTokens) &&
+      finite(lastUsage.cacheReadTokens) && finite(lastUsage.cacheWriteTokens) &&
+      contextWindow !== undefined) {
+    const tokens = lastUsage.inputTokens + lastUsage.cacheReadTokens + lastUsage.cacheWriteTokens
+    usage.context = {
+      tokens,
+      window: contextWindow,
+      percent: Math.round((tokens / contextWindow) * 100),
+    }
+  }
+
+  return {
+    ...(typeof header.id === 'string' ? { id: header.id } : {}),
+    cwd: typeof header.cwd === 'string' ? header.cwd : process.cwd(),
+    messages,
+    usage,
+  }
+}
+
+/** The unscoped `ctx.get('commands')` read, as a re-read resolver. */
+export function commandRegistryFromContext(ctx: any): () => ModBridgeCommandRegistry | undefined {
+  return () => {
+    try {
+      return typeof ctx?.get === 'function' ? (ctx.get('commands') as ModBridgeCommandRegistry | undefined) : undefined
+    } catch {
+      return undefined
+    }
+  }
+}
+
 export function createModBridge(options: ModBridgeOptions): ModBridge {
   const plugin = options.plugin
   const label = `anyplugin mod ${plugin}`
   const warn = options.warn ?? ((): void => {})
   const env = options.env ?? {}
   const now = options.now ?? Date.now
-  const sessionOf = options.session ?? ((): ModBridgeSession | undefined => undefined)
+  const sessionSource = options.session
+  const settingsSource = options.settings
   const telemetrySink = options.telemetry
   const reported = new Set<string>()
   const commandDisposers = new Map<string, () => void>()
@@ -250,45 +396,6 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     return root
   }
 
-  /** The lexical path, checked to sit at or under the data directory. */
-  const lexicalOf = (value: unknown, site: string): string => {
-    const base = rootOf()
-    if (typeof value !== 'string' || value.length === 0) {
-      fail('ERR_MOD_HOST_PATH_INVALID', `${site}: path must be a non-empty string, got ${describeValue(value)}`)
-    }
-    if (value.includes('\0')) fail('ERR_MOD_HOST_PATH_INVALID', `${site}: path contains a NUL byte`)
-    const lexical = isAbsolute(value) ? resolve(value) : resolve(base, value)
-    if (!isWithin(base, lexical)) {
-      fail(
-        'ERR_MOD_HOST_PATH_OUTSIDE',
-        `${site}: ${JSON.stringify(value)} resolves to ${lexical}, outside the plugin data directory ${base}`,
-      )
-    }
-    return lexical
-  }
-
-  /** A path that must exist: lexical and real-path confinement, then its real path. */
-  const existingRealOf = (value: unknown, site: string): string => {
-    const lexical = lexicalOf(value, site)
-    let real: string
-    try {
-      real = realpathSync(lexical)
-    } catch (error) {
-      if (codeOf(error) === 'ENOENT' || codeOf(error) === 'ENOTDIR') {
-        fail('ERR_MOD_HOST_PATH_MISSING', `${site}: ${JSON.stringify(value)} does not exist`, error)
-      }
-      fail('ERR_MOD_HOST_FS', `${site}: cannot resolve ${JSON.stringify(value)}: ${messageOf(error)}`, error)
-    }
-    const base = rootOf()
-    if (!isWithin(base, real)) {
-      fail(
-        'ERR_MOD_HOST_PATH_OUTSIDE',
-        `${site}: ${JSON.stringify(value)} resolves through a link to ${real}, outside the plugin data directory ${base}`,
-      )
-    }
-    return real
-  }
-
   /** A fixed file under the data directory; a symlink that leaves the root refuses. */
   const confinedFile = (name: string, site: string): { file: string; real?: string } => {
     const base = rootOf()
@@ -300,6 +407,9 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       }
       return { file, real }
     } catch (error) {
+      // `fail` above is a stable refusal, not an OS error: rewrite it to FS
+      // and a symlinked store would lose its OUTSIDE code.
+      if (error instanceof ModBridgeError) throw error
       if (codeOf(error) === 'ENOENT') return { file }
       fail('ERR_MOD_HOST_FS', `${site}: cannot inspect ${file}: ${messageOf(error)}`, error)
     }
@@ -307,8 +417,17 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
 
   // ---- fs -----------------------------------------------------------------
 
-  const fsStat = async (path: unknown, statOptions?: unknown): Promise<unknown> => {
-    const lexical = lexicalOf(path, '$.fs.stat')
+  /** The pinned fs rule: relative to the invocation cwd, absolute as written. */
+  const fsPathOf = (cwd: string, value: unknown, site: string): string => {
+    if (typeof value !== 'string' || value.length === 0) {
+      fail('ERR_MOD_HOST_PATH_INVALID', `${site}: path must be a non-empty string, got ${describeValue(value)}`)
+    }
+    if (value.includes('\0')) fail('ERR_MOD_HOST_PATH_INVALID', `${site}: path contains a NUL byte`)
+    return isAbsolute(value) ? resolve(value) : resolve(cwd, value)
+  }
+
+  const fsStat = async (cwd: string, path: unknown, statOptions?: unknown): Promise<unknown> => {
+    const lexical = fsPathOf(cwd, path, '$.fs.stat')
     let requested: { resolve: boolean } = { resolve: false }
     if (statOptions !== undefined) {
       if (!isRecord(statOptions) || typeof statOptions.resolve !== 'boolean') {
@@ -326,13 +445,15 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       fail('ERR_MOD_HOST_FS', `$.fs.stat: ${JSON.stringify(path)}: ${messageOf(error)}`, error)
     }
     const isLink = link.isSymbolicLink()
-    let target = link
-    let realPath: string | undefined
-    if (isLink) {
-      try {
-        realPath = realpathSync(lexical)
-        target = statSync(lexical)
-      } catch (error) {
+    let realPath: string
+    let target: ReturnType<typeof statSync>
+    try {
+      // Follow the whole path, including intermediate links, before deciding
+      // anything about the final component (MF1).
+      realPath = realpathSync(lexical)
+      target = statSync(realPath)
+    } catch (error) {
+      if (isLink) {
         if (codeOf(error) === 'ENOENT' || codeOf(error) === 'ENOTDIR' || codeOf(error) === 'ELOOP') {
           // A link that leads nowhere is `other`, the link's own bytes and mtime.
           return {
@@ -342,34 +463,20 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
             isLink: true,
           }
         }
-        fail('ERR_MOD_HOST_FS', `$.fs.stat: ${JSON.stringify(path)}: ${messageOf(error)}`, error)
       }
-      const base = rootOf()
-      if (!isWithin(base, realPath)) {
-        fail(
-          'ERR_MOD_HOST_PATH_OUTSIDE',
-          `$.fs.stat: ${JSON.stringify(path)} leads to ${realPath}, outside the plugin data directory ${base}`,
-        )
-      }
-    } else if (requested.resolve) {
-      try {
-        realPath = realpathSync(lexical)
-      } catch (error) {
-        fail('ERR_MOD_HOST_FS', `$.fs.stat: cannot resolve ${JSON.stringify(path)}: ${messageOf(error)}`, error)
-      }
+      fail('ERR_MOD_HOST_FS', `$.fs.stat: ${JSON.stringify(path)}: ${messageOf(error)}`, error)
     }
     return {
       kind: kindOf(target.mode),
       size: target.size,
       mtimeMs: target.mtimeMs,
       isLink,
-      ...(requested.resolve && realPath === undefined ? {} : requested.resolve ? { realPath } : {}),
+      ...(requested.resolve ? { realPath } : {}),
     }
   }
 
-  const fsList = async (path?: unknown): Promise<unknown> => {
-    const base = rootOf()
-    const real = path === undefined ? base : existingRealOf(path, '$.fs.list')
+  const fsList = async (cwd: string, path?: unknown): Promise<unknown> => {
+    const real = path === undefined ? cwd : fsPathOf(cwd, path, '$.fs.list')
     let entries: ReturnType<typeof readdirSync>
     try {
       entries = readdirSync(real, { withFileTypes: true })
@@ -397,7 +504,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     return listed
   }
 
-  const fsRead = async (path: unknown, readOptions?: unknown): Promise<unknown> => {
+  const fsRead = async (cwd: string, path: unknown, readOptions?: unknown): Promise<unknown> => {
     let as: 'text' | 'bytes' = 'text'
     if (readOptions !== undefined) {
       if (!isRecord(readOptions) || (readOptions.as !== 'text' && readOptions.as !== 'bytes')) {
@@ -405,7 +512,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       }
       as = readOptions.as
     }
-    const real = existingRealOf(path, '$.fs.read')
+    const real = fsPathOf(cwd, path, '$.fs.read')
     let data: Buffer
     try {
       const info = statSync(real)
@@ -537,26 +644,26 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       if (source !== undefined) {
         fail(
           'ERR_MOD_HOST_SETTINGS_SOURCE',
-          `$.settings.read: source ${JSON.stringify(source)} is not bridged; this host serves the plugin data directory's settings.json only`,
+          `$.settings.read: source ${JSON.stringify(source)} is not bridged; the host serves the merged settings snapshot only`,
         )
       }
     }
-    const { file, real } = confinedFile(SETTINGS_FILE, '$.settings.read')
-    if (real === undefined) return {}
-    let text: string
-    try {
-      text = readFileSync(real, 'utf8')
-    } catch (error) {
-      fail('ERR_MOD_HOST_FS', `$.settings.read: cannot read ${file}: ${messageOf(error)}`, error)
+    if (settingsSource === undefined) {
+      fail(
+        'ERR_MOD_HOST_SETTINGS_UNAVAILABLE',
+        '$.settings.read: this host has no merged settings reader (ctx.settings exposes no readable snapshot); the field is refused rather than served from a plugin-data file',
+      )
     }
-    let parsed: unknown
+    let value: unknown
     try {
-      parsed = JSON.parse(text)
+      value = await settingsSource()
     } catch (error) {
-      fail('ERR_MOD_HOST_SETTINGS_INVALID', `$.settings.read: ${file} is not JSON: ${messageOf(error)}`, error)
+      fail('ERR_MOD_HOST_SETTINGS_UNAVAILABLE', `$.settings.read: the host settings reader failed: ${messageOf(error)}`, error)
     }
-    if (!isRecord(parsed)) fail('ERR_MOD_HOST_SETTINGS_INVALID', `$.settings.read: ${file} is not a JSON object`)
-    return parsed
+    if (!isRecord(value)) {
+      fail('ERR_MOD_HOST_SETTINGS_INVALID', `$.settings.read: the host settings reader returned ${describeValue(value)}, not an object`)
+    }
+    return value
   }
 
   // ---- env -----------------------------------------------------------------
@@ -572,7 +679,8 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
 
   // ---- session -------------------------------------------------------------
 
-  const sessionOfAgent = (agent: unknown): ModBridgeSession | undefined => sessionOf(agent)
+  const sessionOfAgent = (agent: unknown): ModBridgeSession | undefined =>
+    sessionSource === undefined ? undefined : sessionViewOf(sessionSource(agent))
 
   const sessionId = async (agent: unknown): Promise<string> => {
     const view = sessionOfAgent(agent)
@@ -585,7 +693,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     return view.id
   }
 
-  const sessionCwd = (agent: unknown): string => sessionOfAgent(agent)?.cwd ?? process.cwd()
+  const sessionCwd = (agent: unknown): string => sessionOfAgent(agent)?.cwd ?? options.cwd ?? process.cwd()
 
   const sessionMessages = async (agent: unknown): Promise<readonly Record<string, unknown>[]> =>
     sessionOfAgent(agent)?.messages ?? []
@@ -681,7 +789,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
         description,
         handler: () => ({
           kind: 'error',
-          text: `/${name} is declared by anyplugin mod ${plugin}; its command.run hook answers the run`,
+          text: `/${name} is declared by anyplugin mod ${plugin}; its command.run hook is not bridged on this host`,
         }),
       })
     } catch (error) {
@@ -717,6 +825,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
 
   const dollar = (agent?: unknown): Record<string, unknown> => {
     if (disposed) fail('ERR_MOD_HOST_DISPOSED', 'the bridge was disposed; no further handler can run')
+    const cwd = sessionCwd(agent)
     const ui = Object.fromEntries(
       UI_METHODS.map((method: UiMethod) => {
         const refuse = (): never =>
@@ -756,7 +865,11 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
             '$.process.run is refused: exec is granted per pinned artifact bytes (D25) and a mod is content-class; an unpinned argv from a handler has no grant',
           ),
       },
-      fs: { stat: fsStat, list: fsList, read: fsRead },
+      fs: {
+        stat: (path: unknown, statOptions?: unknown) => fsStat(cwd, path, statOptions),
+        list: (path?: unknown) => fsList(cwd, path),
+        read: (path: unknown, readOptions?: unknown) => fsRead(cwd, path, readOptions),
+      },
       store: { get: storeGet, set: storeSet, delete: storeDelete, keys: storeKeys },
       settings: { read: settingsRead },
       env: { get: envGet },
