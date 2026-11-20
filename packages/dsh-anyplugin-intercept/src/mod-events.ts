@@ -47,7 +47,7 @@ export interface ModEventRoute {
 }
 
 /**
- * The 16 live classic routes plus one loader point.
+ * The 17 live routes: sixteen classic routes and `session.start`.
  *
  * The sixteen `classic.*` rows are the mod-side spellings of the classic hook
  * points; each shares the kernel event name (`ClassicEventOf` maps them
@@ -58,9 +58,10 @@ export interface ModEventRoute {
  * `classic.SessionStart`, and conflating the two would fire a mod's load
  * handler on every new root agent.
  *
- * `session.start` is a loader point, not a live route: the adapter maps it so
- * the name is accounted for, but no loader front-end fires it yet. Wiring that
- * front-end is the follow-up; this PR must not imply the host already fires it.
+ * `session.start` is live: the materializer fires it from the same `apply`
+ * that loads the mods, once per loaded plugin and before the first prompt of
+ * the process (D32 §4). A reload is a new `apply` and fires it again with
+ * exactly that load's registrations.
  */
 export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
   {
@@ -221,11 +222,9 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
     kernelEvent: 'session.start',
     hostSeam: 'mod-host/load',
     payload: 'engine',
-    status: 'loader-point',
-    reason:
-      'The loader front-end that fires session.start from mod-host/load is a follow-up; this row only reserves the loader point. It is not agent/created (that is classic.SessionStart).',
+    status: 'live',
     evidence:
-      'EngineEventOf session.start fires once per process for each loaded plugin, before the first prompt, then once per fresh load (d.ts:3568-3578). The mod host does not fire it yet: no production caller of the adapter or loader front-end exists in this PR.',
+      'EngineEventOf session.start fires once per process for each loaded plugin, before the first prompt, then once per fresh load (d.ts:3568-3578). The materializer fires it from apply, once per loaded plugin, before the first prompt; a reload is a new apply. It is not agent/created (that is classic.SessionStart).',
   },
 ])
 

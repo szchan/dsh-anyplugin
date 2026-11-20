@@ -1338,7 +1338,7 @@ claim that every upstream mod is blocked: only graphs that reach a `.tsx` are.
 
 ## D32 — Mod events ride the one kernel; the mapping is data
 
-**Status:** ratified 2026-11-19 (issue #36, PR #37).
+**Status:** ratified 2026-11-19 (issue #36, PR #37); amended 2026-11-19 (issue #39, PR #44).
 
 **Context.** `loadMod` (D31) returns a mod's `register(on)` registrations, and
 `dsh-anyplugin-intercept` already owns tier ordering, matchers, continuation
@@ -1372,10 +1372,37 @@ fidelity claim, so it is data with evidence, not code with comments.
    excluded); a selected-but-unrouted name keeps its own S9/D31 reason, and an
    unexpandable pattern gets a `pattern` reason. Nothing is dropped as "not an
    event".
-4. **`session.start` is a loader point, not live.** It fires once per loaded
-   plugin at load, not at `agent/created` (that is classic `SessionStart`). The
-   table therefore has **16 live classic routes plus one loader point**, and
-   says so. Wiring the loader front-end is a follow-up, not a claim.
+4. **`session.start` is live per load, before the first prompt.** The
+   materializer fires it from the same `apply` that loads the mods (Cordis
+   awaits `apply`), once per loaded plugin — not per session, not per
+   `agent/created`, not after `/clear`. A reload is a new `apply` and fires
+   again with exactly that load's registrations. A second agent or session in
+   the same process does not fire it. On a late enable or reload a root may
+   already be live, so "before any agent exists" is false for that path; the
+   claim is "once per load, before the first prompt of the process". At the fire
+   there may be no session: `$.session.id` is absent, `messages()` is `[]`, and
+   `command.register`/`tool.register` throw. The pin's payload is
+   `{cwd, surface, isInteractive}`; `cwd` is the live root's cwd when one
+   exists, otherwise the process working directory, never
+   `CLAUDE_PLUGIN_ROOT`; `surface` and `isInteractive` are host/session facts
+   `apply` cannot observe, so they are omitted and reported as an unbridged
+   field gap with a reason — never filled with invented values. The first-load
+   guarantee that a `$.tool.register` is visible to turn one is not claimed
+   until `$` registration is bridged.
+
+   A seat is per agent, on `payload.agent.ctx`: created for every agent already
+   live when `apply` runs (`ctx.agents.list()`) and for every
+   `agent/created`; `createSeat` is idempotent per session id. A reload
+   disposes the old seat with the plugin effect and re-seats the live set,
+   without replaying `classic.SessionStart`. `agent/disposed` disposes the
+   seat. The plugin-entry context is never used for agent events. One seat runs
+   `[mod registrations, classic registrations]` in one fan-out `runChain`; a
+   mod that returns without `next` does not skip the classic arm, and later
+   arms see the rewritten event. `classic.SessionStart`/`SessionEnd` are
+   root-only; `SubagentStart`/`SubagentStop` ride the root carrier. The
+   plugin-level classic mounts remain only for agentless calls; a live agent
+   reaching them is a bug, not a fallback.
+
 5. **What stays unmapped, and why.** 17 classic names: six S9-unprobed
    (`TaskCreated`, `TaskCompleted`, `TeammateIdle`, `WorktreeCreate`,
    `WorktreeRemove`, `StopFailure`), ten S9-refuted with a per-name reason
@@ -1396,28 +1423,54 @@ fidelity claim, so it is data with evidence, not code with comments.
    D13's "a mod that declines `next()` owns the rest of the chain" is therefore
    a `first-decision` statement; in a fan-out channel the channel owns
    continuation.
-7. **Classic results are translated, never collapsed.** `additionalContext`
-   becomes the kernel's `text` channel; `updatedInput` becomes an event
-   rewrite; engine verbs pass through. `ask`, `preventContinuation`,
-   `stopReason`, `updatedToolOutput`, `updatedMCPToolOutput`, `decision` and any
-   unknown field become a typed `unsupported` with field and reason — never a
-   silent `continue`. Classic events return `ClassicResultOf`, not the engine
-   verbs (d.ts:1086-1087).
+7. **Classic results are translated, never collapsed — inside the adapter.**
+   A mod's `classic.PreToolUse` `updatedInput` becomes the chain event rewrite
+   and is applied by §9; a `hooks.json` command hook's `updatedInput` is carried
+   by `HookVerdict` and routed through the same rewrite, and a value that is not
+   lossless JSON is a typed unsupported naming the field, never a silent
+   continue. `ask`, `preventContinuation`, `stopReason`, `updatedToolOutput`,
+   `updatedMCPToolOutput`, `decision`, and unknown fields stay typed
+   unsupported. Classic events return `ClassicResultOf`, not engine verbs.
+
 8. **`$` stays per invocation.** The adapter never receives `$`; D31's host
    wrapper calls `host.dollar()` once immediately before each invocation and
    never caches it. The proof through the adapter is transitive — two kernel
    runs build two namespaces; caching in the wrapper turns both the adapter and
    the host isolation test red.
-9. **Status.** There is no production caller yet: the loader front-end that
-   calls the adapter, and the host wiring that applies `updatedInput` at the
-   seam, are follow-ups. The D13 tier assumption is now grounded in the pinned
-   d.ts; no other D13 semantic changed.
+9. **`updatedInput` is applied by the materializer, through one guard.**
+   `modRegistrationsToKernel` has a production caller: the materializer.
+   `updatedInput` is applied by the same pre-execute mount after the chain: the
+   final `tool_input` is validated as lossless JSON, cloned and deep-frozen; the
+   execution object's `arguments` property is checked writable (own data
+   property writable, or a setter); then it is assigned before `next()`. A
+   non-writable property, a non-JSON value, or a missing `tool_input` is a typed
+   `unsupported` (trace/warn), never a silent no-op. This is a private-API
+   mutation: `ToolExecutionInput.arguments` is readonly, the published contract
+   says arguments are already logged/presented and input rewriting is excluded,
+   and `PreToolDecision` has no value channel (`{kind:'accept', value}` is a
+   denial). It is recorded because it is the only seam available today; a host
+   change that freezes `exec` earlier must produce the typed unsupported, not a
+   crash or a dropped rewrite. Later pre-execute handlers see the rewritten
+   `exec.arguments`; that side effect is tested. The pin requires schema
+   validation of `updatedInput`; if the host cannot validate, that is a typed
+   unsupported too. No second dispatcher or parallel event path is added.
 
-**Evidence.** 346 tests pass on both pins (`0.2.2-rc.5`, `0.2.2-rc.2`);
-`check:arch` clean (17 packages / 42 files); CI `verify` green. The event lists
-were diffed against the pinned d.ts by script (33 classic / 40 engine names, no
-missing, extra, duplicate or unaccounted). Mutations: dropping the mod arm
-makes the classic arm error in the same trace; caching `$` fails four tests.
+**Remaining.** `$` breadth (only `session`/`clock` partially;
+`command.register`/`tool.register` throw; ~21 namespaces and the element/UI
+runtime), the unmapped engine and classic events, `.tsx` refusal,
+`session.start` surface facts, and classic command-hook `updatedInput`. The
+fixture matrix stays 16 declared / 15 matched / 0 missing / 1 refused while
+`mods` is planned for those gaps — not because the mod is unseated.
+
+**Evidence.** 375 tests pass on both pins (`0.2.2-rc.5`, `0.2.2-rc.2`);
+`check:arch` clean (17 packages / 42 files). Mutations: dropping the
+`session.start` fire reddens both mod tests; removing the live-agent sweep
+leaves a pre-existing root and a reloaded root unrevised (`ls`, not
+`ls-first`); routing a second agent's call through the first seat's `$` reds
+the cross-seat test; ignoring a command hook's `updatedInput` leaves the tool
+at `ls-first`; dropping the writable guard throws on a read-only execution
+object; skipping the lossless-JSON check runs `undefined`; and taking
+`session.start`'s cwd from `CLAUDE_PLUGIN_ROOT` reds the live-root payload.
 
 **Consequences.**
 
@@ -1426,9 +1479,10 @@ makes the classic arm error in the same trace; caching `$` fails four tests.
   adapter.
 - The ticket's wrong event names are recorded here so the next ticket inherits
   the corrected vocabulary instead of repeating the guess.
-- `session.start` and production wiring are the next ticket; until then a mod's
-  `session.start` handler does not run in a real session, and `updatedInput`
-  rewrites stop at the adapter.
+- A live agent is seated at load and re-seated on reload; an agentless call
+  still uses the plugin-level classic mounts, and a seated call never does.
+- `updatedInput` rewrites execute; the remaining `$` breadth is an adapter
+  limit with a recorded reason, not a silent drop.
 
 ## D33 — The Codex/portable dialect claims only what it can state; its budgets and caveats are Codex's.
 

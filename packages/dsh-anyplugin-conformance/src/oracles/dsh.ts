@@ -316,6 +316,24 @@ export interface DshLifecycleProbeOptions {
    * order across the root and the child.
    */
   expected: readonly string[]
+  /**
+   * A tool the stub model may call. Registered before the plugin loads, so a
+   * real turn's `tools/pre-execute` sees it; the adapter's first stream asks
+   * for it, and its second stream answers in text.
+   */
+  tool?: unknown
+  /** The tool call the first model stream requests; `arguments` is JSON text. */
+  toolCall?: { id: string; name: string; arguments: string }
+  /** Run a second root turn on a sibling session after the first one. */
+  secondAgent?: boolean
+  /** Reload the entry before the first turn, proving session.start runs again. */
+  reload?: boolean
+  /** Create the root session before the plugin loads, so apply must sweep live agents. */
+  preExistingRoot?: boolean
+  /** Reload the entry while the root is live, then run a second turn on that root. */
+  reloadWhileLive?: boolean
+  /** Observe the root agent after it is seated, before its first turn. */
+  onAgent?: (agent: unknown) => void | Promise<void>
   /** How long to wait for boot, the turn, the child and the expected labels, in milliseconds. */
   timeoutMs?: number
 }
@@ -342,6 +360,14 @@ const textChunks = (text: string): unknown[] => [
   { type: 'text-delta', index: 0, text },
   { type: 'block-end', index: 0, block: { type: 'text', text } },
   { type: 'finish', reason: 'stop' },
+]
+
+/** One model turn that requests a tool call instead of answering in text. */
+const toolCallChunks = (call: { id: string; name: string; arguments: string }): unknown[] => [
+  { type: 'block-start', index: 0, blockType: 'tool-call' },
+  { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments },
+  { type: 'block-end', index: 0, block: { type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments } },
+  { type: 'finish', reason: 'tool-calls' },
 ]
 
 /**
@@ -386,12 +412,27 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
   const WorkingDirectory = (await loadFromHarness(options.harnessDir, 'dsh-working-directory/lib/index.js')).default
 
   class StubAdapter extends LlmAdapter {
+    #calls = 0
+
     async resolveModel(provider: string, model: string): Promise<unknown> {
       return { provider, id: model, name: model, context: { contextWindow: 8192 }, defaultMaxTokens: 1024 }
     }
 
     async *stream(): AsyncGenerator<unknown> {
-      for (const chunk of textChunks('stub answer')) yield chunk
+      this.#calls += 1
+      const call = options.toolCall
+      // Alternate call/answer for the two root sessions: calls 1 and 3 request
+      // the probe tool, calls 2 and 4 answer in text. The delegated child then
+      // gets a text answer (call 5), so a second-agent trace is not polluted by
+      // the child's own tool call.
+      // Only the root turns may request the tool: the delegated child's model
+      // call must answer in text or it would pollute the per-agent call list.
+      const toolTurns = (options.reloadWhileLive === true ? 2 : 1) + (options.secondAgent === true ? 1 : 0)
+      const chunks =
+        call !== undefined && this.#calls % 2 === 1 && this.#calls <= toolTurns * 2 - 1
+          ? toolCallChunks(call)
+          : textChunks('stub answer')
+      for (const chunk of chunks) yield chunk
     }
   }
 
@@ -418,30 +459,78 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
     ctx.llm.registerAdapter(['fake'], new StubAdapter())
     await until(() => Boolean(ctx.get('llm')), timeoutMs, 'llm service')
     await until(() => Boolean(ctx.get('agentLoop')), timeoutMs, 'agent loop service')
-    await ctx.loader.create(options.entry)
-    await ctx.loader.await()
-
+    if (options.tool !== undefined) ctx.tools.register(options.tool)
     // The header carries no cwd unless the creator seeds one, and the payload
     // builder reads it from the header. Seed it with the probe's own data
     // directory, which is distinct from the process cwd, so a payload that
     // silently fell back would fail the assertion instead of matching.
-    const root = await ctx.agentLoop.create(
-      'anyplugin-lifecycle-root',
-      { provider: 'fake', model: 'fake-1' },
-      { cwd: dataDir },
-    )
-    const turnEnded = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('dsh lifecycle probe: root turn did not end')), timeoutMs)
-      const off = ctx.on('session/event', (_session: unknown, event: { type?: string; data?: { turn?: number } }) => {
-        if (event.type === 'turn/end' && event.data?.turn === 1) {
-          clearTimeout(timer)
-          off()
-          resolve()
-        }
+    const makeRoot = (id: string): Promise<any> =>
+      ctx.agentLoop.create(id, { provider: 'fake', model: 'fake-1' }, { cwd: dataDir })
+    let root: any
+    if (options.preExistingRoot === true) {
+      // A late enable or a reload can run apply while a root already exists:
+      // `agent/created` will not fire again, so apply must sweep the live set.
+      root = await makeRoot('anyplugin-lifecycle-root')
+    }
+    await ctx.loader.create(options.entry)
+    await ctx.loader.await()
+    if (options.reload === true) {
+      // A reload is a fresh load of the same entry: the plugin's apply runs
+      // again, so a load-time session.start must run again with exactly one
+      // registration. The turn starts only after the second apply settles.
+      ctx.loader.remove(options.entry.id)
+      await ctx.loader.await()
+      await ctx.loader.create(options.entry)
+      await ctx.loader.await()
+    }
+    if (root === undefined) root = await makeRoot('anyplugin-lifecycle-root')
+    // The observer mounts after apply has seated this root, so a listener
+    // registered here sees the execution object the seat handed downstream.
+    if (options.onAgent !== undefined) await options.onAgent(root)
+
+    const waitTurnEnd = (sessionId: string, turn: number): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`dsh lifecycle probe: turn ${turn} on ${sessionId} did not end`)),
+          timeoutMs,
+        )
+        const off = ctx.on(
+          'session/event',
+          (session: { id?: unknown }, event: { type?: string; data?: { turn?: number } }) => {
+            if (session.id !== sessionId) return
+            if (event.type === 'turn/end' && event.data?.turn === turn) {
+              clearTimeout(timer)
+              off()
+              resolve()
+            }
+          },
+        )
       })
-    })
-    root.followup(createUserMessage({ content: [{ type: 'text', text: 'one turn' }], source: { kind: 'user' } }))
-    await turnEnded
+    const runTurn = async (sessionId: string, turn: number, text: string): Promise<void> => {
+      const ended = waitTurnEnd(sessionId, turn)
+      root.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      await ended
+    }
+
+    await runTurn(root.id, 1, 'one turn')
+    if (options.reloadWhileLive === true) {
+      // The root stays live across the reload: apply must dispose the old seat
+      // with the plugin effect and re-seat the live set, not wait for a new
+      // `agent/created` that will never arrive.
+      ctx.loader.remove(options.entry.id)
+      await ctx.loader.await()
+      await ctx.loader.create(options.entry)
+      await ctx.loader.await()
+      await runTurn(root.id, 2, 'second turn')
+    }
+
+    let secondRoot: any
+    if (options.secondAgent === true) {
+      secondRoot = await makeRoot('anyplugin-lifecycle-root-2')
+      const secondEnded = waitTurnEnd(secondRoot.id, 1)
+      secondRoot.followup(createUserMessage({ content: [{ type: 'text', text: 'second turn' }], source: { kind: 'user' } }))
+      await secondEnded
+    }
 
     const childEnded = new Promise<Record<string, unknown> | undefined>((resolve) => {
       const timer = setTimeout(() => {
@@ -467,9 +556,11 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
     if (ended === undefined) throw new Error('dsh lifecycle probe: the delegated child did not end')
     await activation?.dispose?.()
 
-    const entry = [...(ctx.agents.store?.values?.() ?? [])].find(
-      (item: { id?: unknown }) => item.id === root.id,
-    ) as { id?: unknown } | undefined
+    const entryFor = (sessionId: string): { id?: unknown } | undefined =>
+      [...(ctx.agents.store?.values?.() ?? [])].find((item: { id?: unknown }) => item.id === sessionId) as
+        | { id?: unknown }
+        | undefined
+    const entry = entryFor(root.id)
     if (entry === undefined) throw new Error('dsh lifecycle probe: root agent is not in the registry')
     const disposed = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('dsh lifecycle probe: root agent did not dispose')), timeoutMs)
@@ -482,6 +573,10 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
     })
     ctx.agents.detachEntered(entry)
     await disposed
+    if (secondRoot !== undefined) {
+      const secondEntry = entryFor(secondRoot.id)
+      if (secondEntry !== undefined) ctx.agents.detachEntered(secondEntry)
+    }
 
     // The host does not await async emit listeners, and each handler spawns
     // `sh`, so the await above proves the event was announced, not that the

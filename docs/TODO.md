@@ -15,15 +15,6 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Next
 
-- [ ] **A mod host inside a real session.** Give `modRegistrationsToKernel` a
-      production caller: the loader front-end that hands a loaded mod's
-      registrations to the kernel and fires `session.start` once per loaded
-      plugin (D32 §4, §9). Needs a per-session mod-host design — one realm per
-      mod, one kernel channel per agent channel — and the host wiring that
-      applies an `updatedInput` rewrite at the seam instead of dropping it at
-      the adapter. Done when a mod's `session.start` and `classic.PreToolUse`
-      both run inside a real agent turn, with the trace showing the same source
-      strings the adapter emits today.
 - [ ] **Output styles** (S11). Carry `output-styles/*.md` as
       `outputStyles:<name>` rows. The seam is reachable
       (`invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces
@@ -88,8 +79,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
   caller-supplied seating, source order preserved) so mods and classic hooks
-  share one chain. `mod-events.ts` pins the mapping as data (16 live classic
-  routes plus the `session.start` loader point, 56 unmapped names with reasons
+  share one chain. `mod-events.ts` pins the mapping as data (17 live routes:
+  16 classic plus `session.start`, 56 unmapped names with reasons
   from S9), `on()` patterns (`classic.*`, `*`, negations) expand instead of
   being dropped, classic results are translated (`additionalContext`,
   `updatedInput`) or typed `unsupported`, and the fan-out `next()` divergence

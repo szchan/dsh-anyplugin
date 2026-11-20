@@ -660,7 +660,7 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
       sourcePath: 'hooks/hooks.json',
       annotation: {
         fidelity: 'planned',
-        reason: 'In-process mods are a second subsystem (ARCHITECTURE §7): static scanner + mod host, v0.5+. Loaded as authored, never transpiled.',
+        reason: 'In-process mods are seated and live (D32 §4/§9): remaining gaps are $ breadth (only session/clock partial; command.register/tool.register throw; ~21 namespaces and the element runtime), the unmapped engine and classic events, .tsx refusal (D31), and classic command-hook updatedInput schema validation. Loaded as authored, never transpiled.',
       },
     })
   }

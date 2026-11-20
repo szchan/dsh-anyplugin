@@ -50,13 +50,13 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
       assert.ok(CLASSIC_HOOK_EVENTS.includes(route.kernelEvent), `${route.modEvent} has no shared classic point`)
     }
   }
-  // 16 live classic routes plus one loader point, not 17 live routes.
-  assert.equal(MOD_EVENT_ROUTES.filter((route) => route.status === 'live').length, 16)
+  // 16 live classic routes plus the live session.start loader event.
+  assert.equal(MOD_EVENT_ROUTES.filter((route) => route.status === 'live').length, 17)
   const start = MOD_EVENT_ROUTES.find((route) => route.modEvent === 'session.start')
   assert.equal(start.kernelEvent, 'session.start')
   assert.equal(start.hostSeam, 'mod-host/load')
-  assert.equal(start.status, 'loader-point')
-  assert.match(start.reason, /follow-up/)
+  assert.equal(start.status, 'live')
+  assert.equal(start.reason, undefined)
   assert.equal(MOD_PINNED_EVENTS.length, 73)
   assert.equal(new Set(MOD_PINNED_EVENTS).size, 73)
   // The two partial classic payloads record the S9 caveat.

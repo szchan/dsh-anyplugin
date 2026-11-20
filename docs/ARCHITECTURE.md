@@ -506,20 +506,60 @@ with fan-out continuation, so tier order, matcher skips, fan-out and the trace
 belong to the kernel. The materializer keeps only the host wiring, the artifact
 re-hash, the spawn and the D20 verdict translation; an optional `onTrace` sink
 exposes the kernel trace to a caller (a diagnostic hook; nothing in the rig
-depends on it yet). The mod front-end's adapter has landed (#36); the loader
-wiring that would call it remains v0.5+.
+depends on it yet).
 
-**Landed (#36):** `modRegistrationsToKernel` converts `loadMod`'s frozen
-registrations into kernel registrations (`wrap` mode, source
+**Landed (#36, consumed by #39):** `modRegistrationsToKernel` converts
+`loadMod`'s frozen registrations into kernel registrations (`wrap` mode, source
 `${plugin}/${entry}#index`, `continuation` left unset so a channel's classic
 arm keeps fan-out) and reports every event it cannot seat instead of dropping
-it. It has no production caller yet: the loader front-end that would call it is
-the follow-up ticket, and `session.start` is that loader point, not a live host
-event. The mapping is data in `mod-events.ts`, one row per mod event with the
-host seam and the pinned `claude-code.d.ts` line as evidence — claude-code
+it. The production caller is the same materializer: its `mods` config loads
+each mod once, adapts the registrations, and seats them **per agent** on the
+`payload.agent.ctx` that `agent/created` carries (S9). That seat is
+deliberate: a plugin-entry context is untagged, so `ctx.on` there would see
+every agent's events and a mod's `$` could read a sibling's session;
+`agent.ctx` is scoped to that agent, and events flow up the scope chain, never
+down (`dsh-scope`). `createSeat` is idempotent per session id, and `apply`
+sweeps `ctx.agents.list()` so a root that was already live when the plugin
+loaded is seated too. A reload disposes the old seat with the plugin effect and
+re-seats the live set; it does not replay `classic.SessionStart`. The seat
+combines the mod registrations with the classic ones for the same event and
+runs one `runChain`; the plugin-level classic mounts skip a call that has a
+seat, so a hook is not run twice. A subagent is seated too (its parent's events
+still reach the root seat, but its own tool calls do not leak to the parent);
+`SessionStart`/`SessionEnd` remain root-only, matching S9's classic map. The
+realm is owned by the plugin entry (`ctx.effect(() => handle.dispose())`), so
+removal disposes it and later invocations fail with `ERR_MOD_HOST_LINK`
+instead of reviving a dead module.
+
+`session.start` fires while `apply` runs — once per loaded plugin, before the
+first prompt of the process, never per agent and never at `agent/created`
+(that is classic `SessionStart`). On a late enable or reload a root may
+already be live, so the claim is "once per load, before the first prompt", not
+"before any agent exists"; a reload is a new `apply`, which fires it again
+with exactly that load's registrations. The payload is `{cwd}`: the live
+root's cwd when one exists, otherwise the process working directory, never
+`CLAUDE_PLUGIN_ROOT`. `surface` and `isInteractive` are host/session facts
+`apply` cannot observe, so they are omitted and recorded as a field gap with
+a reason — never filled with invented values.
+
+`updatedInput` is applied at the seam the kernel already returns: the
+pre-execute mount reads `ChainResult.event.data.tool_input` after the chain,
+validates it as lossless JSON, clones and deep-freezes it, checks that the
+execution object's `arguments` property is writable, and assigns it before
+`next()`. A non-writable property, a non-JSON value, or a missing
+`tool_input` is a typed `unsupported` (trace and warning), never a throw and
+never a silent drop. The DSH `tools/pre-execute` waterfall has no value
+channel — a non-`allow` decision is a denial — so this reuses the existing
+mount and the existing `runChain` result; it does not add a second event path.
+The trace and the classic arm see the same rewritten event because the classic
+registration runs later in the same fan-out chain, and a `hooks.json` command
+hook's own `updatedInput` is carried by its verdict into that same rewrite.
+
+The mapping is data in `mod-events.ts`, one row per mod event with the host
+seam and the pinned `claude-code.d.ts` line as evidence — claude-code
 2.1.322, commit `6e1e44f6433bfa17d198e932bff53373aa229eea` (the d.ts file's own
-header still says 2.1.277; the commit is the pin). It is **16 live `classic.*`
-routes plus one loader point**, not 17 live routes.
+header still says 2.1.277; the commit is the pin). It is **16 live `classic.*` routes
+plus the live `session.start` loader event**, 17 live routes.
 
 `on()`'s `Pattern` is first-class (d.ts:6101): `classic.*` expands to the 16
 classic routes, `*` to all 17, and a negation (`!tool.*`) to the complement.
@@ -533,8 +573,9 @@ seams; `classic.PreToolUse` is special-cased because the mod API hands it
 adapter rebuilds the envelope and carries a rewrite back.
 `classic.PermissionRequest` and `classic.PermissionDenied` record their partial
 payloads at the S9 seam (no `tool_input`; no tool name or input).
-`session.start` is the loader's per-plugin event and maps to the kernel's
-`session.start`, not to `agent/created` (that is classic `SessionStart`). The
+`session.start` is the loader's per-plugin event, fired from `apply`, and maps
+to the kernel's `session.start`, not to `agent/created` (that is classic
+`SessionStart`). The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`
 (d.ts:6253-6265). Unmapped engine-native events (39) and classic events S9
@@ -1343,7 +1384,18 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   `equivalent` and their five coverage rows are log lines from a real turn
   (§10.3), while the four remaining listener seams stay `planned`. Nothing
   here adds a second event path: every row is a listener on the existing host
-  bus.
+  bus. The mod front-end reuses the same carrier: `agent/created` seats
+  each agent's mod and classic registrations on `payload.agent.ctx`, and
+  `apply` sweeps `ctx.agents.list()` so a root already live at load is seated
+  too; a reload disposes the old seats and re-seats the live set without
+  replaying `classic.SessionStart`. `session.start` is the loader's per-plugin
+  point fired during `apply` (D32 §4; §7.2), before the first prompt of the
+  process; its payload is `{cwd}` (the live root's cwd or the process cwd,
+  never `CLAUDE_PLUGIN_ROOT`), and `surface`/`isInteractive` are recorded as
+  an unbridged field gap. The real-turn test drives a mod rewrite through
+  `tools/pre-execute`, asserts the executing tool received it, and checks the
+  guard turns a non-writable `arguments` or a lossy rewrite into a typed
+  unsupported rather than a throw or a silent drop.
 
   | classic event | host seam (site) | dispatch | observed at runtime | payload keys | influence [observed]/[source]; filter the wiring ticket must apply |
   | --- | --- | --- | --- | --- | --- |

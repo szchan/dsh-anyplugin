@@ -822,9 +822,11 @@ function expandModPattern(pattern: string): ModPatternExpansion {
  * - An event with no route, or a structural matcher, is returned in `unmapped`
  *   with a non-empty reason. Nothing is dropped silently.
  *
- * There is no production caller yet: this adapter and its tests are the shell.
- * The loader front-end that calls it is the follow-up (the `session.start` row
- * is that loader point, not a live host event).
+ * The production caller is `dsh-anyplugin-materialize-hook`'s mod seating: it
+ * loads each mod once and runs this adapter's registrations in the same
+ * `runChain` as the classic arm. `session.start` is live there: it fires once
+ * per load from `apply`, not at `agent/created` (that is classic
+ * `SessionStart`).
  *
  * `$` is not here on purpose: the mod host calls `host.dollar()` once
  * immediately before each invocation (D31), one layer below the adapter, so

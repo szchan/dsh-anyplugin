@@ -34,6 +34,8 @@ export interface HookVerdict {
   additionalContext?: string
   /** Something we could not carry; surfaced as a warning, never silently. */
   warn?: string
+  /** PreToolUse `hookSpecificOutput.updatedInput`: rewrite the tool input. */
+  updatedInput?: unknown
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000
@@ -114,6 +116,8 @@ interface HookJson {
     permissionDecision?: string
     permissionDecisionReason?: string
     additionalContext?: string
+    /** A replacement tool input; the materializer validates and applies it. */
+    updatedInput?: unknown
   }
 }
 
@@ -156,6 +160,9 @@ export function judgeHookResult(result: HookRunResult, event: string): HookVerdi
   const specific = parsed.hookSpecificOutput
   if (specific?.additionalContext !== undefined && specific.additionalContext !== '') {
     verdict.additionalContext = specific.additionalContext
+  }
+  if (specific?.updatedInput !== undefined) {
+    verdict.updatedInput = specific.updatedInput
   }
   if (parsed.continue === false) {
     verdict.warn = 'hook returned continue:false, which has no equivalent here; ignored'
