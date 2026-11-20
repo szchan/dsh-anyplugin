@@ -64,14 +64,28 @@ with the exact anchor so the proposal is reviewable without a checkout.
 ## Later
 
 - [ ] **Mod host** (D3, ARCHITECTURE §7), in dependency order: static scanner →
-      chain engine → element runtime → ~21 namespace bridges → type generation
-      from the pinned `claude-code.d.ts`. Coverage is `covered / total` against
-      that file, and it only moves up.
+      chain engine → element runtime → the remaining namespace bridges → type
+      generation from the pinned `claude-code.d.ts`. Coverage is
+      `covered / total` against that file, and it only moves up.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; delegate to the real host or
       annotate `unsupported`.
 
 ## Done
+
+- `$` bridge (ticket #46): the 23 sites the pinned `diff` mod calls across 10
+  namespaces are covered — clock, fs, store, settings, env, session, command,
+  telemetry. `fs` resolves against the invocation session's cwd (absolute as
+  written), `store` is rooted at the plugin data dir and confined on
+  `realpath`, and `settings.read` serves only a host merged snapshot. Fifteen
+  sites are served; `ui.*`, `process.run` and `settings.read` (no merged reader
+  on this host) are typed refusals. `session.messages()` carries the tool-result
+  turn in the pinned `toolResults` shape and `session.usage()` omits incomplete
+  token context; `command.register` uses the real registry when present and
+  refuses immediately when absent. `session.start` on a fresh `diff` load
+  completes through four recorded calls (`session.usage → clock.now →
+  command.register → session.messages`); the static, dynamic and transcript
+  ledgers live in `packages/dsh-anyplugin-conformance/test/mods.test.mjs`.
 
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,

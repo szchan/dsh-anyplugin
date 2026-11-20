@@ -8,15 +8,15 @@
 // ordering because apply settles before the loader reports success.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { classicEvent, modRegistrationsToKernel } from '../../dsh-anyplugin-intercept/src/index.ts'
-import { applyToolInputRewrite } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
-import { loadMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
+import { apply as applyMaterializer, applyToolInputRewrite } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
+import { createModBridge, loadMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { DIFF_MOD_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
 import { scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
 import { hashManifest } from '../../dsh-anyplugin-trust/src/index.ts'
@@ -57,11 +57,18 @@ function pinned(hook) {
 }
 
 function modsEntry(dataDir, traceFile, overrides = {}) {
+  const commands = overrides.commands ?? (harness === undefined
+    ? []
+    : [{
+        id: 'commands',
+        name: pathToFileURL(join(harness.harnessDir, 'dsh-commands', 'lib', 'index.js')).href,
+      }])
   return {
     id: overrides.id ?? 'anyplugin.mods-seat',
     name: '@deepseek-ai/cordis-plugin-group',
     group: true,
     config: [
+      ...commands,
       {
         id: 'hook',
         name: materializerUrl('dsh-anyplugin-materialize-hook'),
@@ -88,7 +95,10 @@ function bashTool(calls) {
       required: ['command'],
       additionalProperties: false,
     },
-    output: { schema: { type: 'string' }, render: () => [] },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
     execute: async (args) => {
       calls.push(args)
       return 'ran'
@@ -102,6 +112,38 @@ function readTrace(traceFile) {
     .filter((line) => line !== '')
     .map((line) => JSON.parse(line))
 }
+
+function stored(dataDir) {
+  return JSON.parse(readFileSync(join(dataDir, '.anyplugin-store.json'), 'utf8'))
+}
+
+// The 23 sites in `scanModSource` order. The one-line table is the contract:
+// a served site says `ran`; a refusal names the stable code the mod sees.
+const SYNTHETIC_LEDGER = [
+  'clock.now:ran',
+  'clock.after:ran',
+  'clock.every:ran',
+  'process.run:refused:ERR_MOD_HOST_EXEC_UNSUPPORTED',
+  'fs.stat:ran',
+  'fs.list:ran',
+  'fs.read:ran',
+  'store.get:ran',
+  'store.set:ran',
+  'settings.read:refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE',
+  'env.get:ran',
+  'session.messages:ran',
+  'ui.invalidate:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ui.status:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ui.log:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ui.open:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ui.close:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'command.register:ran',
+  'session.id:ran',
+  'session.usage:ran',
+  'telemetry.mark:ran',
+  'telemetry.log:ran',
+  'ui.resolve:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+]
 
 test('a mod and a classic hook share the turn; the rewrite executes per agent', { skip }, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-'))
@@ -430,12 +472,275 @@ test('two plugins load mods with their own $ and registrations', { skip }, async
   }
 })
 
+test('a synthetic mod exercises all 23 $ sites, in scan order, with typed refusals', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-ledger-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    writeFileSync(join(dataDir, 'ledger.txt'), 'ledger\n')
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        mods: [{ entry: 'bridge-ledger.ts' }, { entry: 'bridge-load.ts' }],
+        hooks: [],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 30_000,
+    })
+
+    const store = stored(dataDir)
+    assert.deepEqual(store['bridge-ledger'], SYNTHETIC_LEDGER)
+
+    // D32 §4: a load-time session.start has no agent, so the view is empty and
+    // the id is a typed refusal, not an invented value.
+    assert.deepEqual(store['bridge-load'].messages, [])
+    assert.deepEqual(store['bridge-load'].usageFirst, {})
+    assert.deepEqual(store['bridge-load'].usageSecond, {})
+    assert.equal(store['bridge-load'].id.code, 'ERR_MOD_HOST_SESSION_UNAVAILABLE')
+
+    // Missing usage fields are reported once per load even though the fixture
+    // asks twice. Scope to the load-time mod: the ledger mod is a separate
+    // load with its own report-once set and a live session.
+    const warnings = readTrace(traceFile).filter(
+      (record) => record.warning !== undefined && record.warning.includes('bridge-load.ts'),
+    )
+    for (const field of ['startedAt', 'context', 'rateLimits', 'cost']) {
+      const matches = warnings.filter((record) => record.warning.includes(`has no ${field} observable`))
+      assert.equal(matches.length, 1, `usage.${field} is reported exactly once per load`)
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('the session transcript carries the tool-result turn in the pinned shape', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-transcript-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        mods: [{ entry: 'transcript-seat.ts' }],
+        hooks: [],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_transcript', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 30_000,
+    })
+
+    const assertTranscript = (label, messages, expectResult) => {
+      assert.ok(Array.isArray(messages), `${label} is an array`)
+      assert.ok(messages.length >= 2, `${label} is not empty`)
+      const assistant = messages.find((message) => message.role === 'assistant' && (message.toolUses ?? []).length > 0)
+      assert.ok(assistant, `${label} has the assistant tool call`)
+      const use = assistant.toolUses[0]
+      assert.equal(use.tool, 'Bash')
+      assert.deepEqual(use.input, { command: 'ls' })
+      // PostToolUse runs before the host appends the tool/result event (the
+      // seat's own ordering), so only Stop can assert the completed result.
+      if (!expectResult) return
+      assert.equal(use.text, 'ran', 'the tool result text is attached to the tool use')
+      const carrier = messages.find(
+        (message) => message.role === 'user' &&
+          (message.toolResults ?? []).some((result) => result.tool_use_id === use.tool_use_id),
+      )
+      assert.ok(carrier, `${label} has the user message carrying the tool result`)
+      const result = carrier.toolResults.find((entry) => entry.tool_use_id === use.tool_use_id)
+      assert.equal(result.text, 'ran')
+      assert.equal(result.isError, undefined)
+    }
+
+
+    const store = stored(dataDir)
+    assertTranscript('PostToolUse transcript', store['transcript-post'], false)
+    assertTranscript('Stop transcript', store['transcript-stop'], true)
+    assert.ok(store['transcript-stop'].length >= store['transcript-post'].length)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('a load without a commands service refuses command.register instead of waiting', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-nocommands-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    writeFileSync(join(dataDir, 'ledger.txt'), 'ledger\n')
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        commands: [],
+        mods: [{ entry: 'bridge-ledger.ts' }],
+        hooks: [],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      timeoutMs: 30_000,
+    })
+    const ledger = stored(dataDir)['bridge-ledger']
+    assert.ok(
+      ledger.includes('command.register:refused:ERR_MOD_HOST_COMMAND_UNAVAILABLE'),
+      'the typed refusal is observable, not a silent undefined',
+    )
+
+    // The old host slept up to 500 ms for a sibling service. Time the
+    // materializer's apply directly: a missing service must refuse now.
+    const directDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-nocommands-apply-'))
+    const disposers = []
+    try {
+      const ctx = {
+        logger: { warn() {} },
+        on: () => () => {},
+        effect(fn) { const dispose = fn(); disposers.push(dispose); return () => {} },
+        get(name) { return name === 'agents' ? { list: () => [] } : undefined },
+      }
+      const started = Date.now()
+      await applyMaterializer(ctx, {
+        pluginRoot: fixture,
+        pluginData: directDir,
+        plugin: 'nocommands',
+        mods: [{ entry: 'bridge-load.ts' }],
+        hooks: [],
+        traceFile: join(directDir, 'trace.jsonl'),
+      })
+      const elapsed = Date.now() - started
+      assert.ok(elapsed < 200, `the apply took ${elapsed} ms; a missing service must not sleep`)
+    } finally {
+      for (const dispose of disposers) await dispose?.()
+      rmSync(directDir, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('command.register is live in the DSH registry, disposed on reload, and a duplicate names the mod', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-command-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    writeFileSync(join(dataDir, 'ledger.txt'), 'ledger\n')
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        mods: [{ entry: 'bridge-ledger.ts' }, { entry: 'bridge-command-dup.ts' }],
+        hooks: [],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      reloadWhileLive: true,
+      timeoutMs: 30_000,
+    })
+
+    // The second load registers the same name again: only the first load's
+    // disposer running on unload makes this `ran` instead of a duplicate.
+    assert.deepEqual(stored(dataDir)['bridge-ledger'], SYNTHETIC_LEDGER)
+    const duplicate = stored(dataDir)['bridge-duplicate']
+    assert.equal(duplicate.code, 'ERR_MOD_HOST_COMMAND_DUPLICATE')
+    assert.match(duplicate.message, /bridge-command-dup\.ts/)
+    assert.match(duplicate.message, /bridge-ledger/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
 // The fetched upstream `diff` mod as a kernel fixture (D34, D32). Sources are
 // fetched at test time and never vendored; CI sets ANYPLUGIN_MOD_TREE.
 const diffFixturePath = fileURLToPath(new URL('../../../fixtures/mods/diff/fixture.json', import.meta.url))
 const diffFixture = JSON.parse(readFileSync(diffFixturePath, 'utf8'))
 const isCI = process.env.CI === 'true' || process.env.CI === '1'
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+
+// The static capability ledger: every site the scanner sees in the pinned
+// graph, in source order. `served` means the bridged namespace has the method;
+// `refused:<code>` means the call was made and the typed refusal came back.
+const DIFF_LEDGER = [
+  { site: 'clock.now', result: 'ran', argument: 'session.start fallback', evidence: 'diff session.start' },
+  { site: 'clock.after', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'clock.every', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'process.run', result: 'refused:ERR_MOD_HOST_EXEC_UNSUPPORTED', argument: '[]', evidence: 'D25 refusal' },
+  { site: 'fs.stat', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads the git dir HEAD from hook code' },
+  { site: 'fs.list', result: 'ran', argument: '.', evidence: 'method availability; the fetched call reads entry kinds from hook code' },
+  { site: 'fs.read', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads registration.ts from hook code' },
+  { site: 'store.get', result: 'ran', argument: 'ledger', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'store.set', result: 'ran', argument: 'ledger = {from: diff}', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'settings.read', result: 'refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE', argument: 'no argument', evidence: 'no merged settings reader on this host; refused rather than served from plugin data' },
+  { site: 'env.get', result: 'ran', argument: 'PATH', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'session.messages', result: 'ran', argument: 'no argument', evidence: 'diff session.start openOnRestore' },
+  { site: 'ui.invalidate', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.status', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.log', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.open', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.close', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'command.register', result: 'ran', argument: '{ name: "diff", description }', evidence: 'diff session.start' },
+  { site: 'session.id', result: 'ran', argument: 'no argument', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'session.usage', result: 'ran', argument: 'no argument', evidence: 'diff session.start' },
+  { site: 'telemetry.mark', result: 'ran', argument: '{ from: "diff-ledger" }', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'telemetry.log', result: 'ran', argument: '{ from: "diff-ledger" }', evidence: 'method availability; the fetched call is in hook code' },
+  { site: 'ui.resolve', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+]
+
+// What the pinned `session.start` actually does through `$`: bind() asks
+// session.usage, falls back to clock.now, registers /diff, then opens the
+// restore view with the (empty) message list. None of the other 19 sites is
+// reached at load; they remain declared capabilities, not load-time calls.
+const DIFF_SESSION_START_RELOAD = [
+  'session.usage:ran',
+  'command.register:ran',
+  'session.messages:ran',
+]
+const DIFF_SESSION_START = [
+  'session.usage:ran',
+  'clock.now:ran',
+  'command.register:ran',
+  'session.messages:ran',
+]
+
+/** A `$` that records every method it serves, preserving sync throws. */
+function recordingDollar(bridge, calls) {
+  const source = bridge.dollar()
+  const wrapped = {}
+  for (const [namespace, table] of Object.entries(source)) {
+    const next = {}
+    for (const [method, value] of Object.entries(table)) {
+      if (typeof value !== 'function') {
+        next[method] = value
+        continue
+      }
+      next[method] = (...args) => {
+        const label = `${namespace}.${method}`
+        try {
+          const result = value(...args)
+          if (result !== null && typeof result === 'object' && typeof result.then === 'function') {
+            return result.then(
+              (resolved) => {
+                calls.push(`${label}:ran`)
+                return resolved
+              },
+              (error) => {
+                calls.push(`${label}:refused:${error?.code ?? 'UNKNOWN'}`)
+                throw error
+              },
+            )
+          }
+          calls.push(`${label}:ran`)
+          return result
+        } catch (error) {
+          calls.push(`${label}:refused:${error?.code ?? 'UNKNOWN'}`)
+          throw error
+        }
+      }
+    }
+    wrapped[namespace] = next
+  }
+  return wrapped
+}
 
 test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async (t) => {
   const tree = process.env[diffFixture.env]
@@ -464,40 +769,180 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
   assert.equal(scan.calls.length, diffFixture.scan.calls)
   assert.equal(scan.dynamic.length, diffFixture.scan.dynamic)
 
-  // Loading proves the .tsx path: without the classic transform the graph is
-  // refused at views/pane-view.tsx (the pre-#45 nail).
-  const load = await loadMod({
-    root,
-    entry: diffFixture.entry,
-    host: {
-      dollar: () => {
-        throw new Error('$ must not be built while loading: register() declares only')
-      },
+  // A real bridge, not a throwing host: the ledger is what diff's own code
+  // asks this $ for, and the registry is a recording stand-in for ctx.commands.
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-diff-ledger-'))
+  const registered = new Map()
+  const commands = {
+    register(definition) {
+      if (registered.has(definition.name)) {
+        throw new Error(`command "${definition.name}" is already registered`)
+      }
+      registered.set(definition.name, definition)
+      return () => registered.delete(definition.name)
     },
-  })
-  const events = load.registrations.map((registration) => registration.event)
-  assert.deepEqual(events, diffFixture.registrations, 'the runtime registrations are the authored order')
-  assert.deepEqual(
-    scan.events.map((event) => event.name),
-    events,
-    'the scanner and the loaded graph must see the same on() sites',
-  )
-
-  // D32: the registrations ride the one kernel. Only session.start has a host
-  // route at this pin; the rest are reported as unmapped with a reason, never
-  // silently dropped.
-  const kernel = modRegistrationsToKernel(load.registrations, {
-    plugin: diffFixture.name,
-    entry: diffFixture.entry,
-  })
-  assert.equal(kernel.routes.length, diffFixture.kernel.routed)
-  assert.equal(kernel.routes[0].route.modEvent, 'session.start')
-  assert.equal(kernel.routes[0].registration.event, 'session.start')
-  assert.equal(kernel.unmapped.length, diffFixture.kernel.unmapped)
-  for (const unmapped of kernel.unmapped) {
-    assert.ok(unmapped.reason.length > 0, `${unmapped.event} has an empty unmapped reason`)
   }
-  assert.equal(kernel.routes.length + kernel.unmapped.length, diffFixture.registrations.length)
+  const warnings = []
+  const bridge = createModBridge({
+    plugin: 'diff/register.ts',
+    dataDir,
+    commands,
+    session: () => ({ id: 'diff-ledger-session', cwd: root, messages: [], usage: {} }),
+    env: process.env,
+    warn: (message) => warnings.push(message),
+  })
+  try {
+    // The static ledger: every scanned site is actually invoked, in scan
+    // order, through the bridged $. Refusals must carry a stable code; every
+    // served site must complete. This is the same ledger shape the synthetic
+    // fixture asserts, so the two are directly comparable in the PR body.
+    writeFileSync(join(dataDir, 'ledger.txt'), 'diff\n')
+    const capability = []
+    for (const site of scan.calls) {
+      const label = `${site.namespace}.${site.method}`
+      const namespace = bridge.dollar()[site.namespace]
+      const method = namespace?.[site.method]
+      if (typeof method !== 'function') {
+        capability.push({ site: label, result: 'missing' })
+        continue
+      }
+      try {
+        switch (label) {
+          case 'clock.now':
+          case 'fs.list':
+          case 'settings.read':
+          case 'session.messages':
+          case 'session.id':
+          case 'session.usage':
+            await method()
+            break
+          case 'clock.after':
+          case 'clock.every': {
+            const timer = method(1, () => {})
+            timer.cancel()
+            break
+          }
+          case 'fs.stat':
+            await method('register.ts')
+            break
+          case 'fs.read':
+            await method('register.ts')
+            break
+          case 'store.get':
+            await method('ledger')
+            break
+          case 'store.set':
+            await method('ledger', { from: 'diff' })
+            break
+          case 'env.get':
+            await method('PATH')
+            break
+          case 'command.register':
+            await method({ name: 'diff', description: 'diff (ledger)' })
+            break
+          case 'telemetry.mark':
+          case 'telemetry.log':
+            await method({ from: 'diff-ledger' })
+            break
+          default:
+            // process.run and the six ui.* sites: the call must refuse.
+            await method()
+        }
+        capability.push({ site: label, result: 'ran' })
+      } catch (error) {
+        capability.push({ site: label, result: `refused:${error?.code ?? 'UNKNOWN'}` })
+      }
+    }
+    assert.deepEqual(
+      capability.map((row) => ({ site: row.site, result: row.result })),
+      DIFF_LEDGER.map((row) => ({ site: row.site, result: row.result })),
+      'every scanned site ran or refused with a typed code',
+    )
+
+    const calls = []
+    const load = await loadMod({
+      root,
+      entry: diffFixture.entry,
+      host: { dollar: () => recordingDollar(bridge, calls) },
+    })
+    const events = load.registrations.map((registration) => registration.event)
+    assert.deepEqual(events, diffFixture.registrations, 'the runtime registrations are the authored order')
+    assert.deepEqual(
+      scan.events.map((event) => event.name),
+      events,
+      'the scanner and the loaded graph must see the same on() sites',
+    )
+
+    // D32: the registrations ride the one kernel. Only session.start has a host
+    // route at this pin; the rest are reported as unmapped with a reason, never
+    // silently dropped.
+    const kernel = modRegistrationsToKernel(load.registrations, {
+      plugin: diffFixture.name,
+      entry: diffFixture.entry,
+    })
+    assert.equal(kernel.routes.length, diffFixture.kernel.routed)
+    assert.equal(kernel.routes[0].route.modEvent, 'session.start')
+    assert.equal(kernel.routes[0].registration.event, 'session.start')
+    assert.equal(kernel.unmapped.length, diffFixture.kernel.unmapped)
+    for (const unmapped of kernel.unmapped) {
+      assert.ok(unmapped.reason.length > 0, `${unmapped.event} has an empty unmapped reason`)
+    }
+    assert.equal(kernel.routes.length + kernel.unmapped.length, diffFixture.registrations.length)
+
+    // The dynamic half: fire the pinned session.start through the real bridge.
+    // It must complete, and the ordered calls are the recorded outcome.
+    const sessionStart = load.registrations.find((registration) => registration.event === 'session.start')
+    assert.ok(sessionStart !== undefined, 'the pinned graph registers session.start')
+    const result = await sessionStart.handler(
+      { cwd: root },
+      async (event) => ({ decision: 'continue', event }),
+    )
+    assert.equal(result.decision, 'continue', 'session.start completes its next() chain')
+    assert.deepEqual(calls, DIFF_SESSION_START, 'session.start asks $ for exactly these four sites, in order')
+    assert.equal(registered.has('diff'), true, 'command.register landed in the DSH-shaped registry')
+
+    bridge.dispose()
+    assert.equal(registered.size, 0, 'dispose removes the load-lifetime registration')
+    assert.throws(() => bridge.dollar(), (error) => error.code === 'ERR_MOD_HOST_DISPOSED')
+
+    // A reload has a live root: the session view now carries header.createdAt,
+    // so session.usage() is observed and the clock.now fallback does not run.
+    const reloaded = createModBridge({
+      plugin: 'diff/register.ts',
+      dataDir,
+      commands,
+      session: () => ({
+        id: 'diff-ledger-session',
+        cwd: root,
+        messages: [],
+        usage: { startedAt: 1_700_000_000_000 },
+      }),
+      env: process.env,
+      warn: () => {},
+    })
+    const reloadCalls = []
+    const second = await loadMod({
+      root,
+      entry: diffFixture.entry,
+      host: { dollar: () => recordingDollar(reloaded, reloadCalls) },
+    })
+    const secondStart = second.registrations.find((registration) => registration.event === 'session.start')
+    const secondResult = await secondStart.handler(
+      { cwd: root },
+      async (event) => ({ decision: 'continue', event }),
+    )
+    assert.equal(secondResult.decision, 'continue', 'a reloaded session.start completes')
+    assert.deepEqual(
+      reloadCalls,
+      DIFF_SESSION_START_RELOAD,
+      'a reload reads startedAt from the live session and skips clock.now',
+    )
+    second.dispose()
+    reloaded.dispose()
+  } finally {
+    bridge.dispose()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 
   assert.equal(sha256(entry), before, 'the fixture load must not touch the authored bytes')
 })

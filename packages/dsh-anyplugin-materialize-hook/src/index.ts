@@ -70,7 +70,12 @@ import {
   runCommandHook,
   type HookVerdict,
 } from '../../dsh-anyplugin-hook-runner/src/index.ts'
-import { loadMod, type LoadedMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
+import {
+  commandRegistryFromContext,
+  createModBridge,
+  loadMod,
+  type LoadedMod,
+} from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const name = 'anyplugin-materialize-hook'
@@ -360,50 +365,6 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
    * that called it, not to the load.
    */
   const invocation = new AsyncLocalStorage<{ agent?: unknown }>()
-
-  /**
-   * The `$` handed to a mod handler. D31 pins the shape to "whatever the host
-   * supplies"; this host can answer the clock, the session header and the
-   * message list without a session log, while command/tool registration are
-   * host seams that do not exist yet. Those throw a typed bridge error instead
-   * of silently succeeding (D32 §7: an unsupported result is recorded, never
-   * dropped).
-   */
-  const dollarFor = (agent: any): Record<string, unknown> => {
-    const header = agent?.session?.header
-    const cwd = typeof header?.cwd === 'string' ? header.cwd : (config.pluginRoot ?? process.cwd())
-    const notBridged = (surface: string) => async (): Promise<never> => {
-      throw new Error(`anyplugin mod: ${surface} is not bridged on this host yet`)
-    }
-    return {
-      session: {
-        ...(header?.id === undefined ? {} : { id: header.id }),
-        cwd,
-        // Claude reads `$.session.messages()` as the session's messages. The
-        // host reads them from the agent's own log; a chain with no agent (a
-        // load-time session.start) sees no session and therefore no messages.
-        messages: async () => {
-          const log = agent?.session?.log
-          if (!Array.isArray(log)) return []
-          const messages: unknown[] = []
-          for (const entry of log) {
-            if (entry?.type === 'user/message' || entry?.type === 'assistant/message') {
-              messages.push(entry.data)
-            }
-          }
-          return messages
-        },
-        usage: async () => undefined,
-      },
-      clock: { now: async () => Date.now() },
-      command: { register: notBridged('command.register') },
-      tool: { register: notBridged('tool.register') },
-    }
-  }
-
-  const modHost = {
-    dollar: async (): Promise<Record<string, unknown>> => dollarFor(invocation.getStore()?.agent),
-  }
 
   const env: NodeJS.ProcessEnv = { ...process.env }
   // Claude's spelling is what existing hooks read; Codex-compatible hooks read
@@ -1141,18 +1102,44 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     const pluginName = config.plugin ?? 'mod'
     const modRoot = config.pluginRoot ?? process.cwd()
 
+    const invocationAgentSession = (agent: unknown): unknown =>
+      (agent as { session?: unknown } | undefined)?.session
+
     for (const mod of mods) {
+      // One bridge (and therefore one command registry slice, timer set and
+      // telemetry attribution) per mod: a duplicate command names the mod that
+      // collided, and unloading one mod never disposes another's command. The
+      // `$` itself is still rebuilt per invocation.
+      const bridge = createModBridge({
+        plugin: `${pluginName}/${mod.entry}`,
+        ...(config.pluginData === undefined ? {} : { dataDir: config.pluginData }),
+        commands: commandRegistryFromContext(ctx),
+        session: (agent: unknown) => invocationAgentSession(agent),
+        cwd: process.cwd(),
+        env,
+        warn,
+        telemetry: (record) => {
+          warn(`anyplugin mod ${record.plugin}: telemetry.${record.kind} ${textify(record.entry)}`)
+        },
+      })
+      const modHost = {
+        dollar: async (): Promise<Record<string, unknown>> => bridge.dollar(invocation.getStore()?.agent),
+      }
       let handle: LoadedMod
       try {
         handle = await loadMod({ root: modRoot, entry: mod.entry, host: modHost })
       } catch (error) {
+        bridge.dispose()
         warn(`anyplugin mod ${pluginName}/${mod.entry}: load refused (${(error as Error).message})`)
         continue
       }
       // One realm per mod, owned by the plugin entry (D31): unloading the
       // plugin disposes the realm; the entries' own ctx effects remove every
       // seat listener in the same step.
-      ctx.effect(() => () => handle.dispose())
+      ctx.effect(() => () => {
+        handle.dispose()
+        bridge.dispose()
+      })
       const adapted = modRegistrationsToKernel(handle.registrations, {
         plugin: pluginName,
         entry: mod.entry,
@@ -1326,7 +1313,10 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       const gaps = ['surface', 'isInteractive'] as const
       warn(`anyplugin mod ${pluginName}: session.start surface and isInteractive are host facts apply cannot observe; omitted (unbridged)`)
       const event: ChainEvent = { name: 'session.start', subject: null, data: { cwd } }
-      await runKernel(event, sessionStart, undefined, gaps)
+      // A reload can find a live root; pass it so the invocation's `$` sees
+      // that session rather than pretending none exists. A fresh load still
+      // has no session, which is the documented D32 §4 case.
+      await runKernel(event, sessionStart, liveRoot, gaps)
     }
 
     for (const agent of liveAgents) createSeat(agent)

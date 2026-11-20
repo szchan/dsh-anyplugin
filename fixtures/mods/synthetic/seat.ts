@@ -13,13 +13,12 @@ export function register(on: On): void {
 
   on('classic.PreToolUse', async ($: Dollar, event: unknown, next: Next) => {
     const envelope = event as { tool: string; command: string }
-    const messages = (await $.session.messages()) as Array<{
-      content?: Array<{ type?: string; text?: string }>
-    }>
+    // The pinned `SessionMessage` shape (#46): `text` is the joined text blocks,
+    // not the host's raw content array. The agent's own message list is what
+    // distinguishes the first root's `ls-first` from the second's `ls-second`.
+    const messages = (await $.session.messages()) as Array<{ text?: string }>
     const text = messages
-      .flatMap((message) => message.content ?? [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
+      .map((message) => message.text ?? '')
       .join(' ')
     if (envelope.tool !== 'Bash' || !String(envelope.command).startsWith('ls')) {
       throw new Error(`unexpected PreToolUse envelope: ${JSON.stringify(envelope)}`)

@@ -714,7 +714,7 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
       sourcePath: 'hooks/hooks.json',
       annotation: {
         fidelity: 'planned',
-        reason: 'In-process mods are seated and live (D32 §4/§9): remaining gaps are $ breadth (only session/clock partial; command.register/tool.register throw; ~21 namespaces and the element runtime), the unmapped engine and classic events, .tsx refusal (D31), and classic command-hook updatedInput schema validation. Loaded as authored, never transpiled.',
+        reason: 'In-process mods are seated and live (D32 §4/§9): the 23 $ sites the pinned diff mod calls across 10 namespaces are covered (#46): fs resolves in the session cwd, store confines to plugin data, and settings.read serves only a host merged snapshot; ui.*, process.run and settings.read without a merged reader are typed refusals. Remaining gaps are the element runtime, the rest of the ~21 namespaces, the unmapped engine and classic events, and classic command-hook updatedInput schema validation. Loaded as authored, never transpiled (D30/D34).',
       },
     })
   }
