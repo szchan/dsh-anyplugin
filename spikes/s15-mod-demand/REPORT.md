@@ -244,8 +244,11 @@ the trace is read.
 **Fixed after the spike (#68).** The mod-visible `next` is now the kernel's own
 continuation with the pinned seven members projected onto it. `next` is eager
 and call-scoped: each call continues the chain from the calling link with that
-call's `to` target, a second call runs the remainder a second time, and the
-latest trip is the one the hook's return and `trace` describe. `to` reuses the
+call's `to` target, a second call runs the remainder a second time (our host
+contract; the pin only says `trace` describes the latest call), an unawaited
+`next` is joined exactly once before the loop decides, and the latest trip is
+the one the hook's return and `trace` describe. A same-tier sibling's named
+target wins over the outer call's. `to` reuses the
 kernel's tier order and records every passed-over link as `skipped` with
 `bypassed by <plugin>`; a jump is computed by tier rank, so a same-tier sibling
 still runs, the landing is inclusive of the named target (a direct jump runs

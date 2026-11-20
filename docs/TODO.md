@@ -100,8 +100,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
   (`index`, `plugin`, `tier`, `event`, `outcome`, `reason`) without inventing
   `ms`/`chunks`/`received`/`returned`, excludes matcher skips, and reports a
   throwing link as `rejected`. Review corrections pinned by tests: a continuation is eager and call-scoped,
-so a hook that calls `next` twice runs the remainder twice and the latest trip
-is the one its return and `trace` describe; pass-over is tier-ranked; fan-out
+so a hook that calls `next` twice runs the remainder twice (our host contract;
+the pin only says `trace` describes the latest call) and the latest trip is the
+one its return and `trace` describe; an unawaited `next` is joined exactly once;
+when a same-tier sibling names its own target, the nested target wins over the
+outer call's; pass-over is tier-ranked; fan-out
 lands direct targets and falls forward when the named tier is empty; a
 backwards `next.to` is refused by name; `core` is a declared fidelity gap
 (pin allows it, this chain has no core link); and the meter counts the hook's

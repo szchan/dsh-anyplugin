@@ -630,15 +630,26 @@ the kernel `Next` with the tier argument the kernel already understands, so
 tier order, matcher skipping and trace recording stay in one place. `next` is
 eager and call-scoped: each call immediately continues the chain from the
 calling link and returns that trip, with that call's `to` target. A hook that
-calls `next` twice runs the remainder twice (its choice); the latest trip is
-the one its return decides with and the one `trace` describes, and a sibling's
-later call can never inherit or be blamed for someone else's jump. Both
+calls `next` twice runs the remainder twice — our host contract, not a pin
+guarantee: the pin only says `trace` describes "its latest next() call", and
+we take it as the cited spec for this rule. The latest trip is the one the
+return decides with and the one `trace` describes, and a sibling's later call
+can never inherit or be blamed for someone else's jump. An unawaited `next` is
+joined exactly once before the loop decides, so the remainder never runs
+twice. Both
 continuations follow the same rule: fan-out runs an eager fan-out trip and
 still collects its decisions, but a mod's `next` resolves the kernel's
-continue, not the classic arm's result (D32 §6). A jump is computed by tier
+continue, not the classic arm's result. This refines D32 §6's sentence "a
+mod's next(e) only rewrites the event … it does not run the classic arm
+itself": the eager trip now does run it, and the return rule is unchanged — the
+chain collects the trip's decisions, the mod does not decide them. A jump is
+computed by tier
 rank, not by index: only links strictly between the caller's tier and the
 target tier are passed over and recorded as `skipped` with
-`bypassed by <plugin>`, while a same-tier sibling still runs. The landing is
+`bypassed by <plugin>`, while a same-tier sibling still runs. When that
+sibling names its own target, the nested call's target wins over the outer
+one: the outer target is never reached, and the passed-over links are recorded
+once by the innermost call. The landing is
 inclusive of the named target, including a direct jump with no link in
 between; a named tier with no link left falls forward to the next tier that
 has one rather than dropping the rest of the chain. `to` refuses a target tier
