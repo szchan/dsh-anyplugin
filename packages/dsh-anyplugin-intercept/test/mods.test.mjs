@@ -18,6 +18,7 @@ import {
   classicHookRegistration,
   describeTrace,
   modRegistrationsToKernel,
+  pauseWhilePending,
   runChain,
 } from '../src/index.ts'
 
@@ -636,4 +637,299 @@ test('next.to refuses the tiers TargetTier excludes and the core tier this chain
   assert.equal(core.name, 'TypeError')
   assert.match(core.message, /not served/)
   assert.match(core.message, /9938/)
+})
+
+// ---- Review rulings M1–M5 / S-a–S-c --------------------------------------
+// The seven members are only worth serving if the kernel's continuation rules
+// hold beneath them. These pin the rulings from the PR #70 review.
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** One adapter registration, so each test can choose its own tier and budget. */
+const at = (tier, entry, options = {}) =>
+  modRegistrationsToKernel([entry], { plugin: 'synthetic', entry: 'kernel.ts', tier, ...options }).registrations[0]
+
+const guardedCall = () =>
+  classicEvent('PreToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_review', tool_input: { command: 'ls' } })
+
+test('first-decision: next runs the remainder once, not once per sibling', async () => {
+  const ran = []
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('prepend')
+      const resolved = await next(event)
+      ran.push('prepend:after')
+      return resolved
+    }),
+  )
+  const user = at(
+    'user',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('user')
+      return next(event)
+    }),
+  )
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', () => {
+      ran.push('append')
+      return { deny: 'stop' }
+    }),
+  )
+  const result = await runChain(guardedCall(), [prepend, user, append])
+  assert.deepEqual(ran, ['prepend', 'user', 'append', 'prepend:after'])
+  assert.deepEqual(result.decision, { kind: 'deny', reason: 'stop' })
+  assert.deepEqual(result.trace.map((entry) => entry.status), ['ran', 'ran', 'ran'])
+})
+
+test('first-decision: next.to runs the named tier once and traces the pass-over', async () => {
+  const ran = []
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      const resolved = await next.to(event, 'append')
+      ran.push('prepend:after')
+      return resolved
+    }),
+  )
+  const user = at(
+    'user',
+    mod('classic.PreToolUse', () => {
+      ran.push('user')
+    }),
+  )
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', () => {
+      ran.push('append')
+      return { deny: 'stop' }
+    }),
+  )
+  const result = await runChain(guardedCall(), [prepend, user, append])
+  assert.deepEqual(ran, ['append', 'prepend:after'])
+  const skipped = result.trace.find((entry) => entry.tier === 'user')
+  assert.equal(skipped.status, 'skipped')
+  assert.equal(skipped.detail, 'bypassed by synthetic')
+  assert.deepEqual(result.decision, { kind: 'deny', reason: 'stop' })
+})
+
+test('fan-out: next.to passes over the tiers beneath the caller, not a same-tier sibling', async () => {
+  const ran = []
+  const first = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next.to(event, 'append')
+      ran.push('first')
+    }),
+  )
+  const second = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      ran.push('second')
+      return next(event)
+    }),
+  )
+  const user = classicHookRegistration({
+    event: 'PreToolUse',
+    source: 'user#0',
+    run: () => {
+      ran.push('user')
+    },
+  })
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', () => {
+      ran.push('append')
+    }),
+  )
+  const result = await runChain(guardedCall(), [first, second, user, append], { continuation: 'fan-out' })
+  assert.deepEqual(ran, ['first', 'second', 'append'])
+  const skipped = result.trace.find((entry) => entry.source === 'user#0')
+  assert.equal(skipped.status, 'skipped')
+  assert.equal(skipped.detail, 'bypassed by synthetic')
+  // A same-tier sibling is not "beneath this tier": it ran, and it is not labelled.
+  const prependTrace = result.trace.filter((entry) => entry.tier === 'prepend')
+  assert.deepEqual(prependTrace.map((entry) => entry.status), ['ran', 'ran'])
+})
+
+test('next.trace omits a link the matcher skipped: it never ran', async () => {
+  let beneath
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next(event)
+      beneath = next.trace
+    }),
+  )
+  const user = at(
+    'user',
+    mod('classic.PreToolUse', () => {
+      throw new Error('a matcher-skipped link must not run')
+    }, 'Write'),
+  )
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', (event, next) => next(event)),
+  )
+  const result = await runChain(guardedCall(), [prepend, user, append])
+  assert.deepEqual(
+    beneath.map((entry) => [entry.tier, entry.outcome]),
+    [['append', 'passed']],
+  )
+  // The kernel still reports the matcher skip; it is a diagnostic, not a link.
+  assert.equal(result.trace.find((entry) => entry.tier === 'user').status, 'skipped-matcher')
+})
+
+test('next.trace reports a throwing link as rejected with the throw as its reason', async () => {
+  let beneath
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next(event)
+      beneath = next.trace
+    }),
+  )
+  const user = at(
+    'user',
+    mod('classic.PreToolUse', () => {
+      throw new Error('boom')
+    }),
+  )
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', (event, next) => next(event)),
+  )
+  const result = await runChain(guardedCall(), [prepend, user, append])
+  const rejected = beneath.find((entry) => entry.tier === 'user')
+  assert.equal(rejected.outcome, 'rejected')
+  assert.equal(rejected.reason, 'boom')
+  assert.equal(result.trace.find((entry) => entry.tier === 'user').status, 'error')
+})
+
+test('the budget clock stands still while next is in flight', async () => {
+  let callerRan = false
+  let downstreamRuns = 0
+  const caller = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      const resolved = await next(event)
+      callerRan = true
+      return resolved
+    }),
+    { timeoutMs: 50 },
+  )
+  const downstream = at(
+    'user',
+    mod('classic.PreToolUse', async (event, next) => {
+      await sleep(150)
+      downstreamRuns += 1
+      return next(event)
+    }),
+    { timeoutMs: 1_000 },
+  )
+  const result = await runChain(guardedCall(), [caller, downstream], { deadlineMs: 5_000 })
+  assert.equal(callerRan, true)
+  assert.equal(downstreamRuns, 1)
+  assert.deepEqual(
+    result.trace.map((entry) => [entry.tier, entry.status]).sort(),
+    [['prepend', 'ran'], ['user', 'ran']].sort(),
+  )
+})
+
+test('pauseWhilePending holds the same meter across a slow $ call', async () => {
+  const paused = await runChain(guardedCall(), [
+    at(
+      'prepend',
+      mod('classic.PreToolUse', async (event, next) => {
+        await pauseWhilePending(() => sleep(120))
+        return next(event)
+      }),
+      { timeoutMs: 40 },
+    ),
+  ])
+  assert.equal(paused.trace[0].status, 'ran')
+
+  // Contrast: the same wait outside a `$` call is the hook's own work and
+  // exceeds the budget.
+  const unpaused = await runChain(guardedCall(), [
+    at(
+      'prepend',
+      mod('classic.PreToolUse', async () => {
+        await sleep(120)
+      }),
+      { timeoutMs: 40 },
+    ),
+  ])
+  assert.equal(unpaused.trace[0].status, 'timeout')
+})
+
+test('a classic hook keeps its budget snapshot; a mod sees the live clock', async () => {
+  let classicSame
+  let modDecreased
+  const user = classicHookRegistration({
+    event: 'PreToolUse',
+    source: 'user#0',
+    run: async (context) => {
+      const before = context.budget.remainingMs
+      await sleep(20)
+      classicSame = context.budget.remainingMs === before
+      return CONTINUE
+    },
+  })
+  const append = at(
+    'append',
+    mod('classic.PreToolUse', async (event, next) => {
+      const before = next.budget.remainingMs
+      await sleep(20)
+      modDecreased = next.budget.remainingMs < before
+      assert.equal(next.budget.ms, 10_000)
+      return next(event)
+    }),
+  )
+  await runChain(guardedCall(), [user, append])
+  assert.equal(classicSame, true)
+  assert.equal(modDecreased, true)
+})
+
+test('a timed-out handler sees its own signal aborted', async () => {
+  let resolveSaw
+  const saw = new Promise((resolve) => {
+    resolveSaw = resolve
+  })
+  const guard = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      next.signal.addEventListener('abort', () => resolveSaw(next.signal.aborted), { once: true })
+      await Promise.race([saw, sleep(500)])
+      return next(event)
+    }),
+    { timeoutMs: 30 },
+  )
+  const result = await runChain(guardedCall(), [guard])
+  assert.equal(result.trace[0].status, 'timeout')
+  assert.equal(await saw, true)
+})
+
+test('fan-out: next.trace is empty while the kernel owns the remainder', async () => {
+  let beneath
+  const prepend = at(
+    'prepend',
+    mod('classic.PreToolUse', async (event, next) => {
+      await next(event)
+      beneath = next.trace
+    }),
+  )
+  const user = classicHookRegistration({
+    event: 'PreToolUse',
+    source: 'user#0',
+    run: () => {},
+  })
+  const result = await runChain(guardedCall(), [prepend, user])
+  // In fan-out the kernel, not the hook, runs the links beneath: nothing has
+  // settled when `next` resolves, so the projection is empty. Pinned so the
+  // documented subset cannot silently start inventing steps.
+  assert.deepEqual(beneath, [])
+  assert.equal(Object.isFrozen(beneath), true)
+  assert.deepEqual(result.trace.map((entry) => entry.status), ['ran', 'ran'])
 })

@@ -58,6 +58,7 @@ import {
   classicEvent,
   classicHookRegistration,
   modRegistrationsToKernel,
+  pauseWhilePending,
   runChain,
   type ChainEvent,
   type ChainResult,
@@ -225,12 +226,40 @@ export function applyToolInputRewrite(
   return { applied: true }
 }
 
+/**
+ * A `$` call is work the handler spends its own budget on, and the pin's clock
+ * stands still while one is in flight (`claude-code.d.ts:5339-5352`). The
+ * kernel's meter is only reachable through the scope `invoke` enters, so the
+ * host wraps the dollar namespace: each call reports itself as paused time.
+ * The wrapper is transparent to the caller (sync stays sync, promises pass
+ * through) and only touches plain objects and functions, never arrays.
+ */
+function pauseDollar(value: unknown): unknown {
+  if (typeof value === 'function') {
+    const member = value as (...args: unknown[]) => unknown
+    return function pausingDollarMember(this: unknown, ...args: unknown[]): unknown {
+      return pauseWhilePending(() => Reflect.apply(member, this, args))
+    }
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const source = value as Record<string, unknown>
+  const wrapped: Record<string, unknown> = {}
+  for (const key of Object.keys(source)) wrapped[key] = pauseDollar(source[key])
+  return wrapped
+}
+
 interface ExecView {
   callId: string | number
   name: string
   arguments: unknown
   /** The agent that owns the call; absent on the standalone tools probe (S8). */
   agent?: unknown
+  /**
+   * The host's dispatch signal (`ToolExecution.signal`). A mod's `next.signal`
+   * is the pinned member for "this call was abandoned": it must be the chain's
+   * controller, so the seat links this one into `ChainOptions.signal`.
+   */
+  signal?: AbortSignal
 }
 
 interface PostDecision {
@@ -490,6 +519,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     registrations: readonly HandlerRegistration[],
     agent?: unknown,
     gaps?: readonly string[],
+    signal?: AbortSignal,
   ): Promise<ChainResult> => {
     // A seat owns every host event, including ones this plugin has no handler
     // for. Running an empty chain would add an empty trace and an empty
@@ -501,6 +531,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       runChain(event, registrations, {
         continuation: 'fan-out',
         timeoutMs: DEFAULT_HOOK_TIMEOUT_MS + KERNEL_GRACE_MS,
+        ...(signal === undefined ? {} : { signal }),
         // A mod registration carries no timeout of its own unless the host set
         // one; the chain still needs a budget, so an all-zero sum means "use
         // the default" rather than "expire immediately".
@@ -1127,7 +1158,8 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         },
       })
       const modHost = {
-        dollar: async (): Promise<Record<string, unknown>> => bridge.dollar(invocation.getStore()?.agent),
+        dollar: async (): Promise<Record<string, unknown>> =>
+          pauseDollar(bridge.dollar(invocation.getStore()?.agent)) as Record<string, unknown>,
       }
       let handle: LoadedMod
       try {
@@ -1214,7 +1246,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             cwd: typeof agent?.session?.header?.cwd === 'string' ? agent.session.header.cwd : undefined,
           })
           const chainEvent = classicEvent('PreToolUse', payload)
-          const result = await runKernel(chainEvent, combined('PreToolUse'), agent)
+          const result = await runKernel(chainEvent, combined('PreToolUse'), agent, undefined, exec.signal)
           const denied = result.decisions.find(
             (decision): decision is { kind: 'deny'; reason: string } => decision.kind === 'deny',
           )
@@ -1243,7 +1275,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             toolResponse: result,
             cwd: typeof agent?.session?.header?.cwd === 'string' ? agent.session.header.cwd : undefined,
           })
-          const run = await runKernel(classicEvent('PostToolUse', payload), combined('PostToolUse'), agent)
+          const run = await runKernel(classicEvent('PostToolUse', payload), combined('PostToolUse'), agent, undefined, exec.signal)
           for (const outcome of run.decisions) {
             for (const text of decisionTexts(outcome)) contexts.push(textContext(text))
           }

@@ -168,8 +168,11 @@ test('a real mod with unprefixed event names is reported, not silently dropped',
 
 // ---- Issue #68: the guard must guard --------------------------------------
 // A loaded guard mod's deny reaches the chain; without the mod the same call
-// continues. This is the unit-level contrast for the sec-default end-to-end
-// test (sec-default itself bypasses user hooks; it does not deny a tool).
+// continues. This case is deny-only on purpose: the guard never calls `next.to`,
+// so it says nothing about continuation coverage (the kernel's own tests carry
+// that), and the title says so. It is the unit-level contrast for the
+// sec-default end-to-end test (sec-default itself bypasses user hooks; it does
+// not deny a tool).
 
 const GUARD_ROOT = fileURLToPath(new URL('../../../fixtures/mods/guard/', import.meta.url))
 
@@ -180,7 +183,7 @@ const bashCall = () =>
     tool_input: { command: 'echo guarded' },
   })
 
-test('a loaded guard mod denies one tool; unloaded, the same call continues', async (t) => {
+test('a loaded deny-only guard mod denies one tool; unloaded, the same call continues', async (t) => {
   const { host } = recorder()
   const loaded = await loadMod({ root: GUARD_ROOT, entry: 'register.ts', host })
   const { registrations } = modRegistrationsToKernel(loaded.registrations, {

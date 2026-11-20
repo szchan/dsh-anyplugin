@@ -11,6 +11,8 @@
  * through `runChain`, not around it.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import { MOD_EVENT_ROUTES, MOD_PINNED_EVENTS, modUnmappedReason, type ModEventRoute } from './mod-events.ts'
 
 export * from './mod-events.ts'
@@ -773,9 +775,13 @@ function modResultToKernel(route: ModEventRoute, event: ChainEvent, value: unkno
  *   meter a handler's own wall time while `next` is in flight, does not count
  *   chunks, and does not keep the mod-shaped payloads, so inventing them would
  *   be fabrication;
- * - a kernel `error` is reported as `skipped`: the kernel knows the throw but
- *   not whether it happened before or after `next`, and `kept` would assert
- *   the latter.
+ * - a kernel `error` is reported as `rejected` with the throw message as the
+ *   reason: the pin's `rejected` is a failing link, while `skipped` asserts
+ *   that the link failed before `next` and the links beneath ran in its place,
+ *   which the kernel cannot know without the mod's own ordering;
+ * - a link the matcher removed never ran, so it is a kernel diagnostic and is
+ *   not projected: `TraceEntry` lists links beneath the call, not every
+ *   registration the chain considered.
  *
  * `origin` is the dispatch's raiser, which is the host for every route served
  * today (the classic arm and `session.start`), so it is the pin's engine origin
@@ -794,6 +800,12 @@ export type ModTraceOutcome = 'caught' | 'expired' | 'kept' | 'passed' | 'reject
 
 export interface ModTraceEntry {
   readonly index: number
+  /**
+   * A host label, not a value the mod wrote: the owning plugin when the
+   * registration carried one, otherwise the registration's stable source
+   * (a classic hook may have no plugin name in this host). The pinned shape
+   * requires a string, and hiding the fallback would make it look invented.
+   */
   readonly plugin: string
   readonly tier: Tier
   readonly event: string
@@ -826,9 +838,10 @@ function modTraceOutcome(step: TraceStep): ModTraceOutcome {
   switch (step.status) {
     case 'timeout':
       return 'expired'
+    case 'error':
+      return 'rejected'
     case 'skipped-matcher':
     case 'skipped':
-    case 'error':
       return 'skipped'
     case 'not-called':
       return 'returned'
@@ -840,8 +853,9 @@ function modTraceOutcome(step: TraceStep): ModTraceOutcome {
 function toModTraceEntry(route: ModEventRoute, step: TraceStep): ModTraceEntry {
   return Object.freeze({
     index: step.index,
-    // A classic registration without an owner still has a host-known label;
-    // the pinned shape requires a plugin string, so the source is the fallback.
+    // A host label: the owning plugin when the registration carried one,
+    // otherwise the registration's stable source. It is not a claim about a
+    // plugin id the host did not know.
     plugin: step.plugin ?? step.source,
     tier: step.tier,
     event: route.modEvent,
@@ -954,7 +968,9 @@ async function runModHandler(
         // call is the only continuation it ever gets). Frozen: the pin says the
         // data is frozen and nothing listed may leave.
         const settled = (context.trace?.() ?? [])
-          .filter((step) => step.index > context.index)
+          // `skipped-matcher` is a kernel diagnostic: the registration never
+          // ran, so it is not a link beneath this call (M3).
+          .filter((step) => step.index > context.index && step.status !== 'skipped-matcher')
           .sort((left, right) => left.index - right.index)
         return Object.freeze(settled.map((step) => toModTraceEntry(route, step)))
       },
@@ -1129,19 +1145,121 @@ export function resolveOrder(registrations: readonly HandlerRegistration[]): Res
 const TIMED_OUT = Symbol('timeout')
 const TIMED_OUT_NOT = Symbol('error')
 
-async function withinLimit<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T | typeof TIMED_OUT> {
-  if (ms <= 0) return TIMED_OUT
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), ms)
-    timer.unref?.()
-  })
-  try {
-    return await Promise.race([work, timeout])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-    void signal
+/**
+ * One handler's budget clock. Time spent inside the links beneath the handler
+ * does not count: the pin says `budget` stands still while a `next` (or `$`)
+ * call is in flight, so the hook is metered on its own work (d.ts:5335-5341).
+ *
+ * The clock is refcounted because a paused call can contain another paused
+ * call from the same handler; the outer resume re-arms with what is left
+ * rather than restarting the full limit.
+ */
+class BudgetMeter {
+  readonly ms: number
+  private remaining: number
+  private started = Date.now()
+  private paused = false
+  private depth = 0
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private closed = false
+  private readonly expiredPromise: Promise<void>
+  private expire: (() => void) | undefined
+
+  constructor(ms: number) {
+    this.ms = Math.max(0, ms)
+    this.remaining = this.ms
+    this.expiredPromise = new Promise<void>((resolve) => {
+      this.expire = resolve
+    })
+    this.arm()
   }
+
+  private arm(): void {
+    if (this.closed || this.paused || this.remaining <= 0 || this.timer !== undefined) return
+    this.timer = setTimeout(() => this.expire?.(), this.remaining)
+    this.timer.unref?.()
+  }
+
+  private hold(): void {
+    if (this.depth === 0) {
+      if (this.timer !== undefined) clearTimeout(this.timer)
+      this.timer = undefined
+      this.remaining = Math.max(0, this.remaining - (Date.now() - this.started))
+      this.paused = true
+    }
+    this.depth += 1
+  }
+
+  private release(): void {
+    if (this.depth === 0) return
+    this.depth -= 1
+    if (this.depth === 0) {
+      this.paused = false
+      this.started = Date.now()
+      this.arm()
+    }
+  }
+
+  pause(): void {
+    this.hold()
+  }
+
+  resume(): void {
+    this.release()
+  }
+
+  get expired(): Promise<void> {
+    return this.expiredPromise
+  }
+
+  get remainingMs(): number {
+    return this.paused
+      ? Math.max(0, this.remaining)
+      : Math.max(0, this.remaining - (Date.now() - this.started))
+  }
+
+  dispose(): void {
+    this.closed = true
+    if (this.timer === undefined) return
+    clearTimeout(this.timer)
+    this.timer = undefined
+  }
+}
+
+/**
+ * The meter of the handler currently executing. It is scoped through an
+ * `AsyncLocalStorage` so host-side calls the kernel cannot see — a mod's `$` —
+ * pause the same clock as `next`; the host wraps those calls with
+ * `pauseWhilePending`.
+ */
+const budgetScope = new AsyncLocalStorage<BudgetMeter>()
+
+/**
+ * Run `work` with the current handler's budget paused until its result
+ * settles. A synchronous result pauses for the call only, so wrapping a
+ * synchronous `$` member does not make it asynchronous.
+ */
+export function pauseWhilePending<T>(work: () => T): T {
+  const meter = budgetScope.getStore()
+  if (meter === undefined) return work()
+  meter.pause()
+  let result: T
+  try {
+    result = work()
+  } catch (error) {
+    meter.resume()
+    throw error
+  }
+  if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+    return (result as Promise<unknown>).finally(() => meter.resume()) as T
+  }
+  meter.resume()
+  return result
+}
+
+async function withinLimit<T>(work: Promise<T>, meter: BudgetMeter): Promise<T | typeof TIMED_OUT> {
+  if (meter.ms <= 0) return TIMED_OUT
+  return await Promise.race([work, meter.expired.then(() => TIMED_OUT)])
 }
 
 /**
@@ -1234,16 +1352,34 @@ export async function runChain(
   }
 
   const pluginOf = (registration: HandlerRegistration): string => registration.plugin ?? registration.source
+  const tierRank = (tier: Tier): number => TIER_ORDER.indexOf(tier)
+
+  /** A `next.to` continuation, kept until the loop leaves the caller's tier. */
+  type TierJump = { readonly target: Tier; readonly callerRank: number; readonly by: string }
 
   /**
    * Record the links a `next.to(e, tier)` did not run. They are skipped, not
    * absent: the pin's trace lists every link beneath the call and says why a
    * link did not run (claude-code.d.ts:10555-10574). A skipped link still
    * consults its matcher, exactly as it would have on the way through.
+   *
+   * "Beneath" is a tier rank, not an array index: only links strictly between
+   * the caller's tier and the target tier are bypassed. A same-tier sibling
+   * stays in the dispatch (d.ts:5286-5289: "every link between this hook's own
+   * tier and that one", and `TraceEntry.reason` names "beneath this tier").
    */
-  const recordBypassed = (from: number, to: number, by: string, current: ChainEvent): void => {
+  const recordBypassed = (
+    from: number,
+    to: number,
+    by: string,
+    current: ChainEvent,
+    callerRank: number,
+    targetRank: number,
+  ): void => {
     for (let at = from; at < to && at < ordered.length; at += 1) {
       const { registration } = ordered[at]
+      const rank = tierRank(registration.tier)
+      if (rank <= callerRank || rank >= targetRank) continue
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
       const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
       const matched = subject === null ? !matcher.specified : matcher.test(subject)
@@ -1263,6 +1399,11 @@ export async function runChain(
   /**
    * Run one handler under its budget. A throw is reported, never propagated;
    * the caller decides whether to continue (fan-out) or skip (first-decision).
+   *
+   * The budget clock pauses while the handler is inside `next`: the pin meters
+   * the hook's own work, not the links beneath it. `$` calls are host-side;
+   * the host wraps them with `pauseWhilePending`, which reads the meter from
+   * the scope this function enters.
    */
   const invoke = async (
     registration: HandlerRegistration,
@@ -1270,40 +1411,57 @@ export async function runChain(
     current: ChainEvent,
     next: Next,
     ms: number,
-    remainingMs: number,
   ): Promise<HandlerRun> => {
     const controller = new AbortController()
     const detach = linkAbort(options.signal, controller)
-    const handlerDeadline = Date.now() + ms
+    const meter = new BudgetMeter(ms)
+    const wrapped = (registration.mode ?? 'observe') === 'wrap'
+
+    // The live getter is for mod handlers. A classic hook keeps the entry
+    // snapshot it has always received: a decreasing value would be a change in
+    // an existing behaviour (T3), and no classic caller asked for it.
+    const budget = wrapped
+      ? {
+          ms,
+          get remainingMs(): number {
+            return Math.min(ms, meter.remainingMs)
+          },
+        }
+      : { ms, remainingMs: meter.remainingMs }
+
+    const timedNext: Next = wrapped
+      ? async (nextEvent, tier) => {
+          meter.pause()
+          try {
+            return await next(nextEvent, tier)
+          } finally {
+            meter.resume()
+          }
+        }
+      : next
+
     let failure: string | undefined
     const outcome = await withinLimit(
-      (async () =>
+      budgetScope.run(meter, async () =>
         registration.run(
           {
             tier: registration.tier,
             index: at,
-            budget: {
-              ms,
-              // Live, and clamped: a `next` call consumes the same budget, so
-              // reading it again after a continuation shows what is left rather
-              // than the snapshot taken at entry.
-              get remainingMs() {
-                return Math.max(0, Math.min(ms, Math.min(handlerDeadline, deadline) - Date.now()))
-              },
-            },
+            budget,
             signal: controller.signal,
             trace: () => trace,
           },
           current,
-          next,
-        ))(),
-      ms,
-      controller.signal,
+          timedNext,
+        ),
+      ),
+      meter,
     ).catch((error: unknown) => {
       failure = (error as Error)?.message ?? String(error)
       return TIMED_OUT_NOT
     })
     detach()
+    meter.dispose()
 
     if (outcome === TIMED_OUT) {
       controller.abort()
@@ -1313,9 +1471,22 @@ export async function runChain(
     return { status: 'ran', decision: (outcome as HandlerOutcome) ?? CONTINUE }
   }
 
-  const step = async (position: number, current: ChainEvent): Promise<Decision> => {
-    for (let at = position; at < ordered.length; at += 1) {
+  const step = async (position: number, current: ChainEvent, pending?: TierJump): Promise<Decision> => {
+    let at = position
+    while (at < ordered.length) {
       const { registration } = ordered[at]
+      const rank = tierRank(registration.tier)
+
+      // The caller's tier is finished once a link of a deeper tier is reached.
+      // Only then does its `to` take effect; same-tier siblings ran first.
+      if (pending !== undefined && rank > pending.callerRank) {
+        const target = tierStart(pending.target, at)
+        recordBypassed(at, target, pending.by, current, pending.callerRank, tierRank(pending.target))
+        at = target
+        pending = undefined
+        continue
+      }
+
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
       const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
       // No subject means the matcher cannot be evaluated. Running it would
@@ -1323,6 +1494,7 @@ export async function runChain(
       const matched = subject === null ? !matcher.specified : matcher.test(subject)
       if (!matched) {
         record(registration, at, 'skipped-matcher', subject === null ? { detail: 'no subject' } : {})
+        at += 1
         continue
       }
 
@@ -1338,45 +1510,53 @@ export async function runChain(
           deepest = nextEvent
           current = nextEvent
         }
-        if (tier === undefined) {
-          resumed = step(Math.max(0, at + 1), current)
-        } else {
-          // The tier jump is the same forward index arithmetic the kernel
-          // always used; the skipped links are now recorded rather than
-          // silently vanished.
-          const target = tierStart(tier, at)
-          recordBypassed(at + 1, target, pluginOf(registration), current)
-          resumed = step(target, current)
+        let carry = pending
+        if (tier !== undefined && tierRank(tier) > rank) {
+          carry = { target: tier, callerRank: rank, by: pluginOf(registration) }
         }
+        resumed = step(at + 1, current, carry)
         return resumed
       }
 
-      const run = await invoke(registration, at, current, next, ms, remainingMs)
+      const run = await invoke(registration, at, current, next, ms)
       if (run.status === 'timeout') {
         record(registration, at, 'timeout', { detail: `exceeded ${run.ms}ms` })
+        // The handler may have started the remainder before it timed out. That
+        // continuation owns it; the outer loop must not run those links again.
+        if (resumed !== undefined) return await resumed
+        at += 1
         continue
       }
       if (run.status === 'error') {
         record(registration, at, 'error', { detail: run.detail })
+        if (resumed !== undefined) return await resumed
+        at += 1
         continue
       }
 
       const own = run.decision
-      const decided = resumed === undefined ? own : await resumed
-      const final = own !== CONTINUE ? own : decided
-
-      if (resumed === undefined && own === CONTINUE) {
-        if ((registration.mode ?? 'observe') === 'wrap') {
-          // A wrapper that declined to continue has ended the chain.
-          record(registration, at, 'not-called')
-          return CONTINUE
+      if (resumed === undefined) {
+        if (own === CONTINUE) {
+          if ((registration.mode ?? 'observe') === 'wrap') {
+            // A wrapper that declined to continue has ended the chain.
+            record(registration, at, 'not-called')
+            return CONTINUE
+          }
+          // An observing hook has no "next": it ran, and the chain continues.
+          record(registration, at, 'ran')
+          at += 1
+          continue
         }
-        // An observing hook has no "next": it ran, and the chain continues.
-        record(registration, at, 'ran')
-        continue
+        record(registration, at, 'ran', { decision: own.kind })
+        return own
       }
+
+      // The recursion ran the whole remainder. Its decision stands unless this
+      // handler overrode it; either way the loop is over.
+      const decided = await resumed
+      const final = own !== CONTINUE ? own : decided
       record(registration, at, 'ran', final === CONTINUE ? {} : { decision: final.kind })
-      if (final !== CONTINUE) return final
+      return final
     }
     return CONTINUE
   }
@@ -1386,14 +1566,27 @@ export async function runChain(
    * timeout only affects the handler that produced it; later siblings still
    * run. `next()` rewrites the event for downstream handlers; `next(e, tier)`
    * additionally continues beneath a tier, recording the links it passed over.
+   * The jump waits until the caller's tier is left, so a same-tier sibling is
+   * still dispatched.
    */
   const fanOut = async (): Promise<{ decision: Decision; decisions: Decision[] }> => {
     const decisions: Decision[] = []
     let first: Decision = CONTINUE
     let current = event
     let at = 0
+    let pending: TierJump | undefined
     while (at < ordered.length) {
       const { registration } = ordered[at]
+      const rank = tierRank(registration.tier)
+
+      if (pending !== undefined && rank > pending.callerRank) {
+        // The pass-over was recorded when `to` was called, so the hook can
+        // read it while it still runs; only the jump is deferred.
+        at = tierStart(pending.target, at)
+        pending = undefined
+        continue
+      }
+
       const subject = current.subject === undefined ? classicSubject(current) : current.subject
       const matcher = registration.compiledMatcher ?? compileMatcher(registration.matcher)
       const matched = subject === null ? !matcher.specified : matcher.test(subject)
@@ -1405,20 +1598,23 @@ export async function runChain(
 
       const remainingMs = Math.max(0, deadline - Date.now())
       const ms = Math.min(registration.timeoutMs ?? defaultTimeout, remainingMs)
-      let jump: number | undefined
       const next: Next = async (nextEvent, tier) => {
         if (nextEvent !== undefined) {
           deepest = nextEvent
           current = nextEvent
         }
-        if (tier !== undefined && jump === undefined) {
-          jump = tierStart(tier, at)
-          recordBypassed(at + 1, jump, pluginOf(registration), current)
+        if (tier !== undefined && tierRank(tier) > rank && pending === undefined) {
+          pending = { target: tier, callerRank: rank, by: pluginOf(registration) }
+          // Record now: `await next.to(e, tier)` must resolve with the skipped
+          // links already in `next.trace`, as the pin describes. Only links
+          // strictly between the two tiers are named, so a same-tier sibling is
+          // not mislabelled as skipped.
+          recordBypassed(at + 1, tierStart(tier, at), pending.by, current, rank, tierRank(tier))
         }
         return CONTINUE
       }
 
-      const run = await invoke(registration, at, current, next, ms, remainingMs)
+      const run = await invoke(registration, at, current, next, ms)
       if (run.status === 'timeout') {
         record(registration, at, 'timeout', { detail: `exceeded ${run.ms}ms` })
         at += 1
@@ -1436,7 +1632,7 @@ export async function runChain(
         decisions.push(own)
         if (first === CONTINUE) first = own
       }
-      at = jump ?? at + 1
+      at += 1
     }
     return { decision: first, decisions }
   }
