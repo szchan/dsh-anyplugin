@@ -16,10 +16,27 @@
         "calls": 18,
         "dynamic": 0
       },
-      "outcome": "refused",
-      "code": "TypeError",
-      "path": "mods/agents-md/hooks/register.ts:41:38",
-      "message": "Cannot read properties of undefined (reading 'instructionFiles')"
+      "outcome": "loaded",
+      "registrations": [
+        {
+          "event": "session.start"
+        },
+        {
+          "event": "prompt.context"
+        },
+        {
+          "event": "agent.spawn",
+          "matcher": {
+            "fork": true
+          }
+        },
+        {
+          "event": "tool.call",
+          "matcher": {
+            "tool": "Read"
+          }
+        }
+      ]
     },
     {
       "name": "diff",
@@ -138,10 +155,102 @@
         "calls": 8,
         "dynamic": 0
       },
-      "outcome": "refused",
-      "code": "TypeError",
-      "path": "mods/sec-default/hooks/register.ts:151:5",
-      "message": "Cannot read properties of undefined (reading 'catch')"
+      "outcome": "loaded",
+      "registrations": [
+        {
+          "event": "classic.*"
+        },
+        {
+          "event": "prompt.section"
+        },
+        {
+          "event": "prompt.context"
+        },
+        {
+          "event": "prompt.attachment"
+        },
+        {
+          "event": "prompt.compose"
+        },
+        {
+          "event": "skill.prompt"
+        },
+        {
+          "event": "attribution.text"
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "attachment"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "hook-context"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "compaction"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "tool-message"
+          }
+        },
+        {
+          "event": "session.append",
+          "matcher": {
+            "door": "note"
+          }
+        },
+        {
+          "event": "session.compact"
+        },
+        {
+          "event": "settings.read"
+        },
+        {
+          "event": "tool.describe"
+        },
+        {
+          "event": "command.describe"
+        },
+        {
+          "event": "agent.offer"
+        },
+        {
+          "event": "agent.spawn"
+        },
+        {
+          "event": "tool.register"
+        },
+        {
+          "event": "tool.list"
+        },
+        {
+          "event": "tool.check"
+        },
+        {
+          "event": "ui.log"
+        },
+        {
+          "event": "env.get"
+        },
+        {
+          "event": "env.set"
+        },
+        {
+          "event": "plugin.register",
+          "matcher": {
+            "tier": "user"
+          }
+        }
+      ]
     },
     {
       "name": "telemetry",
@@ -154,10 +263,27 @@
         "calls": 0,
         "dynamic": 0
       },
-      "outcome": "refused",
-      "code": "TypeError",
-      "path": "mods/telemetry/hooks/register.ts:27:59",
-      "message": "Cannot read properties of undefined (reading 'catch')"
+      "outcome": "loaded",
+      "registrations": [
+        {
+          "event": "telemetry.*"
+        },
+        {
+          "event": "telemetry.log"
+        },
+        {
+          "event": "telemetry.mark"
+        },
+        {
+          "event": "session.start"
+        },
+        {
+          "event": "session.end"
+        },
+        {
+          "event": "engine.create"
+        }
+      ]
     }
   ]
 }

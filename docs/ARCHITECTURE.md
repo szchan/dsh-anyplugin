@@ -823,17 +823,20 @@ changes, performance, or containment. D30 fixed type stripping as the only
 sanctioned transform and kept `.tsx` `planned`; #45/D34 replaced that with
 one declared classic-pragma transform, and the host skeleton followed in #33.
 
-**Host landed (#33).** `dsh-anyplugin-mod-host` implements this section:
-`loadMod({ root, entry, host })` creates one `node:vm` context per mod,
-resolves the entry and every child through the three rules, strips `.ts` in
-memory, links once and evaluates once, then calls the authored `register(on)`
-and returns its registrations in source order. `$` is never a global: the host
+**Host landed (#33); the pinned contract (#57).** `dsh-anyplugin-mod-host`
+implements this section: `loadMod({ root, entry, host, pluginRoot?,
+pluginOptions? })` creates one `node:vm` context per mod, resolves the entry
+and every child through the three rules, strips `.ts` in memory, links once and
+evaluates once, then calls the authored `register(on, options)` and returns
+its registrations in source order. `$` is never a global: the host
 wraps each registration as `handler(event, next)`; immediately before every
 invocation it calls `host.dollar()` exactly once and passes the result to the
 authored `handler($, event, next)`. The host never caches, clones or freezes
 that namespace; `ModHost.dollar()` **must return the namespace for that one
 invocation**. A host that returns the same object for two calls has reused it —
-a `ModHost` bug, not host-side freshness. Evaluation happens
+a `ModHost` bug, not host-side freshness. A caught invocation calls
+`host.dollar()` a second time for the catch handler, which the pin also invokes
+as `($, e, next)`. Evaluation happens
 before `loadMod` resolves; `evaluate()` is an idempotent accessor, so a mod
 cannot evaluate twice. `dispose()` makes the realm inert. The host reads
 authored bytes and never writes them (the tests assert sha256 before and after).
@@ -842,14 +845,55 @@ The package has two load-time dependencies, pinned exactly (D34:
 `npm test` runs Node with `--experimental-vm-modules`, because D30's realm
 needs `SourceTextModule`.
 
-Failures are `ModHostError`s with one of four codes: `ERR_MOD_HOST_TSX` (a
+**The pinned `Registration` (#57).** `on(event, hook)` returns the object the
+pin declares (`claude-code.d.ts` 2.1.322 line 7480): frozen, with one member,
+`.catch(handler)`. A registration without `.catch` behaves exactly as before —
+a throw from the authored hook rejects the wrapper and the intercept kernel
+records and skips it. With `.catch`, the host catches a throw from the hook,
+calls `host.dollar()` a second time for the catch handler (the pin gives it a
+`$` of its own) and invokes it with `$`, the event and the pinned `N & Caught`:
+`error` is frozen `HookFailure` data (`kind: 'throw'`, the authored message,
+`budget` 1,000 ms — the pin's `catchMs`), `called` reports whether the hook
+invoked beneath it, and `next` replays the hook's last `next` result instead
+of running the hooks beneath again. The host copies the rest of the `Next`
+surface (`to`, `origin`, `trace`, ...) onto that `next`. `engine.create` has no
+budget at the pin, so `.catch` on it is refused at registration time, as are a
+second `.catch`, a `.catch` after `register` returned, and a non-function
+handler (`ERR_MOD_HOST_REGISTRATION`). The host has no per-handler timeout
+budget of its own yet, so it produces only `kind: 'throw'`; a kernel timeout is
+still reported as a timeout, not as a catch.
+
+**The pinned `PluginOptions` (#57).** `PluginOptions` is
+`Readonly<Record<string, string | number | boolean | readonly string[]>>`
+(line 6243), built from two facts: the manifest's `userConfig` declarations and
+the activation's stored values (`pluginConfigs[<plugin>].options`, passed as
+`pluginOptions`). The manifest is `<pluginRoot>/.claude-plugin/plugin.json`;
+without `pluginRoot`, the host proves it at `root` or at the parent of `root`
+(the complete pinned plugins keep it one level above `hooks/`). Every declared
+field is served with its activation value or its default, validated against the
+declared `type` before the module loads: a string field's declared `options`
+list turns a stored value outside it into "unset", a required field with no
+value refuses the load naming the field, and a declared type outside the pinned
+value union is refused instead of guessed at (`ERR_MOD_HOST_OPTIONS`). A module
+whose manifest declares no `userConfig` (synthetic fixtures included) receives
+an empty frozen record: nothing was declared, so nothing is fabricated. The
+pinned `PluginOptions` has no plugin-root or data-dir member; those remain host
+facts (`root`, and the bridge's data dir), not fields added here.
+
+Failures are `ModHostError`s with one of six codes: `ERR_MOD_HOST_TSX` (a
 `.tsx` module lacks the classic pragma or declares a foreign `@jsx`,
 `@jsxRuntime` or `@jsxFrag`, or a direct `.tsx` specifier is written),
 `ERR_MOD_HOST_MISSING` (the root, entry or a named module is absent),
-`ERR_MOD_HOST_UNSUPPORTED_EXT` (an extension D30/D34 does not load) and
+`ERR_MOD_HOST_UNSUPPORTED_EXT` (an extension D30/D34 does not load),
 `ERR_MOD_HOST_LINK` (a specifier outside the three rules, a
 read/strip/syntax failure, a link-time named-import mismatch, a missing or
-misused `register(on)`, or use after `dispose()`). Authored errors are never
+misused `register(on, options)`, or use after `dispose()`),
+`ERR_MOD_HOST_REGISTRATION` (a `Registration` member the pin declares but this
+host cannot serve: `.catch` on `engine.create`, a second or late `.catch`, or a
+non-function handler; the reason names the member) and `ERR_MOD_HOST_OPTIONS`
+(a `PluginOptions` field that cannot be built: a malformed `userConfig`, a
+declared type outside the pinned union, a wrong activation value, or a required
+field with no value; the reason names the field). Authored errors are never
 wrapped: a module-level `$` remains the realm's `ReferenceError`, and a throw
 from `register` keeps the mod's own stack. No `.tsx` stub, override hook or
 test-only escape hatch exists. The realm is not containment (D6/D30): `on` is

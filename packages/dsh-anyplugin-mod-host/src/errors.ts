@@ -1,9 +1,9 @@
 /**
  * The host's typed failures.
  *
- * Four codes, matching the surface the host can refuse (D30; ARCHITECTURE
- * §7.7). They are deliberately coarse: the reason says exactly what happened,
- * and the code tells a caller which decision to revisit.
+ * The codes match the surface the host can refuse (D30; ARCHITECTURE §7.7).
+ * They are deliberately coarse: the reason says exactly what happened, and
+ * the code tells a caller which decision to revisit.
  *
  * Authored code errors (a ReferenceError at module scope, a throw from
  * `register`, a rejection from a handler) are *not* wrapped: the host must not
@@ -25,6 +25,18 @@ export type ModHostErrorCode =
    * reason names the actual failure.
    */
   | 'ERR_MOD_HOST_LINK'
+  /**
+   * The pinned `Registration` cannot be served as declared: `.catch` on
+   * `engine.create` (its hook has no budget), a second or late `.catch`, or a
+   * non-function handler. The reason names the member and the registration.
+   */
+  | 'ERR_MOD_HOST_REGISTRATION'
+  /**
+   * The pinned `PluginOptions` cannot be built: a malformed `userConfig`, a
+   * declared type outside the pinned value union, a wrong activation value, or
+   * a required field with no value. The reason names the field.
+   */
+  | 'ERR_MOD_HOST_OPTIONS'
 
 export interface ModHostErrorOptions {
   /** The file the failure belongs to, when there is one. */
@@ -58,9 +70,19 @@ export function describeValue(value: unknown): string {
   return `a ${typeof value}`
 }
 
-/** `error.message` for an unknown thrown value, without assuming an Error. */
+/**
+ * `error.message` for an unknown thrown value, without assuming an Error.
+ *
+ * Authored code runs in the mod's own realm, so its `Error` fails the host's
+ * `instanceof Error`; a structural read keeps the authored message instead of
+ * turning it into a re-rendered `Error: ...` string.
+ */
 export function messageOf(value: unknown): string {
   if (value instanceof Error) return value.message
+  if (typeof value === 'object' && value !== null) {
+    const message = (value as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
   return String(value)
 }
 
