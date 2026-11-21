@@ -2032,3 +2032,21 @@ DSH pins. Merge `62238bf`.
 **Consequences.** `check:pack` is the gate: it builds, packs, asserts the lib/no-`.ts`/exports-resolve/no-undeclared-import/no-`@babel` invariants, checks that every local image a README names is in the tarball, and runs a real-loader install smoke over all five materializers, so the artifact and its declaration cannot drift apart. The mods kernel (v0.2) needs its own entry and the `@babel/*` dependencies; the 0.1 tarball deliberately ships neither and refuses a `mods` row with a recorded warning, while classic hooks in the same row still run. The ARCHITECTURE §13 question about bundle-versus-profile-dependency is answered by the bundle, with the profile's resolution model kept through subpaths.
 
 **Evidence.** `packages/dsh-anyplugin-install/src/controller.ts`, `scripts/build.mjs`, `scripts/check-pack.mjs`, `scripts/smoke-install.mjs`, `.github/workflows/release.yml` (tag == version, tag on `origin/main` via `merge-base --is-ancestor`, both pins verified with zero skips, then publish), `INSTALL.md`, and the 14-entry tarball exercised by the smoke. Merge `3083596`.
+
+---
+
+## D44 — `$ui` is a headless render sink, and its render hooks ride the one kernel
+
+**Status.** Ratified 2026-11-21. Pins: DSH `0.2.2-rc.2`, `0.2.2-rc.5`; claude-code `2.1.329` (mods tree `f9e4d1e`).
+
+The mod host owns one UI sink per plugin load. Every submitted tree is validated against the pinned surface table: declared elements per surface, element keys, required members, and prop types and literal unions (including the `ImageSource` object union). The sink records the latest valid revision per pane id and serves `open`, `close`, `invalidate`, `log`, `status` and `resolve`. `ui.ask` stays a typed refusal until the host has a person-interaction surface.
+
+`ui.render` and `ui.resolve` are **not** host events and are deliberately absent from the mod-events host table. The sink selects the authored registrations and dispatches them through `runChain` as synthetic events (`mode:'wrap'`, tier `user`), so matchers, ordering, timeouts, traces and the continuation rules stay the kernel's. `ui.resolve` runs at load once per surface and component, because the pin does and pinned mods read that table synchronously at import time.
+
+**Scope, stated rather than assumed.** The sink synthesizes `ui.render` only for `component:'Pane'` on `surface:'terminal'`, and only for the mod's own panes. The other components, and the pin's `ui.open`/`ui.close` hooks, are not dispatched. An invalid tree is recorded and the last validated tree is kept; `isPlaced:false` is reserved for a pane that has never drawn. The refusal wording, keep-last-tree and press recording are `derived`: the pin draws the engine's own component and this host has no drawing engine.
+
+**Why.** A sink is the only way to make stored trees observable without inventing a renderer: `ui.render` becomes a recorded revision, and a pinned turn can assert the tree a mod submitted. Routing the hooks through `runChain` is D13's rule applied to a surface whose events the host does not emit; the alternative, a `uiRenderChain`, would be the second event path AGENTS §3.6 forbids.
+
+**Consequences.** Six `$` ledger rows move from `refused` to `ran`; `ui.ask`, `$.process.run` and `$.settings.read` (with no merged snapshot) remain typed refusals. `mod_ui` is registered only while a pane is open. A regression in the sink's invalidation of `prompt.context` / `prompt.section` is now a test failure rather than an unobserved path.
+
+**Evidence.** `packages/dsh-anyplugin-mod-host/src/ui.ts` (surface tables and validator, 21 tests), `packages/dsh-anyplugin-mod-host/src/bridge.ts` (sink wiring), `packages/dsh-anyplugin-materialize-hook/src/index.ts` (synthetic dispatch), `packages/dsh-anyplugin-conformance/test/mods.test.mjs` (the pinned-turn revision-2 assertion), `packages/dsh-anyplugin-materialize-hook/test/prompt-cache.test.mjs`. Mutations for each MUST were run and reverted. 509/509 with zero skips on both pins after rebasing onto the release bundle. Merge `4b6cb5c`.
