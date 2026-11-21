@@ -2262,3 +2262,57 @@ is the escape layer, and `tools` names its two composition routes; the S16
 spike runs in CI beside S10/S11 and a missing harness fails the job (D22); and
 `isolation` is the one remaining face that a T2 seam can promote without
 touching this table's other rows.
+
+---
+
+## D49 — the lifecycle CLI is a caller; a mention owns its layer; an empty install is a refusal
+
+**Date:** 2026-11-21 · **Status:** ratified · **Depends on:** D2, D23, D27
+
+1. **One writer per store.** `rig install` reads a plugin directory, builds one
+   `InstallRecord`, and hands the whole lock to `writeInstalls`; it never
+   formats `installs.yml`. A lifecycle command's only other write is one
+   enablement layer through `writeEnablements`. Both validate first, then write
+   a temp file and rename, so a typed refusal leaves the previous bytes.
+2. **`--scope` on `install` is enablement, not a record field** (D2 keeps the
+   record profile-global). `install` adds a mention only where the layer has
+   none; **a layer that already mentions the id owns the decision** and is left
+   byte-identical, with a warning naming the deciding layer. A reinstall is not
+   an enable: `--force` is scoped to root/version/dataDir and does not flip a
+   `disable`.
+3. **`enable`/`disable` edit exactly one layer.** With no `--scope` the target
+   is the narrowest layer that already mentions the id, else `user`; the CLI
+   never invents a narrower scope. If a narrower layer still decides against
+   the request, the command exits 0 with a warning naming that layer (D2).
+4. **`disable` never deletes the record; `uninstall` removes only the record.**
+   Layers and grants stay, because a workspace's policy outlives a reinstall;
+   `uninstall` reports the scopes that still mention the id, the desired
+   entry-tree difference, and `grants: N retained`. That count is grants, not
+   effective grants — a revoked grant is still retained, and the same output
+   names the refusal.
+5. **An empty install is a refusal.** A plugin that declares nothing is
+   `nothing-declared` (not bypassable by `--allow-empty`); a plugin whose
+   components all refuse is `nothing-emitted`, naming them, exit 1, unless
+   `--allow-empty`. The record then exists and `list` names the same refusals.
+   Recording an inert plugin silently would make "installed" mean two things.
+6. **Options are closed per command.** An unknown, misspelled or `--flag=value`
+   option exits 2 before any read or write, printing that command's allowed
+   set. This is what makes `--dry-run` a promise rather than a convention.
+7. **Same identity, same root, unchanged fields is a no-op exit 0.** A different
+   root, or a changed version/pin/dataDir, is a typed refusal; `--force` is the
+   only override. `--name` asserts identity and fails on mismatch rather than
+   renaming.
+8. **`--dry-run` runs the same plan**, prints the exact canonical `+`/`-` lines,
+   performs both reads, and skips only the `write*` calls; every target's
+   checksum is unchanged.
+
+**Consequences:** `list` re-runs `prepareInstalledRecord` and
+`buildTransplantReport` rather than counting anything of its own, so a refusal
+row cannot differ between `list` and `report`; `PreparedRecord` keeps the
+ungated IR beside the gated one because gating twice turns refusals into
+skipped; refusals are a stable `code` and `--json` prints
+`{ok:false, refusals:[{code,reason,hint?}]}`; paths (`<plugin-dir>`,
+`--config`, `--project`) resolve against the current directory and a missing
+relative `--config` is a typed error for commands that need an existing lock;
+`install` never grants exec (D27) and never writes profile config (D23);
+`rig --help` with no command still exits 2 — a known rough edge, not a claim.
