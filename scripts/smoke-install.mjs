@@ -14,8 +14,8 @@
  *   4. create the composed row through the real loader, let the controller
  *      reconcile `installs.yml`, and assert the fixture's skill is listed by
  *      `ctx.skills.list()`;
- *   5. import every published subpath through the loader's own resolver
- *      helper, so a broken `exports` map fails here.
+ *   5. import every published subpath through a resolver anchored in the
+ *      profile's package scope, so a broken `exports` map fails here.
  *
  * A missing harness is a failure, not a skip: skipping the install smoke is
  * exactly the silent-success mode it exists to prevent.
@@ -261,14 +261,23 @@ async function main() {
       }
       if (ctx.loader.resolve(styleChild.id).fiber?.state !== 2) fail(`output-style child ${styleChild.id} is not active`)
 
-      step('importing every published subpath through the loader resolver')
-      // The loader writes `.cordis/resolve.mjs` in the profile scope; using it
-      // proves the published `exports` map, not a path under the repo.
-      const helperUrl = pathToFileURL(join(profile, '.cordis', 'resolve.mjs')).href
-      if (!existsSync(join(profile, '.cordis', 'resolve.mjs'))) fail('the loader did not create its resolver helper')
-      const resolveFromProfile = (await import(helperUrl)).default
+      step('importing every published subpath from the profile scope')
+      // Resolve from a module that lives in the profile scope: a bare
+      // `dsh-anyplugin/...` can then only come from the extracted tarball under
+      // `<profile>/node_modules`, never from the repo checkout. Do not borrow
+      // the loader's `.cordis/resolve.mjs`: when the loader takes its
+      // internal-loader path (Node with `--expose-internals`, or a Node whose
+      // builtin loader it can reach) it writes no helper, and that is a loader
+      // implementation detail rather than a package invariant.
+      const probe = join(profile, '.anyplugin-smoke-resolve.mjs')
+      writeFileSync(probe, 'export default (specifier) => import.meta.resolve(specifier)\n')
+      const resolveFromProfile = (await import(pathToFileURL(probe).href)).default
+      const installedLib = pathToFileURL(join(packageDir, 'lib')).href
       for (const subpath of PUBLISHED_SUBPATHS) {
         const url = resolveFromProfile(`dsh-anyplugin/${subpath}`)
+        if (!url.startsWith(installedLib)) {
+          fail(`dsh-anyplugin/${subpath} resolved outside the installed tarball: ${url}`)
+        }
         await import(url)
       }
 
