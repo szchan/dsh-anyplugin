@@ -157,7 +157,7 @@ if (!existsSync(composition.source)) {
   process.exit(1)
 }
 const protectedRoot = composition.config.protectedRoots?.[0] ?? root
-const tableWorktree = ticketWorktrees[0] ?? resolve(root, '.guard-no-ticket-worktree')
+const tableWorktree = ticketWorktrees[0] ?? resolve(root, '..', '.guard-no-ticket-worktree')
 
 console.log(`guard: worktrees ${ticketWorktrees.length} ticket worktree(s); protected root ${protectedRoot}`)
 if (hooksPath !== undefined) {
