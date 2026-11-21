@@ -56,7 +56,7 @@
  */
 import { readFileSync, statSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
-import { extname, isAbsolute, resolve } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as vm from 'node:vm'
 
@@ -192,6 +192,20 @@ export interface LoadModOptions {
    * the pin stores them for the loader but does not pass them through.
    */
   readonly pluginOptions?: Readonly<Record<string, unknown>>
+  /**
+   * Every plugin-relative path the grant pinned (D51). When present, the entry
+   * and every module the linker resolves must be in the set; anything else
+   * refuses with `ERR_MOD_HOST_UNGRANTED` before it is created. A mod may
+   * import any file under its root, so the set — not the import graph — is the
+   * boundary. Omitted only when a caller has already proven the bytes (the
+   * host tests).
+   */
+  readonly files?: readonly string[]
+}
+
+/** Plugin-relative POSIX path, the form a tree manifest stores (D51). */
+function relativePath(root: string, file: string): string {
+  return relative(root, file).split(sep).join('/')
 }
 
 type Registration = {
@@ -353,6 +367,21 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
     throw new ModHostError('ERR_MOD_HOST_MISSING', 'entry is not a file', { file: entryFile })
   }
 
+  // Manifest paths are already plugin-relative (D51); an absolute path is
+  // accepted for a caller holding one and normalized against the same root.
+  const granted =
+    options.files === undefined
+      ? undefined
+      : new Set(options.files.map((file) => (isAbsolute(file) ? relativePath(root, file) : file.split(sep).join('/'))))
+  const entryPath = relativePath(root, entryFile)
+  if (granted !== undefined && !granted.has(entryPath)) {
+    throw new ModHostError(
+      'ERR_MOD_HOST_UNGRANTED',
+      `the entry "${entryPath}" is not in the granted file set; a mod runs only files the grant pinned`,
+      { file: entryFile },
+    )
+  }
+
   const host = options.host
   if (host === null || typeof host !== 'object' || typeof host.dollar !== 'function') {
     throw new ModHostError(
@@ -450,6 +479,16 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
       parent: fileURLToPath(parent),
       root,
     })
+    if (granted !== undefined) {
+      const file = relativePath(root, resolved.file)
+      if (!granted.has(file)) {
+        throw new ModHostError(
+          'ERR_MOD_HOST_UNGRANTED',
+          `'${specifier}' resolves to "${file}", which the grant does not pin`,
+          { file: resolved.file },
+        )
+      }
+    }
     return createModule(resolved.file)
   }
 

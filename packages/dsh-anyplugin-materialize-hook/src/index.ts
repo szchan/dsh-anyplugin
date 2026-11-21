@@ -91,7 +91,14 @@ import {
   type UiResolveInput,
   type UiSurface,
 } from '../../dsh-anyplugin-mod-host/src/index.ts'
-import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
+import {
+  hashManifest,
+  hashManifestAtSpawn,
+  scanTree,
+  type ArtifactFile,
+  type ArtifactManifest,
+  type ArtifactMode,
+} from '../../dsh-anyplugin-trust/src/index.ts'
 
 export const name = 'anyplugin-materialize-hook'
 export const inject = ['tools']
@@ -129,15 +136,14 @@ export interface MaterialMod {
   /** Kernel budget for every registration this mod declares. */
   timeoutMs?: number
   /**
-   * D25 pin carried by the emitter: the tree digest over the authored module
-   * tree under `rootRelative`. Absent on a hand-written config, and then the
-   * mod is refused before `loadMod` — a mod is `exec`-class and default-off.
+   * D25/D51 pin carried by the emitter: one digest over the **whole plugin
+   * tree** (plugin-relative paths, `.git`/`node_modules`/plugin data excluded).
+   * Absent on a hand-written config, and then the mod is refused before
+   * `loadMod` — a mod is `exec`-class and default-off.
    */
   artifactHash?: string
   /** `file` for a one-file tree, `composite` otherwise. */
   artifactMode?: ArtifactMode
-  /** The plugin root the manifest paths are resolved from; must equal pluginRoot. */
-  artifactRoot?: string
   /** The resolved manifest: entry plus every authored file and its hash. */
   artifact?: ArtifactManifest
 }
@@ -534,22 +540,37 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     if (manifest.invocation !== mod.entry) {
       return `refused ${label}: the config no longer names the pinned entry (pinned ${String(manifest.invocation)}, config ${mod.entry})`
     }
-    // The manifest is a set of absolute paths, and loadMod is handed a *root*
-    // plus a relative entry. Pin the join: a config whose pluginRoot no longer
-    // resolves the entry to the pinned file would load bytes the grant never
-    // saw, even though every manifest file still hashes correctly.
-    const entryFile = resolve(mod.artifactRoot === undefined ? (config.pluginRoot ?? process.cwd()) : mod.artifactRoot, mod.entry)
-    if (!manifest.files.some((file) => resolve(file.path) === entryFile)) {
-      return `refused ${label}: the manifest does not pin the entry ${entryFile}; entry: ${mod.entry}`
+    // The pin is checked against the same root the loader will use. A mod has
+    // exactly one root; there is no second `artifactRoot` that could hash one
+    // tree and load another (M2).
+    const root = config.pluginRoot
+    if (root === undefined) {
+      return `refused ${label}: no pluginRoot was carried, so the pinned tree has no root to re-read; entry: ${mod.entry}`
     }
-    let current: string
-    try {
-      current = hashManifestAtSpawn(manifest)
-    } catch (error) {
-      return `refused ${label}: artifact cannot be re-hashed (${(error as Error).message}); pinned ${mod.artifactHash}; entry: ${mod.entry}`
+    // Re-list, not only re-hash (M3): a file added after the grant is invisible
+    // to a manifest re-read, and a directory symlink can add a whole subtree.
+    const scan = scanTree(root, { exclude: config.pluginData === undefined ? [] : [config.pluginData] })
+    if (!scan.ok) {
+      return `refused ${label}: the tree cannot be pinned now (${scan.refusal.path}: ${scan.refusal.reason})`
     }
-    if (current === mod.artifactHash) return undefined
-    return `refused ${label}: artifact changed since the grant (pinned ${mod.artifactHash}, now ${current}); entry: ${mod.entry}`
+    const pinned = manifest.files
+    const now = scan.files
+    const pinnedPaths = new Set(pinned.map((file) => file.path))
+    const nowPaths = new Set(now.map((file) => file.path))
+    const added = now.filter((file) => !pinnedPaths.has(file.path)).map((file) => file.path)
+    const removed = pinned.filter((file) => !nowPaths.has(file.path)).map((file) => file.path)
+    if (added.length > 0 || removed.length > 0 || pinned.length !== now.length) {
+      const detail = `${added.length === 0 ? '' : `added: ${added.slice(0, 3).join(', ')}`}${added.length === 0 || removed.length === 0 ? '' : '; '}${removed.length === 0 ? '' : `removed: ${removed.slice(0, 3).join(', ')}`}`
+      return `refused ${label}: the file set changed since the grant (pinned ${pinned.length} file(s), now ${now.length}; ${detail}); pinned ${mod.artifactHash}`
+    }
+    const current = hashManifest({ ...manifest, files: now as readonly ArtifactFile[] })
+    if (current !== mod.artifactHash) {
+      // Same paths, different bytes: name the first file that moved and both
+      // tree digests, so the refusal says what to re-review.
+      const changed = now.find((file, index) => file.sha256 !== pinned[index]?.sha256)?.path
+      return `refused ${label}: artifact changed since the grant (pinned ${mod.artifactHash}, now ${current}; first difference: ${changed ?? mod.entry}); entry: ${mod.entry}`
+    }
+    return undefined
   }
 
   /**
@@ -1517,7 +1538,12 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           pauseDollar(bridge.dollar(invocation.getStore()?.agent)) as Record<string, unknown>,
       }
       try {
-        handle = await loadMod({ root: modRoot, entry: mod.entry, host: modHost })
+        handle = await loadMod({
+          root: modRoot,
+          entry: mod.entry,
+          host: modHost,
+          files: mod.artifact === undefined ? undefined : mod.artifact.files.map((file) => file.path),
+        })
       } catch (error) {
         bridge.dispose()
         const message = (error as Error).message

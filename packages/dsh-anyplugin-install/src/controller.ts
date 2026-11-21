@@ -14,8 +14,10 @@
  * `lib/materialize/hook.js`. The lock (`dsh-anyplugin/installs@2`) carries a
  * module as one `mods` entry with its tree manifest; a granted tree reaches
  * the hook row's `mods` config from here, and the packaged materializer loads
- * it as authored (D30/D31/D34) after re-reading the pinned files. Mods need
- * Node's `--experimental-vm-modules`. A row config written by hand is refused
+ * it as authored (D30/D31/D34) after re-listing and re-hashing the plugin tree
+ * against the recorded manifest. A granted tree the lock does not record is
+ * refused as `not-recorded` (a `@1` lock boots no mod until reinstalled).
+ * Mods need Node's `--experimental-vm-modules`. A row config written by hand is refused
  * unless it carries the same pin, so the controller passes mods; nothing
  * reaches `loadMod` on the strength of a hand-edited row.
  */
@@ -130,10 +132,17 @@ export async function apply(ctx: { loader: LoaderLike; get?: (name: string) => u
     ...(grants === undefined ? {} : { grants }),
     home,
     projectDir,
+    // M1: a grant authorizes bytes; the lock records that the install saw the
+    // tree. Booting a carried mod the lock does not record would run a tree
+    // this profile never installed, so the controller requires the record.
+    requireRecordedMods: true,
   })
 
   for (const problem of report.problems) {
     log?.error?.(`${problem.plugin}: ${problem.reason}`)
+  }
+  for (const refusal of report.refusals) {
+    log?.warn?.(`${refusal.plugin}: ${refusal.reason}`)
   }
 
   // A style is a profile selection (D42): say which one won, and why a record

@@ -17,6 +17,7 @@
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { classify, modTarget, pluginIdentity, type ArtifactRow } from './classify.ts'
 import { SCOPES, type GrantRecord, type Grants, type RevokeRecord, type Scope } from './grants.ts'
+import type { TreeOptions } from './hash.ts'
 
 export type RefusalCode = 'no-grant' | 'revoked' | 'hash-mismatch' | 'unsupported'
 
@@ -128,7 +129,7 @@ function invocation(command: string, args?: readonly string[]): string {
  * (`unsupported`) is a declaration too, so it gets no row and no refusal; a
  * carried mod is exec-class and is gated like a hook.
  */
-function candidates(plugin: ClaudePluginIr): ArtifactRow[] {
+function candidates(plugin: ClaudePluginIr, options: TreeOptions = {}): ArtifactRow[] {
   const emittable = new Set<string>([
     ...plugin.hooks
       .filter((hook) => hook.command !== undefined && carried(hook.annotation.fidelity))
@@ -137,7 +138,7 @@ function candidates(plugin: ClaudePluginIr): ArtifactRow[] {
       .filter((mod) => carried(mod.annotation.fidelity))
       .map((mod) => modTarget(mod)),
   ])
-  return classify(plugin).filter((row) => emittable.has(row.target))
+  return classify(plugin, options).filter((row) => emittable.has(row.target))
 }
 
 /** What a prompt should show for one row: a command line, or a mod's tree. */
@@ -162,9 +163,9 @@ function describe(row: ArtifactRow, plugin: ClaudePluginIr): { suffix: string; f
   return { suffix: '', fields: {} }
 }
 
-export function authorize(plugin: ClaudePluginIr, grants: Grants): TrustDecision {
+export function authorize(plugin: ClaudePluginIr, grants: Grants, options: TreeOptions = {}): TrustDecision {
   const id = pluginIdentity(plugin)
-  const rows = candidates(plugin)
+  const rows = candidates(plugin, options)
   const allowed: string[] = []
   const refused: Refusal[] = []
 

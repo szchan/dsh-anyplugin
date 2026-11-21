@@ -22,6 +22,7 @@ import {
   type ArtifactManifest,
   type Grants,
 } from '../../dsh-anyplugin-trust/src/index.ts'
+import { requireRecordedMods, type InstalledMod } from '../../dsh-anyplugin-install/src/index.ts'
 
 const STATUS_MARK: Record<DiffRow['status'], string> = {
   match: 'ok  ',
@@ -105,6 +106,12 @@ export interface TransplantReport {
    * computed later; `rig list` compares it with what the tree hashes to now.
    */
   mods: { entry: string; rootRelative: string; artifactHash: string; manifest: ArtifactManifest }[]
+  /**
+   * Carried mods the lock does not record (M1). Present only when the caller
+   * supplied the record (`recorded`); an empty list means every carried tree
+   * is backed by the lock.
+   */
+  notRecorded: { name: string; reason: string }[]
 }
 
 function identityKey(surface: string, name: string): string {
@@ -159,14 +166,20 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
  */
 export function buildTransplantReport(
   ir: ClaudePluginIr,
-  options: EmitOptions & { grants?: Grants },
+  options: EmitOptions & { grants?: Grants; recorded?: readonly InstalledMod[] },
 ): TransplantReport {
   // Trust runs before emission: refused hooks become `planned` pending nodes,
   // so the emitter cannot place them and the report can name the reason. An
   // absent store means no grants, which is the default-off state (D25).
   const gated = gate(ir, options.grants ?? emptyGrants())
-  const summary = summarizeIr(gated.ir)
-  const emit = emitPlugin(gated.ir, {
+  // The lock is the install decision (M1): a caller that holds the record
+  // requires every carried tree to be in it. A grant alone is authorization,
+  // not installation.
+  const recording =
+    options.recorded === undefined ? { ir: gated.ir, refused: [] } : requireRecordedMods(gated.ir, options.recorded)
+  const installed = recording.ir
+  const summary = summarizeIr(installed)
+  const emit = emitPlugin(installed, {
     materializers: options.materializers,
     ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
     ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
@@ -185,18 +198,18 @@ export function buildTransplantReport(
   )
   const allowedTargets = new Set(gated.decision.allowed)
   const grantedHashes = new Map<string, string>()
-  for (const hook of gated.ir.hooks) {
+  for (const hook of installed.hooks) {
     const target = `hook:${hook.event}#${hook.index}`
     if (hook.artifactHash !== undefined && allowedTargets.has(target)) {
       grantedHashes.set(target, hook.artifactHash)
     }
   }
-  for (const mod of gated.ir.mods ?? []) {
+  for (const mod of installed.mods ?? []) {
     if (mod.artifactHash !== undefined && allowedTargets.has(`mod:${mod.entry}`)) {
       grantedHashes.set(`mods/${mod.entry}`, mod.artifactHash)
     }
   }
-  const faces = facesByName(gated.ir)
+  const faces = facesByName(installed)
 
   const components: ReportComponent[] = summary.entries.map((entry) => {
     const key = identityKey(entry.surface, entry.name)
@@ -224,7 +237,7 @@ export function buildTransplantReport(
     }
   })
 
-  const mods = (gated.ir.mods ?? []).flatMap((mod) => {
+  const mods = (installed.mods ?? []).flatMap((mod) => {
     if (mod.artifact === undefined || mod.artifactHash === undefined) return []
     if (!allowedTargets.has(`mod:${mod.entry}`)) return []
     if (!considered.has(`mods/${mod.entry}`) || skippedEntries.has(`mods/${mod.entry}`)) return []
@@ -233,7 +246,7 @@ export function buildTransplantReport(
 
   const emitted = components.filter((component) => component.carried).length
   const refused = components.filter((component) => component.refused !== undefined).length
-  const problems = validateIr(gated.ir)
+  const problems = validateIr(installed)
   return {
     ok: problems.length === 0,
     plugin: summary.plugin,
@@ -247,6 +260,7 @@ export function buildTransplantReport(
     },
     problems,
     mods,
+    notRecorded: recording.refused,
   }
 }
 

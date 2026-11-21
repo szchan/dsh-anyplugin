@@ -10,6 +10,7 @@
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { classify, pluginIdentity } from './classify.ts'
 import { grant, revoke, type Grants, type Scope } from './grants.ts'
+import type { TreeOptions } from './hash.ts'
 
 export class GrantTargetError extends Error {
   readonly target: string
@@ -21,9 +22,9 @@ export class GrantTargetError extends Error {
   }
 }
 
-function rowFor(plugin: ClaudePluginIr, target: string) {
+function rowFor(plugin: ClaudePluginIr, target: string, options: TreeOptions = {}) {
   const id = pluginIdentity(plugin)
-  const rows = classify(plugin)
+  const rows = classify(plugin, options)
   const row = rows.find((candidate) => candidate.target === target)
   if (row === undefined) {
     const known = rows.slice(0, 8).map((candidate) => candidate.target).join(', ')
@@ -49,9 +50,9 @@ export function grantFor(
   plugin: ClaudePluginIr,
   store: Grants,
   target: string,
-  options: { scope: Scope; grantedAt?: string; expectedHash?: string },
+  options: { scope: Scope; grantedAt?: string; expectedHash?: string; tree?: TreeOptions },
 ): Grants {
-  const { id, row } = rowFor(plugin, target)
+  const { id, row } = rowFor(plugin, target, options.tree)
   if (options.expectedHash !== undefined && row.artifactHash !== options.expectedHash) {
     throw new GrantTargetError(
       target,
@@ -70,8 +71,8 @@ export function revokeFor(
   plugin: ClaudePluginIr,
   store: Grants,
   target: string,
-  options: { scope: Scope },
+  options: { scope: Scope; tree?: TreeOptions },
 ): Grants {
-  const { id, row } = rowFor(plugin, target)
+  const { id, row } = rowFor(plugin, target, options.tree)
   return revoke(store, { plugin: id, capability: row.capability, target: row.target }, options)
 }

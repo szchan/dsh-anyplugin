@@ -84,6 +84,7 @@ const BOOLEAN_OPTIONS = new Set([
   'dry-run',
   'force',
   'allow-empty',
+  'drop-mods',
 ])
 
 function parseArgs(argv: string[]): Args {
@@ -129,7 +130,7 @@ const USAGE = `usage:
   rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
-  rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--dry-run] [--json]
+  rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--drop-mods] [--dry-run] [--json]
   rig list    [--json]
   rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
   rig disable <plugin> [--scope <s>] [--dry-run] [--json]
@@ -296,7 +297,7 @@ function lifecycleRefusal(error: unknown, json: boolean): number {
  * spelling is rejected rather than parsed as an unknown key with a value.
  */
 const LIFECYCLE_OPTIONS: Record<string, readonly string[]> = {
-  install: ['json', 'config', 'project', 'scope', 'name', 'dialect', 'force', 'allow-empty', 'dry-run', 'help'],
+  install: ['json', 'config', 'project', 'scope', 'name', 'dialect', 'force', 'allow-empty', 'drop-mods', 'dry-run', 'help'],
   list: ['json', 'config', 'project', 'help'],
   enable: ['json', 'config', 'project', 'scope', 'dry-run', 'help'],
   disable: ['json', 'config', 'project', 'scope', 'dry-run', 'help'],
@@ -485,6 +486,7 @@ async function main(argv: string[]): Promise<number> {
         ...(typeof name === 'string' ? { name } : {}),
         ...(args.options.get('force') === true ? { force: true } : {}),
         ...(args.options.get('allow-empty') === true ? { allowEmpty: true } : {}),
+        ...(args.options.get('drop-mods') === true ? { dropMods: true } : {}),
         ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
       })
       console.log(json ? JSON.stringify(result, null, 2) : formatInstall(result))

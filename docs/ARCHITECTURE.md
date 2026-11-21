@@ -309,30 +309,39 @@ plugins:
       - entry: "hooks/register.ts"
         rootRelative: "hooks"
         mode: "composite"
-        artifactHash: "sha256:bc53e143ff7368e00463080d56f64c5c3f312912cd54f3d55ab26188d4069bb5"
+        artifactHash: "sha256:19bc03c2d2ef64aec6959f9e2dc26f229cd80bcc10d555ecb7e473289e45d261"
         files:
-          - path: "/…/artifacts/claude-code/mods/0.0.1/hooks/hooks.json"
+          - path: ".claude-plugin/plugin.json"
+            sha256: "sha256:0bf777bfa4bd02b725abf5740edb658b3f6b9b8688b1aee18e82adbf2cf5d5f5"
+            bytes: "142"
+          - path: "hooks/hooks.json"
             sha256: "sha256:939f03f60edc3527e5cf5165eeae78ecac8941d6fa56bd3122970ec0c85401a3"
             bytes: "115"
-          - path: "/…/artifacts/claude-code/mods/0.0.1/hooks/support/note.ts"
-            sha256: "sha256:7cbf2cb22612789feba769db254818e08c459dd0ba23bbcc7381be5426fd0002"
-            bytes: "51"
-          - path: "/…/artifacts/claude-code/mods/0.0.1/hooks/register.ts"
+          - path: "hooks/register.ts"
             sha256: "sha256:0f8d95361739d5c3a427b75062d47220b5d5e7edf1682a0c02b83765f59a0b96"
             bytes: "310"
+          - path: "hooks/support/note.ts"
+            sha256: "sha256:7cbf2cb22612789feba769db254818e08c459dd0ba23bbcc7381be5426fd0002"
+            bytes: "51"
 ```
 
 `entry` is the authored entry file, plugin-relative; `rootRelative` is the
-directory upstream resolves it from (`hooks`, the directory of `hooks.json`);
-`files` lists every authored file under that directory with its absolute path,
-sha256 and byte length. The tree is hashed as one artifact: `mode` is `file` for
-a one-file tree and `composite` otherwise, `invocation` is `entry`, there is no
-command line, and the files are framed **in ascending path order**. That order
-is a *derived* rule, not an upstream one: D25 fixes a manifest as code and says
-order matters, and sorting the plugin-relative paths is this layer's definition
-of a tree, so two checkouts of the same bytes pin the same digest. `rig grant`
-prints the entry and that digest before asking for `--yes`; `rig revoke` takes
-the same `mod:<entry>` target and keeps working after uninstall.
+directory upstream resolves it from (`hooks`, the directory of `hooks.json`).
+The artifact is the **plugin tree**, not that subdirectory: a mod can import any
+file under its root, so every file under `pluginRoot` except `.git/`,
+`node_modules/` and the plugin data directory is code-capable and is pinned.
+`files` lists each one with its plugin-relative path, sha256 and byte length, so
+the manifest does not depend on where the tree is checked out. The tree is
+hashed as one artifact: `mode` is `file` for a one-file tree and `composite`
+otherwise, `invocation` is `entry`, there is no command line, and the files are
+framed **in ascending path order**. That order is a *derived* rule, not an
+upstream one: D25 fixes a manifest as code and says order matters, and sorting
+the plugin-relative paths is this layer's definition of a tree, so two checkouts
+of the same bytes pin the same digest. A symlink whose real path leaves the
+plugin root is refused when the tree is scanned, and a directory symlink is
+refused outright: the loader would follow code the manifest cannot name. `rig
+grant` prints the entry and that digest before asking for `--yes`; `rig revoke`
+takes the same `mod:<entry>` target and keeps working after uninstall.
 
 The reader accepts `@1` (no `mods`): a 0.1.0 lock loads as if it had no mods,
 and the next write normalizes it to `@2`. The other direction is refused rather
@@ -1016,6 +1025,11 @@ it without editing a byte. The four questions:
 | Can Node load it? | **Yes for the 505 reachable `.ts` modules**, with a host resolver; no for stock Node ESM | 579/579 `.ts` strip; the stripped entry stays 33,891 B / 1342 lines; `on('session.start')` stays line 938 |
 | Which realm? | **`node:vm` `SourceTextModule`** in a per-mod context | context has no `process`, `URL` or `$`; a same-thread import exposes Node globals |
 | Registration? | **10 sites / 8 unique**, equal to the scanner's 10/8 and 23 `$.` calls / 0 dynamic | both realms, source order |
+
+At the 2.1.329 pin the fetched `diff` module is a larger tree: **11 sites / 9
+unique events / 25 `$.` calls / 0 dynamic** (`fixtures/mods/diff/fixture.json`,
+`claude-code@2.1.329`, commit `f9e4d1e5…`). The 10/8/23 figures above are the
+S13 spike's 2.1.322 measurement and stay attributed to that pin.
 | Can one hook fire? | `session.start` calls `$.session.usage`, `$.command.register`, `$.session.messages`, then returns `next(e)`; if `usage()` has no timestamp, `$.clock.now` is inserted first | 3 calls with a `startedAt`; 4 with `usage()` returning `undefined`; that handler binds 22 `$` methods |
 
 **Resolution changes no bytes; type stripping is an in-memory, length-preserving
@@ -1296,9 +1310,14 @@ Using the existing hook entry rather than a new subpath **amends D43's
 is where the kernel lands, so 0.2.0 adds no published subpath. A mod reaches
 that row as data: the lock carries `mods` (§5, `dsh-anyplugin/installs@2`), the
 compiler emits one entry per granted module tree, and reconcile passes it to the
-materializer. Before `loadMod` the materializer re-reads the manifest's files
-and refuses a tree whose bytes moved since the grant — a hand-written `mods`
-entry without a pin is refused, never loaded (`D25`, fail closed). That refusal
+materializer. Before `loadMod` the materializer re-lists the plugin tree and
+refuses a tree whose file set or bytes moved since the grant; the same granted
+file set is handed to the linker, so a module that imports a file outside the
+manifest is refused with `ERR_MOD_HOST_UNGRANTED` instead of evaluated. A
+hand-written `mods` entry without a pin is refused, never loaded (`D25`, fail
+closed). A `mods` entry the lock does not record is refused the same way
+(`not-recorded`): a grant alone does not boot a tree, and a `@1` lock boots
+nothing until it is reinstalled as `@2`. That refusal
 is a byte check, not a consent check: a hand-edited row that recomputes a
 consistent pin is indistinguishable from the controller's, so the consent
 boundary stays the grant store plus the lock's granted record; do not hand-edit
@@ -2782,7 +2801,9 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
   **Registration.** `register(on)` has arity 1 and reaches exactly the
   scanner's 10 sites / 8 unique events (23 `$.` calls, 0 dynamic) in both
-  realms, lines 938–1294.
+  realms, lines 938–1294. At the 2.1.329 pin the fixture measures 11 sites / 9
+  unique events / 25 `$.` calls (`fixtures/mods/diff/fixture.json`); the
+  numbers here are the 2.1.322 measurement.
 
   **Fire.** With `usage()` returning a `startedAt`, `session.start` calls
   `$.session.usage`, `$.command.register` (`{ name: 'diff', ... }`) and

@@ -311,7 +311,8 @@ function validateInstalledMod(mod: InstalledMod, file: string, line: number): vo
     }
     const { path, sha256, bytes } = item as InstalledModFile
     // D51: tree paths are plugin-relative. The digest is over those paths, so
-    // an absolute path would tie the lock to one machine.
+    // an absolute path would make the same bytes hash differently at two
+    // checkouts and would tie the lock to one machine.
     if (typeof path !== 'string' || path.length === 0 || isAbsolute(path)) {
       throw new InstallsFileError('"path" must be plugin-relative, not absolute', where)
     }

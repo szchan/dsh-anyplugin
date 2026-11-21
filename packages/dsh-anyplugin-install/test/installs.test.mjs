@@ -128,8 +128,8 @@ const mod = (overrides = {}) => ({
   mode: 'composite',
   artifactHash: 'sha256:' + 'a'.repeat(64),
   files: [
-    { path: join(dir, 'artifact', 'hooks', 'register.ts'), sha256: 'sha256:' + 'b'.repeat(64), bytes: 42 },
-    { path: join(dir, 'artifact', 'hooks', 'views', 'pane.ts'), sha256: 'sha256:' + 'c'.repeat(64), bytes: 7 },
+    { path: 'hooks/register.ts', sha256: 'sha256:' + 'b'.repeat(64), bytes: 42 },
+    { path: 'hooks/views/pane.ts', sha256: 'sha256:' + 'c'.repeat(64), bytes: 7 },
   ],
   ...overrides,
 })
@@ -138,7 +138,7 @@ test('a @2 lock round-trips a mod tree: entry, root, mode, digest, and every fil
   const installs = lock(sample({ mods: [mod()] }))
   const text = serializeInstalls(installs)
   assert.match(text, /\n    mods:\n      - entry: "hooks\/register\.ts"\n        rootRelative: "hooks"\n        mode: "composite"/)
-  assert.match(text, /\n          - path: .*register\.ts"\n            sha256: "sha256:b{64}"\n            bytes: "42"/)
+  assert.match(text, /\n          - path: "hooks\/register\.ts"\n            sha256: "sha256:b{64}"\n            bytes: "42"/)
   assert.deepEqual(parseInstalls(text, 'installs.yml'), installs)
 })
 
@@ -167,14 +167,15 @@ test('a @2 lock carrying mods is refused by a 0.1.0 reader (downgrade is an erro
   )
 })
 
-test('a hand-built mod must be a tree under the record root with one hash per file', () => {
+test('a hand-built mod must be a tree, plugin-relative, with one hash per file', () => {
   const cases = [
     [{ ...mod(), entry: 'register.ts' }, /must be inside "rootRelative"/],
     [{ ...mod(), mode: 'file' }, /mode" is "file" but/],
     [{ ...mod(), mode: 'single' }, /must be "file" or "composite"/],
     [{ ...mod(), artifactHash: 'sha256:abc' }, /artifactHash" must match/],
     [{ ...mod(), files: [mod().files[0], mod().files[0]] }, /duplicate mod file/],
-    [{ ...mod(), files: [{ ...mod().files[0], path: '/elsewhere/register.ts' }, mod().files[1]] }, /outside the record's "root"/],
+    [{ ...mod(), files: [{ ...mod().files[0], path: '/elsewhere/register.ts' }, mod().files[1]] }, /must be plugin-relative, not absolute/],
+    [{ ...mod(), files: [{ ...mod().files[0], path: '../escape.ts' }, mod().files[1]] }, /normalized plugin-relative path/],
     [{ ...mod(), files: [{ ...mod().files[0], bytes: -1 }, mod().files[1]] }, /bytes" must be a non-negative integer/],
   ]
   for (const [value, reason] of cases) {
@@ -197,11 +198,10 @@ test('a marketplace source is a JSON object inside the canonical quoted string',
     text,
     /    source: "\{\\"marketplace\\":\\"local-marketplace\\",\\"entry\\":\\"local-hello\\",\\"version\\":\\"0\.1\.0\\"\}"\n/u,
   )
-  // The grammar did not move: one double-quoted JSON value per field (D23),
-  // and the @1 tag stays, because a @1 reader already accepted this value
-  // (any non-empty string) and a @2 writer would have to reject every lock
-  // this version writes. Additive at the parse level, not the schema level.
-  assert.match(text, /schema: "dsh-anyplugin\/installs@1"/u)
+  // The grammar did not move: one double-quoted JSON value per field (D23).
+  // The schema tag is @2 because a 0.1.x reader would refuse the `mods` block
+  // this writer can also emit; the value itself stays a string.
+  assert.match(text, /schema: "dsh-anyplugin\/installs@2"/u)
   assert.deepEqual(parseInstalls(text, 'installs.yml'), lock(sample({ source })))
 })
 

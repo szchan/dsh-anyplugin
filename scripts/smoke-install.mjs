@@ -128,13 +128,13 @@ function until(predicate, label, timeout = 5000) {
 /** A hook descriptor whose artifact hash the materializer re-checks (D25). */
 /** The lock/emitter pin for a mod tree: entry plus every authored file under it. */
 function pinnedModRow(treeArtifact, pluginRoot, entry) {
-  const tree = treeArtifact(pluginRoot, '', entry)
+  const tree = treeArtifact(pluginRoot, entry)
+  if (!tree.ok) throw new Error(`cannot pin ${entry}: ${tree.refusal.path}: ${tree.refusal.reason}`)
   return {
     entry,
-    artifactHash: tree.artifactHash,
-    artifactMode: tree.mode,
-    artifactRoot: pluginRoot,
-    artifact: tree.manifest,
+    artifactHash: tree.artifact.artifactHash,
+    artifactMode: tree.artifact.mode,
+    artifact: tree.artifact.manifest,
   }
 }
 

@@ -88,13 +88,13 @@ function modsEntry(dataDir, traceFile, overrides = {}) {
 
 /** The emitter's D25 pin, computed the way `treeArtifact` does at install. */
 function pinnedModRow(pluginRoot, row) {
-  const tree = treeArtifact(pluginRoot, '', row.entry)
+  const tree = treeArtifact(pluginRoot, row.entry)
+  if (!tree.ok) throw new Error(`cannot pin ${row.entry}: ${tree.refusal.path}: ${tree.refusal.reason}`)
   return {
     ...row,
-    artifactHash: tree.artifactHash,
-    artifactMode: tree.mode,
-    artifactRoot: pluginRoot,
-    artifact: tree.manifest,
+    artifactHash: tree.artifact.artifactHash,
+    artifactMode: tree.artifact.mode,
+    artifact: tree.artifact.manifest,
   }
 }
 

@@ -4,13 +4,13 @@
 import { treeArtifact } from '../../dsh-anyplugin-trust/src/index.ts'
 
 export function pinnedMod(pluginRoot, entry, extra = {}) {
-  const tree = treeArtifact(pluginRoot, '', entry)
+  const tree = treeArtifact(pluginRoot, entry)
+  if (!tree.ok) throw new Error(`cannot pin ${entry}: ${tree.refusal.path}: ${tree.refusal.reason}`)
   return {
     entry,
-    artifactHash: tree.artifactHash,
-    artifactMode: tree.mode,
-    artifactRoot: pluginRoot,
-    artifact: tree.manifest,
+    artifactHash: tree.artifact.artifactHash,
+    artifactMode: tree.artifact.mode,
+    artifact: tree.artifact.manifest,
     ...extra,
   }
 }

@@ -327,7 +327,6 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
                 entry: mod.entry,
                 artifactHash: mod.artifactHash,
                 artifactMode: mod.artifact?.mode,
-                artifactRoot: ir.plugin.root,
                 artifact: mod.artifact,
               })),
             }),

@@ -27,7 +27,7 @@ import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/in
 import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { compileEntries, readInstalls } from '../../dsh-anyplugin-install/src/index.ts'
 import { DIFF_MOD_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
-import { emptyGrants, grantFor, readGrants, writeGrants } from '../../dsh-anyplugin-trust/src/index.ts'
+import { emptyGrants, grantFor, hashFile, readGrants, writeGrants } from '../../dsh-anyplugin-trust/src/index.ts'
 import { installPlugin } from '../src/install-cli.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 import { probeLifecycleWithDsh } from '../src/oracles/dsh.ts'
@@ -36,6 +36,9 @@ const repoRoot = realpathSync(new URL('../../..', import.meta.url).pathname)
 const harness = resolveHarness()
 const modsTree = process.env.ANYPLUGIN_MODS_TREE ?? join(repoRoot, '.mods', DIFF_MOD_PIN.commit)
 const pluginRoot = join(modsTree, 'mods', 'diff')
+// The claimed graph is the fixture's, not a number typed here: 11 on() sites
+// over 9 unique events at the 2.1.329 pin.
+const fixture = JSON.parse(readFileSync(join(repoRoot, 'fixtures', 'mods', 'diff', 'fixture.json'), 'utf8'))
 const skip =
   harness !== undefined && existsSync(join(pluginRoot, '.claude-plugin', 'plugin.json'))
     ? false
@@ -90,6 +93,7 @@ test('the installed diff mod loads through the lock and its handler runs on runC
     assert.equal(mod.entry, 'hooks/register.ts')
     assert.equal(mod.rootRelative, 'hooks')
     assert.equal(readFileSync(join(pluginRoot, 'hooks', 'register.ts')).byteLength, DIFF_MOD_PIN.entryBytes)
+    assert.equal(hashFile(join(pluginRoot, 'hooks', 'register.ts')), `sha256:${DIFF_MOD_PIN.entrySha256}`)
 
     writeGrants(grantsFile, grantFor(ir, emptyGrants(), 'mod:hooks/register.ts', { scope: 'user' }))
 
@@ -103,7 +107,11 @@ test('the installed diff mod loads through the lock and its handler runs on runC
     assert.equal(recorded[0].rootRelative, 'hooks')
     assert.equal(recorded[0].mode, 'composite')
     assert.match(recorded[0].artifactHash, /^sha256:[0-9a-f]{64}$/)
-    assert.ok(recorded[0].files.length > 500, 'the whole authored hooks/ tree is pinned')
+    assert.ok(recorded[0].files.length > 500, 'the whole plugin tree is pinned')
+    assert.ok(
+      recorded[0].files.some((file) => file.path === '.claude-plugin/plugin.json'),
+      'a module can load any file in its tree, so the plugin manifest is pinned too',
+    )
     const lock = readInstalls(installed.lockFile)
     assert.deepEqual(lock.plugins[0].mods, recorded)
 
@@ -142,7 +150,8 @@ test('the installed diff mod loads through the lock and its handler runs on runC
     assert.ok(loaded, 'the materializer names the load it performed')
     assert.match(loaded.warning, /diff\/hooks\/register\.ts/)
     const loadedCount = Number(/loaded (\d+) registration\(s\)/.exec(loaded.warning)?.[1])
-    assert.equal(loadedCount, 11, 'the whole graph registers, not a partial load')
+    assert.equal(loadedCount, fixture.registrations.length, 'the whole graph registers, not a partial load')
+    assert.equal(new Set(fixture.registrations).size, fixture.scan.uniqueEvents, 'the fixture counts unique events')
 
     const starts = trace.filter((record) => record.event === 'session.start')
     assert.equal(starts.length, 1, 'session.start fires once for the load')

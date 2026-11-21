@@ -237,7 +237,7 @@ function identity(record: { dialect: string; name: string }): string {
 
 /**
  * The lock's copy of the exec pin: the manifest trust hashed at install time,
- * with absolute paths, so `hashManifest({mode, invocation: entry, command: '',
+ * with plugin-relative paths, so `hashManifest({mode, invocation: entry, command: '',
  * files})` recomputes `artifactHash` without touching the plugin again.
  */
 function recordedMods(report: TransplantReport): InstalledMod[] {
@@ -360,6 +360,13 @@ export interface InstallOptions extends PathOptions {
   force?: boolean
   /** Record a plugin whose compile emits nothing (all components refused). */
   allowEmpty?: boolean
+  /**
+   * Replace a recorded module set. A reinstall without a `mod:` grant (or with
+   * a different tree) would otherwise drop or swap the lock's `mods` record
+   * silently, which is outside D49's root/version/dataDir scope: the install
+   * names the missing grant and needs this flag, or `uninstall`, to proceed.
+   */
+  dropMods?: boolean
   dryRun?: boolean
   /**
    * Provenance override. A marketplace install passes the catalog identity so
@@ -495,14 +502,25 @@ export function installPlugin(options: InstallOptions): InstallResult {
     action = 'added'
   } else {
     const modsSame = JSON.stringify(existing.mods ?? []) === JSON.stringify(record.mods ?? [])
-    const same =
+    const otherSame =
       existing.root === record.root &&
       existing.version === record.version &&
       existing.pin === record.pin &&
-      existing.dataDir === record.dataDir &&
-      modsSame
+      existing.dataDir === record.dataDir
+    const same = otherSame && modsSame
     action = same ? 'unchanged' : 'updated'
-    if (!same && options.force !== true) {
+    if (!modsSame && options.dropMods !== true) {
+      const dropped = (existing.mods ?? []).length > 0 && (record.mods ?? []).length === 0
+      const help = dropped
+        ? 'the install has no granted module tree, so it would drop the recorded one; grant the tree and reinstall, pass --drop-mods, or uninstall first'
+        : 'grant the new tree and reinstall, pass --drop-mods, or uninstall first'
+      throw new InstallCliError(
+        'record-differs',
+        `"${id}" is already recorded at ${existing.root} with a different module set (${describeMods(existing.mods)} → ${describeMods(record.mods)})`,
+        help,
+      )
+    }
+    if (!same && options.force !== true && !(otherSame && options.dropMods === true)) {
       if (existing.root !== record.root) {
         throw new InstallCliError(
           'cross-root',
@@ -681,7 +699,13 @@ export function listPlugins(options: ListOptions = {}): ListResult {
     }
     try {
       const prepared = prepareInstalledRecord(record, { grants: state.grants })
-      const report = buildTransplantReport(prepared.ungated, { materializers, grants: state.grants })
+      const report = buildTransplantReport(prepared.ungated, {
+        materializers,
+        grants: state.grants,
+        // The lock is the install decision (M1): a 0.1-style record that
+        // grants a tree still boots nothing until the tree is in the record.
+        recorded: record.mods ?? [],
+      })
       return { ...base, report }
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).replace(/^compileEntries:\s*/, '')
@@ -711,6 +735,7 @@ export function formatList(result: ListResult): string {
         : `${plugin.effective.enabled ? 'enabled' : 'disabled'} at ${plugin.effective.scope}`
     lines.push(`  enabled scopes: ${scopes}; effective: ${effective}`)
     lines.push(`  grants: ${plugin.grants} retained`)
+    // What the lock records, with the drift the current tree implies.
     for (const mod of plugin.mods) {
       const component = plugin.report?.components.find(
         (candidate) => candidate.surface === 'mods' && candidate.name === mod.entry,
@@ -724,6 +749,15 @@ export function formatList(result: ListResult): string {
               ? `  ← no grant now, so the lock will not carry it`
               : ''
       lines.push(`  mod: ${mod.entry} (${mod.mode}, ${mod.files.length} file${mod.files.length === 1 ? '' : 's'}) ${mod.artifactHash}${drift}`)
+    }
+    // What the current tree + grants would actually emit (M1). A recorded mod
+    // is listed above; this is the compile decision, so a lock that lost its
+    // record, or a grant that moved, is visible without booting.
+    for (const mod of plugin.report?.mods ?? []) {
+      lines.push(`  mod (emitted): ${mod.entry} (${mod.manifest.mode}, ${mod.manifest.files.length} file${mod.manifest.files.length === 1 ? '' : 's'}) ${mod.artifactHash}`)
+    }
+    for (const refusal of plugin.report?.notRecorded ?? []) {
+      lines.push(`  mod not recorded: ${refusal.name} — ${refusal.reason}`)
     }
     if (plugin.error !== undefined) lines.push(`  ERROR: ${plugin.error.reason}`)
     if (plugin.report !== undefined) {

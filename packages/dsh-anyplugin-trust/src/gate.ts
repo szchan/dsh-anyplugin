@@ -17,6 +17,7 @@ import type { ClaudePluginIr, IrHook, IrMod } from '../../dsh-anyplugin-ir/src/i
 import { authorize, type Refusal, type TrustDecision } from './authorize.ts'
 import { modTarget } from './classify.ts'
 import type { Grants } from './grants.ts'
+import type { TreeOptions } from './hash.ts'
 
 export interface Gated {
   ir: ClaudePluginIr
@@ -63,8 +64,8 @@ function refusedPending(plugin: ClaudePluginIr, refused: readonly Refusal[]): Cl
   })
 }
 
-export function gate(plugin: ClaudePluginIr, grants: Grants): Gated {
-  const decision = authorize(plugin, grants)
+export function gate(plugin: ClaudePluginIr, grants: Grants, options: TreeOptions = {}): Gated {
+  const decision = authorize(plugin, grants, options)
   const byTarget = new Map(decision.refused.map((refusal) => [refusal.target, refusal]))
   const allowed = new Set(decision.allowed)
   const rows = new Map(decision.rows.map((row) => [row.target, row] as const))

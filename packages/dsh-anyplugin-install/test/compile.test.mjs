@@ -12,6 +12,7 @@ import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-c
 import { AGENT_PLUGINS_PIN, readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { emitPlugin, GROUP_PLUGIN, mangleId } from '../../dsh-anyplugin-emit/src/index.ts'
 import { compileEntries, compileReport } from '../src/index.ts'
+import { emptyGrants, grantFor } from '../../dsh-anyplugin-trust/src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const workspace = mkdtempSync(join(tmpdir(), 'anyplugin-compile-'))
@@ -264,4 +265,43 @@ test('projectDir reads the three scope files when enablements is omitted', () =>
     () => compileEntries(installs, { materializers }),
     /projectDir is required/,
   )
+})
+
+test('a mod the lock does not record is refused, not compiled, even with a grant', () => {
+  const modsRoot = join(repoRoot, 'packages', 'dsh-anyplugin-dialect-claude-code', 'test', 'fixtures', 'claude-mods')
+  const ir = readClaudePlugin(modsRoot)
+  const grants = grantFor(ir, emptyGrants(), 'mod:hooks/register.ts', { scope: 'user' })
+  const modMaterializers = {
+    ...materializers,
+    hooks: pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-materialize-hook', 'src', 'index.ts')).href,
+  }
+  // 0.1.0-shaped: the same record, no `mods` paragraph.
+  const legacy = {
+    schema: 'dsh-anyplugin/installs@1',
+    plugins: [{ ...record('mods'), root: modsRoot, pin: `${ir.pin.tool}@${ir.pin.version}` }],
+  }
+
+  const refused = compileReport(legacy, {
+    materializers: modMaterializers,
+    enablements: enabled('claude-code:mods'),
+    grants,
+    requireRecordedMods: true,
+  })
+  assert.deepEqual(refused.entries, [])
+  assert.equal(refused.refusals.length, 1)
+  assert.equal(refused.refusals[0].code, 'not-recorded')
+  assert.equal(refused.refusals[0].name, 'hooks/register.ts')
+  assert.match(refused.refusals[0].reason, /not-recorded: the lock does not record this module tree/)
+  assert.ok(refused.decisions[0].allowed.includes('mod:hooks/register.ts'))
+
+  // The install path is creating the record, so it compiles the granted tree.
+  const install = compileReport(legacy, {
+    materializers: modMaterializers,
+    enablements: enabled('claude-code:mods'),
+    grants,
+    requireRecordedMods: false,
+  })
+  assert.equal(install.entries.length, 1)
+  const hook = install.entries[0].config.find((child) => child.id.endsWith('#hook'))
+  assert.equal(hook.config.mods[0].entry, 'hooks/register.ts')
 })

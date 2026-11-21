@@ -40,6 +40,7 @@ export {
   hashManifestAtSpawn,
   hookArtifactText,
   listTreeFiles,
+  scanTree,
   shellWords,
   treeArtifact,
   type ArtifactFile,
@@ -47,6 +48,10 @@ export {
   type ArtifactMode,
   type HookArtifact,
   type TreeArtifact,
+  type TreeOptions,
+  type TreeRefusal,
+  type TreeResult,
+  type TreeScan,
 } from './hash.ts'
 export { classify, modTarget, pluginIdentity, type ArtifactRow } from './classify.ts'
 export {

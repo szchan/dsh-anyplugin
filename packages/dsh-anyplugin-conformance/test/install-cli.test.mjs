@@ -635,24 +635,24 @@ test('a granted mod installs, the lock carries its tree, and list names the entr
     const granted = run(box, ['grant', '--plugin', plugin, '--grants', grants, '--yes'])
     assert.equal(granted.status, 0, granted.stdout + granted.stderr)
     assert.match(granted.stdout, new RegExp(modTarget))
-    assert.match(granted.stdout, /entry: hooks\/register\.ts \(3 files, tree sha256:[0-9a-f]{64}\)/)
+    assert.match(granted.stdout, /entry: hooks\/register\.ts \(4 files, tree sha256:[0-9a-f]{64}\)/)
 
     const installed = run(box, ['install', plugin])
     assert.equal(installed.status, 0, installed.stdout + installed.stderr)
-    assert.match(installed.stdout, /mod: hooks\/register\.ts \(composite, 3 files\) sha256:[0-9a-f]{64}/)
+    assert.match(installed.stdout, /mod: hooks\/register\.ts \(composite, 4 files\) sha256:[0-9a-f]{64}/)
     const lock = readInstalls(box.lock)
     assert.equal(lock.schema, 'dsh-anyplugin/installs@2')
     assert.deepEqual(lock.plugins[0].mods.map((mod) => [mod.entry, mod.rootRelative, mod.mode]), [
       ['hooks/register.ts', 'hooks', 'composite'],
     ])
-    assert.equal(lock.plugins[0].mods[0].files.length, 3)
+    assert.equal(lock.plugins[0].mods[0].files.length, 4)
     assert.match(lock.plugins[0].mods[0].artifactHash, /^sha256:[0-9a-f]{64}$/)
 
     const listed = JSON.parse(run(box, ['list', '--json']).stdout)
     assert.deepEqual(listed.plugins[0].mods.map((mod) => mod.entry), ['hooks/register.ts'])
     assert.equal(listed.plugins[0].report.totals.emitted, 1)
     const text = run(box, ['list']).stdout
-    assert.match(text, /mod: hooks\/register\.ts \(composite, 3 files\) sha256:[0-9a-f]{64}/)
+    assert.match(text, /mod: hooks\/register\.ts \(composite, 4 files\) sha256:[0-9a-f]{64}/)
   } finally {
     cleanup(box.dir)
   }
@@ -690,6 +690,39 @@ test('revoke works after uninstall, when the plugin directory is already gone', 
     assert.match(revoked.stdout, new RegExp(modTarget))
     assert.match(revoked.stdout, /revoke written at user scope/)
     assert.match(revoked.stdout, /REVOKED \(artifact unavailable\)/)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('list refuses a mod the lock does not record, even with a matching grant', () => {
+  const box = sandbox()
+  try {
+    const plugin = copyFixture(modsFixture, box.dir, 'mods')
+    const grants = join(box.home, 'anyplugin', 'grants.yml')
+    assert.equal(run(box, ['grant', '--plugin', plugin, '--grants', grants, '--yes']).status, 0)
+    assert.equal(run(box, ['install', plugin]).status, 0)
+
+    // A genuine 0.1.0 lock: same record, no `mods` paragraph. The grant is
+    // still in grants.yml, so only the lock can decide whether the tree boots.
+    const lines = readFileSync(box.lock, 'utf8').split('\n')
+    const at = lines.findIndex((line) => line.startsWith('    mods:'))
+    assert.notEqual(at, -1, 'the installed lock should carry a mods block')
+    let end = at + 1
+    while (end < lines.length && lines[end].startsWith('      ')) end += 1
+    const legacy = [...lines.slice(0, at), ...lines.slice(end)]
+      .join('\n')
+      .replace('schema: "dsh-anyplugin/installs@2"', 'schema: "dsh-anyplugin/installs@1"')
+    writeFileSync(box.lock, legacy)
+
+    const listed = run(box, ['list'])
+    assert.equal(listed.status, 0, listed.stdout + listed.stderr)
+    assert.match(listed.stdout, /mod not recorded: hooks\/register\.ts — not-recorded:/)
+    assert.doesNotMatch(listed.stdout, /mod \(emitted\): hooks\/register\.ts/)
+
+    const json = JSON.parse(run(box, ['list', '--json']).stdout)
+    assert.deepEqual(json.plugins[0].mods, [])
+    assert.equal(json.plugins[0].report.notRecorded[0].name, 'hooks/register.ts')
   } finally {
     cleanup(box.dir)
   }

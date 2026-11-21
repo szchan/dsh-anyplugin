@@ -15,8 +15,11 @@
  * also the target, so a move is a new target. The hash, never the path or mtime,
  * is what the grant actually pins.
  *
- * A mod is a tree: its row pins every authored file under the entry's
- * directory, in sorted path order (the derived rule documented in `hash.ts`).
+ * A mod is an artifact over the **whole plugin tree** (D51): a mod may import
+ * any file under its root, so every authored file is code-capable and every
+ * one is pinned, in ascending plugin-relative path order (the derived rule
+ * documented in `hash.ts`). `.git`, `node_modules` and the plugin's data
+ * directory are excluded; a symlink that leaves the root is a typed refusal.
  * Mods the host refuses (`unsupported` annotation) are declarations, not
  * artifacts; they get no row, exactly like a planned hook.
  */
@@ -33,6 +36,7 @@ import {
   type ArtifactManifest,
   type ArtifactMode,
   type HookArtifact,
+  type TreeOptions,
 } from './hash.ts'
 import { EXEC_CAPABILITY } from './grants.ts'
 
@@ -117,7 +121,7 @@ function modUnsupported(root: string, mod: IrMod): string | undefined {
  * command (prompt/agent handlers) and mods the host refuses have nothing to
  * run and are not rows.
  */
-export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
+export function classify(plugin: ClaudePluginIr, options: TreeOptions = {}): ArtifactRow[] {
   const rows: ArtifactRow[] = []
   const root = plugin.plugin.root
 
@@ -138,7 +142,9 @@ export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
   for (const mod of plugin.mods ?? []) {
     if (!carried(mod.annotation.fidelity)) continue
     const unsupported = modUnsupported(root, mod)
-    if (unsupported !== undefined) {
+    const tree = unsupported === undefined ? treeArtifact(root, mod.entry, options) : undefined
+    const refusal = unsupported ?? (tree !== undefined && !tree.ok ? `${tree.refusal.path}: ${tree.refusal.reason}` : undefined)
+    if (refusal !== undefined || tree === undefined || !tree.ok) {
       // Nothing could be read, so nothing is pinned. The refusal path uses
       // `code: 'unsupported'` before the hash matters; keeping a well-formed
       // manifest means every row has the same shape.
@@ -148,20 +154,19 @@ export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
         target: modTarget(mod),
         artifactHash: hashManifest(manifest),
         manifest,
-        sourcePath: `${mod.rootRelative}/${entryWithin(mod)}`,
+        sourcePath: mod.entry,
         mode: 'text',
-        unsupported,
+        unsupported: refusal ?? 'the tree could not be pinned',
       })
       continue
     }
-    const tree = treeArtifact(root, mod.rootRelative, mod.entry)
     rows.push({
       capability: EXEC_CAPABILITY,
       target: modTarget(mod),
-      artifactHash: tree.artifactHash,
-      manifest: tree.manifest,
-      sourcePath: `${mod.rootRelative}/${entryWithin(mod)}`,
-      mode: tree.mode,
+      artifactHash: tree.artifact.artifactHash,
+      manifest: tree.artifact.manifest,
+      sourcePath: mod.entry,
+      mode: tree.artifact.mode,
     })
   }
 
