@@ -10,11 +10,14 @@
  * the agent that is running this invocation.
  *
  * What is bridged is the surface a real mod (the pinned `diff` graph) calls:
- * clock, fs, store, settings, env, session, command and telemetry. The two
- * namespaces that would break the trust boundary are refused with stable,
- * catchable codes instead of returning `undefined`:
+ * clock, fs, store, settings, env, session, command, telemetry and the six
+ * headless `ui` members. The two namespaces that would break the trust
+ * boundary are refused with stable, catchable codes instead of returning
+ * `undefined`:
  *
- * - `ui.*`: the element runtime does not exist in this host (D32).
+ * - `ui.ask`: the pin declares it, but its answer comes from a person and this
+ *   host has no interaction to carry one (D32 leaves the surface open); the
+ *   other `ui` members are served headless by `ui.ts`.
  * - `process.run`: exec grants are pinned to artifact bytes (D25); a mod is
  *   content-class and cannot turn a `$` call into an unpinned exec.
  *
@@ -47,11 +50,14 @@ import { isAbsolute, join, resolve } from 'node:path'
 
 import { codeOf, describeValue, messageOf } from './errors.ts'
 import { isWithin } from './resolve.ts'
+import { createUiSink, type ModUiSink, type UiRenderRequest } from './ui.ts'
 
 /** Stable codes a bridged call refuses with; the reason always names the site. */
 export type ModBridgeErrorCode =
-  /** `$.ui.*`: the element runtime is not part of this host (D32). */
+  /** `$.ui.ask`: the pin declares a person's answer, and this host has none. */
   | 'ERR_MOD_HOST_UI_UNSUPPORTED'
+  /** `$.ui.resolve`: the argument is not the pinned `ResolveInput` (surface + component). */
+  | 'ERR_MOD_HOST_UI_INPUT'
   /** `$.process.run`: exec is pinned to the artifact, not to `$` (D25). */
   | 'ERR_MOD_HOST_EXEC_UNSUPPORTED'
   /** A path that is empty, not a string, or carries a NUL. */
@@ -170,27 +176,33 @@ export interface ModBridgeOptions {
   readonly telemetry?: (record: ModBridgeTelemetryRecord) => void
   /** Warning channel for reported-once omissions and refused sinks. */
   readonly warn?: (message: string) => void
+  /**
+   * The headless render sink (#75): `render` runs the mod's `ui.render`
+   * chain for one pane, `onChange` is called whenever the recorded state
+   * changes (the materializer registers its tool from it). Without `render`
+   * a pane holds the engine's own default (`{ type: 'engine', ref: 0 }`) —
+   * the same tree an upstream chain returns when every hook declines.
+   */
+  readonly ui?: {
+    readonly render?: (request: UiRenderRequest) => unknown | Promise<unknown>
+    readonly onChange?: () => void
+  }
 }
 
 export interface ModBridge {
   /** A fresh `$` for one handler invocation, or a throw after `dispose()`. */
   dollar(agent?: unknown): Record<string, unknown>
-  /** Releases command registrations and timers; idempotent. */
+  /**
+   * The plugin's recorded panes, status and log lines. The `mod_ui` tool
+   * reads this outside `$`; it is the same sink the handler calls.
+   */
+  readonly ui: ModUiSink
+  /** Releases command registrations, timers and recorded panes; idempotent. */
   dispose(): void
 }
 
 const READ_LIMIT = 4 * 1024 * 1024
 const STORE_FILE = '.anyplugin-store.json'
-const UI_METHODS = [
-  'invalidate',
-  'status',
-  'log',
-  'open',
-  'close',
-  'resolve',
-] as const
-type UiMethod = (typeof UI_METHODS)[number]
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
 
@@ -378,6 +390,17 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     reported.add(key)
     warn(`${label}: ${message}`)
   }
+
+  // One sink per plugin load: panes, revisions, status and log lines are load
+  // state (the pinned surface keeps them across handler invocations), while
+  // each `$` still rebuilds the methods that reach it.
+  const uiSink = createUiSink({
+    plugin,
+    ...(options.ui?.render === undefined ? {} : { render: options.ui.render }),
+    ...(options.ui?.onChange === undefined ? {} : { onChange: options.ui.onChange }),
+    warn: (message: string) => reportOnce(`ui:${message}`, message),
+    refuse: fail,
+  })
 
   let root: string | undefined
   let rootReason: string | undefined
@@ -826,20 +849,20 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
   const dollar = (agent?: unknown): Record<string, unknown> => {
     if (disposed) fail('ERR_MOD_HOST_DISPOSED', 'the bridge was disposed; no further handler can run')
     const cwd = sessionCwd(agent)
-    const ui = Object.fromEntries(
-      UI_METHODS.map((method: UiMethod) => {
-        const refuse = (): never =>
-          fail(
-            'ERR_MOD_HOST_UI_UNSUPPORTED',
-            `$.ui.${method} is refused: the element runtime (D32) is not implemented on this host, so a pane, status line, log, or invalidation has nowhere to land`,
-          )
-        // `invalidate`, `status` and `log` are void in the pinned d.ts and
-        // throw synchronously; `open`, `close` and `resolve` are Promise-returning
-        // and reject.
-        const refuseAsync = async (): Promise<never> => refuse()
-        return [method, method === 'open' || method === 'close' || method === 'resolve' ? refuseAsync : refuse]
-      }),
-    ) as Record<string, unknown>
+    // The pinned `$ui` surface (#75): the same sink methods every invocation,
+    // so a pane opened in `session.start` is still there for a later
+    // `ui.render` hook. `invalidate`, `status` and `log` are void and throw
+    // their typed refusals synchronously; `open`, `close` and `resolve` are
+    // Promise-returning (`ask` rejects, everything else resolves).
+    const ui: Record<string, unknown> = {
+      invalidate: (event: unknown): void => uiSink.invalidate(event),
+      status: (text: unknown): void => uiSink.status(text),
+      log: (text: unknown, logOptions?: unknown): void => uiSink.log(text, logOptions),
+      open: (pane: unknown): Promise<unknown> => uiSink.open(pane),
+      close: (pane: unknown): Promise<void> => uiSink.close(pane),
+      resolve: (input: unknown): unknown => uiSink.resolve(input),
+      ask: () => uiSink.ask(),
+    }
     return {
       session: {
         id: () => sessionId(agent),
@@ -884,9 +907,11 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
 
   return {
     dollar,
+    ui: uiSink,
     dispose: (): void => {
       if (disposed) return
       disposed = true
+      uiSink.dispose()
       for (const dispose of commandDisposers.values()) {
         try {
           dispose()

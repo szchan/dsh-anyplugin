@@ -158,11 +158,18 @@ test('bridge omissions, freshness, timers, dispose and refusals are observable',
     )
     assert.equal(registered.get('unit'), 'live')
 
-    for (const method of ['invalidate', 'status', 'log', 'open', 'close', 'resolve']) {
-      await assert.rejects(async () => {
-        await first.ui[method]({})
-      }, (error) => error.code === 'ERR_MOD_HOST_UI_UNSUPPORTED', `ui.${method}`)
-    }
+    // #75: the six ui members are served headless; ask is the one typed
+    // refusal left in the namespace (the pin asks a person, and this host has
+    // no interaction to carry the answer).
+    first.ui.invalidate('ui.render')
+    first.ui.status('unit')
+    first.ui.log('unit')
+    assert.deepEqual(await first.ui.open({ id: 'unit' }), { isPlaced: true })
+    assert.equal(bridge.ui.snapshot().panes.length, 1)
+    await first.ui.close({ id: 'unit' })
+    assert.equal(bridge.ui.snapshot().panes.length, 0)
+    assert.equal(typeof first.ui.resolve({ surface: 'terminal', component: 'Pane' }), 'object')
+    await assert.rejects(first.ui.ask(), (error) => error.code === 'ERR_MOD_HOST_UI_UNSUPPORTED')
     await assert.rejects(first.process.run(['true']), (error) => error.code === 'ERR_MOD_HOST_EXEC_UNSUPPORTED')
 
     bridge.dispose()

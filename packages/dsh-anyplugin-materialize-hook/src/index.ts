@@ -76,7 +76,10 @@ import {
   commandRegistryFromContext,
   createModBridge,
   loadMod,
+  uiRenderChain,
   type LoadedMod,
+  type ModUiSink,
+  type UiRenderRequest,
 } from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
@@ -1145,6 +1148,114 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   let chainsForSeams: (event: string) => HandlerRegistration[] = (event) =>
     lifecycleRegistrations.get(event) ?? []
 
+  // #75: the headless render sink. A mod's `ui.*` members record a validated
+  // element tree instead of refusing; `readUi` is the one reader, and the tool
+  // carrying it exists only while a pane does. Nothing here draws: no terminal,
+  // no ANSI, no client plumbing — the tree is data, and this is where a test
+  // and a debug tool read it.
+  const uiSinks: ModUiSink[] = []
+  let uiToolDisposer: (() => void) | undefined
+  let warnedNoTools = false
+
+  type UiTools = { register: (tool: unknown) => unknown }
+
+  const toolsOf = (): UiTools | undefined => {
+    const direct = (ctx as { tools?: unknown }).tools
+    if (direct !== undefined && typeof (direct as UiTools).register === 'function') return direct as UiTools
+    const get = (ctx as { get?: unknown }).get
+    if (typeof get !== 'function') return undefined
+    const viaGet = (get as (name: string) => unknown)('tools')
+    if (viaGet !== undefined && typeof (viaGet as UiTools).register === 'function') return viaGet as UiTools
+    return undefined
+  }
+
+  const readUi = (args: unknown): Record<string, unknown> => {
+    const requested = isRecord(args) && typeof args.pane === 'string' ? args.pane : undefined
+    const panes: Record<string, unknown>[] = []
+    const logs: Record<string, unknown>[] = []
+    const refusals: Record<string, unknown>[] = []
+    const statuses: string[] = []
+    for (const sink of uiSinks) {
+      const snapshot = sink.snapshot()
+      for (const pane of snapshot.panes) {
+        if (requested !== undefined && pane.id !== requested) continue
+        panes.push({
+          plugin: snapshot.plugin,
+          id: pane.id,
+          title: pane.title,
+          revision: pane.revision,
+          isPlaced: pane.isPlaced,
+          placement: pane.placement,
+          ...(pane.tree === undefined ? {} : { tree: pane.tree }),
+          ...(pane.refusal === undefined ? {} : { refusal: pane.refusal }),
+        })
+      }
+      if (snapshot.status !== undefined) statuses.push(`${snapshot.plugin}: ${snapshot.status}`)
+      for (const entry of snapshot.logs) logs.push({ plugin: snapshot.plugin, text: entry.text, to: entry.to })
+      for (const refusal of snapshot.refusals) refusals.push({ plugin: snapshot.plugin, refusal })
+    }
+    return {
+      kind: 'mod-ui-headless',
+      panes,
+      ...(statuses.length === 0 ? {} : { status: statuses.join(' | ') }),
+      logs,
+      refusals,
+    }
+  }
+
+  const syncUiTool = (): void => {
+    const anyPane = uiSinks.some((sink) => sink.snapshot().panes.length > 0)
+    if (!anyPane) {
+      if (uiToolDisposer !== undefined) {
+        uiToolDisposer()
+        uiToolDisposer = undefined
+      }
+      return
+    }
+    if (uiToolDisposer !== undefined) return
+    const tools = toolsOf()
+    if (tools === undefined) {
+      if (!warnedNoTools) {
+        warnedNoTools = true
+        warn(`anyplugin mod ${config.plugin ?? 'mod'}: the tools service is absent, so mod_ui is not registered`)
+      }
+      return
+    }
+    const registered = tools.register({
+      name: 'mod_ui',
+      description:
+        'Read the headless render sink of the loaded mods: every open pane and the latest validated element tree.',
+      parameters: {
+        type: 'object',
+        properties: { pane: { type: 'string', description: 'only this pane id' } },
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string' },
+            panes: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            status: { type: 'string' },
+            logs: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            refusals: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          },
+          additionalProperties: true,
+        },
+        render: () => [],
+      },
+      execute: async (args: unknown): Promise<unknown> => readUi(args),
+    })
+    uiToolDisposer = typeof registered === 'function' ? (registered as () => void) : undefined
+  }
+
+  ctx.effect(() => () => {
+    if (uiToolDisposer !== undefined) {
+      uiToolDisposer()
+      uiToolDisposer = undefined
+    }
+  })
+
   if (modsMode) {
     const classicByEvent = (event: string): HandlerRegistration[] => {
       if (event === 'PreToolUse') return preRegistrations
@@ -1159,10 +1270,12 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       (agent as { session?: unknown } | undefined)?.session
 
     for (const mod of mods) {
-      // One bridge (and therefore one command registry slice, timer set and
-      // telemetry attribution) per mod: a duplicate command names the mod that
-      // collided, and unloading one mod never disposes another's command. The
-      // `$` itself is still rebuilt per invocation.
+      // One bridge (and therefore one command registry slice, timer set,
+      // render sink and telemetry attribution) per mod: a duplicate command
+      // names the mod that collided, and unloading one mod never disposes
+      // another's command or panes. The `$` itself is still rebuilt per
+      // invocation.
+      let handle: LoadedMod | undefined
       const bridge = createModBridge({
         plugin: `${pluginName}/${mod.entry}`,
         ...(config.pluginData === undefined ? {} : { dataDir: config.pluginData }),
@@ -1174,12 +1287,22 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         telemetry: (record) => {
           warn(`anyplugin mod ${record.plugin}: telemetry.${record.kind} ${textify(record.entry)}`)
         },
+        ui: {
+          // The sink records; the render chain below is where a mod's own
+          // `ui.render` hooks draw into it. The chain runs the authored
+          // registrations (the kernel adapter does not map ui.render — it is
+          // not an event, it is a `$` member), in source order, and a hook
+          // that declines with next(e) hands the next hook its chance.
+          render: (request: UiRenderRequest): unknown =>
+            handle === undefined ? undefined : uiRenderChain(handle.registrations, request),
+          onChange: () => syncUiTool(),
+        },
       })
+      uiSinks.push(bridge.ui)
       const modHost = {
         dollar: async (): Promise<Record<string, unknown>> =>
           pauseDollar(bridge.dollar(invocation.getStore()?.agent)) as Record<string, unknown>,
       }
-      let handle: LoadedMod
       try {
         handle = await loadMod({ root: modRoot, entry: mod.entry, host: modHost })
       } catch (error) {

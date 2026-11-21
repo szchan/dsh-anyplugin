@@ -57,11 +57,17 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 - `$` bridge (ticket #46; measured by S15): across the five pinned mods the
   bridge is asked for 69 call sites / 30 `namespace.method` pairs in 11
-  namespaces. Sixteen methods are served; the six `ui.*` methods,
-  `process.run` and `settings.read` are typed refusals; `session.identity`,
-  `session.root`, `fs.ancestors`, `ui.ask`, `vcs.detect` and `vcs.diff` are
-  absent (`ui.ask` and `vcs.*` have no member at all, so they throw
-  `TypeError` rather than a typed refusal). `fs` resolves against the
+  namespaces. Twenty-two methods are served; the six `ui.*` members
+  `open/close/invalidate/log/status/resolve` are served through the headless
+  render sink (#75): the pinned element tree is validated against the pinned
+  schema, the latest revision per pane is kept, and one `mod_ui` tool —
+  registered only while a pane is open — reads the panes back.
+  `process.run`, `settings.read` and `ui.ask` are typed refusals (`ui.ask` is
+  declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a
+  person, which this host has no interaction for); `session.identity`,
+  `session.root`, `fs.ancestors`, `vcs.detect` and `vcs.diff` are absent
+  (`vcs.*` has no member, so it throws `TypeError` rather than a typed
+  refusal). `fs` resolves against the
   invocation session's cwd (absolute as written), `store` is rooted at the
   plugin data dir and confined on `realpath`, and `settings.read` serves only a
   host merged snapshot. `session.messages()` carries the tool-result turn in
