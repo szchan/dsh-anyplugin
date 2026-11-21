@@ -30,8 +30,11 @@ jobs:
           cache: npm
       - run: npm ci
 
-      # The shape of the tree is a gate, not a review comment.
+      # The shape of the tree is a gate, not a review comment, and the
+      # capability map must keep pointing at things that exist.
       - run: npm run check:arch
+      - run: npm run check:features
+      - run: npm run check:decisions
 
       # The upstream mods table scans and loads every mod that ships under
       # `mods/` at the pinned Claude Code commit. Fetching is explicit, like
