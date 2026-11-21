@@ -12,7 +12,8 @@
  * *harness* cordis. Two copies of cordis in one process give two `Service`
  * base classes, and the registry would never see the context that owns it.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { EntryOptions } from '../../dsh-anyplugin-emit/src/index.ts'
@@ -629,6 +630,250 @@ export async function probeLifecycleWithDsh(options: DshLifecycleProbeOptions): 
       )
     }
     return { dataDir, events }
+  } finally {
+    try {
+      await Promise.resolve(loaderFiber?.dispose?.())
+      await sleep(20)
+    } catch {
+      // Teardown failures must not mask the assertion that follows.
+    }
+  }
+}
+
+/** One model request as the stub adapter saw it. */
+export interface DshModelCall {
+  model?: string
+  reasoningEffort?: string
+  /** `system`/`user`/`assistant` blocks, concatenated text per role. */
+  messages: Array<{ role: string; text: string }>
+  tools: string[]
+}
+
+export interface DshAgentInvocationOptions {
+  /** Directory holding the harness's `@deepseek-ai/*` packages. */
+  harnessDir: string
+  /** The group entry the emitter produced, carrying the agents child. */
+  entry: EntryOptions
+  /** Scoped tool name, `<plugin>:<agent>`. */
+  toolName: string
+  /** The task the parent passes; used to find the child's first request. */
+  task: string
+  /**
+   * Turn the child's first N model requests into calls to an `s16-progress`
+   * probe tool instead of an answer (the maxTurns face). The tool is
+   * registered by this probe; N+1 requests prove no turn cap was applied.
+   */
+  toolLoop?: number
+  /** How long to wait for boot, the tool and the child, in milliseconds. */
+  timeoutMs?: number
+}
+
+export interface DshAgentInvocationObservation {
+  /** The child's first model request: exactly what the harness sent it. */
+  child: DshModelCall
+  /** The child session header's cwd, for the isolation face. */
+  childCwd?: string
+  /** How the child settled. */
+  stopReason?: string
+  /** Every model request the child made, in order (the maxTurns face counts them). */
+  childRequests: number
+}
+
+/**
+ * Invoke one materialized agent through the *public* tool pipeline and return
+ * the child's first model request.
+ *
+ * S16 needs this for two reasons the `probeWithDsh` catalog probe cannot serve:
+ * a skill preload only exists in the child's prompt, and a turn cap would show
+ * up in the number of child requests. The adapter is a stub (offline, keyless),
+ * but the agent loop, tool pipeline, subagent runtime and fork provider are the
+ * pinned harness's own; nothing here inspects our config.
+ */
+export async function probeAgentInvocationWithDsh(
+  options: DshAgentInvocationOptions,
+): Promise<DshAgentInvocationObservation> {
+  const timeoutMs = options.timeoutMs ?? 10_000
+  const { Context } = await loadFromHarness(options.harnessDir, 'cordis/lib/index.js')
+  const Loader = (await loadFromHarness(options.harnessDir, 'cordis-plugin-loader/lib/index.js')).default
+  const SkillRegistry = (await loadFromHarness(options.harnessDir, 'dsh-skill/lib/index.js')).default
+  const JsonlPersistence = await loadFromHarness(options.harnessDir, 'dsh-session-persistence-jsonl/lib/index.js')
+  const SessionStore = (await loadFromHarness(options.harnessDir, 'dsh-session/lib/index.js')).default
+  const SessionProjections = (await loadFromHarness(options.harnessDir, 'dsh-session-projection/lib/index.js')).default
+  const SystemPrompt = (await loadFromHarness(options.harnessDir, 'dsh-system-prompt/lib/index.js')).default
+  const ToolsService = (await loadFromHarness(options.harnessDir, 'dsh-tools/lib/index.js')).default
+  const AgentRegistry = (await loadFromHarness(options.harnessDir, 'dsh-agent/lib/index.js')).default
+  const { default: LlmRuntime, LlmAdapter } = await loadFromHarness(options.harnessDir, 'dsh-llm/lib/index.js')
+  const AgentLoop = (await loadFromHarness(options.harnessDir, 'dsh-agent-loop/lib/index.js')).default
+  const nativeExecutor = await loadFromHarness(options.harnessDir, 'dsh-tool-executor-native/lib/index.js')
+  const SubagentRuntime = (await loadFromHarness(options.harnessDir, 'dsh-subagent/lib/index.js')).default
+  // The agents materializer defaults to `spawn` (the adapter-owned child),
+  // so this probe mounts that provider rather than `fork`; the observable
+  // face is the child's first request, which both providers produce.
+  const SpawnProvider = await loadFromHarness(options.harnessDir, 'dsh-subagent-spawn-in-process/lib/index.js')
+  const FileSystem = (await loadFromHarness(options.harnessDir, 'dsh-fs-local/lib/index.js')).default
+  const WorkingDirectory = (await loadFromHarness(options.harnessDir, 'dsh-working-directory/lib/index.js')).default
+
+  const calls: DshModelCall[] = []
+  let childSessionId: string | undefined
+  let loopRequests = options.toolLoop ?? 0
+  class RecordingAdapter extends LlmAdapter {
+    async resolveModel(provider: string, model: string): Promise<unknown> {
+      return {
+        provider,
+        id: model,
+        name: model,
+        context: { contextWindow: 8192 },
+        defaultMaxTokens: 1024,
+        // Advertise the levels a real provider might have; the S16 assertion
+        // for effort is that the *id space* is the provider's, not Claude's.
+        reasoning: {
+          efforts: [
+            { id: 'low', name: 'Low' },
+            { id: 'medium', name: 'Medium' },
+            { id: 'high', name: 'High' },
+          ],
+        },
+      }
+    }
+
+    async *stream(streamOptions: {
+      model?: string
+      reasoningEffort?: string
+      messages?: Array<{ role: string; content?: Array<{ type: string; text?: string }> }>
+      tools?: Array<{ name: string }>
+    }): AsyncGenerator<unknown> {
+      calls.push({
+        model: streamOptions.model,
+        reasoningEffort: streamOptions.reasoningEffort,
+        messages: (streamOptions.messages ?? []).map((message) => ({
+          role: message.role,
+          text: (message.content ?? [])
+            .filter((block) => block.type === 'text')
+            .map((block) => block.text)
+            .join('\n'),
+        })),
+        tools: (streamOptions.tools ?? []).map((tool) => tool.name),
+      })
+      if (loopRequests > 0) {
+        loopRequests -= 1
+        for (const chunk of toolCallChunks({
+          id: `s16_loop_${calls.length}`,
+          name: 's16-progress',
+          arguments: '{}',
+        })) {
+          yield chunk
+        }
+        return
+      }
+      for (const chunk of textChunks('stub answer')) yield chunk
+    }
+  }
+
+  const ctx = new Context()
+  const loaderFiber = ctx.plugin(Loader, { baseUrl: loaderBaseUrl(options.harnessDir) })
+  ctx.plugin(SkillRegistry, {})
+  ctx.plugin(SessionStore)
+  // The spawn provider requires a persistence backend; the files are throwaway.
+  ctx.plugin(JsonlPersistence, { root: mkdtempSync(join(tmpdir(), 'anyplugin-agent-faces-sessions-')), compression: 'none' })
+  ctx.plugin(SessionProjections)
+  ctx.plugin(SystemPrompt)
+  ctx.plugin(ToolsService, {})
+  ctx.plugin(AgentRegistry)
+  ctx.plugin(nativeExecutor, {})
+  ctx.plugin(FileSystem, { cwd: process.cwd() })
+  ctx.plugin(WorkingDirectory, { defaultDirectory: process.cwd() })
+  ctx.plugin(SubagentRuntime, {})
+  ctx.plugin(SpawnProvider, { providerName: 'spawn' })
+  ctx.plugin(LlmRuntime)
+  ctx.plugin(AgentLoop)
+
+  try {
+    for (const service of ['sessions', 'sessionProjections', 'systemPrompt', 'tools', 'agents', 'subagents']) {
+      await until(() => Boolean(ctx.get(service)), timeoutMs, `${service} service`)
+    }
+    ctx.llm.registerAdapter(['fake'], new RecordingAdapter())
+    await until(() => Boolean(ctx.get('llm')), timeoutMs, 'llm service')
+    await until(() => Boolean(ctx.get('agentLoop')), timeoutMs, 'agent loop service')
+    if ((options.toolLoop ?? 0) > 0) {
+      // The child can only loop if it has a tool to call. This is the probe's
+      // own tool, not the agent's; registering it changes no face under test.
+      ctx.tools.register({
+        name: 's16-progress',
+        description: 'anyplugin S16 probe tool; returns immediately',
+        parameters: { type: 'object', properties: {}, additionalProperties: true },
+        output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: () => [] },
+        execute: async () => ({ progress: true }),
+      })
+    }
+
+    // The root cwd is the process cwd; the S16 isolation observation compares
+    // the child header against it. No fixture path is used as a directory.
+    const root = await ctx.agentLoop.create(
+      'anyplugin-agent-faces-root',
+      { provider: 'fake', model: 'fake-1' },
+      { cwd: process.cwd() },
+    )
+
+    const childCreated = new Promise<any>((resolve) => {
+      const timer = setTimeout(() => {
+        off()
+        resolve(undefined)
+      }, timeoutMs)
+      const off = ctx.on('agent/created', (payload: { agent?: any }) => {
+        const agent = payload?.agent
+        if (agent?.session?.header?.parentSession !== root.id) return
+        childSessionId = agent.id
+        clearTimeout(timer)
+        off()
+        resolve(agent)
+      })
+    })
+    const childEnded = new Promise<Record<string, unknown> | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        off()
+        resolve(undefined)
+      }, timeoutMs)
+      const off = ctx.on('subagent/end', (payload: Record<string, unknown>) => {
+        if (payload.parentSessionId !== root.id) return
+        clearTimeout(timer)
+        off()
+        resolve(payload)
+      })
+    })
+
+    await ctx.loader.create(options.entry)
+    await ctx.loader.await()
+    await until(() => ctx.tools.schemas().some((schema: { name?: string }) => schema.name === options.toolName), timeoutMs, options.toolName)
+
+    const batch = await ctx.tools.execute({
+      calls: [
+        {
+          type: 'tool-call',
+          id: 'call_agent_faces',
+          name: options.toolName,
+          arguments: JSON.stringify({ prompt: options.task }),
+        },
+      ],
+      agent: root,
+      signal: new AbortController().signal,
+    })
+    const result = batch.results?.[0]?.result
+    if (result?.isError === true) throw new Error(`agent invocation failed: ${JSON.stringify(result.content)}`)
+    const child = await childCreated
+    if (child === undefined) throw new Error(`dsh agent-faces probe: ${options.toolName} started no child`)
+    const ended = await childEnded
+    if (ended === undefined) throw new Error('dsh agent-faces probe: the child did not end')
+
+    const childCalls = childSessionId === undefined ? [] : calls.filter((call) => call.messages.some((message) => message.role === 'user' && message.text.includes(options.task)))
+    if (childCalls.length === 0) {
+      throw new Error(`dsh agent-faces probe: the child made no request containing ${JSON.stringify(options.task)}`)
+    }
+    return {
+      child: childCalls[0],
+      childCwd: child.session?.header?.cwd,
+      stopReason: ended.stopReason as string | undefined,
+      childRequests: childCalls.length,
+    }
   } finally {
     try {
       await Promise.resolve(loaderFiber?.dispose?.())

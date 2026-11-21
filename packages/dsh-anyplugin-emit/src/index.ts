@@ -173,6 +173,22 @@ function agentConfig(agents: IrAgent[], plugin: string): unknown {
       description: agent.description,
       content: agent.content,
       ...(agent.sourcePath ? { path: agent.sourcePath } : {}),
+      // Every frontmatter face travels as data; the materializer decides which
+      // ones the host at the pin can honour (S16). Dropping a face here would
+      // make the report's annotation the only place it survives.
+      ...(agent.model === undefined ? {} : { model: agent.model }),
+      ...(agent.tools === undefined ? {} : { tools: agent.tools }),
+      ...(agent.disallowedTools === undefined ? {} : { disallowedTools: agent.disallowedTools }),
+      ...(agent.effort === undefined ? {} : { effort: agent.effort }),
+      ...(agent.maxTurns === undefined ? {} : { maxTurns: agent.maxTurns }),
+      ...(agent.isolation === undefined ? {} : { isolation: agent.isolation }),
+      ...(agent.skills === undefined ? {} : { skills: agent.skills }),
+      ...(agent.skillContents === undefined ? {} : { skillContents: agent.skillContents }),
+      ...(agent.memory === undefined ? {} : { memory: agent.memory }),
+      ...(agent.background === undefined ? {} : { background: agent.background }),
+      ...(agent.omitClaudeMd === undefined ? {} : { omitClaudeMd: agent.omitClaudeMd }),
+      ...(agent.color === undefined ? {} : { color: agent.color }),
+      ...(agent.autoCompactWindow === undefined ? {} : { autoCompactWindow: agent.autoCompactWindow }),
     })),
   }
 }

@@ -20,13 +20,33 @@
  * plugin loads with or without `subagents`. With the seam absent the tools are
  * still listed (the catalog is real) and invocation fails with a message that
  * names the missing service instead of crashing the group at load time.
+ *
+ * Frontmatter faces (S16). `skills` is the one key the host can honour today:
+ * every skill body the compiler resolved is prepended to the child's first user
+ * message, which is where Claude starts the subagent with the full skill
+ * content. The other keys are *not* forwarded. `startActivation` has no field
+ * for tools, turns, isolation, memory, background, CLAUDE.md suppression,
+ * colour or compaction, and forwarding `model`/`effort` through
+ * `agentOptions` would put Claude's alias/levels into a provider id space that
+ * observed them literally (S16). The IR annotation on each face says so; this
+ * materializer must not pretend otherwise.
  */
 export const name = 'anyplugin-materialize-agents'
 // No static `inject`: apply() runs even when `ctx.tools` is late or missing, so
 // the degradation is recorded instead of the plugin silently never applying.
 export const inject = []
 
-/** One agent as the emitter wrote it into this plugin's config. */
+/** A skill body the compiler resolved for this agent's `skills:` preload. */
+export interface MaterialAgentSkill {
+  name: string
+  content: string
+}
+
+/**
+ * One agent as the emitter wrote it into this plugin's config. The frontmatter
+ * faces are carried as data even when the pin cannot honour them; only
+ * `skillContents` changes what the child receives (S16).
+ */
 export interface MaterialAgent {
   name: string
   description: string
@@ -34,6 +54,19 @@ export interface MaterialAgent {
   content: string
   /** Source path, kept for diagnostics only. */
   path?: string
+  model?: string
+  tools?: string[]
+  disallowedTools?: string[]
+  effort?: string
+  maxTurns?: number
+  isolation?: string
+  skills?: string[]
+  skillContents?: MaterialAgentSkill[]
+  memory?: string
+  background?: boolean
+  omitClaudeMd?: boolean
+  color?: string
+  autoCompactWindow?: number
 }
 
 export interface Config {
@@ -74,6 +107,38 @@ export function agentProblem(agent: MaterialAgent, plugin: string | undefined): 
  * The tool definition for one agent. Exported so the test can assert the exact
  * description (byte equality) without booting a harness.
  */
+/** The provider label the host puts in a skill's `<skill_resources>` note. */
+const SKILL_PROVIDER = 'anyplugin'
+
+// The host's `escapeAttr`/`escapeText` (dsh-skill `renderSkillContent`), so the
+// envelope is byte-identical for any name or provider label.
+const escapeSkillAttr = (value: string): string =>
+  value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
+const escapeSkillText = (value: string): string =>
+  value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+
+/**
+ * The host's own skill envelope at 0.2.2-rc.5 (`dsh-skill/src/index.ts:170`,
+ * `renderSkillContent`) for a skill with no resource base: the
+ * provider-managed note is what the host renders when it has no directory or
+ * URL to point at. The conformance test builds the expected bytes by calling
+ * the pinned host function, so any drift reddens.
+ */
+function renderSkillEnvelope(preload: MaterialAgentSkill): string {
+  return [
+    `<skill_content name="${escapeSkillAttr(preload.name)}">`,
+    '<skill_resources>',
+    `Resources for this skill are managed by provider "${escapeSkillText(SKILL_PROVIDER)}".`,
+    'Load referenced resources only as needed.',
+    '</skill_resources>',
+    '',
+    '<skill_instructions>',
+    preload.content,
+    '</skill_instructions>',
+    '</skill_content>',
+  ].join('\n')
+}
+
 export function agentTool(agent: MaterialAgent, ctx: any, config: Config): unknown {
   const toolName = `${config.plugin}:${agent.name}`
   return {
@@ -123,15 +188,31 @@ export function agentTool(agent: MaterialAgent, ctx: any, config: Config): unkno
       if (prompt === '') throw new Error(`agent ${JSON.stringify(toolName)} requires a non-empty prompt`)
       const label =
         typeof args?.description === 'string' && args.description.trim() !== '' ? args.description.trim() : agent.name
+      // Persona first, then each preloaded skill body, then the parent's task.
+      // None of it is ever a tool description. The envelope is byte-for-byte
+      // the host's own `renderSkillContent` output for a skill with no
+      // resource base (S16); the conformance test renders the expected bytes
+      // with the pinned host function and asserts the whole child message, so
+      // an insertion anywhere between the blocks reddens.
+      const blocks: { type: 'text'; text: string }[] = [{ type: 'text', text: agent.content }]
+      for (const preload of agent.skillContents ?? []) {
+        if (typeof preload?.name !== 'string' || typeof preload?.content !== 'string') {
+          throw new Error(
+            `agent ${JSON.stringify(toolName)} carries a malformed skill preload; refusing to start a child that would silently drop it`,
+          )
+        }
+        if (preload.content.trim() === '') {
+          throw new Error(
+            `agent ${JSON.stringify(toolName)} declares skill ${JSON.stringify(preload.name)} with an empty body; the host would preload nothing, so the equivalent face would be a lie`,
+          )
+        }
+        blocks.push({ type: 'text', text: renderSkillEnvelope(preload) })
+      }
+      blocks.push({ type: 'text', text: prompt })
       const started = await subagents.startActivation({
         provider: config.provider ?? 'spawn',
         label,
-        // Two blocks, in order: the persona body is the first content the child
-        // reads, then the parent's task. Neither is ever a tool description.
-        prompt: [
-          { type: 'text', text: agent.content },
-          { type: 'text', text: prompt },
-        ],
+        prompt: blocks,
         parent,
         ...(exec.signal === undefined ? {} : { signal: exec.signal }),
         delivery: 'parent',

@@ -236,6 +236,22 @@ jobs:
           fi
           npm run spike:s11
 
+      # S16 is the face-by-face probe behind ARCHITECTURE §10 S16: it boots the
+      # fork provider and records the child's own requests, so the nine
+      # unsupported/planned faces and the exact nine-field SubagentStartRequest
+      # set are checked in CI, not only locally.
+      - name: S16 agent-faces spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S16 spike would skip"
+            exit 1
+          fi
+          npm run spike:s16
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed
