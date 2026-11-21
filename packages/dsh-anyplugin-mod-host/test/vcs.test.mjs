@@ -65,6 +65,10 @@ test('vcs.detect answers the pinned working copy for a git repository', async ()
     // The pin's remote is the engine's own words with credentials stripped.
     git(root, 'remote', 'add', 'origin', 'https://user:secret@example.com/o/r.git')
     assert.equal((await $.vcs.detect({ path: root })).remote, 'https://example.com/o/r.git')
+    // A token in the query string is a credential too, and the pin says the
+    // remote has credentials stripped; the harmless parameter survives.
+    git(root, 'remote', 'set-url', 'origin', 'https://example.com/o/r.git?ref=main&access_token=SECRET')
+    assert.equal((await $.vcs.detect({ path: root })).remote, 'https://example.com/o/r.git?ref=main')
 
     // `default` needs refs/remotes/origin/HEAD; until it exists, null is the
     // honest answer rather than guessing `main`.
@@ -96,10 +100,13 @@ test('vcs.detect discovers the root from a subdirectory and answers null outside
   const plainBridge = createModBridge({ plugin: 'unit/vcs.ts', cwd: plain })
   try {
     assert.equal(await plainBridge.dollar().vcs.detect({ path: '.' }), null)
-    await assert.rejects(
-      plainBridge.dollar().vcs.diff({ path: '.', vcs: 'git', base: 'head' }),
-      (error) => error.code === 'ERR_MOD_HOST_VCS_FAILED',
-    )
+    // The pinned result has an `unknown` arm for exactly this: detect answers
+    // null, so there is no working copy to diff. It is an answer, not a throw.
+    const outside = await plainBridge.dollar().vcs.diff({ path: '.', vcs: 'git', base: 'head' })
+    assert.equal(typeof outside.unknown, 'string')
+    assert.match(outside.unknown, /not in a working copy/)
+    assert.equal(outside.base, undefined)
+    assert.equal(outside.files, undefined)
   } finally {
     plainBridge.dispose()
     remove(plain)
@@ -241,6 +248,10 @@ test('vcs.diff answers head, paths, isStatOnly and unknown with the pinned shape
     await assert.rejects($.vcs.diff({ path: '.', vcs: 'git', base: 'sideways' }), (error) => error.code === 'ERR_MOD_HOST_VCS_INVALID')
     await assert.rejects($.vcs.diff({ path: '.', vcs: 'git', base: 'head', paths: ['../x'] }), (error) => error.code === 'ERR_MOD_HOST_VCS_INVALID')
     await assert.rejects($.vcs.diff({ path: '.', vcs: 'git', base: 'head', isStatOnly: 'yes' }), (error) => error.code === 'ERR_MOD_HOST_VCS_INVALID')
+    await assert.rejects(
+      $.vcs.diff({ path: '.', vcs: 'git', base: 'head', paths: ['x'.repeat(4097)] }),
+      (error) => error.code === 'ERR_MOD_HOST_VCS_INVALID',
+    )
   } finally {
     bridge.dispose()
     remove(root)
@@ -275,6 +286,52 @@ test('vcs.diff from a subdirectory reports root-relative paths after detect reco
       remove(elsewhere)
     }
   } finally {
+    bridge.dispose()
+    remove(root)
+  }
+})
+
+test('a repository filter driver cannot execute on the stat, patch or untracked paths', async () => {
+  const root = makeRepo()
+  writeFileSync(join(root, 'tracked.txt'), 'one\nTWO\n')
+  writeFileSync(join(root, 'untracked.txt'), 'hello\n')
+  const marker = join(root, 'filter-ran')
+  const script = join(root, 'evil-filter.sh')
+  writeFileSync(script, '#!/bin/sh\n: > "$ANYPLUGIN_FILTER_MARKER"\ncat\n', { mode: 0o755 })
+  writeFileSync(join(root, '.gitattributes'), '*.txt filter=evil\n')
+  git(root, 'config', 'filter.evil.clean', script)
+  git(root, 'config', 'filter.evil.required', 'true')
+
+  const previous = process.env.ANYPLUGIN_FILTER_MARKER
+  process.env.ANYPLUGIN_FILTER_MARKER = marker
+  const bridge = createModBridge({ plugin: 'unit/vcs.ts', cwd: root })
+  try {
+    // Control: the same raw invocation without the bridge's overrides runs the
+    // driver. If this ever stops writing the marker, the fixture is stale and
+    // the assertions below prove nothing.
+    execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'], {
+      cwd: root,
+      env: { ...GIT_ENV, ANYPLUGIN_FILTER_MARKER: marker },
+      encoding: 'utf8',
+    })
+    assert.equal(existsSync(marker), true, 'the raw-git control must run the driver')
+    rmSync(marker)
+
+    const $ = bridge.dollar()
+    const patched = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head' })
+    assert.equal(existsSync(marker), false, 'the patch path must not run the driver')
+    assert.ok(patched.files.some((file) => file.path === 'tracked.txt' && typeof file.patch === 'string'))
+
+    const stat = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head', isStatOnly: true })
+    assert.equal(existsSync(marker), false, 'the stat path must not run the driver')
+    assert.ok(stat.files.some((file) => file.path === 'tracked.txt'))
+
+    const untracked = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head', paths: ['untracked.txt'] })
+    assert.equal(existsSync(marker), false, 'the --no-index untracked path must not run the driver')
+    assert.equal(untracked.files[0].isUntracked, true)
+  } finally {
+    if (previous === undefined) delete process.env.ANYPLUGIN_FILTER_MARKER
+    else process.env.ANYPLUGIN_FILTER_MARKER = previous
     bridge.dispose()
     remove(root)
   }

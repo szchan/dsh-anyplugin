@@ -4,7 +4,9 @@
 mods `f9e4d1e5753ccffcffdd832f047d72be000396a6` / claude-code `2.1.329`
 (`UPSTREAM_MODS_PIN`). Sections 4–8 below are the original `6e1e44f` /
 `2.1.322` baseline and keep their numbers; §0 records the 2.1.329 re-run and
-says exactly which numbers moved. **Question.** Which events and which `$`
+says exactly which numbers moved, with its `$` partition updated for the #75
+and #119 host changes (the turn numbers are the measured 2.1.329 re-run).
+**Question.** Which events and which `$`
 members do the five pinned mods actually use, and which of those does the host
 serve?
 
@@ -35,22 +37,26 @@ change moved the load surface, and the host resolver caught up with it:
   this pin, not latent.
 - Authored demand over the same five mods: **69 call sites / 30
   `namespace.method` pairs / 11 namespaces**. The 30 pairs partition exactly:
-  **16 served + 8 typed refusals + 6 absent = 30**.
-  - served (16): `env.get`, `fs.list`, `fs.read`, `fs.stat`, `store.get`,
+  **24 served + 3 typed refusals + 3 absent = 30** at the current bridge
+  (#75 served the six `ui` members, #119 served `vcs.detect`/`vcs.diff`).
+  - served (24): `env.get`, `fs.list`, `fs.read`, `fs.stat`, `store.get`,
     `store.set`, `telemetry.log`, `telemetry.mark`, `clock.after`,
     `clock.every`, `clock.now`, `command.register`, `session.cwd`,
-    `session.id`, `session.messages`, `session.usage`;
-  - typed refusals (8): `ui.log`, `ui.close`, `ui.invalidate`, `ui.open`,
-    `ui.resolve`, `ui.status`, `process.run`, `settings.read`;
-  - absent (6): `session.identity`, `session.root`, `fs.ancestors`,
-    `ui.ask`, `vcs.detect`, `vcs.diff`.
+    `session.id`, `session.messages`, `session.usage`, `ui.log`, `ui.close`,
+    `ui.invalidate`, `ui.open`, `ui.resolve`, `ui.status`, `vcs.detect`,
+    `vcs.diff`;
+  - typed refusals (3): `process.run`, `settings.read`, `ui.ask`;
+  - absent (3): `session.identity`, `session.root`, `fs.ancestors`.
 
-  `ui.ask` and `vcs.*` are *absent*, not typed refusals:
-  `createModBridge` has no `ui.ask` member and no `vcs` namespace, so they
-  throw `TypeError` at the call site. `vcs.detect`/`vcs.diff` are cited at
-  the pin (`mods/diff/hooks/register.ts:962-963`). The old status heuristic
-  labelled every unknown name "served"; the spike now classifies against the
-  bridge's exact member table.
+  The four `vcs` members no authored call reaches (`vcs.isolate`, `vcs.list`,
+  `vcs.status`, `vcs.release`) are also typed refusals in this host
+  (`ERR_MOD_HOST_VCS_UNSUPPORTED`), so the bridge's whole `vcs` table is
+  served-or-refused with a named code; they are not among the 30 authored
+  pairs, which is why the partition above counts 24 rather than 28.
+  `vcs.detect`/`vcs.diff` are cited at the pin
+  (`mods/diff/hooks/register.ts:962-963`) and were measured absent before
+  #119; the earlier `16 served + 8 typed refusals + 6 absent` line is the
+  pre-#75/#119 state, kept in the historical sections below.
 - `$` calls on the executed path: 16 across 11 invocation groups (sec-default's
   eight classic calls add `session.cwd` on each event), all resolved; 0 typed
   refusals reached.

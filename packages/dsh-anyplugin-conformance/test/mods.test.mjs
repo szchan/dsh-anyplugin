@@ -296,6 +296,65 @@ test('a reload re-seats a root that stays live', { skip }, async () => {
   }
 })
 
+test('a booted turn lets an authored mod observe detect then diff through $vcs', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-vcs-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_AUTHOR_NAME: 'vcs turn',
+    GIT_AUTHOR_EMAIL: 'turn@example.invalid',
+    GIT_COMMITTER_NAME: 'vcs turn',
+    GIT_COMMITTER_EMAIL: 'turn@example.invalid',
+  }
+  const git = (...args) => execFileSync('git', args, { cwd: dataDir, env: gitEnv, stdio: 'ignore' })
+  git('init', '-b', 'main')
+  writeFileSync(join(dataDir, 'tracked.txt'), 'one\n')
+  git('add', '--', 'tracked.txt')
+  git('commit', '-m', 'init', '--no-gpg-sign')
+  writeFileSync(join(dataDir, 'tracked.txt'), 'one\ntwo\n')
+  writeFileSync(join(dataDir, 'untracked.txt'), 'fresh\n')
+  const calls = []
+  try {
+    // The root session's cwd is the entry's pluginData directory (seeded here
+    // with the repository), so the mod's load-time session.start asks $vcs
+    // about the same working copy the real agent will run in.
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        pluginRoot: join(repoRoot, 'fixtures', 'mods', 'vcs-turn'),
+        plugin: 'vcs-turn',
+        mods: [{ entry: 'vcs.ts' }],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      preExistingRoot: true,
+      timeoutMs: 15_000,
+    })
+
+    // The mod stored this itself through `$store`; the host did not log it.
+    const observation = stored(dataDir)['vcs-observation']
+    assert.equal(observation.vcs, 'git')
+    assert.equal(observation.root, realpathSync(dataDir))
+    assert.equal(observation.branch, 'main')
+    assert.equal(observation.revisionLength, 40)
+    assert.equal(observation.base, 'HEAD')
+    assert.equal(observation.unknown, null)
+    const files = new Map(observation.files.map((file) => [file.path, file]))
+    assert.ok(files.has('tracked.txt'), 'the modified tracked file is in the mod observation')
+    assert.equal(files.get('tracked.txt').added, 1)
+    assert.equal(files.get('tracked.txt').isUntracked, false)
+    assert.equal(files.get('tracked.txt').patchHasHunk, true)
+    assert.ok(files.has('untracked.txt'), 'the untracked file is in the mod observation')
+    assert.equal(files.get('untracked.txt').isUntracked, true)
+    assert.equal(files.get('untracked.txt').added, 1)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
 test('a classic command hook updatedInput follows the same chain rewrite', { skip }, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-classic-rewrite-'))
   const traceFile = join(dataDir, 'trace.jsonl')
@@ -929,6 +988,17 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
       DIFF_LEDGER.map((row) => ({ site: row.site, result: row.result })),
       'every scanned site ran or refused with a typed code',
     )
+    // The ledger above covers what the pinned mod authors. The other four
+    // `vcs` members are part of the same served-or-refused contract even
+    // though no scanned site reaches them; each refuses with a named code,
+    // never `undefined` and never a fabricated engine answer.
+    for (const member of ['isolate', 'list', 'status', 'release']) {
+      await assert.rejects(
+        vcsBridge.dollar().vcs[member]({}),
+        (error) => error?.code === 'ERR_MOD_HOST_VCS_UNSUPPORTED' && String(error.message).includes(`$.vcs.${member}`),
+        `$.vcs.${member} must be a typed refusal`,
+      )
+    }
 
     const calls = []
     const load = await loadMod({

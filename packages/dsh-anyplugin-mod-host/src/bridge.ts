@@ -33,12 +33,17 @@
  *
  * `vcs` is served for git only and is read-only. `detect` and `diff` run the
  * host's `git` through `execFile` (never a shell) with a timeout, no network
- * verb, no write and `--no-optional-locks`; external diff drivers, textconv
- * and the fsmonitor hook are disabled because the repository configures them
- * and this host does not run a program a repository chooses. The child
- * process always starts inside the session working directory; a path outside
- * it is refused before any process is spawned, unless `detect` already
- * reported that exact working-copy root through a path inside the session.
+ * verb, no write and `--no-optional-locks`; external diff drivers, textconv,
+ * the fsmonitor hook and every repository-configured `filter.*` clean/process
+ * driver are disabled or neutralised because the repository configures them
+ * and this host does not run a program a repository chooses. A relative
+ * `path` resolves under the session working directory, which is what the
+ * pinned `$` prose says for `detect` even though the field comment says
+ * absolute; a name over the pin's 4096-character bound refuses the call. The
+ * child process always starts inside the session working directory; a path
+ * outside it is refused before any process is spawned, unless `detect`
+ * already reported that exact working-copy root through a path inside the
+ * session.
  * `isolate`, `list`, `status` and `release` are typed refusals with a named
  * reason, never `undefined`.
  *
@@ -406,6 +411,8 @@ const VCS_GIT = 'git'
 const VCS_TIMEOUT_MS = 10_000
 /** Beyond this a diff call refuses instead of returning a silently truncated patch. */
 const VCS_MAX_BUFFER = 32 * 1024 * 1024
+/** The pinned `VcsDiffFile` name bound (`claude-code.d.ts:20244` @ 2.1.329, pin). */
+const VCS_MAX_NAME = 4096
 /** The empty tree, so a repository with no commit yet can still answer `base: 'head'`. */
 const VCS_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 /**
@@ -492,8 +499,28 @@ const patchBody = (text: string): string => {
   return match === null ? '' : text.slice(match.index)
 }
 
-/** The pinned remote is the URL with any `user:password@` userinfo removed. */
-const withoutCredentials = (url: string): string => url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, '$1')
+/**
+ * Query parameters a remote may carry an answer token in. The pin's promise is
+ * "credentials stripped", not just `user:password@`, so a token in the query
+ * string is removed before the URL is handed to a mod.
+ */
+const VCS_CREDENTIAL_PARAM =
+  /^(?:access[_-]?token|token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|key|auth|authorization|signature|sig|credential|credentials|x-amz-signature|x-amz-credential|x-amz-security-token)$/i
+
+/** The pinned remote is the URL with userinfo and credential-bearing query parameters removed. */
+const withoutCredentials = (url: string): string => {
+  const stripped = url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, '$1')
+  const query = stripped.indexOf('?')
+  if (query === -1) return stripped
+  const head = stripped.slice(0, query)
+  const params = stripped.slice(query + 1).split('&')
+  const kept = params.filter((param) => {
+    const name = param.split('=')[0] ?? ''
+    return name === '' || !VCS_CREDENTIAL_PARAM.test(name)
+  })
+  if (kept.length === params.length) return stripped
+  return kept.length === 0 ? head : `${head}?${kept.join('&')}`
+}
 
 /** First two meaningful stderr lines, bounded, so a refusal names git's own words. */
 const gitDetail = (stderr: string): string => {
@@ -1008,11 +1035,16 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
   // caller-supplied allowance.
   const vcsRoots = new Map<string, Set<string>>()
 
-  const runGit = (args: readonly string[], cwd: string, allowExit: readonly number[] = [0]): Promise<GitRun> =>
+  const runGit = (
+    args: readonly string[],
+    cwd: string,
+    allowExit: readonly number[] = [0],
+    configArgs: readonly string[] = [],
+  ): Promise<GitRun> =>
     new Promise<GitRun>((resolveRun, rejectRun) => {
       execFile(
         VCS_GIT,
-        [...VCS_GLOBAL_ARGS, ...args],
+        [...VCS_GLOBAL_ARGS, ...configArgs, ...args],
         {
           cwd,
           env: vcsEnv(),
@@ -1077,6 +1109,22 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     if (run.status !== 0) return undefined
     const text = run.stdout.toString('utf8').trim()
     return text === '' ? undefined : text
+  }
+
+  // A repository can configure `filter.<driver>.clean`/`.process` and select
+  // it from `.gitattributes`; git would then run that command while diffing
+  // the worktree, even with external diff and textconv off. Every driver key
+  // found in any config scope is neutralised with an empty value on each
+  // worktree-touching invocation. Enumerating keys is a read; the git process
+  // that does it runs no filter.
+  const vcsFilterArgs = async (cwd: string): Promise<string[]> => {
+    const run = await runGit(['config', '--name-only', '-z', '--get-regexp', '^filter\\.'], cwd, [0, 1])
+    if (run.status !== 0) return []
+    return run.stdout
+      .toString('utf8')
+      .split('\0')
+      .filter((key) => key !== '')
+      .flatMap((key) => ['-c', `${key}=`])
   }
 
   const vcsText = (site: string, value: unknown, field: string): string => {
@@ -1256,6 +1304,12 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     const filter: string[] = []
     for (const entry of value) {
       const text = vcsText('$.vcs.diff', entry, 'paths[]')
+      if (text.length > VCS_MAX_NAME) {
+        fail(
+          'ERR_MOD_HOST_VCS_INVALID',
+          `$.vcs.diff: a paths[] entry is ${text.length} characters, over the pin's ${VCS_MAX_NAME}-character name bound`,
+        )
+      }
       if (isAbsolute(text) || /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\')) {
         fail('ERR_MOD_HOST_VCS_INVALID', `$.vcs.diff: paths must be relative to the working-copy root, got ${JSON.stringify(text)}`)
       }
@@ -1274,6 +1328,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     cwd: string,
     path: string,
     isStatOnly: boolean,
+    configArgs: readonly string[],
   ): Promise<Record<string, unknown>> => {
     const row: Record<string, unknown> = {
       path,
@@ -1304,6 +1359,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
         ['diff', '--no-index', '--numstat', '-z', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', absolute],
         cwd,
         [0, 1],
+        configArgs,
       )
       const parsed = parseNumstat(run.stdout.toString('utf8'))[0]
       if (parsed !== undefined) {
@@ -1317,6 +1373,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       ['diff', '--no-index', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', absolute],
       cwd,
       [0, 1],
+      configArgs,
     )
     const text = run.stdout.toString('utf8')
     if (/^Binary files /m.test(text)) {
@@ -1346,10 +1403,11 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     const isStatOnly = record.isStatOnly === true
     const copy = await vcsWorkingCopyOf(agent, pathValue, '$.vcs.diff')
     if (copy.root === null) {
-      fail(
-        'ERR_MOD_HOST_VCS_FAILED',
-        `$.vcs.diff: ${JSON.stringify(pathValue)} is not in a working copy; $.vcs.detect answers null here`,
-      )
+      // The pin's diff result has an `unknown` arm exactly for "no hook can
+      // say", and `detect` answers null here: return the arm, do not throw.
+      return {
+        unknown: `$.vcs.diff: ${JSON.stringify(pathValue)} is not in a working copy, so there is nothing to diff; $.vcs.detect answers null here`,
+      }
     }
     const root: string = copy.root
     if (vcs !== VCS_GIT) {
@@ -1358,6 +1416,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       }
     }
     const cwd = copy.cwd
+    const configArgs = await vcsFilterArgs(cwd)
     const revision = await gitValue(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd)
     let treeish: string
     let baseLabel: string
@@ -1391,6 +1450,8 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     const statRun = await runGit(
       ['diff', '-M', '--numstat', '-z', '--no-color', '--no-ext-diff', '--no-textconv', treeish, '--'],
       cwd,
+      [0],
+      configArgs,
     )
     const tracked = parseNumstat(statRun.stdout.toString('utf8'))
     // Untracked files never appear in `git diff`; `-- :/` makes the listing
@@ -1398,6 +1459,8 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     const untrackedRun = await runGit(
       ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', ':/'],
       cwd,
+      [0],
+      configArgs,
     )
     const untracked = untrackedRun.stdout.toString('utf8').split('\0').filter((entry) => entry !== '')
     const files: Array<Record<string, unknown>> = []
@@ -1414,7 +1477,17 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     }
     for (const path of untracked) {
       if (!vcsMatches(path, null, filter)) continue
-      files.push(await vcsUntrackedFile(root, cwd, path, isStatOnly))
+      files.push(await vcsUntrackedFile(root, cwd, path, isStatOnly, configArgs))
+    }
+    for (const file of files) {
+      const name = String(file.path)
+      const previous = typeof file.renamedFrom === 'string' ? file.renamedFrom : null
+      if (name.length > VCS_MAX_NAME || (previous !== null && previous.length > VCS_MAX_NAME)) {
+        fail(
+          'ERR_MOD_HOST_VCS_FAILED',
+          `$.vcs.diff: git reported a name longer than the pin's ${VCS_MAX_NAME}-character bound; the result would not match the pinned shape, so the call is refused`,
+        )
+      }
     }
     files.sort((left, right) => {
       const a = String(left.path)
@@ -1436,6 +1509,8 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
         const patchRun = await runGit(
           ['diff', '-M', '--no-color', '--no-ext-diff', '--no-textconv', treeish, ...spec],
           cwd,
+          [0],
+          configArgs,
         )
         const body = patchBody(patchRun.stdout.toString('utf8'))
         if (body !== '') file.patch = body
