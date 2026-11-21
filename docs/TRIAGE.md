@@ -57,17 +57,49 @@ decides "who spoke last" by login first.
 the only sanctioned way to decide what to do next, because it is the only view
 that knows who spoke last.
 
-The queue has four sections:
+**An issue does not wake an agent.** There is no webhook into a running session;
+the loop is pull-based. Two things drive it: the master runs `npm run triage` at
+the start of each round, and a scheduled task (`Poll the issue queue and dispatch
+work`, every 20 minutes, delivered to the master session) runs the same command
+and dispatches what it finds. That is the whole intake mechanism — a GitHub
+notification is a convenience for the human, not a trigger.
+
+Consequence, stated so nobody is surprised: a new issue waits for the next pull —
+up to one scheduling interval — before it is labelled. It is never lost, and it
+never interrupts a worker mid-branch.
+
+The queue has five sections:
 
 1. **Maintainer asks** — `from-maintainer` threads whose last human message is
    newer than the last agent message. These outrank everything.
 2. **Maintainer answers** — `maintainer-question` threads where the human replied.
    The waiting agent resumes; nobody else takes the ticket.
-3. **External reports** — `external` issues with no agent triage yet. Each gets
+3. **In review** — issues that an open PR already closes (`Closes #N` in the PR
+   body). Listed so the ticket is visibly in flight, never left in a queue: an
+   ask that already has a PR invites a second worker to claim the same ticket.
+4. **External reports** — `external` issues with no agent triage yet. Each gets
    one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
    `needs-evidence` with the exact questions, or `invalid` with the reason.
-4. **PRs** — every open PR, with its `verify` status and whether an agent has
+5. **PRs** — every open PR, with its `verify` status and whether an agent has
    reviewed at the current head.
+
+A new issue or PR is labelled `needs-triage` by `.github/workflows/intake.yml`
+the moment it opens, so nothing sits unlabelled waiting for the poll. The label
+is the only thing that workflow does; it never checks out the contribution.
+
+### A pull request, in three shapes
+
+| author | what happens |
+| --- | --- |
+| `szchan-bot` (an agent) | the ticket's review: one reviewer, adversarial, verdict on the head, then the master merges if `verify` is green |
+| `szchan` (the human) | the same review. A human PR is still a proposal: if it moves a contract it needs a decision entry first; if it only fixes something, it merges on green |
+| anyone else | read the diff **before** running it (see below), then one of three outcomes — adopt (review, request changes if needed, merge), ask for evidence, or close with the reason |
+
+The security rule is not optional: **a fork PR is untrusted code.** Reading the
+diff is free; `npm install`, `npm test` and any `scripts/` entry point execute it.
+Review first, run second, and never run a contributed script with a token in the
+environment. CI is safe by construction — `verify` runs with `contents: read` and
+no secrets — so the green check is evidence, not a substitute for reading.
 
 ## 3. What counts as evidence
 
@@ -123,11 +155,37 @@ adopted, rewritten in place under the contributor's name, or merged "to be nice"
 
 ## 6. When an agent needs a human
 
-Open an issue with `maintainer-question`, state the decision being requested, the
-options, the default the agent will take if the human says nothing, and the
-deadline-free rule: **no silent blocking**. If the work can proceed on a declared
-default, it proceeds and records the default in the issue; only a decision that
-would bend §3 waits indefinitely.
+An escalation is one issue, and it carries three markers so it is findable from
+any client — notification mail, the issue list, a saved search:
+
+| marker | value |
+| --- | --- |
+| title prefix | `[HUMAN] ` (literal, first thing in the title) |
+| label | `maintainer-question` |
+| first line of the body | `<!-- needs-human -->` |
+
+Saved search for the queue:
+`https://github.com/szchan/dsh-anyplugin/issues?q=is%3Aissue+is%3Aopen+label%3Amaintainer-question`
+
+The body has exactly four parts, in this order:
+
+1. **Decision** — one sentence, phrased as a choice, not a status report.
+2. **Options** — each with its cost and what it forecloses.
+3. **Default** — what the agent does if the issue is still unanswered when the
+   default becomes actionable. A default that would bend §3 of `AGENTS.md` is
+   not a default; the work stops instead.
+4. **Why it cannot be settled here** — the specific check the agent ran, and why
+   that check is the human's to make (a secret, a permission, a purchase, a
+   legal choice).
+
+Everything an agent can settle by reproduction stays out of this queue. The
+queue is for the four things only a human holds: credentials, billing, rights,
+and irreversibility. "I am not sure" is not one of them — research it, test it,
+and write down what you chose.
+
+**No silent blocking.** If the work can proceed on a declared default, it
+proceeds and records the default in the issue; only a decision that would bend §3
+waits indefinitely.
 
 ## 7. What the loop guarantees
 

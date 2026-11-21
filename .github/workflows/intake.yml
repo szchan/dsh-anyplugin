@@ -1,0 +1,31 @@
+name: intake
+
+# An issue or PR does not wake an agent by itself: the work loop is pull-based
+# (docs/TRIAGE.md §2). This workflow only marks the item so it cannot sit
+# unlabelled and invisible; the scheduled triage round does the reading.
+#
+# `pull_request_target` is deliberate and safe here: the job never checks out
+# the pull request's head, so no code from the contribution is executed.
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Add needs-triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          KIND: ${{ github.event_name == 'issues' && 'issue' || 'pr' }}
+        run: gh $KIND edit "$NUMBER" --repo "$REPO" --add-label needs-triage
