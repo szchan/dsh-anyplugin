@@ -185,15 +185,22 @@ async function modsProof({ harnessDir, hookEntry, scratch }) {
     pathToFileURL(join(root, 'packages', 'dsh-anyplugin-conformance', 'src', 'oracles', 'dsh.ts')).href
   )
 
-  // The `$` proof: `clock.now` and `store.get` round-trip, then report through
-  // telemetry — the materializer's telemetry sink writes the line to its trace
-  // file, so the assertion is on the bridge, not on the fixture's own state.
+  // Two proofs in one load. `$`: `clock.now` and `store.get` round-trip, then
+  // report through telemetry — the materializer's telemetry sink writes the line
+  // to its trace file, so the assertion is on the bridge, not on the fixture's
+  // own state. D34: the mod imports a classic-pragma `.tsx` module, so the
+  // packaged Babel pass is exercised, not merely declared.
   const probeRoot = join(scratch, 'mods-smoke', 'kernel-probe')
   mkdirSync(probeRoot, { recursive: true })
   writeFileSync(
+    join(probeRoot, 'view.tsx'),
+    ['/** @jsx h */', 'export function view(label: string) {', '  return <box label={label}><text>{label}</text></box>', '}', ''].join('\n'),
+  )
+  writeFileSync(
     join(probeRoot, 'register.mjs'),
     [
-      '// Written by scripts/smoke-install.mjs — the packaged kernel\'s $ proof.',
+      '// Written by scripts/smoke-install.mjs — the packaged kernel\'s $ and .tsx proof.',
+      'import { view } from "./view"',
       'export function register(on) {',
       "  on('session.start', async ($, event, next) => {",
       '    const now = await $.clock.now()',
@@ -201,7 +208,11 @@ async function modsProof({ harnessDir, hookEntry, scratch }) {
       '    await $.store.set("smoke/clock", now)',
       '    const stored = await $.store.get("smoke/clock")',
       '    if (stored !== now) throw new Error("store round-trip failed: " + JSON.stringify(stored))',
-      '    await $.telemetry.log({ smoke: "clock.now+store.get", at: now })',
+      '    const rendered = view("smoke")',
+      '    if (rendered?.type !== "box" || !Array.isArray(rendered.children) || rendered.children[0]?.type !== "text") {',
+      '      throw new Error("classic .tsx transform did not produce h() elements: " + JSON.stringify(rendered))',
+      '    }',
+      '    await $.telemetry.log({ smoke: "clock.now+store.get+tsx", at: now })',
       '    return next(event)',
       '  })',
       '}',
@@ -292,7 +303,7 @@ async function modsProof({ harnessDir, hookEntry, scratch }) {
   if (guardCount !== 1) fail(`the guard mod reported ${JSON.stringify(guardCount)} registrations`)
 
   const served = probeWarnings.find(
-    (line) => line.includes('kernel-probe/register.mjs: telemetry.log') && line.includes('clock.now+store.get'),
+    (line) => line.includes('kernel-probe/register.mjs: telemetry.log') && line.includes('clock.now+store.get+tsx'),
   )
   if (served === undefined) {
     fail(`$.clock.now/$.store.get did not reach the bridge; warnings: ${JSON.stringify(probeWarnings)}`)
@@ -355,9 +366,12 @@ async function main() {
       symlinkSync(mcpScope, join(profile, 'node_modules', '@modelcontextprotocol'), 'dir')
     }
     // The kernel's only runtime dependencies are the classic-JSX pair (D34). A
-    // real profile installs them from the registry; the smoke links the
-    // checkout's copies so the proof stays offline and the tarball's
-    // `dependencies` are what resolve them.
+    // real profile installs the tarball's `dependencies` from the registry (the
+    // reviewer measured 60 packages / 35 MB for this 98 KiB tarball); the smoke
+    // links the checkout's copies so the proof stays offline. Its claim is
+    // therefore narrow: the packaged hook entry imports the declared packages,
+    // and their declared versions are what resolve — not that npm's install
+    // graph was exercised.
     mkdirSync(join(profile, 'node_modules', '@babel'), { recursive: true })
     for (const dependency of ['core', 'plugin-transform-react-jsx']) {
       const source = join(root, 'node_modules', '@babel', dependency)

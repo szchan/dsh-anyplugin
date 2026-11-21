@@ -1223,17 +1223,40 @@ one classic-pragma transform (`D34`) resolves from the installed package's own
 `dependencies`; every `@deepseek-ai/*` import stays external because the
 harness provides it. The build records the kernel's share of the bundle in
 `lib/kernel-size.json` (`bytesInOutput` for inputs under
-`packages/dsh-anyplugin-mod-host/`), and `check:pack` asserts the exact
-runtime dependency set, prints that byte cost, and refuses a tarball whose hook
-entry still contains the 0.1 stub's refusal.
+`packages/dsh-anyplugin-mod-host/`) plus the entry's external imports (the
+two Babel packages, never a copy), and `check:pack` asserts the exact runtime
+dependency set, bounds the byte cost by the entry's own size and a named
+ceiling, and refuses a tarball whose hook entry still contains the 0.1 stub's
+refusal. The packaged README is also checked for the runtime flag below.
+
+The kernel needs Node's `--experimental-vm-modules`: `node:vm` exposes
+`SourceTextModule` only behind it (D30), and the Desktop's bundled Node starts
+without the flag — the CLI form is `node --experimental-vm-modules …`, the
+Desktop form is an inherited `NODE_OPTIONS=--experimental-vm-modules` in the
+launch environment. The packaged docs therefore state the requirement, the
+materializer says it once per process (not once per mod) and refuses each mod
+into the trace when the flag is missing, and `check:pack` fails a tarball whose
+README does not name it. Classic hooks still run in that state.
+
+Using the existing hook entry rather than a new subpath **amends D43's
+"mods need their own entry" consequence**: the entry a hook row already names
+is where the kernel lands, so 0.2.0 adds no published subpath. A hook
+row's `mods` config is the only door the kernel has: the lock has no `mods`
+field, so 0.2.0 ships the kernel and the row-level config, not a
+plugin-install path for mods. A real
+`npm install` of the tarball pulls the two declared Babel packages — 60
+packages / ~35 MB for the 98 KiB tarball — while the smoke links the checkout's
+copies and proves only that the packaged entry imports the declared packages.
 
 `scripts/smoke-install.mjs` boots the packed tarball (not the checkout)
 against the pinned harness: it loads the pinned upstream `sec-default` (45
 registrations) and the repository's mod fixtures, and observes a registration
 count per mod, a `$` round-trip through the headless bridge, a `classic.*`
 handler next to a classic hook in the same turn, and a mod deny at
-`tools/pre-execute`. The lock schema still has no `mods` field: 0.2.0 ships
-the kernel and the row-level `mods` config, not the install path for mods.
+`tools/pre-execute`, and a classic-pragma `.tsx` module through the Babel
+path. The lock schema still has no `mods` field: 0.2.0 ships the kernel and the
+row-level `mods` config, not the install path for mods, so the kernel is
+reachable only from a hand-written hook row.
 
 ## 8. Seam capability matrix (P4)
 

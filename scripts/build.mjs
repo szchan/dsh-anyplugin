@@ -67,6 +67,7 @@ async function main() {
 
   let kernelBytes = 0
   const kernelInputs = new Set()
+  const kernelExternals = new Set()
 
   for (const [out, entry] of Object.entries(ENTRIES)) {
     const result = await build({
@@ -83,7 +84,15 @@ async function main() {
       banner: { js: `// dsh-anyplugin ${pkg.version} — built by scripts/build.mjs; do not edit.` },
     })
 
-    for (const output of Object.values(result.metafile.outputs)) {
+    for (const [outputPath, output] of Object.entries(result.metafile.outputs)) {
+      // The hook entry's external imports are the evidence that the Babel
+      // packages stayed out of the bundle; persist it instead of grepping the
+      // output for a package name in a later gate.
+      if (outputPath.endsWith('materialize/hook.js')) {
+        for (const imported of output.imports ?? []) {
+          if (imported.external === true) kernelExternals.add(imported.path)
+        }
+      }
       for (const [input, info] of Object.entries(output.inputs)) {
         if (!input.startsWith(kernelDir)) continue
         kernelBytes += info.bytesInOutput
@@ -100,6 +109,7 @@ async function main() {
         entry: 'lib/materialize/hook.js',
         bytes: kernelBytes,
         inputs: [...kernelInputs].sort(),
+        externals: [...kernelExternals].sort(),
       },
       null,
       2,

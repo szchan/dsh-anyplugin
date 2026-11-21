@@ -157,17 +157,39 @@ try {
     check(hookSource.includes('SourceTextModule'), 'the hook entry does not boot mods in a vm realm; the kernel is missing')
     check(hookSource.includes('stripTypeScriptTypes'), 'the hook entry has no type strip; the kernel is missing')
     check(!hookSource.includes('mods are not available in dsh-anyplugin'), 'the hook entry still carries the 0.1 mods stub')
-    check(hookSource.includes('@babel/plugin-transform-react-jsx'), 'the hook entry does not reach the classic JSX transform (D34)')
+    // A page that claims mods load without saying Node needs the vm flag would
+    // be a lie an install cannot recover from: the packaged README must name it.
+    const [major = 0, minor = 0] = (manifest.version ?? '0.0.0').split('.').map(Number)
+    if (major > 0 || minor >= 2) {
+      check(
+        readFileSync(join(tree, 'README.md'), 'utf8').includes('experimental-vm-modules'),
+        'the packaged README does not name --experimental-vm-modules; mods cannot load without it (D46)',
+      )
+    }
     const recorded = has('lib/kernel-size.json')
     check(recorded, 'the build did not record lib/kernel-size.json')
-    const kernel = recorded ? JSON.parse(readFileSync(join(tree, 'lib/kernel-size.json'), 'utf8')) : { bytes: 0, inputs: [] }
+    const kernel = recorded ? JSON.parse(readFileSync(join(tree, 'lib/kernel-size.json'), 'utf8')) : { bytes: 0, inputs: [], externals: [] }
     check(typeof kernel.bytes === 'number' && kernel.bytes > 0, 'lib/kernel-size.json records no kernel bytes')
     check(
       Array.isArray(kernel.inputs) && kernel.inputs.every((path) => path.startsWith('packages/dsh-anyplugin-mod-host/')),
       'lib/kernel-size.json names inputs outside packages/dsh-anyplugin-mod-host',
     )
+    // A printed cost that nobody compares is decoration. The kernel may not
+    // outgrow the entry that carries it, nor this named ceiling (128 KiB: 86.6
+    // KiB today, room for one more measured surface but not for a bundler).
+    const kernelCeilingBytes = 128 * 1024
+    check(
+      kernel.bytes <= kernelCeilingBytes,
+      `the kernel costs ${kernel.bytes} bytes, above the ${kernelCeilingBytes}-byte ceiling; name the cost in a decision before raising it`,
+    )
+    const runtimeExternals = (Array.isArray(kernel.externals) ? kernel.externals : []).filter((path) => !path.startsWith('node:'))
+    check(
+      runtimeExternals.join(',') === '@babel/core,@babel/plugin-transform-react-jsx',
+      `the hook entry's non-node externals are ${JSON.stringify(runtimeExternals)}, expected the two pinned Babel packages (D34)`,
+    )
     const hookSize = packed.files.find((file) => file.path === 'lib/materialize/hook.js')?.size ?? 0
     check(hookSize > 0, 'the tarball has no lib/materialize/hook.js')
+    check(kernel.bytes <= hookSize, `the kernel records ${kernel.bytes} bytes but the entry is ${hookSize} bytes`)
     notes.push(
       `mods kernel ${(kernel.bytes / 1024).toFixed(1)} KiB of lib/materialize/hook.js (${(hookSize / 1024).toFixed(1)} KiB, ${kernel.inputs.length} files)`,
     )
@@ -200,6 +222,13 @@ try {
           // that it did not.
           failures.push('install smoke passed without reporting the mods proof')
         } else {
+          // Each probe is a different refusal the release could regress to:
+          // the upstream mod failing to load, the bridge not serving `$`, or a
+          // mod deny not reaching the tool gate. A summary that drops one must
+          // fail here, not pass on the other two.
+          for (const label of ['sec-default/hooks/register.ts', 'kernel-probe/register.mjs', 'guard/register.ts']) {
+            check(mods[1].includes(label), `install smoke did not report ${label}`)
+          }
           notes.push(`install smoke passed; mods: ${mods[1]}`)
         }
       } catch (error) {

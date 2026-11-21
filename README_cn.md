@@ -61,9 +61,9 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 
 ## ✅ 0.2.0 包含什么
 
-下表描述的是**已发布的产物**，不是仓库里的开发树：每一行都是安装
-`dsh-anyplugin@0.2.0` 后真正得到的能力，`npm run verify` 会启动打出的
-tarball 来验证它。
+下表描述的是 **0.2.0 的产物**，不是仓库里的开发树：每一行都是 `0.2.0` 发布后
+安装 `dsh-anyplugin@0.2.0` 真正得到的能力。今天 npm 上 staged 的是 `0.1.0`，
+`0.2.0` 是下一个版本。`npm run verify` 会启动打出的 tarball 逐行验证。
 
 | 能力 | 在 0.2.0 中 |
 | --- | --- |
@@ -105,7 +105,8 @@ turn 里保留一个 `classic.*` handler 和一个 classic hook，并在
 
 ## 📦 安装
 
-`dsh-anyplugin@0.2.0` 以一个 **bundle** 的形式发布给 DSH profile：
+`dsh-anyplugin@0.2.0`（下一个版本；今天 npm 上 staged 的是 `0.1.0`）以一个
+**bundle** 的形式发布给 DSH profile：
 
 ```bash
 dsh plugin --profile <profile> add dsh-anyplugin
@@ -116,6 +117,19 @@ dsh plugin --profile <profile> add dsh-anyplugin
 `cordis.patch.yml` 只插入一行控制器；控制器读取
 `$DSH_HOME/anyplugin/installs.yml`，把已安装的插件协调进 loader。它不写
 profile 配置，也不生成代码。
+
+### 运行要求
+
+- **Node.js ≥ 22.14**；DSH `0.2.2-rc.2 || 0.2.2-rc.5`；Claude Code `2.1.329`。
+- **mods 需要 `--experimental-vm-modules`。** D30 把每个 mod 放进一个
+  `node:vm` realm，而 Node 只在那个 flag 下暴露 `SourceTextModule`。命令行：
+  `node --experimental-vm-modules …`。Desktop：启动 `dsh` 前
+  `export NODE_OPTIONS=--experimental-vm-modules` —— 一次 shell export 就够了，
+  环境会被捆绑的 Node 继承。缺少它时每个 mod 都会以 `ERR_MOD_HOST_LINK`
+  （“… run Node with --experimental-vm-modules (D30)”）被拒绝，classic hooks
+  照常运行，并且内核只把这条 flag 说**一次**，不是每个 mod 说一次。
+- **mods 目前只能从手写的 hook 行进入**（`mods: [{ entry }]`），直到 lock
+  schema 获得 `mods` 字段；`dsh plugin add` 暂不安装 mods。
 
 0.2.0 同时发布**编译路径** —— skills（斜杠命令以 skills 的模型面落地）、MCP、
 hooks、agents、由 profile 记录激活的 output style（D42）、安装/协调与信任门 ——

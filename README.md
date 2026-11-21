@@ -65,9 +65,10 @@ so a regression fails in the same place.
 
 ## ✅ What 0.2.0 does
 
-This table describes the **published artifact**, not the repository: every row
-is what installing `dsh-anyplugin@0.2.0` gives you, and `npm run verify` boots
-the packed tarball to check it.
+This table describes the **0.2.0 artifact**, not the repository: every row is
+what installing `dsh-anyplugin@0.2.0` gives you once it is released. `0.1.0` is
+the release staged on npm today; `0.2.0` is the next one. `npm run verify` boots
+the packed tarball to check every row.
 
 | surface | in 0.2.0 |
 | --- | --- |
@@ -110,7 +111,8 @@ classic hook firing in the same turn, and observes a mod deny at
 
 ## 📦 Install it
 
-`dsh-anyplugin@0.2.0` is published as **one bundle** for a DSH profile:
+`dsh-anyplugin@0.2.0` (the next release; `0.1.0` is staged on npm today) ships
+as **one bundle** for a DSH profile:
 
 ```bash
 dsh plugin --profile <profile> add dsh-anyplugin
@@ -122,6 +124,21 @@ bundle's `cordis.patch.yml` inserts a single controller row; the controller
 reads `$DSH_HOME/anyplugin/installs.yml` and reconciles the installed plugins
 into the loader. Nothing is written to your profile config, and no code is
 generated.
+
+### Requirements
+
+- **Node.js ≥ 22.14**; DSH `0.2.2-rc.2 || 0.2.2-rc.5`; Claude Code `2.1.329`.
+- **Mods need `--experimental-vm-modules`.** D30 loads each mod in a `node:vm`
+  realm, and Node exposes `SourceTextModule` only behind that flag. CLI:
+  `node --experimental-vm-modules …`. Desktop: export
+  `NODE_OPTIONS=--experimental-vm-modules` before launching `dsh` — a shell
+  export is enough, the environment is inherited by the bundled Node. Without
+  it every mod is refused with `ERR_MOD_HOST_LINK` ("… run Node with
+  --experimental-vm-modules (D30)"), classic hooks still run, and the kernel
+  says the flag **once**, not once per mod.
+- **Mods are reachable only from a hand-written hook row** (`mods: [{ entry }]`)
+  until the lock schema gains a `mods` field; `dsh plugin add` does not install
+  mods.
 
 0.2.0 ships the **compile path** — skills (a slash command lands as a skill on
 its model face), MCP servers, hooks, agents, an output style activated from the

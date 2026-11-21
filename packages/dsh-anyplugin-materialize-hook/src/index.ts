@@ -53,6 +53,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync } from 'node:fs'
+import * as vm from 'node:vm'
 import {
   CONTINUE,
   MOD_SPEC_LABEL,
@@ -409,6 +410,13 @@ const decisionTexts = (decision: Decision): string[] => {
   return []
 }
 
+/**
+ * D30 loads each mod in a `node:vm` realm, and Node exposes
+ * `vm.SourceTextModule` only behind `--experimental-vm-modules`. The fact is
+ * the same for every mod in the process, so the log says it once.
+ */
+let experimentalVmModulesWarned = false
+
 export async function apply(ctx: any, config: Config = {}): Promise<void> {
   const hooks = config.hooks ?? []
   const mods = config.mods ?? []
@@ -489,6 +497,19 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     return `refused ${label}: artifact changed since the grant (pinned ${hook.artifactHash}, now ${current}); command: ${invocation}`
   }
 
+  /**
+   * Trace sink only: a fact the log already explains does not need a second
+   * line, but the trace is where a gate reads per-mod evidence.
+   */
+  const trace = (message: string): void => {
+    if (config.traceFile === undefined) return
+    try {
+      appendFileSync(config.traceFile, `${JSON.stringify({ warning: message })}\n`)
+    } catch {
+      // The trace sink is unavailable; the caller's logger carried the fact.
+    }
+  }
+
   const warn = (message: string): void => {
     const logger = ctx.logger
     if (typeof logger?.warn === 'function') logger.warn(message)
@@ -496,12 +517,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     // A warning is evidence too: when a trace sink is configured, keep the
     // text beside the chain records. Never let the sink's failure recurse
     // through this function.
-    if (config.traceFile === undefined) return
-    try {
-      appendFileSync(config.traceFile, `${JSON.stringify({ warning: message })}\n`)
-    } catch {
-      // The trace sink is already unavailable; the logger above carried it.
-    }
+    trace(message)
   }
 
   // The install record names the plugin's data directory (D2), but creating it
@@ -743,6 +759,21 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
    */
   const lifecycleRegistrations = new Map<string, HandlerRegistration[]>()
   const modsMode = mods.length > 0
+  // Say the missing-flag fact once per process, not once per mod: the per-mod
+  // refusal below keeps the trace evidence, but N copies of the same paragraph
+  // in the log read like N different problems.
+  if (
+    modsMode &&
+    !experimentalVmModulesWarned &&
+    typeof (vm as { SourceTextModule?: unknown }).SourceTextModule !== 'function'
+  ) {
+    experimentalVmModulesWarned = true
+    warn(
+      'anyplugin mods: node:vm SourceTextModule is unavailable, so every mod is refused; ' +
+        'start Node with --experimental-vm-modules, or for the Desktop export ' +
+        'NODE_OPTIONS=--experimental-vm-modules before launching dsh (D30)',
+    )
+  }
   const registerLifecycle = (event: string, host: string): HandlerRegistration[] => {
     const selected = of(event)
     if (selected.length === 0) return []
@@ -1426,23 +1457,21 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         handle = await loadMod({ root: modRoot, entry: mod.entry, host: modHost })
       } catch (error) {
         bridge.dispose()
-        warn(`anyplugin mod ${surfaceLabel}: load refused (${(error as Error).message})`)
+        const message = (error as Error).message
+        // The one-per-process warning above already named the missing flag;
+        // keep the per-mod refusal in the trace, not in the log's N copies.
+        if (message.includes('SourceTextModule is unavailable')) {
+          trace(`anyplugin mod ${surfaceLabel}: load refused (${message})`)
+        } else {
+          warn(`anyplugin mod ${surfaceLabel}: load refused (${message})`)
+        }
         continue
       }
       // The packaging gate reads this line (issue #99): the smoke's proof is
       // "this mod, this many registrations". It goes to the trace sink only — a
       // normal turn's log should not gain a line per loaded mod — and the trace
       // sink is what `check:pack` configures.
-      if (config.traceFile !== undefined) {
-        try {
-          appendFileSync(
-            config.traceFile,
-            `${JSON.stringify({ warning: `anyplugin mod ${surfaceLabel}: loaded ${handle.registrations.length} registration(s)` })}\n`,
-          )
-        } catch {
-          // The trace sink is unavailable; the install smoke fails on the missing line.
-        }
-      }
+      trace(`anyplugin mod ${surfaceLabel}: loaded ${handle.registrations.length} registration(s)`)
       // Only a mod that loaded can open a pane: a failed load must not leave a
       // disposed sink in the reader or a tool that points at nothing.
       uiSinks.push(bridge.ui)
