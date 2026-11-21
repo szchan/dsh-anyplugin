@@ -235,3 +235,18 @@ test('rig report --help names the subcommand', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /rig report {2}<plugin-dir> \[--json\]/)
 })
+
+test('rig report calls itself a preview, in text and in JSON', () => {
+  const text = runRig(['report', fixture])
+  assert.equal(text.status, 0, text.stderr)
+  assert.match(text.stdout, /^preview only: rig report does not read installs\.yml/m)
+
+  const json = runRig(['report', fixture, '--json'])
+  assert.equal(json.status, 0, json.stderr)
+  const parsed = JSON.parse(json.stdout)
+  assert.match(
+    parsed.preview,
+    /^preview only: rig report does not read installs\.yml/,
+    'a preview must not be readable as the controller install decision',
+  )
+})

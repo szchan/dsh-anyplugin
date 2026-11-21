@@ -79,8 +79,9 @@ export interface CompileOptions {
    * does not record must not boot: otherwise a 0.1.0/empty-known `@1` lock plus
    * a `mod:` grant runs a tree the install never recorded. **True is the
    * default**: `list`, the controller and uninstall all enforce it without
-   * saying so. Only the install path (`buildTransplantReport`, which is
-   * creating the record) omits the flag, which is the same as `false`.
+   * saying so. Two callers omit the flag, which is the same as `false`:
+   * `buildTransplantReport` while it is creating the record, and `rig report`,
+   * which is preview-only and says so in its own output.
    */
   requireRecordedMods?: boolean
 }
