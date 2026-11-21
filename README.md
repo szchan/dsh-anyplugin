@@ -8,9 +8,11 @@ English | [中文](README_cn.md)
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-status-today)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-what-010-does)
 
-**Run Claude Code and Codex plugins on DeepSeek Harness — at declared 100 % fidelity.**
+**Run Claude Code plugins on DeepSeek Harness — at the fidelity this repository
+declares for each surface, and never more.** Codex is the second dialect and ships
+in v0.3; 0.1.0 is the Claude Code compile path.
 
 A Claude Code plugin is a bundle of files: skills, slash commands, agents, hooks,
 MCP servers, output styles, and `mods` (JavaScript that runs inside the harness).
@@ -71,7 +73,7 @@ the packed tarball to check it.
 | --- | --- |
 | Skills | `exact` — content, envelope, base-directory preamble, argument substitution where the host has a channel |
 | Slash commands | shipped as **skills** (the model face, `equivalent`); the human `/…` face is `planned` and needs a host command-name seam (`D10`) |
-| MCP servers | `equivalent` — stdio and Streamable HTTP, Claude's tool names kept verbatim |
+| MCP servers | `equivalent` — stdio and Streamable HTTP; DSH namespaces the callable name (`mcp__plugin_<plugin>_<server>__<tool>`) and keeps Claude's name as the suffix |
 | Hooks | `equivalent` for the tool and lifecycle events DSH fires; other events are `planned` with the missing host event named |
 | Agents | `exact` — each `agents/*.md` becomes a scoped tool named `<plugin>:<agent>` |
 | Output styles | **shipped** — the profile's activation record selects one style (`D42`); the `/<plugin>:<name>` alias still needs the command-name seam (`D10`) |
@@ -110,8 +112,8 @@ generated.
 its model face), MCP servers, hooks, agents, an output style activated from the
 profile record (D42), install/reconcile, and the trust gate. The mods kernel and
 the Codex dialect are **not** part of this release. The version claim is DSH
-`>=0.2.2-rc.2 <0.2.2` (`engines.dsh`; the suite boots `0.2.2-rc.2` and
-`0.2.2-rc.5`, and a runtime outside the range is refused until it is tested —
+`0.2.2-rc.2 || 0.2.2-rc.5` (`engines.dsh`; exactly the two pins the suite boots,
+so any other runtime is refused until it is tested —
 `dsh plugin allow-version` grants an exact-version exemption) and Claude Code
 `2.1.329`.
 

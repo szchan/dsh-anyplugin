@@ -12,7 +12,7 @@ What 0.1.0 ships:
 | --- | --- |
 | Skills | loaded into the harness skill registry |
 | Slash commands | land as **skills** on their model face (`equivalent`); the human `/…` face is still `planned` (D10) |
-| MCP servers | stdio and Streamable HTTP, Claude's tool names kept verbatim |
+| MCP servers | stdio and Streamable HTTP; DSH namespaces the callable name (`mcp__plugin_<plugin>_<server>__<tool>`), keeping Claude's as the suffix |
 | Hooks | the events the host actually fires; `exec`-class hooks need a grant |
 | Agents | one scoped tool per `agents/*.md` |
 | Output styles | activated from `$DSH_HOME/anyplugin/output-styles.yml` (one style, `agent/created`); the `/<plugin>:<name>` command face stays `planned` (D42) |
@@ -22,14 +22,14 @@ What 0.1.0 ships:
 ## Requirements and the version claim
 
 - **Node.js ≥ 22.14** (`engines.node`).
-- **DSH `>=0.2.2-rc.2 <0.2.2`** (`engines.dsh`). The suite boots exactly
-  `0.2.2-rc.2` and `0.2.2-rc.5`; the range is a compatibility floor, not a
-  claim about every version inside it (`0.2.2-rc.6` is inside it and is not
-  booted). `engines.dsh` is what the harness's compatibility check enforces,
-  so a runtime outside the range refuses the plugin instead of half-loading
-  it. To try an untested exact version, read the warning and grant the
-  exact-version exemption (`dsh plugin allow-version`); nothing else changes.
-  `@deepseek-ai/cordis` is a peer at `~4.1.0`, the version both pins ship.
+- **DSH `0.2.2-rc.2 || 0.2.2-rc.5`** (`engines.dsh`): exactly the two pins the
+  suite boots. Any other runtime — including `0.2.2-rc.3`, `0.2.2-rc.4`,
+  `0.2.2-rc.6` and `0.2.2` — is refused until it is tested. The harness's
+  compatibility check enforces `engines.dsh`, so a runtime outside the set
+  refuses the plugin instead of half-loading it. To try an untested exact
+  version, read the warning and grant the exact-version exemption
+  (`dsh plugin allow-version`); nothing else changes. `@deepseek-ai/cordis` is
+  a peer at `~4.1.0`, the version both pins ship.
 - **Claude Code `2.1.329`** for the plugin format the compiler reads. Every
   record in `installs.yml` must carry `pin: "claude-code@2.1.329"`; a record
   naming a different pin is rejected rather than silently re-interpreted.

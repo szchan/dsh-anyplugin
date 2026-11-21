@@ -8,9 +8,11 @@
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-当前状态)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-010-包含什么)
 
-**让 DeepSeek Harness 跑 Claude Code / Codex 的插件 —— 按声明的“100% 保真”。**
+**让 DeepSeek Harness 跑 Claude Code 的插件 —— 只按本仓库对每类能力声明的
+保真度，不多一分。** Codex 是第二个 dialect，在 v0.3 发布；0.1.0 是 Claude
+Code 的编译路径。
 
 一个 Claude Code 插件是一堆文件：skills、斜杠命令、agents、hooks、MCP server、
 output styles，还有 `mods`（跑在宿主进程里的 JavaScript）。DeepSeek Harness
@@ -67,7 +69,7 @@ tarball 来验证它。
 | --- | --- |
 | Skills | `exact`（正文、信封、base-directory 前导，以及在宿主有通道时的参数替换） |
 | 斜杠命令 | 以 **skills** 形式发布（模型面 `equivalent`）；人类 `/…` 面是 `planned`，需要宿主的命令名接缝（`D10`） |
-| MCP server | `equivalent`：stdio 与 Streamable HTTP，Claude 的工具名逐字保留 |
+| MCP server | `equivalent`：stdio 与 Streamable HTTP；可调用名由 DSH 加命名空间（`mcp__plugin_<plugin>_<server>__<tool>`），Claude 的名字作为后缀保留 |
 | Hooks | 宿主真的会触发的那批工具/生命周期事件是 `equivalent`；其余 `planned` 并点缺失的宿主事件 |
 | Agents | `exact`：每个 `agents/*.md` 成为名为 `<plugin>:<agent>` 的 scoped 工具 |
 | Output styles | **已发布**：profile 的激活记录选择一个 style（`D42`）；`/<plugin>:<name>` 别名仍缺命令名接缝（`D10`） |
@@ -107,8 +109,8 @@ profile 配置，也不生成代码。
 0.1.0 只包含**编译路径**：skills（斜杠命令以 skills 的模型面落地）、MCP、
 hooks、agents、由 profile 记录激活的 output style（D42）、安装/协调与信任门。
 mods 内核与 Codex 方言**不在**本版本内。版本声明为 DSH
-`>=0.2.2-rc.2 <0.2.2`（`engines.dsh`；测试套件启动 `0.2.2-rc.2` 与
-`0.2.2-rc.5`，范围外的运行时会被拒绝，直到它被测过 —— `dsh plugin
+`0.2.2-rc.2 || 0.2.2-rc.5`（`engines.dsh`：恰好是测试套件启动的两个版本，
+其他运行时都会被拒绝，直到它被测过 —— `dsh plugin
 allow-version` 可授予精确版本豁免）与 Claude Code `2.1.329`。
 
 lock、启用层、行配置覆盖、`exec` 授权文件，以及如何移除 bundle 或单个插件，
