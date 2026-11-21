@@ -1,0 +1,39 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "codex-portable",
+    "version": "1.0.0",
+    "source": "hand-authored: the portable spec is the oracle (D33)"
+  },
+  "components": [
+    {
+      "surface": "mcpServers",
+      "name": "probe",
+      "details": {
+        "note": "hand-authored: the Agent Plugins 1.0.0 spec declares this server; there is no Codex CLI oracle to observe it (D33)."
+      }
+    },
+    {
+      "surface": "skills",
+      "name": "codex-root",
+      "details": {
+        "note": "hand-authored: root SKILL.md is a Codex-layout compatibility extra, not a 1.0.0 component; there is no Codex CLI oracle to observe it (D33)."
+      }
+    },
+    {
+      "surface": "skills",
+      "name": "portable-skill",
+      "details": {
+        "note": "hand-authored: the Agent Plugins 1.0.0 spec declares this skill; there is no Codex CLI oracle to observe it (D33)."
+      }
+    }
+  ],
+  "pin": {
+    "tool": "agent-plugins",
+    "version": "1.0.0"
+  },
+  "notes": [
+    "Hand-authored, not observed: there is no upstream oracle for the Codex dialect, so these rows are the declared portable 1.0.0 surface (D33), not a `codex plugin details` capture. The file is named `codex@<spec version>` for the dialect slot; the composed pin is `agent-plugins@1.0.0`.",
+    "Only components DSH can observe are listed: one portable skill under `skills/`, the root `SKILL.md` compatibility extra, and one MCP server. Hooks are absent because exec grants are default-off (D25); interface/assets/apps/onboardingSkill have no DSH inventory surface."
+  ]
+}

@@ -55,6 +55,15 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- Codex install end to end (ticket #101): `compile.ts` resolves a lock row's
+  `dialect` through a two-entry registry (`claude-code` → `readClaudePlugin` +
+  `claude-code@2.1.329`; `codex` → `readCodexPlugin` +
+  `agent-plugins@1.0.0`), so a codex record reconciles into the same
+  dialect-qualified group shape and runs in the pinned DSH oracle. The
+  `codex@1.0.0` golden is hand-authored because there is no upstream Codex
+  oracle (D33); `codex-e2e.test.mjs` diffs it, exercises the over-budget
+  refusal and a bad-manifest compile problem, and the coverage matrix is
+  unchanged.
 - `$` bridge (ticket #46; measured by S15): across the five pinned mods the
   bridge is asked for 69 call sites / 30 `namespace.method` pairs in 11
   namespaces. Twenty-two methods are served; the six `ui.*` members

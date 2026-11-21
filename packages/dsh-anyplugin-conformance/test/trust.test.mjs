@@ -944,10 +944,10 @@ test('compileReport keeps trusted and refused decisions; reconcile surfaces refu
     // An unknown dialect is a per-record problem, not a whole-lock abort.
     const unknown = {
       ...installs,
-      plugins: [...installs.plugins, { ...installs.plugins[0], name: 'unknown', dialect: 'codex' }],
+      plugins: [...installs.plugins, { ...installs.plugins[0], name: 'unknown', dialect: 'cursor' }],
     }
     const withUnknown = {
-      user: { plugins: { ...enablements.user.plugins, 'codex:unknown': { enabled: true, grants: [] } } },
+      user: { plugins: { ...enablements.user.plugins, 'cursor:unknown': { enabled: true, grants: [] } } },
     }
     const withProblems = compileReport(unknown, {
       materializers,
@@ -956,7 +956,7 @@ test('compileReport keeps trusted and refused decisions; reconcile surfaces refu
     })
     assert.equal(withProblems.entries.length, 1)
     assert.equal(withProblems.problems.length, 1)
-    assert.match(withProblems.problems[0].reason, /unsupported dialect "codex"/)
+    assert.match(withProblems.problems[0].reason, /unsupported dialect "cursor" \(installed dialects: claude-code, codex\)/)
   } finally {
     rmSync(trusted.dir, { recursive: true, force: true })
     rmSync(refused.dir, { recursive: true, force: true })

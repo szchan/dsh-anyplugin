@@ -44,7 +44,7 @@
     "fetch:harness": "node scripts/fetch-harness.mjs",
     "fetch:claude": "node scripts/fetch-claude.mjs",
     "fetch:mod": "node scripts/fetch-mod.mjs",
-    "test": "node --experimental-vm-modules --test 'packages/**/*.test.mjs'",
+    "test": "node --experimental-vm-modules --test \"packages/**/*.test.mjs\" \"scripts/**/*.test.mjs\"",
     "extract:hooks": "node scripts/extract-hook-payloads.mjs",
     "check:arch": "node scripts/check-architecture.mjs",
     "gh-bot": "node scripts/gh-bot.mjs",
