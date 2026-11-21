@@ -10,6 +10,7 @@
  *   rig report  <plugin-dir> [--json] [--grants <grants.yml>]
  *   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
  *   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
+  rig revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
  *
  * `capture` records what the upstream host reports about a plugin. `verify`
  * replays the probe and diffs it against that golden, which is how a pin bump
@@ -130,6 +131,7 @@ const USAGE = `usage:
   rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
+  rig revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
   rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--drop-mods] [--dry-run] [--json]
   rig list    [--json]
   rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
@@ -385,9 +387,20 @@ async function main(argv: string[]): Promise<number> {
       console.log(USAGE)
       return 0
     }
-    const [pluginDir, grantsFile] = requiredOptions(args, 'plugin', 'grants')
+    const capabilityOption = args.options.get('capability')
+    if (capabilityOption !== undefined && typeof capabilityOption !== 'string') {
+      throw new Error(`missing value for --capability\n${USAGE}`)
+    }
+    const [grantsFile] = requiredOptions(args, 'grants')
     const scope = parseScope(args.options.get('scope'))
     if (args.command === 'grant') {
+      const [pluginDir] = requiredOptions(args, 'plugin')
+      if (capabilityOption === 'network') {
+        throw new Error(`a network grant is recorded by \`rig marketplace install --yes\`, not by \`rig grant\`\n${USAGE}`)
+      }
+      if (capabilityOption !== undefined && capabilityOption !== 'exec') {
+        throw new Error(`--capability must be "exec" or "network"\n${USAGE}`)
+      }
       const run = runGrant(readPlugin(pluginDir), grantsFile, {
         scope,
         yes: args.options.get('yes') === true,
@@ -403,6 +416,21 @@ async function main(argv: string[]): Promise<number> {
     if (args.options.get('replace-revoke') === true || args.options.get('partial') === true) {
       throw new Error(`--replace-revoke and --partial apply only to grant\n${USAGE}`)
     }
+    if (capabilityOption === 'network') {
+      const [networkPlugin] = requiredOptions(args, 'plugin-id')
+      const [target] = requiredOptions(args, 'target')
+      const outcome = revokeNetworkGrant(grantsFile, networkPlugin, target, scope)
+      console.log(
+        args.options.get('json') === true
+          ? JSON.stringify(outcome, null, 2)
+          : `revoked ${outcome.capability} grant at ${outcome.scope} scope: ${outcome.plugin} ${outcome.target}`,
+      )
+      return 0
+    }
+    if (capabilityOption !== undefined && capabilityOption !== 'exec') {
+      throw new Error(`--capability must be "exec" or "network"\n${USAGE}`)
+    }
+    const [pluginDir] = requiredOptions(args, 'plugin')
     const [target] = requiredOptions(args, 'target')
     let plugin: ClaudePluginIr | undefined
     let pluginError: string | undefined
@@ -713,6 +741,28 @@ export interface ResolutionView {
   allowedBy: { scope: Scope; artifactHash: string; grantedAt: string } | null
   verdict: string
   warning?: string
+}
+
+/**
+ * Revoke a network grant. Exec revokes are planned against a plugin directory;
+ * a network grant has no plugin to read, so the record itself is the target.
+ * `--yes` is refused for every revoke: revocation is immediate and needs no
+ * confirmation.
+ */
+export function revokeNetworkGrant(
+  file: string,
+  plugin: string,
+  target: string,
+  scope: Scope,
+): { plugin: string; capability: string; target: string; scope: Scope; alreadyRevoked: boolean; wrote: boolean } {
+  const before = readGrants(file)
+  const alreadyRevoked = before.revokes.some(
+    (record) => record.plugin === plugin && record.capability === 'network' && record.target === target && record.scope === scope,
+  )
+  if (!alreadyRevoked) {
+    updateGrants(file, (current) => revoke(current, { plugin, capability: 'network', target }, { scope }))
+  }
+  return { plugin, capability: 'network', target, scope, alreadyRevoked, wrote: !alreadyRevoked }
 }
 
 export interface RevokePlan {

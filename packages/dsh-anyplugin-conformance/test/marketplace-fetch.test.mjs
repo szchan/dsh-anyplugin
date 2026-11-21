@@ -15,6 +15,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
@@ -214,6 +215,7 @@ async function serve(handler) {
   const { port } = server.address()
   return {
     url: `https://127.0.0.1:${port}`,
+    port,
     close: () =>
       new Promise((done) => {
         server.closeAllConnections()
@@ -614,7 +616,8 @@ test('a url query token is sent but never stored or printed', async () => {
     const grants = readGrants(box.grants).grants
     const network = grants.filter((record) => record.capability === 'network')
     assert.equal(network.length, 1)
-    assert.equal(network[0].target, 'url:' + server.url + '/url-plugin.tgz')
+    assert.equal(network[0].target.startsWith('url:' + server.url + '/url-plugin.tgz#q='), true)
+    assert.match(network[0].target, /#q=[0-9a-f]{16}$/u)
     assert.equal(grants.filter((record) => record.capability === 'exec').length, 0)
     // The fetch itself still carried the query the catalog asked for.
     assert.equal(requests.length, 1)
@@ -668,6 +671,7 @@ test('--dry-run prints the exact fetch and creates no cache, grant, lock or requ
     assert.equal(preview.status, 0, preview.stderr)
     assert.match(preview.stdout, /dry run — nothing fetched, nothing written/u)
     assert.match(preview.stdout, new RegExp(`would fetch: GET ${server.url}/plugin\\.tgz`, 'u'))
+    assert.match(preview.stdout, /integrity: unknown — a dry run fetches nothing/u)
     assert.match(preview.stdout, /network grant: none/u)
     assert.deepEqual(requests, [], 'a dry run must not fetch')
     assert.equal(existsSync(box.cache), false, 'a dry run must not create the cache directory')
@@ -684,6 +688,43 @@ test('--dry-run prints the exact fetch and creates no cache, grant, lock or requ
     assert.equal(payload.fetch.kind, 'url')
     assert.match(payload.fetch.command, /^GET https:/u)
     assert.equal(existsSync(box.cache), false)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a redirect carrying credentials is refused before the hop', async () => {
+  const box = sandbox()
+  const requests = []
+  const server = await serve((request, response) => {
+    requests.push({ url: request.url, authorization: request.headers.authorization ?? null })
+    if (request.url === '/cred') {
+      response.writeHead(302, { location: `https://user:pw@127.0.0.1:${server.port}/same.tgz` })
+      response.end()
+      return
+    }
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end()
+  })
+  try {
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      { name: 'url-plugin', source: { source: 'url', url: server.url + '/cred' } },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /marketplace-fetch-refused/u)
+    assert.match(refused.stderr, /redirected to a URL carrying credentials/u)
+    assert.doesNotMatch(refused.stderr, /user:pw/u, 'the refusal must not echo the credentials')
+    assert.deepEqual(
+      requests.map((request) => request.url),
+      ['/cred'],
+      'the hop carrying credentials must never be requested',
+    )
+    assert.equal(requests[0].authorization, null)
+    assert.equal(existsSync(box.cache), false, 'a refused hop writes no artifact')
   } finally {
     await server.close()
     cleanup(box.dir)
@@ -771,4 +812,275 @@ test('a statically malformed catalog cannot name a cache directory', async () =>
 test('the fetch caps are the ones the refusal messages name', async () => {
   assert.equal(MAX_ARTIFACT_BYTES, 20 * 1024 * 1024)
   assert.equal(MAX_REDIRECTS, 5)
+})
+
+
+// ---------------------------------------------------------------------------
+// review round: option-shaped refs, query identity, origin pinning, redaction,
+// symlinks, cache re-hashing, grant-after-install, network revoke
+// ---------------------------------------------------------------------------
+
+test('a git ref that looks like an option is refused before git runs', async () => {
+  const box = sandbox()
+  const repo = createRepo()
+  const marker = join(box.dir, 'RIG-RCE')
+  const tick = String.fromCharCode(96)
+  const payload = '--upload-pack=' + tick + 'touch$' + '{IFS}' + marker + tick + 'sh'
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCatalog(root, [
+      {
+        name: 'git-plugin',
+        source: { source: 'git-subdir', url: repo.url, path: 'plugins/git-plugin', ref: payload },
+      },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'git-plugin', '--from', catalog, '--yes'])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /source\.ref .* is not a plain git ref/u)
+    assert.equal(existsSync(marker), false, 'the ref payload must never reach a shell')
+    assert.equal(existsSync(box.cache), false)
+    // A bare option-shaped ref passes the character grammar, so the leading
+    // "-" rule is the only thing that refuses it before git sees the ref.
+    const optionCatalog = writeCatalog(join(box.dir, 'catalog-option'), [
+      { name: 'git-plugin', source: { source: 'git-subdir', url: repo.url, path: 'plugins/git-plugin', ref: '--upload-pack' } },
+    ])
+    const option = await run(box, ['marketplace', 'install', 'git-plugin', '--from', optionCatalog, '--yes'])
+    assert.equal(option.status, 1)
+    assert.match(option.stderr, /source\.ref .* is not a plain git ref/u)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a query string is part of the grant identity, not display-only', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false })
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const requests = []
+  const server = await serve((request, response) => {
+    requests.push(request.url)
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const first = writeCatalog(join(box.dir, 'one'), [
+      { name: 'url-plugin', source: { source: 'url', url: server.url + '/url-plugin.tgz?token=one' } },
+    ])
+    const installed = await run(box, ['marketplace', 'install', 'url-plugin', '--from', first, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    const network = readGrants(box.grants).grants.filter((record) => record.capability === 'network')
+    assert.equal(network.length, 1)
+    assert.match(network[0].target, /#q=[0-9a-f]{16}$/u)
+    const second = writeCatalog(join(box.dir, 'two'), [
+      { name: 'url-plugin', source: { source: 'url', url: server.url + '/url-plugin.tgz?token=two' } },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'url-plugin', '--from', second], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /network-consent-required/u)
+    assert.equal(requests.length, 1, 'consent for ?token=one must not fetch ?token=two')
+    assert.equal(readGrants(box.grants).grants.length, 1)
+    const preview = await run(box, ['marketplace', 'install', 'url-plugin', '--from', first, '--dry-run', '--json'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(preview.status, 0, preview.stderr)
+    const plan = JSON.parse(preview.stdout).fetch
+    assert.equal(plan.consent, 'granted')
+    assert.equal(plan.integrity, 'unknown', 'a dry run cannot verify the current bytes')
+    assert.equal(plan.pinnedIntegrity, network[0].artifactHash)
+    assert.equal(requests.length, 1, 'the dry run after a grant still fetches nothing')
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a cross-origin redirect is refused before the second origin is contacted', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false })
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const secondRequests = []
+  const second = await serve((request, response) => {
+    secondRequests.push(request.url)
+    response.writeHead(200)
+    response.end()
+  })
+  const first = await serve((request, response) => {
+    response.writeHead(302, { location: second.url + '/url-plugin.tgz' })
+    response.end()
+  })
+  try {
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      { name: 'url-plugin', source: { source: 'url', url: first.url + '/url-plugin.tgz' } },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /redirected to a different origin/u)
+    assert.deepEqual(secondRequests, [])
+    assert.equal(existsSync(box.cache), false)
+  } finally {
+    await first.close()
+    await second.close()
+    cleanup(box.dir)
+  }
+})
+
+test('--json and list output never print a query token', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false })
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      { name: 'url-plugin', source: { source: 'url', url: server.url + '/url-plugin.tgz?token=S3CRET&sig=ABC' } },
+      // Catalog rows with userinfo must be redacted before either output mode
+      // prints them; this entry is never installed.
+      { name: 'credential-plugin', source: { source: 'url', url: 'https://user:s3cr3t@example.invalid/x.tgz' } },
+    ])
+    const listJson = await run(box, ['marketplace', 'list', '--from', catalog, '--json'])
+    assert.equal(listJson.status, 0, listJson.stderr)
+    assert.doesNotMatch(listJson.stdout, /S3CRET|ABC|s3cr3t/u)
+    const listed = JSON.parse(listJson.stdout)
+    const credential = listed.entries.find((entry) => entry.name === 'credential-plugin')
+    assert.equal(credential.source.url, 'https://example.invalid/x.tgz')
+    const listText = await run(box, ['marketplace', 'list', '--from', catalog])
+    assert.doesNotMatch(listText.stdout + listText.stderr, /S3CRET|ABC|s3cr3t/u)
+    const preview = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--dry-run', '--json'])
+    assert.equal(preview.status, 0, preview.stderr)
+    assert.doesNotMatch(preview.stdout, /S3CRET|ABC/u)
+    const previewText = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--dry-run'])
+    assert.equal(previewText.status, 0, previewText.stderr)
+    assert.doesNotMatch(previewText.stdout + previewText.stderr, /S3CRET|ABC|s3cr3t/u)
+    const installed = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--yes', '--json'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    assert.doesNotMatch(installed.stdout, /S3CRET|ABC/u)
+    assert.doesNotMatch(readFileSync(box.grants, 'utf8'), /S3CRET|ABC/u)
+    assert.doesNotMatch(readFileSync(box.lock, 'utf8'), /S3CRET|ABC/u)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a git artifact with a symbolic link is refused like a tar link', async () => {
+  const box = sandbox()
+  const repo = createRepo()
+  try {
+    symlinkSync('skills/hello/SKILL.md', join(repo.plugin, 'linked.md'))
+    git(repo.work, ['add', '.'])
+    git(repo.work, ['commit', '-m', 'link'])
+    git(repo.work, ['push', repo.bare, 'main'])
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      { name: 'git-plugin', source: { source: 'git-subdir', url: repo.url, path: 'plugins/git-plugin', ref: 'main' } },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'git-plugin', '--from', catalog, '--yes'])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /symbolic link/u)
+    // The marketplace cache parent exists because the fetch workspace is made
+    // inside it; no artifact may be committed for a refused git checkout.
+    assert.deepEqual(readdirSync(join(box.cache, 'fetch-marketplace')), [])
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a tampered cache entry is re-fetched instead of trusted by metadata', async () => {
+  const box = sandbox()
+  const repo = createRepo()
+  try {
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      {
+        name: 'git-plugin',
+        source: { source: 'git-subdir', url: repo.url, path: 'plugins/git-plugin', sha: repo.commit },
+      },
+    ])
+    const first = await run(box, ['marketplace', 'install', 'git-plugin', '--from', catalog, '--yes'])
+    assert.equal(first.status, 0, first.stderr)
+    const artifact = join(box.cache, 'fetch-marketplace', 'git-plugin@' + repo.commit)
+    const skill = join(artifact, 'plugins', 'git-plugin', 'skills', 'hello', 'SKILL.md')
+    writeFileSync(skill, readFileSync(skill, 'utf8') + '\ntampered\n')
+    const again = await run(box, ['marketplace', 'install', 'git-plugin', '--from', catalog])
+    assert.equal(again.status, 0, again.stderr)
+    assert.doesNotMatch(readFileSync(skill, 'utf8'), /tampered/u)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a fetch followed by a refused install writes no network grant', async () => {
+  const box = sandbox()
+  const pkg = tempDir('empty-pkg-')
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'empty-fixture', version: '0.1.0' }))
+  mkdirSync(join(pkg, '.claude-plugin'), { recursive: true })
+  writeFileSync(
+    join(pkg, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'empty-plugin', version: '0.1.0' }),
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      { name: 'empty-plugin', source: { source: 'url', url: server.url + '/empty.tgz' } },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'empty-plugin', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /nothing-declared/u)
+    assert.equal(existsSync(box.cache), true, 'the fetch happened before the install refusal')
+    assert.equal(existsSync(box.grants), false, 'a refused install leaves no standing consent')
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a network grant is revoked by target and a later install refuses', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false })
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const catalog = writeCatalog(join(box.dir, 'catalog'), [
+      { name: 'url-plugin', source: { source: 'url', url: server.url + '/url-plugin.tgz' } },
+    ])
+    const installed = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    const target = readGrants(box.grants).grants.find((record) => record.capability === 'network').target
+    const revoked = await run(box, [
+      'revoke', '--grants', box.grants,
+      '--plugin-id', 'fetch-marketplace:url-plugin',
+      '--target', target,
+      '--capability', 'network',
+    ])
+    assert.equal(revoked.status, 0, revoked.stderr)
+    assert.match(revoked.stdout, /revoked network grant/u)
+    assert.equal(readGrants(box.grants).revokes.filter((record) => record.capability === 'network').length, 1)
+    const refused = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /network-consent-revoked/u)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
 })

@@ -217,7 +217,7 @@ test('a fetched source records its integrity and the first resolvedAt', () => {
   // On disk the object's quotes are escaped by the outer canonical string.
   assert.ok(text.includes('\\"integrity\\":\\"git:0123456789abcdef0123456789abcdef01234567\\"'))
   assert.ok(text.includes('\\"resolvedAt\\":\\"2026-11-21T12:00:00.000Z\\"'))
-  assert.match(text, /schema: "dsh-anyplugin\/installs@1"/u)
+  assert.match(text, /schema: "dsh-anyplugin\/installs@2"/u)
   assert.deepEqual(parseInstalls(text, 'installs.yml'), lock(sample({ source })))
 })
 

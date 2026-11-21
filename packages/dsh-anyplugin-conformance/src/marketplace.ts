@@ -495,6 +495,20 @@ export function resolveLocalSource(file: string, entry: MarketplaceEntry): Resol
   return { root, pluginDir }
 }
 
+/** A URL as it may be printed: no credentials, no query (a token is not display text). */
+function displayUrl(raw: string): string {
+  try {
+    const url = new URL(raw)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return raw
+  }
+}
+
 function sourceTarget(source: MarketplaceSource): string {
   switch (source.kind) {
     case 'local':
@@ -503,15 +517,30 @@ function sourceTarget(source: MarketplaceSource): string {
       return source.repo
     case 'git-subdir': {
       const pin = source.sha ?? source.ref
-      return `${source.url} (${source.path})${pin === undefined ? '' : ` @ ${pin}`}`
+      return `${displayUrl(source.url)} (${source.path})${pin === undefined ? '' : ` @ ${pin}`}`
     }
     case 'npm':
       return source.version === undefined ? source.package : `${source.package}@${source.version}`
     case 'command':
       return source.command
     default:
-      return source.url
+      return displayUrl(source.url)
   }
+}
+
+/**
+ * The catalog entry as a result may carry it: the name and metadata are
+ * public, but a source URL may hold a token in its query and must not reach
+ * `--json` (or a log line) intact.
+ */
+function redactEntry(entry: MarketplaceEntry): MarketplaceEntry {
+  const source = entry.source
+  if (source.kind === 'url') return { ...entry, source: { ...source, url: displayUrl(source.url) } }
+  if (source.kind === 'git-subdir') return { ...entry, source: { ...source, url: displayUrl(source.url) } }
+  if (source.kind === 'github') {
+    return { ...entry, source: { ...source, repo: /^https?:/u.test(source.repo) ? displayUrl(source.repo) : source.repo } }
+  }
+  return entry
 }
 
 function problemText(problem: MarketplaceProblem): string {
@@ -554,10 +583,11 @@ export function listMarketplace(options: MarketplaceListOptions): MarketplaceLis
   const file = resolve(options.from)
   const marketplace = readMarketplace(file)
   const entries: ListedMarketplaceEntry[] = marketplace.entries.map((entry) => {
+    const shown = redactEntry(entry)
     if (entry.source.kind === 'local' || entry.source.kind === 'url' || entry.source.kind === 'git-subdir' || entry.source.kind === 'npm') {
-      return { ...entry, installable: true }
+      return { ...shown, installable: true }
     }
-    return { ...entry, installable: false, unsupported: unsupportedReason(entry.source.kind) }
+    return { ...shown, installable: false, unsupported: unsupportedReason(entry.source.kind) }
   })
   return {
     /** Malformed entries are problems; a remote entry is a valid catalog row. */
@@ -624,8 +654,13 @@ export interface MarketplaceFetchPreview {
     consent: 'none' | 'granted' | 'revoked'
     /** The scope of the deciding grant/revoke, when one exists. */
     scope?: Scope
-    /** The pinned content address, when a grant exists. */
-    integrity?: string
+    /**
+     * The current artifact integrity. A dry run fetches nothing, so it cannot
+     * check whether a floating ref moved: this is always `unknown` here.
+     */
+    integrity: 'unknown'
+    /** The content address an existing grant pins, when there is one. */
+    pinnedIntegrity?: string
   }
 }
 
@@ -714,7 +749,7 @@ export async function installFromMarketplace(options: MarketplaceInstallOptions)
     )
   }
   const root = marketplaceRoot(file)
-  const metadata: MarketplaceMetadata = { name: marketplace.name, file, entry, root }
+  const metadata: MarketplaceMetadata = { name: marketplace.name, file, entry: redactEntry(entry), root }
 
   if (entry.source.kind === 'local') {
     const resolved = resolveLocalSource(file, entry)
@@ -759,7 +794,8 @@ export async function installFromMarketplace(options: MarketplaceInstallOptions)
         command: target.command,
         consent: revoke ? 'revoked' : prior === undefined ? 'none' : 'granted',
         ...(resolution.scope === undefined ? {} : { scope: resolution.scope }),
-        ...(prior === undefined ? {} : { integrity: prior.artifactHash }),
+        integrity: 'unknown',
+        ...(prior === undefined ? {} : { pinnedIntegrity: prior.artifactHash }),
       },
     }
   }
@@ -776,20 +812,6 @@ export async function installFromMarketplace(options: MarketplaceInstallOptions)
   })
   const moved = prior !== undefined && prior.artifactHash !== artifact.integrity
   if (moved && yes !== true) throw pinMoved(identity, target.target, prior, artifact.integrity)
-  if (prior === undefined || moved) {
-    updateGrants(paths.grants, (current) =>
-      grant(
-        current,
-        {
-          plugin: identity,
-          capability: NETWORK_CAPABILITY,
-          target: target.target,
-          artifactHash: artifact.integrity,
-        },
-        { scope },
-      ),
-    )
-  }
 
   const version = entry.version ?? artifact.version
   const source = {
@@ -808,6 +830,22 @@ export async function installFromMarketplace(options: MarketplaceInstallOptions)
     pluginDir: artifact.pluginDir,
     source,
   })
+  // The grant is written only after the install succeeded. A fetch that is
+  // followed by a refused install leaves no standing network authorization.
+  if (prior === undefined || moved) {
+    updateGrants(paths.grants, (current) =>
+      grant(
+        current,
+        {
+          plugin: identity,
+          capability: NETWORK_CAPABILITY,
+          target: target.target,
+          artifactHash: artifact.integrity,
+        },
+        { scope },
+      ),
+    )
+  }
   return { ...result, marketplace: { ...metadata, root: artifact.root } }
 }
 
@@ -818,13 +856,14 @@ export function formatMarketplaceInstall(outcome: MarketplaceInstallOutcome): st
       plan.consent === 'none'
         ? `none — pass --yes to fetch and record ${plan.target}`
         : plan.consent === 'granted'
-          ? `granted (${plan.integrity ?? 'pinned'})`
+          ? `granted (grant pins ${plan.pinnedIntegrity ?? 'not recorded'}; current integrity unknown — a dry run fetches nothing)`
           : `revoked${plan.scope === undefined ? '' : ` at ${plan.scope} scope`}`
     return [
       `marketplace: ${outcome.marketplace.name}  ${outcome.marketplace.file}`,
       `  entry: ${outcome.marketplace.entry.name}`,
       '  dry run — nothing fetched, nothing written',
       `  would fetch: ${plan.command}`,
+      '  integrity: unknown — a dry run fetches nothing',
       `  network grant: ${consent}`,
     ].join('\n')
   }

@@ -92,12 +92,18 @@ function paxRecords(payload: Buffer): Map<string, string> {
  */
 function safeSegments(raw: string): string[] {
   if (raw.includes('\0')) throw new TarError('tar member name contains a NUL byte')
+  if (raw.includes('\\')) throw new TarError(`tar member "${raw}" contains a backslash`)
   if (raw.startsWith('/')) throw new TarError(`tar member "${raw}" is an absolute path`)
   if (/^[A-Za-z]:/u.test(raw)) throw new TarError(`tar member "${raw}" has a drive prefix`)
   const segments: string[] = []
   for (const segment of raw.split('/')) {
     if (segment === '' || segment === '.') continue
     if (segment === '..') throw new TarError(`tar member "${raw}" escapes the destination`)
+    // win32 drops a trailing dot or space from a path component, so "a." and
+    // "a " can address a file the author did not name.
+    if (segment.endsWith('.') || segment.endsWith(' ')) {
+      throw new TarError(`tar member "${raw}" has a component ending in a dot or space`)
+    }
     segments.push(segment)
   }
   return segments
@@ -131,6 +137,7 @@ export function extractTarball(buffer: Buffer, destination: string, options: Ext
   let offset = 0
   let files = 0
   let written = 0
+  const seen = new Set<string>()
   let pendingPath: string | undefined
   let done = false
   while (offset + BLOCK <= data.length && !done) {
@@ -173,14 +180,25 @@ export function extractTarball(buffer: Buffer, destination: string, options: Ext
     const target = join(destination, ...segments)
     if (written + size > maxBytes) throw new TarError(`tarball exceeds the ${maxBytes} byte extraction cap`)
     if (isDirectory) {
-      mkdirSync(target, { recursive: true })
+      try {
+        mkdirSync(target, { recursive: true })
+      } catch (error) {
+        throw new TarError(`cannot create directory "${segments.join('/')}": ${(error as Error).message}`)
+      }
     } else {
       if (files >= maxFiles) throw new TarError(`tarball has more than ${maxFiles} files`)
-      mkdirSync(dirname(target), { recursive: true })
+      const path = segments.join('/')
+      if (seen.has(path)) throw new TarError(`tar member "${path}" appears more than once`)
+      seen.add(path)
       const content = data.subarray(offset, offset + size)
-      writeFileSync(target, content)
-      const mode = octal(header, 100, 8, 'mode') & 0o777
-      chmodSync(target, (mode & 0o111) === 0 ? 0o644 : mode & 0o755)
+      try {
+        mkdirSync(dirname(target), { recursive: true })
+        writeFileSync(target, content)
+        const mode = octal(header, 100, 8, 'mode') & 0o777
+        chmodSync(target, (mode & 0o111) === 0 ? 0o644 : mode & 0o755)
+      } catch (error) {
+        throw new TarError(`cannot extract "${path}": ${(error as Error).message}`)
+      }
       files += 1
       written += size
     }

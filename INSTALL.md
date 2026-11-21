@@ -252,9 +252,9 @@ directory install produces, except for the record's `source`:
 ```
 
 A structured provenance lives inside the canonical double-quoted JSON string,
-because D23 already defines every value that way: the grammar does not move and
-the schema stays `dsh-anyplugin/installs@1`, so a reader that only requires
-`source` to be a non-empty string still reads the file. A fetched entry also
+because D23 already defines every value that way: the grammar does not move (the
+schema moved to `@2` for `mods`, not for this field), so a reader that only
+requires `source` to be a non-empty string still reads the file. A fetched entry also
 records what it resolved to, so a later install can tell the pin moved:
 
 ```yaml
@@ -265,9 +265,9 @@ records what it resolved to, so a later install can tell the pin moved:
 `sha256:<sha256 of the downloaded bytes>`; `resolvedAt` records when the bytes
 were first fetched. Two installs of the same resolved commit or tarball produce
 the same `integrity`, and re-installing the same bytes keeps the lock
-byte-identical. The pair must appear together, and the schema still stays
-`dsh-anyplugin/installs@1` — the object lives inside the existing canonical
-string.
+byte-identical. The pair must appear together, and the field needs no schema
+change of its own — the object lives inside the existing canonical string
+(`@2` exists for `mods`).
 
 `github`, `archive` and `command` entries are valid catalog rows but are
 refused as `unsupported-marketplace-source`: each names the missing piece and
@@ -302,7 +302,14 @@ fetched, not read: git fetch --depth=1 https://example.invalid/plugin.git main
 
 `--yes` records a `network` grant in `grants.yml` whose target is the exact
 source spec and whose `artifactHash` is the resolved integrity. A later run
-without `--yes` uses that grant. When a floating `ref` (for example `main`)
+without `--yes` uses that grant. The grant is written only after the install
+succeeds, so a fetch followed by a refused install leaves no standing network
+authorization. The URL in a grant target drops credentials and the query; a
+query string is represented by an opaque fingerprint (`#q=<16 hex>`), so
+`?token=a` and `?token=b` are different grants and consent for one never
+fetches the other. `rig revoke --grants <file> --plugin-id <marketplace:entry>
+--target <target> --capability network [--scope <s>]` revokes one record by
+target. When a floating `ref` (for example `main`)
 resolves to a new commit, or a tarball's bytes change, the install refuses with
 `network-pin-moved` naming both the recorded and the resolved identity before
 anything new is installed, and exits 1; passing `--yes` accepts the new pin,
@@ -313,29 +320,57 @@ capability-scoped — it never authorizes `exec`, `hook`, `monitor`, `bin` or
 
 `--dry-run` fetches nothing: it prints the exact command, the consent state and
 the target, writes no lock, layer, grant or cache entry, and exits 0. The tests
-assert the cache directory does not exist afterwards.
+assert the cache directory does not exist afterwards. Because no fetch happens,
+the preview cannot know the current bytes: it prints `integrity: unknown` (plus
+the hash an existing grant pins) rather than claiming the pin still matches.
+
+Grant records are scope-ranked, not scope-filtered: `--scope` does not narrow
+which record applies. The narrowest matching record decides, so a project-scope
+network grant also authorizes a `--scope user` install, and a project-scope
+revoke blocks a user-scope `--yes`. Keep marketplace grants and revokes at one
+scope when both directions must be predictable.
 
 Fetch rules:
 
 - `https://` and `file://` only; `http://` is a typed
   `insecure-marketplace-source` refusal before any request is made. A URL that
   carries credentials is refused, and every printed URL drops userinfo and
-  query strings.
+  query strings. A redirect must stay on the origin the catalog named (same
+  scheme, host and port); a cross-origin hop is refused before the second
+  request, because consent names an origin and an artifact, not whatever host a
+  redirect picks.
 - `git-subdir` runs a shallow `git fetch` with a fixed argv (no submodules, no
-  terminal prompts), checks out the resolved commit or the requested `sha`, and
-  refuses a `path` that escapes the repository or is absent.
+  terminal prompts) and a literal `--` before the repository and ref, checks
+  out the resolved commit or the requested `sha`, and refuses a `path` that
+  escapes the repository or is absent. `source.ref` must be a plain git ref
+  (no leading `-`, no `..`, `@{`, control characters or `.lock` suffix);
+  `git fetch` passes a local transport's `upload-pack` through a shell, so an
+  option-shaped ref would be code execution. When both `sha` and `ref` are
+  present, `sha` is the pin and `ref` is advisory: the fetch checks out `sha`,
+  and `ref` is not verified for ancestry.
+- A git checkout that contains a symbolic link is refused
+  (`marketplace-fetch-refused`): the tar extractor already refuses links, and
+  the same artifact should not be trusted differently because of its transport.
 - `npm` packs with `--ignore-scripts`, so a `prepare` or `postinstall` in the
   package never runs; a registry spec must pin an exact `version` (no
   `latest`, no ranges), and a package with no plugin manifest after extraction
   is refused.
 - `url` must return a gzipped tarball; the download is capped at 20 MiB and
   five redirects, hashed before extraction, and extracted with the same
-  traversal checks as the other kinds.
+  traversal checks as the other kinds. Tar members are refused when they are
+  absolute, contain `..`, a backslash (win32's separator), a NUL, a drive
+  prefix, or a path component ending in a dot or space (win32 drops those), and
+  a duplicate file name is refused rather than last-wins. CI runs on ubuntu
+  only, so the Windows-shaped traversal cases are tested on POSIX but the
+  win32 path itself is unexercised.
 - A fetched artifact is cached under
   `<lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/` with the
   metadata `kind`, `integrity`, `resolved`, `resolvedAt` and `version`. The
   cache directory is written only after the bytes were verified; a pinned sha
   or exact npm version can be reinstalled from it without touching the network.
+  The sidecar also records a `contentHash` over the extracted files, and a
+  reuse re-hashes the directory against it: a tampered cache is re-fetched (a
+  pinned artifact) rather than trusted on its metadata alone.
 
 The fetched directory then goes through the same `installPlugin` path as a
 local one — the same dialect detection, report, refusals, enablement decision

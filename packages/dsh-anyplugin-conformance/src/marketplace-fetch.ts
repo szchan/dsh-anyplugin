@@ -99,6 +99,8 @@ interface Metadata {
   /** Plugin root relative to the cache directory; `.` for a package/url root. */
   plugin: string
   version?: string
+  /** sha256 over the extracted files: what re-validates a reused cache entry. */
+  contentHash?: string
 }
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u
@@ -125,6 +127,21 @@ function redactAccess(url: string): string {
 
 function redactText(text: string): string {
   return text.replace(/https?:\/\/[^\s]+/gu, (match) => redactAccess(match))
+}
+
+/**
+ * The grant target for a URL: display-redacted, but with an opaque
+ * fingerprint of the query string. Two catalog URLs that differ only in a
+ * query (`?token=a` vs `?token=b`) must be two different grants — otherwise
+ * consent for one authorizes the other — while the token itself never reaches
+ * `grants.yml`, stdout or an error message.
+ */
+function targetUrl(url: URL): string {
+  const redacted = redactAccess(url.toString())
+  const query = url.search.replace(/^\?/u, '')
+  if (query === '') return redacted
+  const fingerprint = createHash('sha256').update(query).digest('hex').slice(0, 16)
+  return `${redacted}#q=${fingerprint}`
 }
 
 function firstLine(text: string): string {
@@ -190,6 +207,37 @@ function subdirSegments(raw: string): string[] {
   return segments
 }
 
+/**
+ * A ref that `git fetch` may receive as an argv word without being read as an
+ * option or a refspec expression. `git fetch` runs a local transport's
+ * `upload-pack` through a shell, so `--upload-pack=` plus backticks in a
+ * catalog would be arbitrary code execution; a leading `-`, `..`, `@{` or a
+ * control character is refused for the same reason.
+ */
+function gitRef(raw: string): string {
+  const bad =
+    raw === '' ||
+    raw.startsWith('-') ||
+    raw.length > 255 ||
+    !/^[A-Za-z0-9._/-]+$/u.test(raw) ||
+    raw.includes('..') ||
+    raw.includes('@{') ||
+    raw.includes('//') ||
+    raw.startsWith('/') ||
+    raw.endsWith('/') ||
+    raw.endsWith('.') ||
+    raw.endsWith('.lock') ||
+    raw.split('/').some((part) => part === '' || part === '.' || part.startsWith('.'))
+  if (bad) {
+    throw refusal(
+      'marketplace-fetch-refused',
+      `git-subdir source.ref "${raw}" is not a plain git ref`,
+      'use a branch, tag or refs/... name without options, "@{", ".." or a leading "-"',
+    )
+  }
+  return raw
+}
+
 function localPath(value: string): string | undefined {
   if (value.startsWith('file:')) return value
   if (value.startsWith('./') || value.startsWith('../') || value.startsWith('/')) return value
@@ -207,18 +255,15 @@ export function remoteTarget(source: MarketplaceSource, root: string): FetchTarg
     case 'git-subdir': {
       const url = remoteUrl(source.url, 'git-subdir source.url')
       const segments = subdirSegments(source.path)
-      const ref = source.sha ?? source.ref ?? 'HEAD'
       if (source.sha !== undefined && !HEX40.test(source.sha)) {
         throw refusal('marketplace-fetch-refused', `git-subdir source.sha "${source.sha}" must be a 40-character commit`)
       }
-      if (source.sha === undefined && source.ref !== undefined && (source.ref.trim() === '' || /\s/u.test(source.ref))) {
-        throw refusal('marketplace-fetch-refused', 'git-subdir source.ref must be a non-empty ref without whitespace')
-      }
+      const ref = source.sha !== undefined ? source.sha : gitRef(source.ref ?? 'HEAD')
       return {
         kind: 'git-subdir',
-        // The grant target and every message drop userinfo and the query:
-        // a catalog URL may carry a signed token that must not be stored.
-        target: `git:${redactAccess(url.toString())}@${ref}#${segments.join('/')}`,
+        // The grant target keeps an opaque query fingerprint (targetUrl) but
+        // never the query itself; the printed command is display-redacted.
+        target: `git:${targetUrl(url)}@${ref}#${segments.join('/')}`,
         command: `git fetch --depth=1 ${redactAccess(url.toString())} ${ref}`,
         pinned: source.sha !== undefined,
       }
@@ -271,7 +316,7 @@ export function remoteTarget(source: MarketplaceSource, root: string): FetchTarg
       const url = remoteUrl(source.url, 'url source.url')
       return {
         kind: 'url',
-        target: `url:${redactAccess(url.toString())}`,
+        target: `url:${targetUrl(url)}`,
         command: `GET ${redactAccess(url.toString())}`,
         pinned: false,
       }
@@ -322,6 +367,7 @@ function readMetadata(directory: string): Metadata | undefined {
     resolvedAt: record.resolvedAt,
     plugin: record.plugin,
     ...(typeof record.version === 'string' ? { version: record.version } : {}),
+    ...(typeof record.contentHash === 'string' ? { contentHash: record.contentHash } : {}),
   }
 }
 
@@ -408,6 +454,62 @@ function pluginInside(
   return { pluginDir: directory, plugin: relative(artifactRoot, directory) || '.' }
 }
 
+/**
+ * A git checkout preserves symlinks, while the tar extractor refuses them.
+ * Refuse them here too: one artifact shape should not be trusted differently
+ * because it arrived as a repository instead of a tarball.
+ */
+function rejectSymlinks(root: string, request: FetchRequest): void {
+  const pending = [root]
+  while (pending.length > 0) {
+    const directory = pending.pop() as string
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = join(directory, entry.name)
+      if (entry.isSymbolicLink()) {
+        throw refusal(
+          'marketplace-fetch-refused',
+          `${request.marketplace}: entry "${request.entry}" fetched a git artifact containing the symbolic link "${relative(root, full)}"`,
+          'a fetched artifact is plain files; replace the symlink with the file it points at',
+        )
+      }
+      if (entry.isDirectory()) pending.push(full)
+    }
+  }
+}
+
+/**
+ * Content address of an extracted artifact, over the relative paths and the
+ * bytes (the metadata sidecar is not content). A reused cache entry is
+ * re-hashed against this; metadata alone is a claim, not evidence.
+ */
+function contentDigest(root: string): string {
+  const hash = createHash('sha256')
+  const files: string[] = []
+  const pending = [root]
+  while (pending.length > 0) {
+    const directory = pending.pop() as string
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        pending.push(full)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const rel = relative(root, full).split(sep).join('/')
+      if (rel === METADATA) continue
+      files.push(rel)
+    }
+  }
+  files.sort()
+  for (const rel of files) {
+    const full = join(root, rel)
+    hash.update(rel).update('\0')
+    hash.update(String(statSync(full).mode & 0o777)).update('\0')
+    hash.update(readFileSync(full)).update('\0')
+  }
+  return `sha256:${hash.digest('hex')}`
+}
+
 function artifactFrom(directory: string, metadata: Metadata): FetchedArtifact {
   const pluginDir = resolve(directory, metadata.plugin)
   return {
@@ -425,6 +527,9 @@ function reusable(directory: string, expected: { kind: RemoteSourceKind; resolve
   if (!existsSync(metadataPath(directory))) return undefined
   const metadata = readMetadata(directory)
   if (metadata === undefined || metadata.kind !== expected.kind || metadata.resolved !== expected.resolved) return undefined
+  // Trust is pinned to the artifact hash, so a reused directory is re-hashed;
+  // a metadata sidecar alone cannot keep a tampered cache alive.
+  if (metadata.contentHash === undefined || metadata.contentHash !== contentDigest(directory)) return undefined
   const pluginDir = resolve(directory, metadata.plugin)
   if (escapes(pluginDir, directory) || !existsSync(pluginDir) || !hasManifest(pluginDir)) return undefined
   return artifactFrom(directory, metadata)
@@ -438,17 +543,23 @@ function prepareCacheRoot(cacheRoot: string, marketplace: string): string {
 
 /** Move a verified artifact into its content-addressed directory, atomically. */
 function commitArtifact(artifactRoot: string, final: string, metadata: Metadata): FetchedArtifact {
-  writeFileSync(metadataPath(artifactRoot), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
+  const complete: Metadata = { ...metadata, contentHash: contentDigest(artifactRoot) }
+  writeFileSync(metadataPath(artifactRoot), `${JSON.stringify(complete, null, 2)}\n`, 'utf8')
   if (existsSync(final)) {
     const existing = readMetadata(final)
-    if (existing !== undefined && existing.integrity === metadata.integrity) {
+    const intact =
+      existing !== undefined &&
+      existing.integrity === complete.integrity &&
+      existing.contentHash !== undefined &&
+      existing.contentHash === contentDigest(final)
+    if (intact) {
       rmSync(artifactRoot, { recursive: true, force: true })
       return artifactFrom(final, existing)
     }
     rmSync(final, { recursive: true, force: true })
   }
   renameSync(artifactRoot, final)
-  return artifactFrom(final, metadata)
+  return artifactFrom(final, complete)
 }
 
 function git(args: string[], cwd: string, display: string): string {
@@ -501,7 +612,8 @@ function fetchGit(request: FetchRequest, source: Extract<MarketplaceSource, { ki
   try {
     git(['init', '-q', work], work, redactAccess(url))
     const ref = sha ?? source.ref ?? 'HEAD'
-    git(['fetch', '--depth=1', url, ref], work, redactAccess(url))
+    // `--` ends options even though `url` and `ref` are validated: belt and braces.
+    git(['fetch', '--depth=1', '--', url, ref], work, redactAccess(url))
     const commit = git(['rev-parse', 'FETCH_HEAD'], work, redactAccess(url)).trim()
     if (sha !== undefined && commit !== sha) {
       throw refusal(
@@ -511,6 +623,7 @@ function fetchGit(request: FetchRequest, source: Extract<MarketplaceSource, { ki
     }
     git(['checkout', '-q', '-f', commit], work, redactAccess(url))
     rmSync(join(work, '.git'), { recursive: true, force: true })
+    rejectSymlinks(work, request)
     const { pluginDir, plugin } = pluginInside(work, request, source.path)
     const version = pluginVersion(pluginDir)
     const final = cacheDirectory(request.cacheRoot, request.marketplace, request.entry, commit)
@@ -672,6 +785,32 @@ function httpsBytes(url: URL, redirects: number, visited: Set<string>): Promise<
           }
           if (next.protocol !== 'https:') {
             rejectPromise(refusal('marketplace-fetch-refused', `url ${redactAccess(url.toString())} redirected to ${next.protocol}`))
+            return
+          }
+          // A redirect must not add a credential either. Same-origin echo of
+          // server-supplied userinfo is still an Authorization header the
+          // catalog and the grant never named.
+          if (next.username !== '' || next.password !== '') {
+            rejectPromise(
+              refusal(
+                'marketplace-fetch-refused',
+                `url ${redactAccess(url.toString())} redirected to a URL carrying credentials; a redirect must not add userinfo`,
+                'a redirect cannot introduce a credential the catalog and the consent did not name',
+              ),
+            )
+            return
+          }
+          // Consent is for an origin and an artifact, not for whichever host a
+          // redirect names. A cross-origin hop would install bytes fetched from
+          // a server the human never saw.
+          if (next.origin !== url.origin) {
+            rejectPromise(
+              refusal(
+                'marketplace-fetch-refused',
+                `url ${redactAccess(url.toString())} redirected to a different origin (${redactAccess(next.origin)}); a fetch stays on the origin it was consented for`,
+                'put the final https URL in the catalog entry so consent names the host that serves the bytes',
+              ),
+            )
             return
           }
           if (visited.has(next.toString())) {
