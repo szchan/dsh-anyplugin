@@ -13,13 +13,20 @@
  *
  * What is checked is the pin's published shape: every tag must be one the
  * surface's element table declares (`Elements`, claude-code.d.ts:4776 @ 2.1.329),
- * every tree member and prop must be on the pinned allowlist
- * (`BoxProps` 1280, `TextProps` 16722 and the per-element interfaces in
- * `RenderElement`, 12513-12884), and the members the pin marks required must
- * be present. The refusal sentence (`a tree Pane refuses: Text prop "x" is
- * not allowed`) follows the shape the ticket asks for; the exact wording is
+ * every tree member must be on the pinned key list, every prop must be one the
+ * element's pinned interface declares, and every value must have the type or
+ * literal union that interface gives it (`BoxProps` 1280, `TextProps` 16722,
+ * `ImageSource` 6997, `Matcher` 7460, and the per-element interfaces in
+ * `RenderElement`, 12513-12884). The members the pin marks required must be
+ * present. The refusal sentence (`a tree Pane refuses: Text prop "x" is not
+ * allowed`) follows the shape the ticket asks for; the exact wording is
  * *derived*, because the pin's validator is compiled into the runtime and its
  * strings are not part of the declaration file.
+ *
+ * The host synthesizes `ui.render` for `component: 'Pane'` on
+ * `surface: 'terminal'`, for the mod's own panes only: that is the one render
+ * site this host owns. `ToolUse`, `ContextMenu` and the other components have
+ * no host drawing site here and stay documented as planned.
  *
  * Two further behaviours are derived and are labelled as such in
  * `docs/ARCHITECTURE.md`:
@@ -301,6 +308,279 @@ const TEXT_HOVER_PROPS = [
   'inverse',
 ] as const
 
+/**
+ * One pinned prop type, from the declaration the tag's `*Props` names: scalars,
+ * literal unions, `Space` steps, `Color`, `ImageSource`, and the two object
+ * shapes a tree may carry (`SelectOption[]`, `Shader.values`).
+ */
+type PropRule =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'true'
+  | 'number-or-string'
+  | 'space'
+  | 'color'
+  | 'string-list'
+  | 'options'
+  | 'number-record'
+  | 'json'
+  | 'image-source'
+  | { readonly oneOf: readonly string[] }
+
+const oneOf = (...values: readonly string[]): PropRule => ({ oneOf: values })
+
+/** `Space` (claude-code.d.ts:16051 @ 2.1.329). */
+const SPACE_STEPS = ['xs', 'sm', 'md', 'lg', 'xl'] as const
+
+/** `SelectOption` (claude-code.d.ts:14050 @ 2.1.329). */
+const selectOptionsError = (tag: string, prop: string, value: unknown): string | undefined => {
+  const quoted = JSON.stringify(prop)
+  if (!Array.isArray(value) || value.length === 0) {
+    return `${tag} prop ${quoted} must be a non-empty list of { value, label? } options`
+  }
+  for (const option of value) {
+    if (!isRecord(option)) {
+      return `${tag} prop ${quoted} option is ${describeValue(option)}; expected { value, label? }`
+    }
+    for (const key of Object.keys(option)) {
+      if (key !== 'value' && key !== 'label') {
+        return `${tag} prop ${quoted} option member ${JSON.stringify(key)} is not allowed`
+      }
+    }
+    if (typeof option.value !== 'string') {
+      return `${tag} prop ${quoted} option "value" must be a string`
+    }
+    if (option.label !== undefined && typeof option.label !== 'string') {
+      return `${tag} prop ${quoted} option "label" must be a string`
+    }
+  }
+  return undefined
+}
+
+/** `ImageSource` (claude-code.d.ts:6997-7081 @ 2.1.329): five pinned shapes, no others. */
+const imageSourceIsValid = (value: unknown): boolean => {
+  if (!isRecord(value)) return false
+  const keys = Object.keys(value)
+  const only = (...allowed: string[]): boolean => keys.every((key) => allowed.includes(key))
+  const pixelRange = (candidate: unknown, atLeast: number, atMost: number): boolean =>
+    typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= atLeast && candidate <= atMost
+  const generationOk = value.generation === undefined || isWhole(value.generation)
+  if (hasOwn(value, 'png')) return only('png') && typeof value.png === 'string'
+  if (hasOwn(value, 'rgba')) {
+    return (
+      only('rgba', 'width', 'height') &&
+      typeof value.rgba === 'string' &&
+      pixelRange(value.width, 1, 2048) &&
+      pixelRange(value.height, 1, 2048)
+    )
+  }
+  if (hasOwn(value, 'file')) {
+    if (!only('file', 'format', 'width', 'height', 'generation') || typeof value.file !== 'string' || !generationOk) {
+      return false
+    }
+    if (value.format === 'png') return value.width === undefined && value.height === undefined
+    if (value.format === 'rgba' || value.format === 'rgb') {
+      return pixelRange(value.width, 1, 4096) && pixelRange(value.height, 1, 4096)
+    }
+    return false
+  }
+  if (hasOwn(value, 'shm')) {
+    if (!only('shm', 'format', 'width', 'height', 'generation') || typeof value.shm !== 'string' || !generationOk) {
+      return false
+    }
+    if (value.format !== 'rgba' && value.format !== 'rgb') return false
+    return pixelRange(value.width, 1, 4096) && pixelRange(value.height, 1, 4096)
+  }
+  return false
+}
+
+const numberRecordError = (tag: string, prop: string, value: unknown): string | undefined => {
+  const quoted = JSON.stringify(prop)
+  if (!isRecord(value)) return `${tag} prop ${quoted} must be an object of finite numbers`
+  for (const [name, entry] of Object.entries(value)) {
+    if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+      return `${tag} prop ${quoted} value ${JSON.stringify(name)} must be a finite number`
+    }
+  }
+  return undefined
+}
+
+const propValueError = (tag: string, prop: string, rule: PropRule, value: unknown): string | undefined => {
+  const quoted = JSON.stringify(prop)
+  if (rule === 'string') return typeof value === 'string' ? undefined : `${tag} prop ${quoted} must be a string`
+  if (rule === 'number') {
+    return typeof value === 'number' && Number.isFinite(value) ? undefined : `${tag} prop ${quoted} must be a number`
+  }
+  if (rule === 'boolean') return typeof value === 'boolean' ? undefined : `${tag} prop ${quoted} must be a boolean`
+  if (rule === 'true') return value === true ? undefined : `${tag} prop ${quoted} must be true`
+  if (rule === 'number-or-string') {
+    return typeof value === 'number' || typeof value === 'string'
+      ? undefined
+      : `${tag} prop ${quoted} must be a number or a string`
+  }
+  if (rule === 'space') {
+    return typeof value === 'number' || (typeof value === 'string' && (SPACE_STEPS as readonly string[]).includes(value))
+      ? undefined
+      : `${tag} prop ${quoted} must be a number or one of ${SPACE_STEPS.map((step) => JSON.stringify(step)).join(', ')}`
+  }
+  if (rule === 'color') return typeof value === 'string' ? undefined : `${tag} prop ${quoted} must be a color string`
+  if (rule === 'string-list') {
+    return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+      ? undefined
+      : `${tag} prop ${quoted} must be a list of strings`
+  }
+  if (rule === 'options') return selectOptionsError(tag, prop, value)
+  if (rule === 'number-record') return numberRecordError(tag, prop, value)
+  if (rule === 'json') return undefined
+  if (rule === 'image-source') {
+    return imageSourceIsValid(value)
+      ? undefined
+      : `${tag} prop ${quoted} must be one of { png }, { rgba, width, height }, { file, format }, or { shm, format, width, height }`
+  }
+  const allowed = rule.oneOf.map((entry) => JSON.stringify(entry)).join(', ')
+  return typeof value === 'string' && rule.oneOf.includes(value)
+    ? undefined
+    : `${tag} prop ${quoted} must be one of ${allowed}`
+}
+
+/**
+ * The pinned type of every `props` member a tree may carry, per tag. Every
+ * allowlisted holder below has an entry; `boxes and texts` carry only the
+ * primitive types their declarations name, not the old "any primitive".
+ */
+const PROP_TYPES: Readonly<Record<string, Readonly<Record<string, PropRule>>>> = {
+  Box: {
+    key: 'string',
+    position: oneOf('relative', 'absolute'),
+    top: 'number',
+    left: 'number',
+    right: 'number',
+    bottom: 'number',
+    flexDirection: oneOf('row', 'column', 'row-reverse', 'column-reverse'),
+    flexGrow: 'number',
+    flexShrink: 'number',
+    flexWrap: oneOf('nowrap', 'wrap', 'wrap-reverse'),
+    alignItems: oneOf('flex-start', 'center', 'flex-end', 'stretch'),
+    alignSelf: oneOf('flex-start', 'center', 'flex-end', 'auto'),
+    justifyContent: oneOf('flex-start', 'center', 'flex-end', 'space-between', 'space-around', 'space-evenly'),
+    gap: 'space',
+    columnGap: 'space',
+    rowGap: 'space',
+    width: 'number-or-string',
+    height: 'number-or-string',
+    minWidth: 'number-or-string',
+    minHeight: 'number-or-string',
+    margin: 'space',
+    marginX: 'space',
+    marginY: 'space',
+    marginTop: 'space',
+    marginBottom: 'space',
+    marginLeft: 'space',
+    marginRight: 'space',
+    padding: 'space',
+    paddingX: 'space',
+    paddingY: 'space',
+    paddingTop: 'space',
+    paddingBottom: 'space',
+    paddingLeft: 'space',
+    paddingRight: 'space',
+    borderStyle: 'string',
+    borderColor: 'color',
+    borderDimColor: 'boolean',
+    backgroundColor: 'color',
+    overflow: oneOf('visible', 'hidden'),
+    overflowX: oneOf('visible', 'scroll'),
+    display: oneOf('flex', 'none'),
+  },
+  Text: {
+    color: 'color',
+    backgroundColor: 'color',
+    dimColor: 'boolean',
+    size: oneOf('caption', 'footnote', 'body', 'heading', 'title'),
+    weight: oneOf('regular', 'medium', 'semibold', 'bold'),
+    mono: 'boolean',
+    tabular: 'boolean',
+    bold: 'boolean',
+    italic: 'boolean',
+    underline: 'boolean',
+    strikethrough: 'boolean',
+    inverse: 'boolean',
+    dir: oneOf('ltr', 'rtl'),
+    wrap: oneOf('wrap', 'end', 'middle', 'truncate', 'truncate-start', 'truncate-middle', 'truncate-end', 'clip'),
+    maxLines: 'number',
+  },
+  Button: {
+    key: 'string',
+    label: 'string',
+    hotkey: 'string',
+    action: 'string',
+    plain: 'true',
+    dimColor: 'boolean',
+    variant: oneOf('primary', 'secondary'),
+    role: oneOf('dismiss'),
+    autoFocus: 'true',
+  },
+  Input: {
+    key: 'string',
+    label: 'string',
+    placeholder: 'string',
+    value: 'string',
+    submitLabel: 'string',
+    rows: 'number',
+    autoFocus: 'true',
+  },
+  Select: { key: 'string', label: 'string', options: 'options', value: 'string', autoFocus: 'true' },
+  Link: { href: 'string', label: 'string' },
+  Code: {
+    source: 'string',
+    language: 'string',
+    path: 'string',
+    startLine: 'number',
+    format: oneOf('source', 'diff'),
+    wrap: oneOf('wrap', 'truncate-end'),
+  },
+  Markdown: { key: 'string', text: 'string', dimColor: 'boolean', pressableLinks: 'string-list' },
+  Progress: { label: 'string', value: 'number', max: 'number', valueText: 'string', color: 'color' },
+  Client: {
+    key: 'string',
+    module: 'string',
+    props: 'json',
+    width: 'number-or-string',
+    height: 'number-or-string',
+    flexGrow: 'number',
+  },
+  Svg: { source: 'string', alt: 'string', width: 'number', height: 'number', isInteractive: 'boolean' },
+  Shader: { module: 'string', values: 'number-record' },
+  Raster: { key: 'string', columns: 'number', rows: 'number', cells: 'string' },
+  Image: { key: 'string', source: 'image-source', columns: 'number', rows: 'number', alt: 'string' },
+}
+
+const BOX_HOVER_TYPES: Readonly<Record<string, PropRule>> = {
+  scope: 'string',
+  borderStyle: 'string',
+  borderColor: 'color',
+  borderDimColor: 'boolean',
+  backgroundColor: 'color',
+  display: oneOf('flex'),
+  top: 'number',
+  left: 'number',
+  right: 'number',
+  bottom: 'number',
+}
+
+const TEXT_HOVER_TYPES: Readonly<Record<string, PropRule>> = {
+  scope: 'string',
+  color: 'color',
+  backgroundColor: 'color',
+  dimColor: 'boolean',
+  bold: 'boolean',
+  italic: 'boolean',
+  underline: 'boolean',
+  strikethrough: 'boolean',
+  inverse: 'boolean',
+}
+
 interface ElementRule {
   /** Members of the tree node itself. */
   readonly keys: readonly string[]
@@ -310,12 +590,6 @@ interface ElementRule {
   readonly children: 'nodes' | 'inline' | 'button' | 'none'
   /** `props` members the pinned declaration marks required. */
   readonly required?: readonly string[]
-  /** Required string `props` members (a subset of `required`). */
-  readonly requiredStrings?: readonly string[]
-  /** Required array `props` members. */
-  readonly requiredArrays?: readonly string[]
-  /** Required whole-number `props` members. */
-  readonly requiredNumbers?: readonly string[]
   /** Which hover allowlist applies. */
   readonly hover?: 'box' | 'text'
   /** Whether the tree node carries a `press` handle, and whether it must. */
@@ -340,7 +614,6 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['key', 'label', 'hotkey', 'action', 'plain', 'dimColor', 'variant', 'role', 'autoFocus'],
     children: 'button',
     required: ['key', 'label'],
-    requiredStrings: ['key', 'label'],
     press: 'required',
     hover: 'text',
   },
@@ -349,7 +622,6 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['key', 'label', 'placeholder', 'value', 'submitLabel', 'rows', 'autoFocus'],
     children: 'none',
     required: ['key'],
-    requiredStrings: ['key'],
     press: 'required',
   },
   Select: {
@@ -357,8 +629,6 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['key', 'label', 'options', 'value', 'autoFocus'],
     children: 'none',
     required: ['key', 'options'],
-    requiredStrings: ['key'],
-    requiredArrays: ['options'],
     press: 'required',
   },
   Link: {
@@ -366,21 +636,18 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['href', 'label'],
     children: 'inline',
     required: ['href'],
-    requiredStrings: ['href'],
   },
   Code: {
     keys: ['type', 'props'],
     props: ['source', 'language', 'path', 'startLine', 'format', 'wrap'],
     children: 'none',
     required: ['source'],
-    requiredStrings: ['source'],
   },
   Markdown: {
     keys: ['type', 'props', 'part', 'press'],
     props: ['key', 'text', 'dimColor', 'pressableLinks'],
     children: 'none',
     required: ['text'],
-    requiredStrings: ['text'],
     press: 'optional',
   },
   Client: {
@@ -388,7 +655,6 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['key', 'module', 'props', 'width', 'height', 'flexGrow'],
     children: 'none',
     required: ['key', 'module'],
-    requiredStrings: ['key', 'module'],
     requiredStamps: ['client'],
   },
   Svg: {
@@ -396,29 +662,24 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['source', 'alt', 'width', 'height', 'isInteractive'],
     children: 'none',
     required: ['source', 'alt'],
-    requiredStrings: ['source', 'alt'],
   },
   Shader: {
     keys: ['type', 'props', 'shader', 'children'],
     props: ['module', 'values'],
     children: 'nodes',
     required: ['module'],
-    requiredStrings: ['module'],
   },
   Progress: {
     keys: ['type', 'props'],
     props: ['label', 'value', 'max', 'valueText', 'color'],
     children: 'none',
     required: ['label'],
-    requiredStrings: ['label'],
   },
   Raster: {
     keys: ['type', 'props', 'raster'],
     props: ['key', 'columns', 'rows', 'cells'],
     children: 'none',
     required: ['key', 'columns', 'rows', 'cells'],
-    requiredStrings: ['key', 'cells'],
-    requiredNumbers: ['columns', 'rows'],
     requiredStamps: ['raster'],
   },
   Image: {
@@ -426,8 +687,6 @@ const ELEMENT_RULES: Readonly<Record<string, ElementRule>> = {
     props: ['key', 'source', 'columns', 'rows', 'alt'],
     children: 'none',
     required: ['source', 'columns', 'rows', 'alt'],
-    requiredStrings: ['source', 'alt'],
-    requiredNumbers: ['columns', 'rows'],
     requiredStamps: ['image'],
   },
   engine: { keys: ['type', 'ref'], props: [], children: 'none' },
@@ -521,8 +780,15 @@ export const validateUiTree = (
       const hover = node.hover
       if (!isRecord(hover)) return `${type} hover must be an object`
       const allowed = rule.hover === 'box' ? BOX_HOVER_PROPS : TEXT_HOVER_PROPS
+      const hoverTypes = rule.hover === 'box' ? BOX_HOVER_TYPES : TEXT_HOVER_TYPES
       for (const key of Object.keys(hover)) {
         if (!(allowed as readonly string[]).includes(key)) return `${type} hover ${JSON.stringify(key)} is not allowed`
+      }
+      for (const [key, value] of Object.entries(hover)) {
+        const typed = hoverTypes[key]
+        if (typed === undefined) return `${type} hover ${JSON.stringify(key)} is not allowed`
+        const problem = propValueError(`${type} hover`, key, typed, value)
+        if (problem !== undefined) return problem
       }
     }
     if (type === 'engine') {
@@ -543,20 +809,11 @@ export const validateUiTree = (
         for (const key of rule.required ?? []) {
           if (!hasOwn(props, key)) return `${type} prop ${JSON.stringify(key)} is required`
         }
-        for (const key of rule.requiredStrings ?? []) {
-          if (typeof props[key] !== 'string') return `${type} prop ${JSON.stringify(key)} must be a string`
-        }
-        for (const key of rule.requiredArrays ?? []) {
-          if (!Array.isArray(props[key])) return `${type} prop ${JSON.stringify(key)} must be an array`
-        }
-        for (const key of rule.requiredNumbers ?? []) {
-          if (!isPositive(props[key])) return `${type} prop ${JSON.stringify(key)} must be a positive whole number`
-        }
-        if (type === 'Box' || type === 'Text') {
-          for (const [key, value] of Object.entries(props)) {
-            const primitive = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-            if (!primitive) return `${type} prop ${JSON.stringify(key)} must be a string, number or boolean`
-          }
+        for (const [key, value] of Object.entries(props)) {
+          const typed = PROP_TYPES[type]?.[key]
+          if (typed === undefined) return `${type} prop ${JSON.stringify(key)} has no pinned type`
+          const problem = propValueError(type, key, typed, value)
+          if (problem !== undefined) return problem
         }
       }
     } else {
@@ -701,14 +958,16 @@ const isUiComponent = (value: unknown): value is UiComponent =>
   typeof value === 'string' && (UI_COMPONENTS as readonly string[]).includes(value)
 
 /** The fields a `ui.render` matcher may narrow on (Matcher, d.ts:7460 @ 2.1.329). */
-const RENDER_MATCHER_FIELDS = new Set(['component', 'requestId', 'surface', 'plugin', 'props'])
+const RENDER_MATCHER_FIELDS = new Set(['component', 'requestId', 'surface', 'plugin', 'viewport', 'props'])
 
 /**
- * One pinned matcher leaf: equality, a RegExp against a string, an array of
- * alternatives, or a partial object (d.ts:7460-7545 @ 2.1.329).
+ * One pinned matcher leaf: equality, a RegExp against the value as a string, an
+ * array of alternatives, or a partial object (d.ts:7460-7545 @ 2.1.329). An
+ * array VALUE holds when one of its elements matches.
  */
 const matcherValueMatches = (rule: unknown, value: unknown): boolean => {
-  if (rule instanceof RegExp) return typeof value === 'string' ? rule.test(value) : false
+  if (Array.isArray(value)) return value.some((entry) => matcherValueMatches(rule, entry))
+  if (rule instanceof RegExp) return rule.test(String(value))
   if (Array.isArray(rule)) return rule.some((entry) => matcherValueMatches(entry, value))
   if (isRecord(rule)) {
     if (!isRecord(value)) return false
@@ -728,6 +987,9 @@ export const uiRenderMatcherMatches = (matcher: unknown, request: unknown): bool
   if (!isRecord(matcher)) return false
   for (const [key, rule] of Object.entries(matcher)) {
     if (!RENDER_MATCHER_FIELDS.has(key)) return false
+    // `plugin: "*"` names every plugin, an `e` without the key included
+    // (Matcher doc, claude-code.d.ts:7520-7545 @ 2.1.329).
+    if (key === 'plugin' && rule === '*') continue
     const value = isRecord(request) ? request[key] : undefined
     if (!matcherValueMatches(rule, value)) return false
   }

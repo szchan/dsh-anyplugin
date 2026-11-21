@@ -342,6 +342,30 @@ test('the render matcher is the pin grammar: partial objects, regexps and arrays
   assert.equal(uiRenderMatcherMatches({ props: { title: /^UI/ } }, request), true)
   assert.equal(uiRenderMatcherMatches({ requestId: ['proof', 'other'] }, request), true)
   assert.equal(uiRenderMatcherMatches({ surface: 'desktop' }, request), false)
+  // The pin's `plugin` default key: `"*"` names every plugin (d.ts:7520-7545).
+  assert.equal(uiRenderMatcherMatches({ plugin: '*' }, request), true)
+  assert.equal(
+    uiRenderMatcherMatches({ plugin: '*' }, { surface: 'terminal', component: 'Pane', requestId: 'x' }),
+    true,
+    'an `e` without the key is still heard',
+  )
+  // `viewport` is a matcher key, and a RegExp tests the value as a string.
+  assert.equal(uiRenderMatcherMatches({ viewport: { columns: 80 } }, request), true)
+  assert.equal(uiRenderMatcherMatches({ viewport: { columns: 81 } }, request), false)
+  assert.equal(
+    uiRenderMatcherMatches({ props: { bodyColumns: /^7/ } }, { ...request, props: { bodyColumns: 72 } }),
+    true,
+    'a RegExp leaf tests a number as its string',
+  )
+  // For an array value one element may match (MatcherOne, d.ts:7460-7560).
+  assert.equal(
+    uiRenderMatcherMatches({ props: { anchoredEdges: 'left' } }, { ...request, props: { anchoredEdges: ['top', 'left'] } }),
+    true,
+  )
+  assert.equal(
+    uiRenderMatcherMatches({ props: { anchoredEdges: 'right' } }, { ...request, props: { anchoredEdges: ['top', 'left'] } }),
+    false,
+  )
   // A field the pin does not let a matcher narrow is not silently accepted.
   assert.equal(uiRenderMatcherMatches({ nope: 1 }, request), false)
 })
@@ -414,7 +438,7 @@ test("constructors stamp the members the runtime owns", () => {
   const raster = Raster({ key: 'k', columns: 1, rows: 1, cells: 'x' })
   assert.deepEqual(raster.raster, { plugin: 'unit/ui.ts' })
   assert.equal(validateUiTree(raster, 'Pane').ok, true)
-  const image = Image({ source: 's', columns: 1, rows: 1, alt: 'a' })
+  const image = Image({ source: { png: 'iVBORw0KGgo=' }, columns: 1, rows: 1, alt: 'a' })
   assert.deepEqual(image.image, { plugin: 'unit/ui.ts' })
   assert.equal(validateUiTree(image, 'Pane').ok, true)
   assert.equal(
@@ -422,6 +446,68 @@ test("constructors stamp the members the runtime owns", () => {
     true,
     'Select carries a stamped press',
   )
+})
+
+test('ImageSource is the pin union: five shapes, and a string is refused', () => {
+  const on = (source) =>
+    validateUiTree(
+      { type: 'Image', props: { source, columns: 40, rows: 12, alt: 'p95' }, image: { plugin: 'p' } },
+      'Pane',
+    )
+  for (const source of [
+    { png: 'iVBORw0KGgo=' },
+    { rgba: 'AAAA', width: 64, height: 32 },
+    { file: '/dev/shm/frame-3.png', format: 'png' },
+    { file: '/dev/shm/frame-3.rgba', format: 'rgba', width: 640, height: 400, generation: 7 },
+    { shm: '/tb-view-2', format: 'rgb', width: 1280, height: 720 },
+  ]) {
+    assert.equal(on(source).ok, true, JSON.stringify(source))
+  }
+  for (const bad of [
+    'iVBORw0KGgo=',
+    {},
+    { png: 'x', rgba: 'y' },
+    { png: 'x', extra: 1 },
+    { rgba: 'x', width: 0, height: 32 },
+    { rgba: 'x', width: 64 },
+    { file: '/f', format: 'rgba' },
+    { file: '/f', format: 'png', width: 10, height: 10 },
+    { shm: '/s', format: 'png', width: 10, height: 10 },
+    { shm: '/s', format: 'rgb', width: 10, height: 10, generation: 1.5 },
+  ]) {
+    assert.equal(on(bad).ok, false, JSON.stringify(bad))
+  }
+  assert.match(on('AAAA').refusal, /Image prop "source" must be one of/)
+})
+
+test('optional props are checked against the pinned type or literal union', () => {
+  const on = (tree, surface = 'terminal') => validateUiTree(tree, 'Pane', surface)
+  const button = (props) => on({ type: 'Button', props: { key: 'k', label: 'l', ...props }, press: { plugin: 'p', handle: 1 } })
+  const select = (props) => on({ type: 'Select', props: { key: 'k', ...props }, press: { plugin: 'p', handle: 1 } })
+
+  assert.equal(on({ type: 'Text', props: { wrap: 'truncate-middle', size: 'title', weight: 'bold' }, children: ['x'] }).ok, true)
+  assert.match(on({ type: 'Text', props: { wrap: 5 }, children: ['x'] }).refusal, /Text prop "wrap" must be one of/)
+  assert.match(on({ type: 'Text', props: { dir: 'up' }, children: ['x'] }).refusal, /Text prop "dir" must be one of/)
+  assert.match(on({ type: 'Box', props: { gap: true }, children: [] }).refusal, /Box prop "gap" must be a number or one of/)
+  assert.equal(on({ type: 'Box', props: { gap: 'md', margin: 1, width: '50%', display: 'flex' }, children: [] }).ok, true)
+  assert.match(on({ type: 'Box', props: { width: {} }, children: [] }).refusal, /Box prop "width" must be a number or a string/)
+  assert.match(button({ hotkey: 5 }).refusal, /Button prop "hotkey" must be a string/)
+  assert.match(button({ plain: false }).refusal, /Button prop "plain" must be true/)
+  assert.match(button({ variant: 'tertiary' }).refusal, /Button prop "variant" must be one of/)
+  assert.match(select({ options: [{ label: 'a' }] }).refusal, /option "value" must be a string/)
+  assert.match(select({ options: [{ value: 'a', extra: 1 }] }).refusal, /option member "extra" is not allowed/)
+  assert.match(select({ options: [] }).refusal, /must be a non-empty list/)
+  assert.match(on({ type: 'Svg', props: { source: 's', alt: 'a', width: 'x' } }, 'desktop').refusal, /Svg prop "width" must be a number/)
+  assert.match(on({ type: 'Svg', props: { source: 's', alt: 'a', isInteractive: 'yes' } }, 'desktop').refusal, /must be a boolean/)
+  assert.match(on({ type: 'Code', props: { source: 'x', format: 'diff2' } }).refusal, /Code prop "format" must be one of/)
+  assert.match(on({ type: 'Progress', props: { label: 'l', value: '1' } }).refusal, /Progress prop "value" must be a number/)
+  assert.match(on({ type: 'Shader', props: { module: 'm', values: { a: 'b' } } }, 'desktop').refusal, /must be a finite number/)
+  assert.match(on({ type: 'Markdown', props: { text: 'x', pressableLinks: 'a' } }).refusal, /must be a list of strings/)
+  assert.match(on({ type: 'Image', props: { key: 5, source: { png: 'x' }, columns: 1, rows: 1, alt: 'a' }, image: { plugin: 'p' } }).refusal, /Image prop "key" must be a string/)
+  assert.match(on({ type: 'Box', props: {}, hover: { borderRadius: 2 }, children: [] }).refusal, /Box hover "borderRadius" is not allowed/)
+  assert.match(on({ type: 'Box', props: {}, hover: { top: 'x' }, children: [] }).refusal, /Box hover prop "top" must be a number/)
+  assert.equal(on({ type: 'Box', props: {}, hover: { top: 1, display: 'flex' }, children: [] }).ok, true)
+  assert.match(on({ type: 'Text', props: {}, hover: { bold: 'yes' }, children: ['x'] }).refusal, /Text hover prop "bold" must be a boolean/)
 })
 
 test('invalidate maps the pin union: redraw, cache drop, or a typed refusal', async () => {

@@ -858,10 +858,18 @@ What a faithful host needs, in dependency order:
    intercept kernel's `runChain` as sink-owned synthetic events (the sink names
    them, the kernel orders them — not a second path and not a host route); and
    one `mod_ui` tool, registered only while a pane is open, reads the panes
-   back. Drawing, host-owned layout, focus routing and `invalidate` throttling
-   are still ahead. Two behaviours are `derived` because this host has no
-   drawing engine: the refusal sentence is ours (the pin draws the engine's own
-   component instead) and an invalid redraw keeps the last good tree;
+   back. The scope is stated plainly: the host synthesizes `ui.render` only for
+   `component: 'Pane'` on `surface: 'terminal'`, and only for the mod's own
+   panes; the pin's `ui.open` / `ui.close` hooks (`claude-code.d.ts:8875` /
+   `:8880` @ 2.1.329) are declared but not dispatched (the adapter reports them
+   unmapped), and `ui.render` for the other components (`ToolUse`,
+   `ContextMenu`, …) is planned. `isPlaced: false` means open but never drawn
+   (a first draw that produced no tree); a later invalid redraw keeps the last
+   good tree and its revision. Drawing, host-owned layout, focus routing and
+   `invalidate` throttling are still ahead. Two behaviours are `derived` because
+   this host has no drawing engine: the refusal sentence is ours (the pin draws
+   the engine's own component instead) and an invalid redraw keeps the last
+   good tree;
 4. **namespace bridges** — the measured `$` surface of a real mod first:
    clock / fs / store / settings / env / session / command / telemetry (10
    namespaces, 23 call sites, #46), with `process.run` and — until a
@@ -1101,8 +1109,9 @@ is the `$` proof: `session.start` calls
 `$.session.usage → $.command.register → $.session.messages`, or
 `$.session.usage → $.clock.now → $.command.register → $.session.messages` when
 `usage()` returns `undefined`, then returns `next(e)`. The returned
-descriptors are validated against the pinned surface tables and recorded by the
-headless render sink (#75) — the refusal sentence and the keep-last-tree
+descriptors are validated against the pinned surface tables, element keys,
+required members and prop types (allowlists and literal unions) and recorded by
+the headless render sink (#75) — the refusal sentence and the keep-last-tree
 fallback are `derived`, since the pin draws the engine's own component instead;
 drawing them is still `planned`; D34 is a load-time transform, not an element
 runtime.
@@ -1119,8 +1128,13 @@ the headless render sink (#75): each call records a validated tree or value
 and returns; nothing draws. The sink dispatches the pin's `ui.render` and
 `ui.resolve` hooks through the intercept kernel's `runChain` as synthetic
 events it owns (the sink names them, the kernel orders them; they are not host
-routes), and it validates a submitted tree against the pinned surface tables
-and prop allowlists. Its refusal sentence and its keep-last-tree policy are
+routes), and it validates a submitted tree against the pinned surface tables,
+element keys, required members and prop types (allowlists and literal unions).
+It synthesizes `ui.render` only for `component: 'Pane'` on `surface:
+'terminal'`, and only for the mod's own panes; the pin's `ui.open`/`ui.close`
+hooks (`claude-code.d.ts:8875`/`:8880` @ 2.1.329) are declared but not
+dispatched, and the other render components are `planned`. Its refusal sentence
+and its keep-last-tree policy are
 `derived`: the pin draws the engine's own component on an invalid tree, which
 this host cannot do. The static conformance ledger invokes the
 scanner's 23 sites in source order: 21 served sites complete, and the two
