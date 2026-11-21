@@ -68,7 +68,7 @@ Consequence, stated so nobody is surprised: a new issue waits for the next pull 
 up to one scheduling interval — before it is labelled. It is never lost, and it
 never interrupts a worker mid-branch.
 
-The queue has five sections:
+The queue has six sections:
 
 1. **Maintainer asks** — `from-maintainer` threads whose last human message is
    newer than the last agent message. These outrank everything.
@@ -77,10 +77,14 @@ The queue has five sections:
 3. **In review** — issues that an open PR already closes (`Closes #N` in the PR
    body). Listed so the ticket is visibly in flight, never left in a queue: an
    ask that already has a PR invites a second worker to claim the same ticket.
-4. **External reports** — `external` issues with no agent triage yet. Each gets
+4. **In progress** — issues labelled `ticket/in-progress` that have no PR yet.
+   Claimed work is in flight even when there is nothing to review; without this
+   the queue undercounts WIP and the next round dispatches a second worker onto
+   a moving ticket.
+5. **External reports** — `external` issues with no agent triage yet. Each gets
    one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
    `needs-evidence` with the exact questions, or `invalid` with the reason.
-5. **PRs** — every open PR, with its `verify` status and whether an agent has
+6. **PRs** — every open PR, with its `verify` status and whether an agent has
    reviewed at the current head.
 
 A new issue or PR is labelled `needs-triage` by `.github/workflows/intake.yml`
