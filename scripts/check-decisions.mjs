@@ -35,6 +35,19 @@ for (const line of text.split('\n')) {
 }
 if (current !== null) entries.push(current)
 
+// An entry ends at the next heading, so its trailing separator must not be
+// part of the hash: otherwise appending D<n+1> rewrites D<n>'s digest and the
+// append-only rule forbids the very act it is meant to allow.
+const trimTail = (entry) => {
+  while (entry.lines.length > 0) {
+    const last = entry.lines[entry.lines.length - 1]
+    if (last.trim() === "" || last.trim() === "---") entry.lines.pop()
+    else break
+  }
+  return entry
+}
+for (const entry of entries) trimTail(entry)
+
 if (entries.length === 0) {
   console.error('decisions: no entries found')
   process.exit(1)
