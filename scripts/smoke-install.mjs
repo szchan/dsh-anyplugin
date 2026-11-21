@@ -18,7 +18,11 @@
  *      agent tool and the namespaced MCP tool, and that the skill is in
  *      `ctx.skills.list()`;
  *   5. import every published subpath through a resolver anchored in the
- *      profile's package scope, so a broken `exports` map fails here.
+ *      profile's package scope, so a broken `exports` map fails here;
+ *   6. load real mods from `ANYPLUGIN_MODS_TREE` through the *packaged* hook
+ *      entry and run one real turn: the kernel seats them, serves `$` through
+ *      the bridge, keeps a classic hook in the same turn, and a mod's deny
+ *      reaches `tools/pre-execute`.
  *
  * The lock's `grants.yml` is authored with the repository's own trust code
  * (the same call an installer UI makes). That is fixture setup only: the
@@ -30,11 +34,23 @@
  *
  * Usage: node scripts/smoke-install.mjs <tarball> [--keep]
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+// D30 loads mods in a `node:vm` realm, which Node exposes only behind this
+// flag. Re-exec once so a direct `node scripts/smoke-install.mjs <tarball>`
+// runs the same proof as `npm run check:pack`.
+if (!process.execArgv.includes('--experimental-vm-modules')) {
+  const child = spawnSync(
+    process.execPath,
+    ['--experimental-vm-modules', ...process.argv.slice(1)],
+    { stdio: 'inherit' },
+  )
+  process.exit(child.status ?? 1)
+}
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const keep = process.argv.includes('--keep')
@@ -109,6 +125,200 @@ function until(predicate, label, timeout = 5000) {
   })
 }
 
+/** A hook descriptor whose artifact hash the materializer re-checks (D25). */
+function pinnedCommandHook(hashManifest, event, command) {
+  const artifact = { mode: 'command', invocation: command, command, files: [] }
+  return { event, index: 0, command, artifactHash: hashManifest(artifact), artifactMode: 'command', artifact }
+}
+
+/** The probe's Bash tool: every executed call is evidence the deny did not win late. */
+function bashTool(calls) {
+  return {
+    name: 'Bash',
+    description: 'Run a shell command and return its output.',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] },
+    execute: async (args) => {
+      calls.push(args)
+      return 'ran'
+    },
+  }
+}
+
+function readTraceFile(file) {
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => JSON.parse(line))
+}
+
+/**
+ * The packaging proof for the mods kernel (issue #99, acceptance 3): the mods
+ * are loaded through the *tarball's* hook entry, not the source tree, and one
+ * real turn runs on the pinned harness. `sec-default` is upstream and pinned;
+ * the `kernel-probe` mod is written here because the `$` proof must be
+ * deterministic (each load gets a fresh store); the `guard` fixture is the
+ * deny half the repository already tests.
+ */
+async function modsProof({ harnessDir, hookEntry, scratch }) {
+  const modsTree = process.env.ANYPLUGIN_MODS_TREE?.trim()
+  if (!modsTree) {
+    fail(
+      'ANYPLUGIN_MODS_TREE is not set; fetch the pinned mods with `node scripts/fetch-mod.mjs` ' +
+        '(the install smoke never reaches the network)',
+    )
+  }
+  const tree = resolve(modsTree)
+  const secRoot = join(tree, 'mods', 'sec-default')
+  const secEntry = join(secRoot, 'hooks', 'register.ts')
+  if (!existsSync(secEntry)) {
+    fail(`ANYPLUGIN_MODS_TREE=${modsTree} has no mods/sec-default/hooks/register.ts; run \`node scripts/fetch-mod.mjs\``)
+  }
+
+  const trust = await import(pathToFileURL(join(root, 'packages', 'dsh-anyplugin-trust', 'src', 'index.ts')).href)
+  const { probeLifecycleWithDsh } = await import(
+    pathToFileURL(join(root, 'packages', 'dsh-anyplugin-conformance', 'src', 'oracles', 'dsh.ts')).href
+  )
+
+  // The `$` proof: `clock.now` and `store.get` round-trip, then report through
+  // telemetry — the materializer's telemetry sink writes the line to its trace
+  // file, so the assertion is on the bridge, not on the fixture's own state.
+  const probeRoot = join(scratch, 'mods-smoke', 'kernel-probe')
+  mkdirSync(probeRoot, { recursive: true })
+  writeFileSync(
+    join(probeRoot, 'register.mjs'),
+    [
+      '// Written by scripts/smoke-install.mjs — the packaged kernel\'s $ proof.',
+      'export function register(on) {',
+      "  on('session.start', async ($, event, next) => {",
+      '    const now = await $.clock.now()',
+      '    if (typeof now !== "number" || !Number.isFinite(now)) throw new Error("clock.now did not return a number")',
+      '    await $.store.set("smoke/clock", now)',
+      '    const stored = await $.store.get("smoke/clock")',
+      '    if (stored !== now) throw new Error("store round-trip failed: " + JSON.stringify(stored))',
+      '    await $.telemetry.log({ smoke: "clock.now+store.get", at: now })',
+      '    return next(event)',
+      '  })',
+      '}',
+      '',
+    ].join('\n'),
+  )
+
+  const classicCommand = 'printf \'%s\\n\' classic-fired >> "$CLAUDE_PLUGIN_DATA/events.log"'
+  const bashCall = { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) }
+  const groupEntry = (id, config) => ({
+    id,
+    name: '@deepseek-ai/cordis-plugin-group',
+    group: true,
+    config: [
+      // The materializer reads the command registry from the service when it
+      // exists; the pinned harness has it, so give it the same anchor tests use.
+      { id: 'commands', name: pathToFileURL(join(harnessDir, 'dsh-commands', 'lib', 'index.js')).href },
+      { id: 'hook', name: hookEntry, config },
+    ],
+  })
+
+  // One probe per mod: a seat owns the agent's pre-execute waterfall, so a
+  // denying mod in the same agent would short-circuit the other rows' chains.
+  // Splitting the runs keeps each assertion causally its own.
+  const run = async (label, config, expected) => {
+    const dataDir = join(scratch, 'mods-data', label)
+    mkdirSync(dataDir, { recursive: true })
+    const traceFile = join(dataDir, 'trace.jsonl')
+    const calls = []
+    const observation = await probeLifecycleWithDsh({
+      harnessDir,
+      entry: groupEntry(`anyplugin.mods-smoke.${label}`, { ...config, pluginData: dataDir, traceFile }),
+      expected,
+      tool: bashTool(calls),
+      toolCall: bashCall,
+      timeoutMs: 20_000,
+    })
+    return { dataDir, traceFile, calls, events: observation.events }
+  }
+
+  const sec = await run(
+    'sec-default',
+    {
+      pluginRoot: secRoot,
+      plugin: 'sec-default',
+      mods: [{ entry: 'hooks/register.ts' }],
+      hooks: [pinnedCommandHook(trust.hashManifest, 'PreToolUse', classicCommand)],
+    },
+    // The classic hook's line is the completion marker: the probe waits for it,
+    // so the "classic arm still fires" assertion is never a race.
+    ['classic-fired'],
+  )
+  const probe = await run(
+    'kernel-probe',
+    { pluginRoot: probeRoot, plugin: 'kernel-probe', mods: [{ entry: 'register.mjs' }] },
+    [],
+  )
+  const guard = await run(
+    'guard',
+    { pluginRoot: join(root, 'fixtures', 'mods', 'guard'), plugin: 'guard', mods: [{ entry: 'register.ts' }] },
+    [],
+  )
+
+  const warningsOf = (traceFile) =>
+    readTraceFile(traceFile)
+      .filter((record) => typeof record.warning === 'string')
+      .map((record) => record.warning)
+  const countOf = (warnings, label) => {
+    const warning = warnings.find((line) => line.startsWith(`anyplugin mod ${label}: loaded `))
+    if (warning === undefined) return undefined
+    const match = /loaded (\d+) registration/.exec(warning)
+    return match === null ? undefined : Number(match[1])
+  }
+
+  const secWarnings = warningsOf(sec.traceFile)
+  const secCount = countOf(secWarnings, 'sec-default/hooks/register.ts')
+  if (secCount !== 45) {
+    fail(
+      `the upstream mod reported ${JSON.stringify(secCount)} registrations, expected 45 at the pinned tree; ` +
+        `warnings: ${JSON.stringify(secWarnings)}`,
+    )
+  }
+  const probeWarnings = warningsOf(probe.traceFile)
+  const probeCount = countOf(probeWarnings, 'kernel-probe/register.mjs')
+  if (probeCount !== 1) fail(`the kernel-probe mod reported ${JSON.stringify(probeCount)} registrations`)
+  const guardWarnings = warningsOf(guard.traceFile)
+  const guardCount = countOf(guardWarnings, 'guard/register.ts')
+  if (guardCount !== 1) fail(`the guard mod reported ${JSON.stringify(guardCount)} registrations`)
+
+  const served = probeWarnings.find(
+    (line) => line.includes('kernel-probe/register.mjs: telemetry.log') && line.includes('clock.now+store.get'),
+  )
+  if (served === undefined) {
+    fail(`$.clock.now/$.store.get did not reach the bridge; warnings: ${JSON.stringify(probeWarnings)}`)
+  }
+
+  const pre = (traceFile) => readTraceFile(traceFile).filter((record) => record.event === 'PreToolUse')
+  const classicStar = pre(sec.traceFile)
+    .flatMap((record) => (Array.isArray(record.trace) ? record.trace : []))
+    .find((stepFound) => typeof stepFound.source === 'string' && stepFound.source.includes('sec-default/hooks/register.ts'))
+  if (classicStar?.status !== 'ran') {
+    fail(`the upstream mod's classic.* handler did not run: ${JSON.stringify(classicStar)}`)
+  }
+  if (!sec.events.includes('classic-fired')) {
+    fail(`the classic hook did not fire alongside the mods; events: ${JSON.stringify(sec.events)}`)
+  }
+  if (sec.calls.length !== 1) fail(`the allowed tool call ran ${sec.calls.length} time(s), expected 1`)
+
+  const denied = pre(guard.traceFile).find((record) => record.decision?.kind === 'deny')
+  if (denied === undefined || denied.decision.reason !== 'the guard mod does not allow Bash') {
+    fail(`no mod-initiated deny reached tools/pre-execute: ${JSON.stringify(pre(guard.traceFile).map((record) => record.decision))}`)
+  }
+  if (guard.calls.length !== 0) fail(`the denied tool call still executed: ${JSON.stringify(guard.calls)}`)
+
+  return `sec-default/hooks/register.ts ${secCount} registrations, kernel-probe/register.mjs ${probeCount}, guard/register.ts ${guardCount}`
+}
+
 async function main() {
   const scratch = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-smoke-'))
   let ok = false
@@ -143,6 +353,16 @@ async function main() {
     const mcpScope = join(harness, 'node_modules', '@modelcontextprotocol')
     if (existsSync(mcpScope)) {
       symlinkSync(mcpScope, join(profile, 'node_modules', '@modelcontextprotocol'), 'dir')
+    }
+    // The kernel's only runtime dependencies are the classic-JSX pair (D34). A
+    // real profile installs them from the registry; the smoke links the
+    // checkout's copies so the proof stays offline and the tarball's
+    // `dependencies` are what resolve them.
+    mkdirSync(join(profile, 'node_modules', '@babel'), { recursive: true })
+    for (const dependency of ['core', 'plugin-transform-react-jsx']) {
+      const source = join(root, 'node_modules', '@babel', dependency)
+      if (!existsSync(source)) fail(`the checkout has no node_modules/@babel/${dependency}; run \`npm install\` first`)
+      symlinkSync(source, join(profile, 'node_modules', '@babel', dependency), 'dir')
     }
 
     step('writing the fixture plugin, the lock and the enabled layer')
@@ -396,10 +616,20 @@ async function main() {
         await import(url)
       }
 
+      step('loading real mods from the tarball through the published hook entry')
+      // Everything above proved the published surface; this proves the kernel
+      // inside `lib/materialize/hook.js` runs an upstream mod in a real turn.
+      const modsSummary = await modsProof({
+        harnessDir: modules,
+        hookEntry: resolveFromProfile('dsh-anyplugin/materialize/hook'),
+        scratch,
+      })
+
       process.stdout.write(
         `install smoke: ok — ${manifest.name}@${manifest.version}; skill "hello", MCP "probe", hook ` +
           `"PostToolUse", agent "persona" and output style "concise" across ${expected.length} active materializer ` +
-          `children; tools "${agentToolName}" + "${mcpToolName}"; ${PUBLISHED_SUBPATHS.length} subpaths resolved from ${harness}\n`,
+          `children; tools "${agentToolName}" + "${mcpToolName}"; ${PUBLISHED_SUBPATHS.length} subpaths resolved from ${harness}; ` +
+          `mods: ${modsSummary}\n`,
       )
       ok = true
     } finally {

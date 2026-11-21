@@ -1429,6 +1429,20 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         warn(`anyplugin mod ${surfaceLabel}: load refused (${(error as Error).message})`)
         continue
       }
+      // The packaging gate reads this line (issue #99): the smoke's proof is
+      // "this mod, this many registrations". It goes to the trace sink only — a
+      // normal turn's log should not gain a line per loaded mod — and the trace
+      // sink is what `check:pack` configures.
+      if (config.traceFile !== undefined) {
+        try {
+          appendFileSync(
+            config.traceFile,
+            `${JSON.stringify({ warning: `anyplugin mod ${surfaceLabel}: loaded ${handle.registrations.length} registration(s)` })}\n`,
+          )
+        } catch {
+          // The trace sink is unavailable; the install smoke fails on the missing line.
+        }
+      }
       // Only a mod that loaded can open a pane: a failed load must not leave a
       // disposed sink in the reader or a tool that points at nothing.
       uiSinks.push(bridge.ui)

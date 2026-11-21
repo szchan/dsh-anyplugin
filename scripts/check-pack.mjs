@@ -2,10 +2,11 @@
  * check:pack — the invariants a publishable tarball must satisfy.
  *
  * `npm run verify` runs this, so a package that would ship a broken `exports`
- * map, a TypeScript source, a harness import, or an undeclared runtime
- * dependency cannot merge. It packs with `--ignore-scripts` on purpose: the
- * caller builds first, and the flag is what lets the install smoke be tested
- * against a lib-less tarball (the mutation the smoke must catch).
+ * map, a TypeScript source, a harness import, an undeclared runtime dependency,
+ * or a mods stub instead of the kernel cannot merge. It packs with
+ * `--ignore-scripts` on purpose: the caller builds first, and the flag is what
+ * lets the install smoke be tested against a lib-less tarball (the mutation the
+ * smoke must catch).
  *
  * The final step is the real install smoke: this is the only check that boots
  * the harness against the packed artifact.
@@ -128,15 +129,53 @@ try {
     }
     notes.push(`declared runtime deps: ${[...declared.keys()].sort().join(', ')}; ${imported.size} statically imported`)
 
-    // 4. The mods kernel and its transform stack are a v0.2 feature: a tarball
-    //    that contains them is publishing something 0.1.0 does not support.
-    for (const [path, source] of contents) {
-      check(!source.includes('@babel'), `lib/${path.slice(4)} contains @babel code; mods must not ship in 0.1.0`)
+    // 4. The shipped runtime set is exact, and it is the real kernel. v0.2
+    //    reverses the 0.1 assertion: the pinned Babel packages are required
+    //    (D34's one classic-pragma pass), and the hook entry may not carry the
+    //    0.1 stub that refused every mods row.
+    const expectedDeps = {
+      '@babel/core': '7.29.13',
+      '@babel/plugin-transform-react-jsx': '7.29.7',
+      '@modelcontextprotocol/client': '2.2.0',
     }
+    const shippedDeps = manifest.dependencies ?? {}
+    for (const [name, version] of Object.entries(expectedDeps)) {
+      check(
+        shippedDeps[name] === version,
+        `dependency ${name} is ${JSON.stringify(shippedDeps[name])}, expected ${version}`,
+      )
+    }
+    check(
+      Object.keys(shippedDeps).sort().join(',') === Object.keys(expectedDeps).sort().join(','),
+      `dependencies are ${JSON.stringify(Object.keys(shippedDeps).sort())}, expected exactly ${JSON.stringify(Object.keys(expectedDeps).sort())}`,
+    )
+    check(
+      shippedDeps['@deepseek-ai/cordis'] === undefined,
+      'cordis is declared as a runtime dependency; it must stay a peer',
+    )
+    const hookSource = contents.get('lib/materialize/hook.js') ?? ''
+    check(hookSource.includes('SourceTextModule'), 'the hook entry does not boot mods in a vm realm; the kernel is missing')
+    check(hookSource.includes('stripTypeScriptTypes'), 'the hook entry has no type strip; the kernel is missing')
+    check(!hookSource.includes('mods are not available in dsh-anyplugin'), 'the hook entry still carries the 0.1 mods stub')
+    check(hookSource.includes('@babel/plugin-transform-react-jsx'), 'the hook entry does not reach the classic JSX transform (D34)')
+    const recorded = has('lib/kernel-size.json')
+    check(recorded, 'the build did not record lib/kernel-size.json')
+    const kernel = recorded ? JSON.parse(readFileSync(join(tree, 'lib/kernel-size.json'), 'utf8')) : { bytes: 0, inputs: [] }
+    check(typeof kernel.bytes === 'number' && kernel.bytes > 0, 'lib/kernel-size.json records no kernel bytes')
+    check(
+      Array.isArray(kernel.inputs) && kernel.inputs.every((path) => path.startsWith('packages/dsh-anyplugin-mod-host/')),
+      'lib/kernel-size.json names inputs outside packages/dsh-anyplugin-mod-host',
+    )
+    const hookSize = packed.files.find((file) => file.path === 'lib/materialize/hook.js')?.size ?? 0
+    check(hookSize > 0, 'the tarball has no lib/materialize/hook.js')
+    notes.push(
+      `mods kernel ${(kernel.bytes / 1024).toFixed(1)} KiB of lib/materialize/hook.js (${(hookSize / 1024).toFixed(1)} KiB, ${kernel.inputs.length} files)`,
+    )
+    notes.push(`exact runtime deps: ${Object.entries(expectedDeps).map(([name, version]) => `${name}@${version}`).join(', ')}; cordis stays a peer`)
 
     // 5. Metadata a consumer relies on.
     check(manifest.name === 'dsh-anyplugin', `package name is ${JSON.stringify(manifest.name)}`)
-    check(manifest.version === '0.1.0', `version is ${JSON.stringify(manifest.version)}; v0.1 ships as 0.1.0`)
+    check(manifest.version === '0.2.0', `version is ${JSON.stringify(manifest.version)}; v0.2 ships as 0.2.0`)
     check(manifest.private !== true, 'the published manifest is still private')
     check(manifest.license === 'MIT', `license is ${JSON.stringify(manifest.license)}`)
     check(manifest.engines?.node === '>=22.14', `engines.node is ${JSON.stringify(manifest.engines?.node)}`)
@@ -147,12 +186,22 @@ try {
     // 6. The install smoke runs against this exact tarball, not the source tree.
     if (failures.length === 0) {
       try {
-        execFileSync(process.execPath, [join(root, 'scripts', 'smoke-install.mjs'), tarball], {
+        const smokeOutput = execFileSync(process.execPath, [join(root, 'scripts', 'smoke-install.mjs'), tarball], {
           cwd: root,
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf8',
         })
-        notes.push('install smoke passed')
+        // The kernel's proof names the mod and its registration count; keep it
+        // in the gate's one-line summary, not only in the smoke's stdout.
+        const mods = /mods: (.*)$/m.exec(smokeOutput)
+        if (mods === null) {
+          // The tarball can install every compile-path surface and still ship a
+          // kernel that refuses every mod; the smoke's mods line is the proof
+          // that it did not.
+          failures.push('install smoke passed without reporting the mods proof')
+        } else {
+          notes.push(`install smoke passed; mods: ${mods[1]}`)
+        }
       } catch (error) {
         failures.push(`install smoke failed:\n${(error.stdout || '') + (error.stderr || '')}`)
       }

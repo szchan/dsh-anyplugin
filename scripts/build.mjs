@@ -8,18 +8,24 @@
  * private — so each entry the loader can ever be asked to import is bundled
  * here, with the harness packages and Node builtins left external.
  *
- * Two deliberate choices:
+ * One release fact shapes this file: **0.2.0 ships the mods kernel**. Mods load
+ * as authored (D30/D31): no transpile, bundle, minify or rewrite. The one
+ * exception is a classic-pragma `.tsx` module, which goes through a single
+ * `@babel/plugin-transform-react-jsx` pass in memory (D34). That is why the
+ * kernel is bundled into `lib/materialize/hook.js` while the two Babel
+ * packages stay **external and declared**: they are the kernel's runtime, so a
+ * consumer's Node must resolve them from the installed `dependencies`, not
+ * from a copy baked into the tarball.
  *
- * - **No source maps, no minification, no code generation at runtime.** The
- *   emitted loader configs are still pure data (D1); this script only turns
- *   the compiler that produces them into a file a consumer can import.
- * - **`dsh-anyplugin-mod-host` is replaced by `scripts/build-stubs/mod-host.mjs`.**
- *   The mods kernel is not part of 0.1.0. Bundling the real one would pull
- *   `@babel/core` and the whole host into the tarball and quietly ship a
- *   surface the release does not claim. The stub keeps the classic-hook path
- *   working and refuses a hand-written `mods` list with a named reason.
+ * The metafile is kept for one gate reason: `check:pack` prints the kernel's
+ * share of the bundle from `lib/kernel-size.json`, so a release cannot claim
+ * the kernel ships without also stating what it costs.
+ *
+ * Still no source maps, no minification and no runtime code generation: the
+ * emitted loader configs are pure data (D1), and this script only turns the
+ * compiler that produces them into a file a consumer can import.
  */
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +35,9 @@ import { build } from 'esbuild'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const lib = join(root, 'lib')
-const stub = join(root, 'scripts', 'build-stubs', 'mod-host.mjs')
+
+/** The kernel's source directory; its `bytesInOutput` sum is the shipped cost. */
+const kernelDir = 'packages/dsh-anyplugin-mod-host/'
 
 /** Entry point → output path under `lib/`, matching `exports` in package.json. */
 const ENTRIES = {
@@ -46,18 +54,10 @@ const externals = [
   'node:*',
   '@modelcontextprotocol/client',
   '@modelcontextprotocol/client/*',
+  // The kernel's runtime, resolved from the installed dependencies (D34).
+  '@babel/core',
+  '@babel/plugin-transform-react-jsx',
 ]
-
-/** Redirect the mods host to the 0.1 stub; nothing else is allowed to be rewritten. */
-const modHostStub = {
-  name: 'mod-host-stub',
-  setup(pluginBuild) {
-    pluginBuild.onResolve({ filter: /dsh-anyplugin-mod-host/ }, (args) => {
-      if (!args.path.includes('dsh-anyplugin-mod-host')) return null
-      return { path: stub }
-    })
-  },
-}
 
 async function main() {
   rmSync(lib, { recursive: true, force: true })
@@ -65,8 +65,11 @@ async function main() {
     await mkdir(dirname(join(lib, `${out}.js`)), { recursive: true })
   }
 
+  let kernelBytes = 0
+  const kernelInputs = new Set()
+
   for (const [out, entry] of Object.entries(ENTRIES)) {
-    await build({
+    const result = await build({
       entryPoints: [join(root, entry)],
       outfile: join(lib, `${out}.js`),
       bundle: true,
@@ -74,14 +77,38 @@ async function main() {
       platform: 'node',
       target: ['node22'],
       external: externals,
-      plugins: [modHostStub],
+      metafile: true,
       logLevel: 'warning',
       legalComments: 'none',
       banner: { js: `// dsh-anyplugin ${pkg.version} — built by scripts/build.mjs; do not edit.` },
     })
+
+    for (const output of Object.values(result.metafile.outputs)) {
+      for (const [input, info] of Object.entries(output.inputs)) {
+        if (!input.startsWith(kernelDir)) continue
+        kernelBytes += info.bytesInOutput
+        kernelInputs.add(input)
+      }
+    }
   }
 
-  process.stdout.write(`build: ${Object.keys(ENTRIES).length} entries → lib/\n`)
+  writeFileSync(
+    join(lib, 'kernel-size.json'),
+    `${JSON.stringify(
+      {
+        version: pkg.version,
+        entry: 'lib/materialize/hook.js',
+        bytes: kernelBytes,
+        inputs: [...kernelInputs].sort(),
+      },
+      null,
+      2,
+    )}\n`,
+  )
+
+  process.stdout.write(
+    `build: ${Object.keys(ENTRIES).length} entries → lib/; mods kernel ${kernelBytes} bytes across ${kernelInputs.size} files\n`,
+  )
 }
 
 await main()

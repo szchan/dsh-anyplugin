@@ -153,7 +153,10 @@ reconcile lives in `dsh-anyplugin-install`.
 
 ### The published package
 
-The root package is `dsh-anyplugin` (0.1.0), and it is the one published artifact.
+The root package is `dsh-anyplugin` (0.2.0), and it is the one published artifact.
+Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
+kernel and the two Babel packages it needs for the one classic-pragma
+transform (`D34`; §7.8).
 `src/` remains the development entry: every workspace manifest keeps
 `exports["."] = "./src/index.ts"` so tests and spikes run the sources directly.
 `scripts/build.mjs` bundles each runtime entry to `lib/<name>.js` for a
@@ -1210,6 +1213,27 @@ remains `planned`. The conformance test asserts both the static
 ledger and the ordered dynamic sequence against the fetched graph, and the
 synthetic fixture asserts the ordered `ran` / `refused:<code>` ledger for
 every row.
+
+### 7.8 Packaging: the kernel ships inside the bundle (0.2.0)
+
+The kernel is not a separate npm package; it is bundled into
+`lib/materialize/hook.js`, the entry a hook row names. `scripts/build.mjs`
+keeps `@babel/core` and `@babel/plugin-transform-react-jsx` external, so the
+one classic-pragma transform (`D34`) resolves from the installed package's own
+`dependencies`; every `@deepseek-ai/*` import stays external because the
+harness provides it. The build records the kernel's share of the bundle in
+`lib/kernel-size.json` (`bytesInOutput` for inputs under
+`packages/dsh-anyplugin-mod-host/`), and `check:pack` asserts the exact
+runtime dependency set, prints that byte cost, and refuses a tarball whose hook
+entry still contains the 0.1 stub's refusal.
+
+`scripts/smoke-install.mjs` boots the packed tarball (not the checkout)
+against the pinned harness: it loads the pinned upstream `sec-default` (45
+registrations) and the repository's mod fixtures, and observes a registration
+count per mod, a `$` round-trip through the headless bridge, a `classic.*`
+handler next to a classic hook in the same turn, and a mod deny at
+`tools/pre-execute`. The lock schema still has no `mods` field: 0.2.0 ships
+the kernel and the row-level `mods` config, not the install path for mods.
 
 ## 8. Seam capability matrix (P4)
 
