@@ -2316,3 +2316,61 @@ skipped; refusals are a stable `code` and `--json` prints
 relative `--config` is a typed error for commands that need an existing lock;
 `install` never grants exec (D27) and never writes profile config (D23);
 `rig --help` with no command still exits 2 — a known rough edge, not a claim.
+
+---
+
+## D50 — A bundle's install claim is the host's profile path
+
+**Ratified 2026-11-21.** Supersedes nothing; D43 (packaging) and D49 (lifecycle
+CLI) stand. Evidence: S17, `packages/dsh-anyplugin-conformance/test/profile-mount.test.mjs`.
+
+**Decision.** A packed `dsh-anyplugin` is "installed" only when the host mounts
+it from a profile: the profile `package.json` lists it in `dsh.profile.bundles`,
+the host reads the bundle's `cordis.patch.yml`, merges it into the profile root
+`cordis.yml`, and `boot`'s include loads the entry. A tree composed with
+`composeEntries` + `loader.create` — what `check:pack`'s install smoke does —
+remains a **packaging check**, not profile evidence. The two answer different
+questions: the smoke says the tarball's entries are expressible; the profile
+path says the host will actually run them.
+
+**What S17 proves** (pin: DSH `0.2.2-rc.5` and `0.2.2-rc.2`, harness from
+`.harness/<pin>`):
+
+- one positive: a temp profile listing the package in `dsh.profile.bundles`
+  mounts the `anyplugin.claude-code…skills-only` group with its
+  `dsh-anyplugin/materialize/skill` child active, `greet` + `hello` present, and
+  the body renders as `Say hello to the user.`;
+- the bundle's module URL resolves **inside the profile's**
+  `node_modules/dsh-anyplugin/lib/index.js`, including a boundary control where
+  that path is a symlink to the checkout — a host resolving to the checkout
+  would mean the profile was not what ran;
+- three negatives (no lock, corrupt lock, disabled plugin) mount nothing.
+
+**What it does not prove, and must never be read as proving.**
+
+- The launcher's `PluginPackages` install-closure interception was **not**
+  exercised. On this machine it does not initialize
+  (`node-addon-require-builtin … Unsupported/no-getter` against
+  `internal/modules/esm/loader`, Nodes 24.12.0 and 24.22.2), so the harness
+  scope is *linked* into the profile's `node_modules` as a stand-in. Install
+  closure remains unproven.
+- A real template profile with the stock base application bundle: the fetched
+  harness union contains no base bundle, so the profile lists only
+  `dsh-anyplugin` and the test supplies the host services.
+- pnpm as the install step: the test installs by offline extract + link; pnpm
+  was only compared in a spike.
+- The controller's reconcile **count**: the include's load pass can run after
+  `loader.await()` collected its tasks, so the same boot can log
+  `group fiber is 1, expected active (2)` and still settle the tree active. The
+  test asserts the settled tree, not that count, and a future change must not
+  turn the count into a claim.
+
+**Consequences.**
+
+- Anything that claims "installable" in README/INSTALL must be backed by S17 or
+  quietly say it is smoke-tested. The packaging smoke alone is not enough.
+- The suite's Node floor for this test is 22.15 (`module.registerHooks`), while
+  the published package's `engines` floor stays 22.14; the test skips with a
+  reason naming Node 22.15 rather than failing to link.
+- If `PluginPackages` becomes exercisable in CI, that is a new decision with its
+  own evidence, not a silent upgrade of this one.
