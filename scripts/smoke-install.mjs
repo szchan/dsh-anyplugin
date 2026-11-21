@@ -35,7 +35,12 @@ const step = (message) => {
   if (verbose) process.stderr.write(`install smoke: … ${message}\n`)
 }
 const tarball = process.argv[2]
-const CLAUDE_PIN = 'claude-code@2.1.329' // CLAUDE_CODE_PIN; compile rejects a stale pin by design.
+// The pin is part of the claim, so read it from its one source rather than
+// repeating it here: compile rejects a record whose pin is stale by design.
+const pinFile = join(root, 'packages', 'dsh-anyplugin-conformance', 'src', 'pin.ts')
+const pinMatch = /version:\s*'([^']+)'/.exec(readFileSync(pinFile, 'utf8'))
+if (pinMatch === null) fail(`cannot read the Claude Code pin from ${pinFile}`)
+const CLAUDE_PIN = `claude-code@${pinMatch[1]}`
 const PUBLISHED_SUBPATHS = [
   'materialize/skill',
   'materialize/command',
