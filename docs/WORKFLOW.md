@@ -137,6 +137,15 @@ match the pin before the suite runs.
   money). Those are local evidence and belong in the PR body. CI green is a
   floor, not the whole claim.
 
+**A pull request can land without a `verify` run.** GitHub has been
+observed not to schedule `pull_request` workflows for a PR opened through the
+API right after its branch push: intake and the label job run, `verify` never
+appears, and the merge stays blocked waiting for a check that will not come.
+Two minutes without a `verify` row is the signal. Recovery: push an empty
+commit so the head changes (`git commit --allow-empty -m "ci: re-run verify"`)
+and wait for the new run. Never merge without the check and never bypass the
+rule; the status is the gate, the empty commit only re-asks for it.
+
 Do not "fix" a skipped test by making it not need the harness. Either it is a
 pure test (then it belongs in a pure package) or it belongs to the oracle. In CI
 a skip is a bug.
