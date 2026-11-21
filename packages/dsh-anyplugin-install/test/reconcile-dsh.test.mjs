@@ -12,6 +12,7 @@ import test from 'node:test'
 
 import { harnessSkipReason, resolveHarness } from '../../dsh-anyplugin-conformance/src/harness.ts'
 import { CLAUDE_CODE_PIN } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { AGENT_PLUGINS_PIN } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { compileEntries, reconcile } from '../src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -223,5 +224,48 @@ test(
 
     await sleep(350)
     assert.equal(childFiber.state, 4, 'the disposer did finish after reconcile reported the timeout')
+  }),
+)
+
+// A codex record goes through the same lock → compile → loader path: the group
+// id is dialect-qualified, the children are the emitter's, and the second
+// reconcile is a no-op. This is the install half of issue #101; the DSH oracle
+// half lives in the conformance rig.
+const codexInstalls = {
+  schema: 'dsh-anyplugin/installs@1',
+  plugins: [
+    {
+      dialect: 'codex',
+      name: 'codex-portable',
+      version: '1.0.0',
+      root: join(repoRoot, 'fixtures', 'codex-portable'),
+      dataDir: join(workspace, 'data', 'codex-portable'),
+      pin: `${AGENT_PLUGINS_PIN.tool}@${AGENT_PLUGINS_PIN.version}`,
+    },
+  ],
+}
+const codexEnablements = {
+  user: { plugins: { 'codex:codex-portable': { enabled: true, grants: [] } } },
+}
+const codexDesired = compileEntries(codexInstalls, { materializers: { skill: materializerUrl }, enablements: codexEnablements })
+const CODEX_GROUP_ID = codexDesired[0].id
+const CODEX_CHILD_ID = codexDesired[0].config[0].id
+
+test(
+  'a codex record reconciles once, then reports zero changes',
+  when,
+  () => withLoader(async (ctx) => {
+    assert.equal(CODEX_GROUP_ID, 'anyplugin.codex~3acodex-portable')
+    assert.equal(codexDesired.length, 1)
+    assert.equal(codexDesired[0].config.length, 1, 'one skill child carries both codex skills')
+    assert.match(CODEX_CHILD_ID, /#skill$/)
+
+    const first = await reconcile(ctx.loader, codexDesired)
+    assert.deepEqual(first, { created: [CODEX_GROUP_ID], updated: [], removed: [], kept: [], failed: [], refused: [] })
+    assert.equal(ctx.loader.resolve(CODEX_GROUP_ID).fiber.state, 2, 'codex group is active')
+    assert.equal(ctx.loader.resolve(CODEX_CHILD_ID).fiber.state, 2, 'codex skill child is active')
+
+    const second = await reconcile(ctx.loader, codexDesired)
+    assert.deepEqual(second, { created: [], updated: [], removed: [], kept: [CODEX_GROUP_ID], failed: [], refused: [] })
   }),
 )

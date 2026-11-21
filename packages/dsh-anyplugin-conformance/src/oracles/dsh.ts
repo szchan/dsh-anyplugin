@@ -130,10 +130,20 @@ async function boot(harnessDir: string, timeoutMs: number, needTools: boolean, n
   return { ctx, loader: ctx.loader, loaderFiber, skills: ctx.skills, tools: ctx.tools }
 }
 
+/**
+ * Child ids are the emitter's surface id for a hand-built entry, but the
+ * install compiler makes them profile-global (`anyplugin.<scope>#<surface>`).
+ * Match on the surface suffix so the oracle can read either shape; the entry
+ * it is handed is the entry the loader will actually start.
+ */
+function isSurfaceChild(id: unknown, surface: string): boolean {
+  return typeof id === 'string' && (id === surface || id.endsWith(`#${surface}`))
+}
+
 /** The MCP child entry, when the emitter placed one. */
 function mcpChild(entry: EntryOptions): { plugin: string; servers: Array<{ name: string }> } | undefined {
   const children = (entry.config ?? []) as Array<{ id?: string; config?: { plugin?: string; servers?: Array<{ name: string }> } }>
-  const child = children.find((item) => item.id === 'mcp')
+  const child = children.find((item) => isSurfaceChild(item.id, 'mcp'))
   if (child?.config?.plugin === undefined) return undefined
   return { plugin: child.config.plugin, servers: child.config.servers ?? [] }
 }
@@ -146,7 +156,7 @@ function agentsChild(
     id?: string
     config?: { plugin?: unknown; agents?: Array<{ name?: unknown; description?: unknown }> }
   }>
-  const child = children.find((item) => item.id === 'agents')
+  const child = children.find((item) => isSurfaceChild(item.id, 'agents'))
   if (!Array.isArray(child?.config?.agents)) return undefined
   const plugin = typeof child.config.plugin === 'string' ? child.config.plugin : ''
   if (plugin.trim() === '') return undefined
@@ -347,10 +357,15 @@ export interface DshLifecycleObservation {
   events: string[]
 }
 
-/** The hook child's data directory, which the emitter copied from the install lock. */
-function lifecycleDataDir(entry: EntryOptions): string {
+/**
+ * The hook child's data directory, which the emitter copied from the install
+ * lock. Exported for the unit test: the id may be the bare surface
+ * (`hook`) or install-qualified (`anyplugin.<scope>#hook`), and both must
+ * resolve the same way the materializer's child does.
+ */
+export function lifecycleDataDir(entry: EntryOptions): string {
   const children = (entry.config ?? []) as Array<{ id?: string; config?: { pluginData?: unknown } }>
-  const child = children.find((item) => item.id === 'hook')
+  const child = children.find((item) => isSurfaceChild(item.id, 'hook'))
   if (typeof child?.config?.pluginData !== 'string' || child.config.pluginData.trim() === '') {
     throw new Error('dsh lifecycle probe: the hook child carries no pluginData directory')
   }
