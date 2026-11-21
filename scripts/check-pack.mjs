@@ -59,6 +59,17 @@ try {
     check(has('LICENSE'), 'the tarball has no LICENSE')
     check(has('INSTALL.md'), 'the tarball has no INSTALL.md')
     check(has('README.md'), 'the tarball has no README.md')
+    // Both READMEs ship and render on npm: a local image they name must be in
+    // the tarball, or the package page shows a broken image.
+    for (const name of ['README.md', 'README_cn.md']) {
+      if (!has(name)) continue
+      const text = readFileSync(join(tree, name), 'utf8')
+      for (const match of text.matchAll(/(?:src|href)=["'](?!(?:https?:|#|\/\/))([^"']+)["']/g)) {
+        const target = match[1].replace(/^\.\//, '')
+        if (!/\.(?:svg|png|jpe?g|gif|webp)$/i.test(target)) continue
+        check(has(target), `${name} references ${target}, which is not in the tarball`)
+      }
+    }
     check(has(manifest.dsh?.bundle?.patch?.replace(/^\.\//, '') ?? 'cordis.patch.yml'), 'the bundle patch is not in the tarball')
 
     // 1. The built entry point and every published export target.
