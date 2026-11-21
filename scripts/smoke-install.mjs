@@ -367,7 +367,7 @@ async function main() {
     }
     // The kernel's only runtime dependencies are the classic-JSX pair (D34). A
     // real profile installs the tarball's `dependencies` from the registry (the
-    // reviewer measured 60 packages / 35 MB for this 98 KiB tarball); the smoke
+    // reviewer measured 60 packages / 35 MB for this tarball, about 99 KiB); the smoke
     // links the checkout's copies so the proof stays offline. Its claim is
     // therefore narrow: the packaged hook entry imports the declared packages,
     // and their declared versions are what resolve — not that npm's install

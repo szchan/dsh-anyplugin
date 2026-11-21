@@ -1,6 +1,6 @@
 # Installing `dsh-anyplugin`
 
-`dsh-anyplugin@0.2.0` is the next release; `0.1.0` is staged on npm today. It is
+`dsh-anyplugin@0.2.0` is this release. It is
 **one bundle** whose
 patch inserts **one row** — the controller. Everything else (skills, including
 commands on their model face, MCP servers, hooks, agents, an activated output

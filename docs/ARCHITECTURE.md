@@ -1245,8 +1245,9 @@ row's `mods` config is the only door the kernel has: the lock has no `mods`
 field, so 0.2.0 ships the kernel and the row-level config, not a
 plugin-install path for mods. A real
 `npm install` of the tarball pulls the two declared Babel packages — 60
-packages / ~35 MB for the 98 KiB tarball — while the smoke links the checkout's
-copies and proves only that the packaged entry imports the declared packages.
+packages / ~35 MB for a tarball of about 99 KiB — while the smoke links the
+checkout's copies and proves only that the packaged entry imports the declared
+packages.
 
 `scripts/smoke-install.mjs` boots the packed tarball (not the checkout)
 against the pinned harness: it loads the pinned upstream `sec-default` (45

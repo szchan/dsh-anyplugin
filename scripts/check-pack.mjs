@@ -158,12 +158,30 @@ try {
     check(hookSource.includes('stripTypeScriptTypes'), 'the hook entry has no type strip; the kernel is missing')
     check(!hookSource.includes('mods are not available in dsh-anyplugin'), 'the hook entry still carries the 0.1 mods stub')
     // A page that claims mods load without saying Node needs the vm flag would
-    // be a lie an install cannot recover from: the packaged README must name it.
+    // be a lie an install cannot recover from: every packaged page that carries
+    // the requirements must name it. The install page is also the artifact
+    // description, so it must describe the release it ships, not the previous
+    // one (round 1 shipped a 0.1.0 INSTALL.md inside a 0.2.0 tarball).
     const [major = 0, minor = 0] = (manifest.version ?? '0.0.0').split('.').map(Number)
     if (major > 0 || minor >= 2) {
+      const flag = 'experimental-vm-modules'
+      const reference = 'see docs/ARCHITECTURE.md §7.8'
       check(
-        readFileSync(join(tree, 'README.md'), 'utf8').includes('experimental-vm-modules'),
-        'the packaged README does not name --experimental-vm-modules; mods cannot load without it (D46)',
+        readFileSync(join(tree, 'README.md'), 'utf8').includes(flag),
+        `the packaged README does not name --experimental-vm-modules; mods cannot load without it (${reference})`,
+      )
+      check(
+        readFileSync(join(tree, 'README_cn.md'), 'utf8').includes(flag),
+        `the packaged README_cn.md does not name --experimental-vm-modules; mods cannot load without it (${reference})`,
+      )
+      const install = readFileSync(join(tree, 'INSTALL.md'), 'utf8')
+      check(
+        install.includes(flag),
+        `the packaged INSTALL.md does not name --experimental-vm-modules; mods cannot load without it (${reference})`,
+      )
+      check(
+        !install.includes('0.1.0'),
+        'the packaged INSTALL.md still discusses 0.1.0; it must describe the artifact it ships',
       )
     }
     const recorded = has('lib/kernel-size.json')
