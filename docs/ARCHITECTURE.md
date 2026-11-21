@@ -1252,12 +1252,13 @@ returns the host's own verdict shape.
 | `tools/pre-execute` (waterfall, S8) | `{name, arguments, callId, agent, …}` | judges the call; `{kind: 'deny', reason}` ends the waterfall, otherwise `next()` |
 | `agent/pre-step` (waterfall, S9) | `{messages, turn, step, agent}` | on a spawned worker's first step, appends one user message to the continuation the host returned |
 
-Four rules, each with a positive and a near-miss case in the dry-run table:
-`git push` with a destination of `main`/`master` (any role), and **every bare
-`git push`** (any role) — `remote.<name>.push` and `push.default` can retarget
-a bare push after it was read, so the ambiguous form is refused and an explicit
-refspec is demanded; `gh pr merge` from a worker only (the root may merge);
-writes outside the worker's recorded worktree, with the main checkout always
+The core rules, each with a positive and a near-miss case in the dry-run table:
+a push is accepted only as `git push [-u|--force-with-lease] origin <one
+refspec that is not main>`, so a destination of `main`/`master`, **every bare
+`git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
+refused (`remote.<name>.push` and `push.default` can retarget a bare push after
+it was read); `gh pr merge` from a worker only (the root may merge); writes
+outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
 "Recorded" is the operative word: the worktree comes from an explicit path in
@@ -1270,22 +1271,28 @@ real boundary is branch protection, the DSH file sandbox and CI.
 
 The **tool layer is what sees a tool call**. A push is judged by shape,
 not by a list of forbidden spellings: the only accepted form is
-`git push [-u] origin <one refspec that is not main>`. A bare push, a second
-refspec, another remote, `--receive-pack`/`--exec`, `send-pack`, `update-ref`
-and any config that can rewrite the shape are refused with their own rule
+`git push [-u|--force-with-lease] origin <one refspec that is not main>`; a
+force update of a ticket branch is ordinary work after a rebase, a force update
+of main is not. A bare push, a second refspec, a wildcard or range refspec,
+another remote, `--receive-pack`/`--exec`, `send-pack`, `update-ref` and any
+config that can rewrite the shape are refused with their own rule
 (`git-push-shape`, `git-push-bare`, `git-push-exec`, `git-push-plumbing`,
-`git-config-write`). A worker runs no `-c`/`--config-env` and no `git config`
-at all; the root may read config and may set only keys that cannot execute a
-program — `alias.*`, `filter.*`, `core.pager`, `core.fsmonitor`,
+`git-config-write`). A worker may pass `-c` for keys that cannot execute a
+program (`user.*`, `color.*`, `core.quotepath`, non-external `diff.*`) and may
+read config (`--get`, `--get-all`, `--get-regexp`, `--list`); it may not write
+config or set an exec key. The root may write config, but never a key that
+executes a program: `alias.*`, `filter.*`, `core.pager`, `core.fsmonitor`,
 `core.hooksPath`, `core.sshCommand` and the rest of `GIT_EXEC_KEYS` are
 refused, lowercased before comparison so `Alias.p` is the same key. For a
-worker, unknown git subcommands are refused too (`git p`), with a reason that
-names the alias hazard. The shell reader defaults to deny on syntax it cannot
+worker, any leading `VAR=value` on a git segment is refused
+(`git-env-prefix`), and unknown git subcommands are refused too (`git p`),
+with a reason that names the alias hazard. The shell reader defaults to deny on syntax it cannot
 model — grouping, a background `&`, command substitution, backticks,
 here-strings, process substitution, `eval`/`source`/dot, `find -exec`, a shell
 reading stdin, unknown commands, unquoted `$` expansion — and refuses a
-worker's interpreter `-c`/`-e` payload that looks like a write. A worker may
-not run a script file either (`shell-script-unverified`): the bytes are
+worker's interpreter `-c`/`-e` payload that looks like a write or contains a
+literal process-spawn token (`interpreter-exec`). A worker may not run a **shell**
+script file either (`shell-script-unverified`): the bytes are
 writable and the reader does not read them, so the script could be rewritten
 to push main between the check and the run. Symlinks are resolved before
 confinement. The shell subset is deliberately narrow and is stated in the
@@ -1313,16 +1320,27 @@ which reports the hook path instead of claiming a vacuous `current`) and
 `--uninstall` removes it. Installation is transactional across the two writes:
 a failed profile write restores the hook to its prior bytes, and a read-only
 profile leaves both the hook and the block untouched. `core.hooksPath` is
-followed by git, not overridden: install warns when it moves the hooks outside
-the checkout, and the docs say that deleting that config orphans the installed
+followed by git, not overridden: install names the shadow path and `guard:status`
+reports it, and the docs say that deleting that config orphans the installed
 hook.
 
-None of this is a containment boundary. The residual holes are named rather
-than papered over: a root-run script (its bytes are not verified), a config key
-the root writes and a host later executes, a git feature outside the modelled
-subcommands reached by another path, and `--no-verify` inside a command the
-reader did not model. Branch protection, the DSH file sandbox and CI are the
-boundary; the guard is a convention checker for honest mistakes.
+The guard is a **conventional-deterrent at the tool layer plus a pre-push hook
+as defence in depth**. It is not containment. The authority over `main` is the
+server: branch protection with `enforce_admins: true`, required `verify`, linear
+history, no force-push and no deletion. A worker that evades the guard still
+cannot push `main` to this repository; it can only fabricate a local branch and
+open a PR, which is the workflow we want anyway. What the guard buys is that the
+*accident* — the mistyped refspec, the copy-pasted force push, the rushed
+`git config` — is caught at the call, before the network.
+
+The residual holes are named rather than papered over: worker interpreter
+payloads (only literal spawn spellings are denied, so `String.fromCharCode`,
+`globalThis['pro'+'cess']` or a downloaded script remain possible),
+`node scripts/*.mjs` and `npm run *` (both editable, so unverified), a
+`--no-verify` inside a command the reader did not model, non-git file writes
+from allowed tools, a root-run shell script, a root-written exec key that a host
+later runs, and any git feature outside the modelled subcommands. Branch
+protection, the DSH file sandbox and CI are the boundary.
 
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
 no value channel, and `SubagentStartRequest` has no instructions field at this

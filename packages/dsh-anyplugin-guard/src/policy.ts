@@ -46,7 +46,7 @@ import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isMainRef } from './git.ts'
-import { baseCommand, expansionHazard, parseSegments, shellScriptFile, shellStdinHazard, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
+import { baseCommand, expansionHazard, leadingAssignments, parseSegments, shellScriptFile, shellStdinHazard, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
 
 /** The brief the guard injects into a spawned worker (see `brief.ts`). */
 export interface BriefConfig {
@@ -353,7 +353,7 @@ export function destinationRef(refspec: string, branch: string | undefined): str
 }
 
 const PUSH_EXEC_FLAGS = new Set(['--receive-pack', '--exec'])
-const PUSH_ALLOWED_FLAGS = new Set(['-u', '--set-upstream'])
+const PUSH_ALLOWED_FLAGS = new Set(['-u', '--set-upstream', '--force-with-lease', '--force-if-includes'])
 
 function pushExecFlag(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
@@ -414,6 +414,12 @@ function judgePush(push: GitPush, branch: string | undefined, raw: string): Verd
       `refusing "${excerpt(raw)}": push one refspec at a time, so the guard can name every destination`,
     )
   }
+  if (/[*?[]/u.test(refspecs[0]) || refspecs[0].includes('..')) {
+    return deny(
+      'git-push-shape',
+      `refusing "${excerpt(raw)}": a wildcard or range refspec can address main through a pattern; name the one destination`,
+    )
+  }
   const destination = destinationRef(refspecs[0], branch)
   if (destination !== undefined && isMainRef(destination)) {
     return deny(
@@ -441,7 +447,7 @@ const DECISIONS_PATH = /docs\/DECISIONS\.md|decisions\.lock\.json/u
 const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync'])
 const ANY_ARG_WRITE_VERBS = new Set(['rm', 'tee', 'truncate', 'patch'])
 const INTERPRETERS = new Set(['node', 'python', 'python3', 'ruby', 'php'])
-const GIT_WRITE_SUBCOMMANDS = new Set([
+const GIT_DECISIONS_WRITE_SUBCOMMANDS = new Set([
   'checkout',
   'restore',
   'reset',
@@ -460,6 +466,14 @@ const GIT_WRITE_SUBCOMMANDS = new Set([
   'send-pack',
   'update-ref',
 ])
+
+/**
+ * The only git verbs that rewrite history or a ref outside the workspace.
+ * Workspace-local verbs (`rebase`, `stash`, `merge`, `checkout`, `reset`,
+ * `clean`, …) are ordinary work and stay allowed; they are still listed in
+ * `GIT_DECISIONS_WRITE_SUBCOMMANDS` so a decision-log write is caught.
+ */
+const GIT_PLUMBING_WRITE_SUBCOMMANDS = new Set(['send-pack', 'update-ref'])
 
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select'])
 
@@ -485,7 +499,7 @@ export function gitWriteVerb(tokens: string[]): string | undefined {
     break
   }
   const subcommand = head[index]
-  return subcommand !== undefined && GIT_WRITE_SUBCOMMANDS.has(subcommand) ? subcommand : undefined
+  return subcommand !== undefined && GIT_PLUMBING_WRITE_SUBCOMMANDS.has(subcommand) ? subcommand : undefined
 }
 
 interface GitInvocation {
@@ -587,27 +601,15 @@ function executesProgram(key: string): boolean {
 /**
  * `git -c`/`--config-env` and `git config` can define an alias, move
  * `core.hooksPath`, or name a program in a key such as `core.fsmonitor` — all
- * of which hide a push from the reader. A worker runs neither form; the root
- * may read config and may set only keys that cannot execute a program.
+ * of which hide a push from the reader. A worker may pass `-c` for keys that
+ * cannot execute a program and may read config; it may not write it. The root
+ * may write non-exec keys (the promise in ARCHITECTURE §8) but never an
+ * exec-capable one.
  */
 export function gitConfigViolation(tokens: string[], worker: boolean): Verdict | undefined {
   const invocation = gitInvocation(tokens)
   if (invocation === undefined) return undefined
   const raw = tokens.join(' ')
-  if (worker) {
-    if (invocation.configs.length > 0) {
-      return deny(
-        'git-config-write',
-        `refusing "${excerpt(raw)}": workers run git without -c/--config-env; a config value can name a program that pushes main`,
-      )
-    }
-    if (invocation.name === 'config') {
-      return deny(
-        'git-config-write',
-        `refusing "${excerpt(raw)}": workers do not run git config; read the value you need from the file instead`,
-      )
-    }
-  }
   for (const config of invocation.configs) {
     const key = configKey(config)
     if (executesProgram(key)) {
@@ -623,22 +625,18 @@ export function gitConfigViolation(tokens: string[], worker: boolean): Verdict |
   const reads = args.some((token) => CONFIG_READ_FLAGS.has(token))
   const positional = args.filter((token) => !token.startsWith('-'))
   const key = positional[0]?.toLowerCase()
-  if (writes || (!reads && positional.length >= 2)) {
-    if (key !== undefined && executesProgram(key)) {
-      return deny(
-        'git-config-write',
-        `refusing "${excerpt(raw)}": ${key} names a program git will execute; edit the file you meant to edit instead`,
-      )
-    }
-    if (worker) {
-      return deny(
-        'git-config-write',
-        `refusing "${excerpt(raw)}": workers do not write git config`,
-      )
-    }
+  const write = writes || (!reads && positional.length >= 2)
+  if (!write) return undefined
+  if (key !== undefined && executesProgram(key)) {
     return deny(
       'git-config-write',
-      `refusing "${excerpt(raw)}": writing git config can change how git runs; edit the file you meant to edit instead`,
+      `refusing "${excerpt(raw)}": ${key} names a program git will execute; edit the file you meant to edit instead`,
+    )
+  }
+  if (worker) {
+    return deny(
+      'git-config-write',
+      `refusing "${excerpt(raw)}": workers read git config but do not write it; pass -c for one command if a value is really needed`,
     )
   }
   return undefined
@@ -803,6 +801,20 @@ function interpreterWrite(tokens: string[]): boolean {
   if (head.length === 0 || !INTERPRETERS.has(baseCommand(head[0]))) return false
   const payload = head.slice(1).find((token) => !token.startsWith('-'))
   return payload !== undefined && WRITE_PAYLOAD.test(payload)
+}
+
+/**
+ * Literal spawn spellings in an interpreter payload. This closes the class the
+ * reviewer reproduced; it cannot close the class itself — `globalThis['pro'+'cess']`
+ * and a downloaded script remain possible, and the docs say so.
+ */
+const SPAWN_PAYLOAD = /child_process|execSync|execFileSync|execFile|spawn|os\.system|subprocess|system\(/u
+
+function interpreterExec(tokens: string[]): boolean {
+  const head = stripPrefix(tokens)
+  if (head.length === 0 || !INTERPRETERS.has(baseCommand(head[0]))) return false
+  const payload = head.slice(1).find((token) => !token.startsWith('-'))
+  return payload !== undefined && SPAWN_PAYLOAD.test(payload)
 }
 
 /** Constructs whose effects the segment parser cannot see. Refused, not guessed. */
@@ -1019,7 +1031,7 @@ function decisionsViolation(segment: ShellSegment): Verdict | undefined {
     written.push(...nonFlagArguments(head))
   } else if (command === 'dd') {
     for (const token of args) if (token.startsWith('of=')) written.push(token.slice(3))
-  } else if (command === 'git' && GIT_WRITE_SUBCOMMANDS.has(head[1] ?? '')) {
+  } else if (command === 'git' && GIT_DECISIONS_WRITE_SUBCOMMANDS.has(head[1] ?? '')) {
     written.push(...args)
   } else if (command === 'sed' || command === 'perl') {
     if (args.some((token) => /^-[A-Za-z]*i/u.test(token) || token === '--in-place')) {
@@ -1083,6 +1095,19 @@ function judgeCommand(
     if (violation !== undefined) return violation
   }
 
+  if (agent.worker) {
+    for (const segment of flat) {
+      const assignments = leadingAssignments(segment.tokens)
+      const head = stripPrefix(segment.tokens)
+      if (assignments.length > 0 && baseCommand(head[0]) === 'git') {
+        return deny(
+          'git-env-prefix',
+          `refusing "${excerpt(segment.raw)}": a leading ${assignments[0].split('=')[0]} can redirect git config, ssh, exec-path or pager; run git with no environment prefix`,
+        )
+      }
+    }
+  }
+
   for (const segment of flat) {
     const violation = gitConfigViolation(segment.tokens, agent.worker)
     if (violation !== undefined) return violation
@@ -1122,6 +1147,12 @@ function judgeCommand(
       return deny(
         'shell-script-unverified',
         `refusing "${excerpt(segment.raw)}": the guard does not read script contents, so a writable ${script} could be rewritten to push main; run the commands directly`,
+      )
+    }
+    if (interpreterExec(segment.tokens)) {
+      return deny(
+        'interpreter-exec',
+        `refusing "${excerpt(segment.raw)}": an interpreter payload that literally spawns a process can push from inside it; put the logic in a committed command`,
       )
     }
     if (interpreterWrite(segment.tokens)) {

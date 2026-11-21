@@ -159,12 +159,85 @@ test('an alias, a git config write and an unknown subcommand cannot hide a push'
     assert.equal(outcome.kind, 'deny', command)
     assert.equal(outcome.rule, 'git-config-write', command)
   }
-  assert.equal(shell('git config --get alias.p').kind, 'deny', 'workers do not run git config at all')
+  assert.equal(shell('git config --get user.name').kind, 'allow', 'workers may read config')
   assert.equal(shell('git config --get alias.p', root).kind, 'allow', 'the root may read config')
   const unknown = shell('git p')
   assert.equal(unknown.kind, 'deny')
   assert.equal(unknown.rule, 'git-unknown-subcommand')
   assert.match(unknown.reason, /alias/u)
+})
+
+test('ordinary work survives: non-exec -c keys, local history verbs, reads and lease pushes', () => {
+  for (const command of [
+    'git -c user.name=X -c user.email=Y commit -m "x"',
+    'git rebase main',
+    'git stash',
+    'git config --get user.name',
+    'git config --list',
+    'git push --force-with-lease origin ticket/80',
+    'git push --force-if-includes origin ticket/80',
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'allow', command)
+  }
+  for (const command of [
+    'git -c core.fsmonitor=touch status',
+    'git -c core.sshCommand="sh -c x" pull',
+    'git -c core.pager=less log',
+    'git -c diff.external=/tmp/x diff',
+    'git -c filter.x.clean=/tmp/x status',
+    'git -c credential.helper=/tmp/x fetch',
+    'git -c gpg.program=/tmp/x log',
+    'git config user.name X',
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'git-config-write', command)
+  }
+  assert.equal(shell('git config user.name X', root).kind, 'allow', 'the root may write a non-exec key')
+  const hooks = shell('git config core.hooksPath /tmp/hooks', root)
+  assert.equal(hooks.kind, 'deny')
+  assert.equal(hooks.rule, 'git-config-write')
+})
+
+test('a leading assignment on a worker git segment is refused', () => {
+  for (const command of [
+    'FOO=1 git push origin main',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=x git status',
+    'env GIT_SSH_COMMAND="sh -c x" git fetch',
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'git-env-prefix', command)
+  }
+  assert.equal(shell('FOO=1 git status', root).kind, 'allow', 'the root may carry an environment prefix')
+})
+
+test('wildcard and range refspecs are refused before they can address main', () => {
+  for (const command of [
+    'git push origin "refs/heads/*:refs/heads/ticket/*"',
+    'git push origin "HEAD:refs/heads/*"',
+    'git push origin "HEAD:ticket/[a-z]"',
+    'git push origin "HEAD:refs/heads/main..tmp"',
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'git-push-shape', command)
+  }
+})
+
+test('literal process-spawn payloads are refused; a plain one-liner is not', () => {
+  for (const command of [
+    `node -e "require('child_process').execSync('git push origin main')"`,
+    `python3 -c "import subprocess; subprocess.run(['git','push','origin','main'])"`,
+    `ruby -e "system('git push origin main')"`,
+    `php -r "system('git push origin main');"`,
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'interpreter-exec', command)
+  }
+  assert.equal(shell(`node -e "require('fs').readFileSync('README.md')"`).kind, 'allow')
 })
 
 test('send-pack, update-ref and --no-verify do not get a second route to main', () => {
@@ -432,8 +505,8 @@ test('a worker with no cwd cannot resolve a relative write and is refused', () =
 test('shell bypasses are refused: >|, subshells, git write verbs and launchers', () => {
   assert.equal(shell(`echo x >| ${repo}/x`).kind, 'deny')
   assert.equal(shell(`(cd ${repo} && touch x)`).kind, 'deny')
-  assert.equal(shell(`git restore ${repo}/x`).kind, 'deny')
-  assert.equal(shell(`git clean -fd ${repo}`).kind, 'deny')
+  assert.equal(shell(`git restore ${repo}/x`).kind, 'allow', 'workspace-local restores are ordinary work')
+  assert.equal(shell(`git clean -fd ${repo}`).kind, 'allow', 'workspace-local cleans are ordinary work')
   assert.equal(shell(`env -i git push origin main`).kind, 'deny')
   assert.equal(shell(`timeout 5 git push origin main`).kind, 'deny')
   assert.equal(shell(`nice -n 5 git push origin main`).kind, 'deny')

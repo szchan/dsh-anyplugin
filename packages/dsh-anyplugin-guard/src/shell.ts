@@ -263,6 +263,42 @@ export function tokenize(segment: string): string[] {
  * Drop the prefixes that do not change the command: `sudo`, `env`, `command`,
  * `nohup`, `time`, `exec`, `builtin`, `VAR=value` assignments and `--`.
  */
+/**
+ * Environment assignments in front of the command: `VAR=value git …`.
+ * They are enough to redirect git config and exec paths, so a worker's git
+ * segment is refused when this is non-empty. `env -i VAR=value git …` counts.
+ */
+export function leadingAssignments(tokens: string[]): string[] {
+  const found: string[] = []
+  let index = 0
+  while (index < tokens.length) {
+    const token = tokens[index]
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+      found.push(token)
+      index += 1
+      continue
+    }
+    if (token === 'env') {
+      index += 1
+      continue
+    }
+    if (token === '-i' || token === '--ignore-environment') {
+      index += 1
+      continue
+    }
+    if (token === '-u' || token === '--unset') {
+      index += 2
+      continue
+    }
+    if (token.startsWith('-')) {
+      index += 1
+      continue
+    }
+    break
+  }
+  return found
+}
+
 export function stripPrefix(tokens: string[]): string[] {
   const result = tokens.slice()
   let index = 0
