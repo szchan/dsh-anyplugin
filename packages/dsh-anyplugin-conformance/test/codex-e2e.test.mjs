@@ -19,7 +19,7 @@ import {
 import { compileEntries, compileReport } from '../../dsh-anyplugin-install/src/index.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 import { diffInventories } from '../src/inventory.ts'
-import { probeWithDsh } from '../src/oracles/dsh.ts'
+import { lifecycleDataDir, probeWithDsh } from '../src/oracles/dsh.ts'
 import { buildTransplantReport, formatTransplantReport } from '../src/report.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -87,6 +87,30 @@ function writePortableManifest(dir, manifest = {}) {
   )
 }
 
+// A stdio MCP server whose two tools sit exactly on either side of the shared
+// 64-character limit once the Codex prefix is composed.
+const BUDGET_SERVER = String.raw`import { createInterface } from 'node:readline'
+const TOOLS = [
+  { name: 'ok', description: 'fits', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'long', description: 'over budget', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+]
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
+createInterface({ input: process.stdin }).on('line', (line) => {
+  if (line.trim() === '') return
+  const message = JSON.parse(line)
+  if (message.id === undefined) return
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: (message.params && message.params.protocolVersion) || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'budget', version: '1.0.0' } } })
+  } else if (message.method === 'ping') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'tools/list') {
+    send({ jsonrpc: '2.0', id: message.id, result: { tools: TOOLS } })
+  } else {
+    send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found: ' + message.method } })
+  }
+})
+`
+
 test('the codex report prints its own pin and classes, not the Claude pin', () => {
   const report = buildTransplantReport(readCodexPlugin(fixtureDir), { materializers })
   const text = formatTransplantReport(report)
@@ -101,6 +125,18 @@ test('the codex report prints its own pin and classes, not the Claude pin', () =
   assert.doesNotMatch(text, /claude-code@/, 'the codex report must not borrow the Claude pin')
   assert.match(text, /totals: 13 declared, 3 emitted, 2 refused, 8 skipped/)
   assert.match(text, /validation: PASS/)
+})
+
+test('the lifecycle probe finds the hook child by install-qualified id', () => {
+  const dataDir = join(workspace, 'data', 'hook')
+  const qualified = { id: 'anyplugin.codex~3acodex-portable', config: [{ id: 'anyplugin.codex~3acodex-portable#hook', config: { pluginData: dataDir } }] }
+  assert.equal(lifecycleDataDir(qualified), dataDir)
+  // Bare ids stay valid: the oracle also boots hand-built entries.
+  assert.equal(lifecycleDataDir({ id: 'anyplugin.x', config: [{ id: 'hook', config: { pluginData: dataDir } }] }), dataDir)
+  assert.throws(
+    () => lifecycleDataDir({ id: 'anyplugin.x', config: [{ id: 'anyplugin.x#hook', config: {} }] }),
+    /the hook child carries no pluginData directory/,
+  )
 })
 
 test(
@@ -135,6 +171,7 @@ test(
 
     const golden = JSON.parse(readFileSync(goldenPath, 'utf8'))
     assert.equal(golden.plugin.source, 'hand-authored: the portable spec is the oracle (D33)')
+    assert.deepEqual(golden.pin, { tool: AGENT_PLUGINS_PIN.tool, version: AGENT_PLUGINS_PIN.version })
     assert.ok(golden.notes.some((note) => /^Hand-authored, not observed/.test(note)))
     for (const component of golden.components) {
       assert.match(component.details?.note ?? '', /^hand-authored: /, `${component.surface}:${component.name} provenance`)
@@ -192,6 +229,70 @@ test('an over-budget Codex MCP server is refused with arithmetic, not truncated 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test(
+  'a Codex tool over the shared budget is skipped, while its server row survives',
+  { skip: harness ? false : harnessSkipReason() },
+  async () => {
+    const dir = tempPlugin('anyplugin-codex-e2e-tool-budget-')
+    const serverName = 's'.repeat(55)
+    const prefix = `mcp__${serverName}__`
+    try {
+      writePortableManifest(dir, { name: 'codex-tool-budget' })
+      writeFileSync(join(dir, 'tool-server.mjs'), BUDGET_SERVER)
+      writeFileSync(
+        join(dir, 'mcp.json'),
+        JSON.stringify({
+          $schema: PORTABLE_MCP_SCHEMA,
+          mcpServers: {
+            [serverName]: { type: 'stdio', command: 'node', args: [join(dir, 'tool-server.mjs')] },
+          },
+        }),
+      )
+
+      // The arithmetic the test is pinning: 5 (`mcp__`) + 55 + 2 (`__`) = 62,
+      // so `ok` is exactly 64 and `long` is 66.
+      assert.equal(prefix.length, 62)
+      assert.equal(`${prefix}ok`.length, 64)
+      assert.equal(`${prefix}long`.length, 66)
+
+      const entries = compileEntries(
+        installed([
+          {
+            dialect: 'codex',
+            name: 'codex-tool-budget',
+            version: '1.0.0',
+            root: dir,
+            dataDir: join(workspace, 'data', 'codex-tool-budget'),
+            pin: CODEX_PIN,
+          },
+        ]),
+        {
+          materializers,
+          sdkRoot: harness.modulesDir,
+          home,
+          enablements: { user: { plugins: { 'codex:codex-tool-budget': { enabled: true, grants: [] } } } },
+        },
+      )
+      assert.deepEqual(entries[0].config.map((child) => child.id), ['anyplugin.codex~3acodex-tool-budget#mcp'])
+
+      const { inventory, tools } = await probeWithDsh({ harnessDir: harness.harnessDir, entry: entries[0] })
+      assert.ok(tools.includes(`${prefix}ok`), `the 64-character tool registers, got ${JSON.stringify(tools)}`)
+      assert.ok(!tools.includes(`${prefix}long`), 'the 66-character tool is skipped, not renamed')
+      assert.deepEqual(
+        tools.filter((name) => name.startsWith('mcp__')).sort(),
+        [`${prefix}ok`],
+        'no truncation, rename or hash suffix on the over-budget tool',
+      )
+      assert.ok(
+        inventory.components.some((component) => component.surface === 'mcpServers' && component.name === serverName),
+        'the server row survives even though one of its tools could not be presented',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
 
 test('a codex manifest that declares another name is a typed compile problem', () => {
   const dir = tempPlugin('anyplugin-codex-e2e-name-')

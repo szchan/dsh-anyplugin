@@ -217,18 +217,28 @@ test('the artifact must declare the name the lock recorded', () => {
 })
 
 test('an unknown dialect is rejected, not guessed', () => {
-  const installs = lock(record('x', 'claude-skills-only', { dialect: 'cursor' }))
-  const report = compileReport(installs, { materializers, enablements: enabled('cursor:x') })
-  assert.equal(report.entries.length, 0)
-  assert.match(report.problems[0].reason, /unsupported dialect "cursor" \(installed dialects: claude-code, codex\)/)
+  // `constructor` is a legal identifier (the lock file grammar accepts it) and
+  // an inherited `Object.prototype` key, so it must still be rejected as an
+  // unsupported dialect rather than crash while reading `.pin.tool`.
+  for (const dialect of ['cursor', 'constructor']) {
+    const installs = lock(record('x', 'claude-skills-only', { dialect }))
+    const report = compileReport(installs, { materializers, enablements: enabled(`${dialect}:x`) })
+    assert.equal(report.entries.length, 0)
+    assert.match(
+      report.problems[0].reason,
+      new RegExp(`unsupported dialect "${dialect}" \\(installed dialects: claude-code, codex\\)`),
+    )
+  }
 })
 
 test('compileEntries fails closed instead of dropping a per-record problem', () => {
-  const installs = lock(record('x', 'claude-skills-only', { dialect: 'cursor' }))
-  assert.throws(
-    () => compileEntries(installs, { materializers, enablements: enabled('cursor:x') }),
-    /compileEntries: .*unsupported dialect "cursor"/,
-  )
+  for (const dialect of ['cursor', 'constructor']) {
+    const installs = lock(record('x', 'claude-skills-only', { dialect }))
+    assert.throws(
+      () => compileEntries(installs, { materializers, enablements: enabled(`${dialect}:x`) }),
+      new RegExp(`compileEntries: .*unsupported dialect "${dialect}"`),
+    )
+  }
 })
 
 test('projectDir reads the three scope files when enablements is omitted', () => {

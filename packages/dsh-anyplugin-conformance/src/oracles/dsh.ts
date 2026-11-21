@@ -357,10 +357,15 @@ export interface DshLifecycleObservation {
   events: string[]
 }
 
-/** The hook child's data directory, which the emitter copied from the install lock. */
-function lifecycleDataDir(entry: EntryOptions): string {
+/**
+ * The hook child's data directory, which the emitter copied from the install
+ * lock. Exported for the unit test: the id may be the bare surface
+ * (`hook`) or install-qualified (`anyplugin.<scope>#hook`), and both must
+ * resolve the same way the materializer's child does.
+ */
+export function lifecycleDataDir(entry: EntryOptions): string {
   const children = (entry.config ?? []) as Array<{ id?: string; config?: { pluginData?: unknown } }>
-  const child = children.find((item) => item.id === 'hook')
+  const child = children.find((item) => isSurfaceChild(item.id, 'hook'))
   if (typeof child?.config?.pluginData !== 'string' || child.config.pluginData.trim() === '') {
     throw new Error('dsh lifecycle probe: the hook child carries no pluginData directory')
   }

@@ -143,7 +143,11 @@ interface PreparedRecord {
 
 function prepareRecord(record: InstallRecord, options: CompileOptions): PreparedRecord {
   const id = `${record.dialect}:${record.name}`
-  const dialect = DIALECTS[record.dialect]
+  // `record.dialect` matches the install-file identifier grammar, but
+  // `constructor` is a legal identifier and also an inherited
+  // `Object.prototype` key. Own-key lookup keeps the registry a closed set
+  // instead of letting the prototype answer for a dialect we do not support.
+  const dialect = Object.hasOwn(DIALECTS, record.dialect) ? DIALECTS[record.dialect] : undefined
   if (dialect === undefined) {
     fail(
       `plugin "${id}" uses unsupported dialect "${record.dialect}" (installed dialects: ${Object.keys(DIALECTS).join(', ')})`,
