@@ -56,14 +56,14 @@
  */
 import { readFileSync, statSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
-import { extname, isAbsolute, resolve } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as vm from 'node:vm'
 
 import { ModHostError, codeOf, describeValue, messageOf } from './errors.ts'
 import { jsxRealmGlobals, transformTsx } from './jsx.ts'
 import { resolvePluginOptions } from './options.ts'
-import { isWithin, resolveModSpecifier } from './resolve.ts'
+import { isWithin, resolveModSpecifier, resolveSnapshotSpecifier } from './resolve.ts'
 
 export { ModHostError, type ModHostErrorCode } from './errors.ts'
 export {
@@ -112,8 +112,10 @@ export {
 } from './ui.ts'
 export {
   resolveModSpecifier,
+  resolveSnapshotSpecifier,
   type ModResolutionBehavior,
   type ResolveModSpecifierOptions,
+  type ResolveSnapshotSpecifierOptions,
   type ResolvedModSpecifier,
 } from './resolve.ts'
 
@@ -192,6 +194,28 @@ export interface LoadModOptions {
    * the pin stores them for the loader but does not pass them through.
    */
   readonly pluginOptions?: Readonly<Record<string, unknown>>
+  /**
+   * Every plugin-relative path the grant pinned (D52). When present, the entry
+   * and every module the linker resolves must be in the set; anything else
+   * refuses with `ERR_MOD_HOST_UNGRANTED` before it is created. A mod may
+   * import any file under its root, so the set — not the import graph — is the
+   * boundary. Omitted only when a caller has already proven the bytes (the
+   * host tests).
+   */
+  readonly files?: readonly string[]
+  /**
+   * The pinned bytes themselves, keyed by plugin-relative path (D52, M1).
+   * When present, `loadMod` compiles from this map and never opens a path
+   * under `root`: the digest the grant pinned and the code that evaluates are
+   * one snapshot, so rewriting a file between the scan and the link cannot
+   * change what runs. `files` then defaults to the map's keys.
+   */
+  readonly sources?: ReadonlyMap<string, Uint8Array | string>
+}
+
+/** Plugin-relative POSIX path, the form a tree manifest stores (D52). */
+function relativePath(root: string, file: string): string {
+  return relative(root, file).split(sep).join('/')
 }
 
 type Registration = {
@@ -319,14 +343,17 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
   }
 
   const root = resolve(options.root)
-  let rootStat
-  try {
-    rootStat = statSync(root)
-  } catch (cause) {
-    throw new ModHostError('ERR_MOD_HOST_MISSING', 'mod root does not exist', { file: root, cause })
-  }
-  if (!rootStat.isDirectory()) {
-    throw new ModHostError('ERR_MOD_HOST_MISSING', 'mod root is not a directory', { file: root })
+  const sources = options.sources
+  if (sources === undefined) {
+    let rootStat
+    try {
+      rootStat = statSync(root)
+    } catch (cause) {
+      throw new ModHostError('ERR_MOD_HOST_MISSING', 'mod root does not exist', { file: root, cause })
+    }
+    if (!rootStat.isDirectory()) {
+      throw new ModHostError('ERR_MOD_HOST_MISSING', 'mod root is not a directory', { file: root })
+    }
   }
 
   if (typeof options.entry !== 'string' || options.entry.length === 0) {
@@ -343,14 +370,37 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
       file: entryFile,
     })
   }
-  let entryStat
-  try {
-    entryStat = statSync(entryFile)
-  } catch (cause) {
-    throw new ModHostError('ERR_MOD_HOST_MISSING', 'entry does not exist', { file: entryFile, cause })
+  if (sources === undefined) {
+    let entryStat
+    try {
+      entryStat = statSync(entryFile)
+    } catch (cause) {
+      throw new ModHostError('ERR_MOD_HOST_MISSING', 'entry does not exist', { file: entryFile, cause })
+    }
+    if (!entryStat.isFile()) {
+      throw new ModHostError('ERR_MOD_HOST_MISSING', 'entry is not a file', { file: entryFile })
+    }
   }
-  if (!entryStat.isFile()) {
-    throw new ModHostError('ERR_MOD_HOST_MISSING', 'entry is not a file', { file: entryFile })
+
+  // Manifest paths are already plugin-relative (D52); an absolute path is
+  // accepted for a caller holding one and normalized against the same root.
+  const granted =
+    sources !== undefined
+      ? new Set(
+          options.files === undefined
+            ? [...sources.keys()]
+            : options.files.map((file) => (isAbsolute(file) ? relativePath(root, file) : file.split(sep).join('/'))),
+        )
+      : options.files === undefined
+        ? undefined
+        : new Set(options.files.map((file) => (isAbsolute(file) ? relativePath(root, file) : file.split(sep).join('/'))))
+  const entryPath = relativePath(root, entryFile)
+  if (granted !== undefined && !granted.has(entryPath)) {
+    throw new ModHostError(
+      'ERR_MOD_HOST_UNGRANTED',
+      `the entry "${entryPath}" is not in the granted file set; a mod runs only files the grant pinned`,
+      { file: entryFile },
+    )
   }
 
   const host = options.host
@@ -393,14 +443,26 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
     }
 
     let source: string
-    try {
-      source = readFileSync(file, 'utf8')
-    } catch (cause) {
-      throw new ModHostError(
-        codeOf(cause) === 'ENOENT' ? 'ERR_MOD_HOST_MISSING' : 'ERR_MOD_HOST_LINK',
-        `cannot read module: ${messageOf(cause)}`,
-        { file, cause },
-      )
+    if (sources === undefined) {
+      try {
+        source = readFileSync(file, 'utf8')
+      } catch (cause) {
+        throw new ModHostError(
+          codeOf(cause) === 'ENOENT' ? 'ERR_MOD_HOST_MISSING' : 'ERR_MOD_HOST_LINK',
+          `cannot read module: ${messageOf(cause)}`,
+          { file, cause },
+        )
+      }
+    } else {
+      const pinned = sources.get(relativePath(root, file))
+      if (pinned === undefined) {
+        throw new ModHostError(
+          'ERR_MOD_HOST_UNGRANTED',
+          `"${relativePath(root, file)}" is not in the granted snapshot`,
+          { file },
+        )
+      }
+      source = typeof pinned === 'string' ? pinned : Buffer.from(pinned).toString('utf8')
     }
 
     let code = source
@@ -445,11 +507,27 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
         `cannot resolve '${specifier}': the importing module has no file identifier`,
       )
     }
-    const resolved = resolveModSpecifier({
-      specifier,
-      parent: fileURLToPath(parent),
-      root,
-    })
+    const resolved =
+      sources === undefined
+        ? resolveModSpecifier({ specifier, parent: fileURLToPath(parent), root })
+        : (() => {
+            const snapshot = resolveSnapshotSpecifier({
+              specifier,
+              parent: relativePath(root, fileURLToPath(parent)),
+              files: new Set(sources.keys()),
+            })
+            return { file: resolve(root, snapshot.file), behavior: snapshot.behavior }
+          })()
+    if (granted !== undefined) {
+      const file = relativePath(root, resolved.file)
+      if (!granted.has(file)) {
+        throw new ModHostError(
+          'ERR_MOD_HOST_UNGRANTED',
+          `'${specifier}' resolves to "${file}", which the grant does not pin`,
+          { file: resolved.file },
+        )
+      }
+    }
     return createModule(resolved.file)
   }
 

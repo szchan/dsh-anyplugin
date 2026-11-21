@@ -78,7 +78,7 @@ every row.
 | Hooks | `equivalent` for the tool and lifecycle events DSH fires; other events are `planned` with the missing host event named |
 | Agents | `exact` — each `agents/*.md` becomes a scoped tool named `<plugin>:<agent>` |
 | Output styles | **shipped** — the profile's activation record selects one style (`D42`); the `/<plugin>:<name>` alias still needs the command-name seam (`D10`) |
-| `mods` | **shipped** — the kernel is in the tarball (`D30`, `D31`, `D34`): authored `.js`, `.mjs` and `.ts` load as authored in one `node:vm` realm, `.tsx` only through the one classic-pragma pass; `$` serves the measured namespaces and a seat binds each agent's events. A hook row's config may carry `mods: [{ entry }]`; the lock schema still has no `mods` field, so `dsh plugin add` does not install mods yet |
+| `mods` | **shipped** — the kernel is in the tarball (`D30`, `D31`, `D34`): authored `.js`, `.mjs` and `.ts` load as authored in one `node:vm` realm, `.tsx` only through the one classic-pragma pass; `$` serves the measured namespaces and a seat binds each agent's events. The lock (`dsh-anyplugin/installs@2`) carries a granted `mods` tree and `rig install` writes it; the hook row's `mods` config is emitted from that record, and an ungranted, unrecorded or changed tree — one digest over the whole plugin tree — is refused before `loadMod` |
 | Codex plugins | **not in 0.2.0** — the second dialect ships in v0.3 |
 | Install / enable / release | `dsh-anyplugin@0.2.0` — bundle + controller + reconciler |
 
@@ -136,16 +136,18 @@ generated.
   it every mod is refused with `ERR_MOD_HOST_LINK` ("… run Node with
   --experimental-vm-modules (D30)"), classic hooks still run, and the kernel
   says the flag **once**, not once per mod.
-- **Mods are reachable only from a hand-written hook row** (`mods: [{ entry }]`)
-  until the lock schema gains a `mods` field; `dsh plugin add` does not install
-  mods.
+- **Mods are installed through the lock** (`dsh-anyplugin/installs@2`): the
+  granted tree is emitted to the hook row, and a hand-written row without the
+  same pin is refused; the materializer re-reads the pinned files before
+  `loadMod`.
 
 0.2.0 ships the **compile path** — skills (a slash command lands as a skill on
 its model face), MCP servers, hooks, agents, an output style activated from the
 profile record (D42), install/reconcile, and the trust gate — and the **mods
-kernel** in `lib/materialize/hook.js`. A hook row whose config carries
-`mods: [{ entry }]` loads the authored mod in its own `node:vm` realm; the lock
-schema still has no `mods` field, so `dsh plugin add` does not install mods yet.
+kernel** in `lib/materialize/hook.js`. A plugin that declares its module
+entry in `hooks/hooks.json` installs as a `mods` record in
+`dsh-anyplugin/installs@2`; once granted, the controller emits the tree to the
+hook row and it loads in its own `node:vm` realm.
 The kernel's only runtime dependencies are `@babel/core` and
 `@babel/plugin-transform-react-jsx` (the one classic-pragma pass, D34);
 `check:pack` asserts that exact set and prints the kernel's byte cost. The

@@ -1,0 +1,5 @@
+{
+  "name": "mods",
+  "description": "Conformance fixture: a plugin whose hooks/hooks.json declares one module entry",
+  "version": "0.0.1"
+}

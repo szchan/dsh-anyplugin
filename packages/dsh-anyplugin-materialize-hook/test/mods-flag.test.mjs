@@ -12,18 +12,23 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { pinnedMod } from './pinned.mjs'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const applyUrl = new URL('../src/index.ts', import.meta.url).href
 
 test('without --experimental-vm-modules: one warning for two apply() calls, one trace refusal per mod', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-vm-flag-'))
+  // Trace files live outside the pinned tree: the mod artifact now covers the
+  // whole plugin root (D52), and a trace written into it would change the file
+  // set between the pin and the re-list.
+  const logs = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-vm-flag-logs-'))
   try {
     for (const name of ['a', 'b', 'c', 'd', 'e']) {
       writeFileSync(join(dir, `${name}.ts`), 'export function register(): void {}\n')
     }
-    const traceFile = join(dir, 'trace.jsonl')
-    const traceFile2 = join(dir, 'trace-2.jsonl')
+    const traceFile = join(logs, 'trace.jsonl')
+    const traceFile2 = join(logs, 'trace-2.jsonl')
     const script = `
       const { apply } = await import(${JSON.stringify(applyUrl)})
       const warnings = []
@@ -34,7 +39,7 @@ test('without --experimental-vm-modules: one warning for two apply() calls, one 
       }
       await apply(ctx, {
         hooks: [],
-        mods: [{ entry: 'a.ts' }, { entry: 'b.ts' }, { entry: 'c.ts' }],
+        mods: ${JSON.stringify(['a.ts', 'b.ts', 'c.ts'].map((entry) => pinnedMod(dir, entry)))},
         plugin: 'flag-probe',
         pluginRoot: ${JSON.stringify(dir)},
         pluginData: ${JSON.stringify(join(dir, 'data'))},
@@ -42,7 +47,7 @@ test('without --experimental-vm-modules: one warning for two apply() calls, one 
       })
       await apply(ctx, {
         hooks: [],
-        mods: [{ entry: 'd.ts' }, { entry: 'e.ts' }],
+        mods: ${JSON.stringify(['d.ts', 'e.ts'].map((entry) => pinnedMod(dir, entry)))},
         plugin: 'flag-probe-2',
         pluginRoot: ${JSON.stringify(dir)},
         pluginData: ${JSON.stringify(join(dir, 'data-2'))},
@@ -70,5 +75,6 @@ test('without --experimental-vm-modules: one warning for two apply() calls, one 
     assert.equal(refusals(traceFile2).length, 2, 'the second apply must trace one refusal per mod')
   } finally {
     rmSync(dir, { recursive: true, force: true })
+    rmSync(logs, { recursive: true, force: true })
   }
 })

@@ -24,18 +24,23 @@
  * Relative and outside-root **program** files are refused: hooks run with the
  * project directory as cwd, so `./hook.sh` would pin one file and execute
  * another. A relative/outside-root *data* operand is allowed; the hook's own
- * cwd decides what it means. Nothing is sorted, and duplicate words are kept.
+ * cwd decides what it means. A hook manifest keeps discovery order and
+ * duplicate words; a mod's *tree* manifest is the one sorted artifact — see
+ * `treeArtifact` for that derived rule (D52).
  */
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync } from 'node:fs'
-import { basename, isAbsolute, relative, resolve } from 'node:path'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { IrHook } from '../../dsh-anyplugin-ir/src/index.ts'
 
 export type ArtifactMode = 'file' | 'text' | 'composite'
 
 export interface ArtifactFile {
-  /** Absolute path, exactly the path re-read before every spawn. */
+  /**
+   * For a hook, the absolute path re-read before every spawn. For a mod tree,
+   * the plugin-relative path re-read against the row's `pluginRoot`.
+   */
   path: string
   /** sha256 of the file's bytes. */
   sha256: string
@@ -121,13 +126,24 @@ function fileEntry(file: string): ArtifactFile {
 /**
  * Re-read exactly the manifest's paths and return the current hash. This never
  * re-parses the command. Throws if a pinned file is gone or unreadable.
+ *
+ * A tree manifest stores **plugin-relative** paths (D52), so the caller hands
+ * the root the manifest was made against. Hook manifests stored absolute
+ * paths, which still work: an absolute path ignores `root`.
  */
-export function hashManifestAtSpawn(manifest: ArtifactManifest): string {
+export function hashManifestAtSpawn(manifest: ArtifactManifest, root?: string): string {
   const current: ArtifactManifest = {
     ...manifest,
-    files: manifest.files.map((file) => fileEntry(file.path)),
+    files: manifest.files.map((file) => entryAt(file.path, root)),
   }
   return hashManifest(current)
+}
+
+/** Read one manifest path, resolving a relative (tree) path against `root`. */
+function entryAt(path: string, root?: string): ArtifactFile {
+  const absolute = isAbsolute(path) || root === undefined ? path : resolve(root, path)
+  const bytes = readFileSync(absolute)
+  return { path, sha256: hashBytes(bytes), bytes: bytes.byteLength }
 }
 
 /** Hash a whole file as a pure-file manifest (bin/monitor/mod rows). */
@@ -139,6 +155,209 @@ export function fileArtifact(file: string): { artifactHash: string; manifest: Ar
     files: [fileEntry(file)],
   }
   return { artifactHash: hashManifest(manifest), manifest }
+}
+
+/**
+ * Every authored file under `dir` (recursive), as paths relative to `root`,
+ * POSIX separators, **sorted in path order**. Directories are descended;
+ * symlinks to files are included, symlinks to directories are not followed.
+ *
+ * Sorted paths are this repository's definition for a *tree* artifact. D25
+ * fixes the manifest-is-code rule and says the file order is hashed; it does not
+ * name an order, because until trees arrived every artifact was a resolved
+ * program list. Path order is deterministic across filesystems and independent
+ * of readdir order, which is the property a grant needs.
+ */
+export function listTreeFiles(root: string, dir: string): string[] {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const files: string[] = []
+  for (const entry of entries) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...listTreeFiles(root, path))
+    } else if (entry.isFile() || entry.isSymbolicLink()) {
+      try {
+        if (!statSync(path).isFile()) continue
+      } catch {
+        continue
+      }
+      files.push(relative(root, path).split(sep).join('/'))
+    }
+  }
+  return files.sort()
+}
+
+export interface TreeArtifact {
+  artifactHash: string
+  manifest: ArtifactManifest
+  mode: ArtifactMode
+  /** Number of files the tree pinned. */
+  files: number
+}
+
+/** One tree that cannot be pinned honestly; `path` is plugin-relative. */
+export interface TreeRefusal {
+  path: string
+  reason: string
+}
+
+export interface TreeOptions {
+  /**
+   * Absolute paths to leave out of the tree — the plugin's data directory.
+   * `.git` and `node_modules` are always left out: neither is authored plugin
+   * code, and a mod that imported dependency code would load bytes the grant
+   * never reviewed.
+   */
+  exclude?: readonly string[]
+}
+
+const SKIPPED_DIRS = new Set(['.git', 'node_modules'])
+
+/** `path` is `base` or below it (lexical). */
+function within(base: string, path: string): boolean {
+  const rel = relative(base, path)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/** The most a mod tree may occupy; the snapshot is held in memory once. */
+export const MAX_TREE_BYTES = 64 * 1024 * 1024
+
+export type TreeScan =
+  | {
+      ok: true
+      files: ArtifactFile[]
+      /**
+       * The exact bytes every file had when it was hashed, keyed by
+       * plugin-relative path. `loadMod` compiles from this map, so the digest
+       * and the code that runs are one snapshot: nothing re-opens a path after
+       * the scan (D52, M1).
+       */
+      contents: ReadonlyMap<string, Uint8Array>
+    }
+  | { ok: false; refusal: TreeRefusal }
+
+/**
+ * Walk the **whole plugin tree** (D52) and hash every authored file, in
+ * ascending plugin-relative path order.
+ *
+ * Pinning only the entry's directory pins the wrong thing: a mod may import any
+ * file under its root, so every file under the root is code-capable. Paths are
+ * stored relative to the root and hashed as such, so the same bytes at two
+ * checkout roots produce the same digest. A symlink whose realpath leaves the
+ * root, or a directory symlink, is a typed refusal — never skipped.
+ */
+export function scanTree(root: string, options: TreeOptions = {}): TreeScan {
+  const base = resolve(root)
+  const excluded = (options.exclude ?? []).map((path) => resolve(path))
+  const files: ArtifactFile[] = []
+  const contents = new Map<string, Uint8Array>()
+  let total = 0
+
+  const walk = (dir: string): TreeRefusal | undefined => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch (error) {
+      const path = relative(base, dir).split(sep).join('/')
+      return { path, reason: `cannot be read (${(error as NodeJS.ErrnoException).code ?? 'unknown'})` }
+    }
+    entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+    for (const entry of entries) {
+      const absolute = join(dir, entry.name)
+      const path = relative(base, absolute).split(sep).join('/')
+      if (entry.isDirectory() && SKIPPED_DIRS.has(entry.name)) continue
+      if (excluded.some((skip) => absolute === skip || absolute.startsWith(`${skip}${sep}`))) continue
+      if (entry.isSymbolicLink()) {
+        let real: string
+        try {
+          real = realpathSync(absolute)
+        } catch (error) {
+          return { path, reason: `symlink is unreadable (${(error as NodeJS.ErrnoException).code ?? 'unknown'})` }
+        }
+        if (!within(base, real)) {
+          return {
+            path,
+            reason: `symlink resolves outside the plugin root (${real}); a mod loads only files the grant pins`,
+          }
+        }
+        let target
+        try {
+          target = statSync(real)
+        } catch (error) {
+          return { path, reason: `symlink target is unreadable (${(error as NodeJS.ErrnoException).code ?? 'unknown'})` }
+        }
+        if (target.isDirectory()) {
+          return { path, reason: 'directory symlink is refused: the loader would follow a tree the manifest cannot name' }
+        }
+        if (!target.isFile()) continue
+        const bytes = readFileSync(absolute)
+        total += bytes.byteLength
+        if (total > MAX_TREE_BYTES) {
+          return { path, reason: 'the tree is larger than the 64 MiB snapshot cap; the host will not hold a bigger map in memory' }
+        }
+        contents.set(path, bytes)
+        files.push({ path, sha256: hashBytes(bytes), bytes: bytes.byteLength })
+        continue
+      }
+      if (entry.isDirectory()) {
+        const refusal = walk(absolute)
+        if (refusal !== undefined) return refusal
+        continue
+      }
+      if (!entry.isFile()) continue
+      const bytes = readFileSync(absolute)
+      total += bytes.byteLength
+      if (total > MAX_TREE_BYTES) {
+        return { path, reason: 'the tree is larger than the 64 MiB snapshot cap; the host will not hold a bigger map in memory' }
+      }
+      contents.set(path, bytes)
+      files.push({ path, sha256: hashBytes(bytes), bytes: bytes.byteLength })
+    }
+    return undefined
+  }
+
+  const refusal = walk(base)
+  if (refusal !== undefined) return { ok: false, refusal }
+  files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+  return { ok: true, files, contents }
+}
+
+export type TreeResult = { ok: true; artifact: TreeArtifact } | { ok: false; refusal: TreeRefusal }
+
+/**
+ * Resolve a mod's artifact: **the plugin tree** (D52).
+ *
+ * `entry` is the plugin-relative loader entry (`hooks/register.ts`); it must be
+ * one of the tree's files. `invocation` is that entry text, `command` is empty —
+ * a mod is evaluated by the host, never spawned. A tree of one file is `file`
+ * mode; anything larger is `composite`.
+ */
+export function treeArtifact(root: string, entry: string, options: TreeOptions = {}): TreeResult {
+  const scan = scanTree(root, options)
+  if (!scan.ok) return scan
+  if (!scan.files.some((file) => file.path === entry)) {
+    return { ok: false, refusal: { path: entry, reason: 'the entry is not one of the tree\'s files' } }
+  }
+  const manifest: ArtifactManifest = {
+    mode: scan.files.length === 1 ? 'file' : 'composite',
+    invocation: entry,
+    command: '',
+    files: scan.files,
+  }
+  return {
+    ok: true,
+    artifact: {
+      artifactHash: hashManifest(manifest),
+      manifest,
+      mode: manifest.mode,
+      files: scan.files.length,
+    },
+  }
 }
 
 /**

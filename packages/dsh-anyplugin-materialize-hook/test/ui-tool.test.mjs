@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { apply } from '../src/index.ts'
+import { pinnedMod } from './pinned.mjs'
 
 const harness = () => {
   const listeners = new Map()
@@ -123,7 +124,7 @@ test('mod_ui appears with the first pane, returns the validated tree, and leaves
   try {
     writeFileSync(join(dir, 'panes.ts'), panesFixture)
     const { ctx, listeners, tools, warnings, config } = harness()
-    await apply(ctx, { ...config({}), mods: [{ entry: 'panes.ts' }], pluginRoot: dir })
+    await apply(ctx, { ...config({}), mods: [pinnedMod(dir, 'panes.ts')], pluginRoot: dir })
 
     assert.ok(tools.has('mod_ui'), 'a pane is open, so the reader exists')
     assert.deepEqual(tools.get('mod_ui').parameters.additionalProperties, false)
@@ -200,7 +201,7 @@ test('unloading a mod with an open pane removes the reader and clears the sink',
       ].join('\n'),
     )
     const { ctx, disposers, tools, config } = harness()
-    await apply(ctx, { ...config({}), mods: [{ entry: 'open-only.ts' }], pluginRoot: dir })
+    await apply(ctx, { ...config({}), mods: [pinnedMod(dir, 'open-only.ts')], pluginRoot: dir })
     assert.ok(tools.has('mod_ui'))
     for (const dispose of disposers.splice(0)) dispose()
     assert.equal(tools.has('mod_ui'), false, 'unload removed the reader')
@@ -233,7 +234,7 @@ test('ui.resolve hooks run at load, once per surface and component the matcher s
       ].join('\n'),
     )
     const { ctx, tools, config } = harness()
-    await apply(ctx, { ...config({}), mods: [{ entry: 'resolve-hooks.ts' }], pluginRoot: dir })
+    await apply(ctx, { ...config({}), mods: [pinnedMod(dir, 'resolve-hooks.ts')], pluginRoot: dir })
     const value = await tools.get('mod_ui').execute({})
     const resolveLogs = value.logs.filter((entry) => entry.text.startsWith('resolve '))
     assert.deepEqual(
@@ -279,7 +280,7 @@ test('two mods cannot hold the same pane id: the second open is refused in the t
     const { ctx, tools, config } = harness()
     await apply(ctx, {
       ...config({}),
-      mods: [{ entry: 'holder.ts' }, { entry: 'contender.ts' }],
+      mods: [pinnedMod(dir, 'holder.ts'), pinnedMod(dir, 'contender.ts')],
       pluginRoot: dir,
     })
     const value = await tools.get('mod_ui').execute({})

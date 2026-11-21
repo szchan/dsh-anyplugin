@@ -84,6 +84,7 @@ const BOOLEAN_OPTIONS = new Set([
   'dry-run',
   'force',
   'allow-empty',
+  'drop-mods',
 ])
 
 function parseArgs(argv: string[]): Args {
@@ -129,7 +130,7 @@ const USAGE = `usage:
   rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
-  rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--dry-run] [--json]
+  rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--drop-mods] [--dry-run] [--json]
   rig list    [--json]
   rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
   rig disable <plugin> [--scope <s>] [--dry-run] [--json]
@@ -296,7 +297,7 @@ function lifecycleRefusal(error: unknown, json: boolean): number {
  * spelling is rejected rather than parsed as an unknown key with a value.
  */
 const LIFECYCLE_OPTIONS: Record<string, readonly string[]> = {
-  install: ['json', 'config', 'project', 'scope', 'name', 'dialect', 'force', 'allow-empty', 'dry-run', 'help'],
+  install: ['json', 'config', 'project', 'scope', 'name', 'dialect', 'force', 'allow-empty', 'drop-mods', 'dry-run', 'help'],
   list: ['json', 'config', 'project', 'help'],
   enable: ['json', 'config', 'project', 'scope', 'dry-run', 'help'],
   disable: ['json', 'config', 'project', 'scope', 'dry-run', 'help'],
@@ -364,7 +365,15 @@ async function main(argv: string[]): Promise<number> {
       materializers: MATERIALIZERS,
       ...(grants === undefined ? {} : { grants }),
     })
-    console.log(args.options.get('json') === true ? JSON.stringify(report, null, 2) : formatTransplantReport(report))
+    // Pass-through by design: `report` reads a plugin directory, not the lock.
+    // Say so, so a preview cannot be read as the controller's install decision.
+    const preview =
+      'preview only: rig report does not read installs.yml, so "not recorded" is not enforced here (the controller decides at boot)'
+    console.log(
+      args.options.get('json') === true
+        ? JSON.stringify({ preview, ...report }, null, 2)
+        : `${preview}\n${formatTransplantReport(report)}`,
+    )
     return report.ok ? 0 : 1
   }
 
@@ -485,6 +494,7 @@ async function main(argv: string[]): Promise<number> {
         ...(typeof name === 'string' ? { name } : {}),
         ...(args.options.get('force') === true ? { force: true } : {}),
         ...(args.options.get('allow-empty') === true ? { allowEmpty: true } : {}),
+        ...(args.options.get('drop-mods') === true ? { dropMods: true } : {}),
         ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
       })
       console.log(json ? JSON.stringify(result, null, 2) : formatInstall(result))
@@ -609,7 +619,7 @@ async function main(argv: string[]): Promise<number> {
   throw new Error(`unknown command "${args.command}"\n${USAGE}`)
 }
 
-export type ArtifactForm = 'shell' | 'argv'
+export type ArtifactForm = 'shell' | 'argv' | 'mod'
 
 /** One classified artifact as the CLI shows it. */
 export interface ArtifactPlan {
@@ -623,6 +633,10 @@ export interface ArtifactPlan {
    * where the host spawns words without a shell.
    */
   command: string
+  /** Present for a mod: the resolved entry `loadMod` would take. */
+  entry?: string
+  /** Present for a mod: how many authored files the tree digest covers. */
+  files?: number
   /** Present on an already-granted artifact: the scope whose record allows it. */
   grantedScope?: Scope
   grantedAt?: string
@@ -802,6 +816,11 @@ function artifactPlan(plugin: ClaudePluginIr, row: ArtifactRow): ArtifactPlan {
       form = 'argv'
       command = renderArgv([hook.command, ...hook.args])
     }
+  } else if (row.target.startsWith('mod:')) {
+    // A mod has no command line: what a human consents to is the entry and the
+    // digest over every authored file under it (D25/D30).
+    form = 'mod'
+    command = ''
   } else if (typeof row.manifest.invocation === 'string') {
     command = renderArgv([row.manifest.invocation])
   } else {
@@ -814,6 +833,7 @@ function artifactPlan(plugin: ClaudePluginIr, row: ArtifactRow): ArtifactPlan {
     sourcePath: row.sourcePath,
     form,
     command,
+    ...(form === 'mod' ? { entry: row.target.slice('mod:'.length), files: row.manifest.files.length } : {}),
   }
 }
 
@@ -1384,6 +1404,7 @@ export function revokeJson(run: RevokeRun): Record<string, unknown> {
 }
 
 function formLabel(form: ArtifactForm): string {
+  if (form === 'mod') return 'module tree (loaded as authored; no command line)'
   return form === 'shell' ? 'shell (sh -c; ${CLAUDE_PLUGIN_ROOT} expanded)' : 'argv (no shell; words passed literally)'
 }
 
@@ -1394,7 +1415,9 @@ function formatArtifact(artifact: ArtifactPlan, indent: string): string[] {
     `${indent}  artifact: ${artifact.artifactHash}`,
     `${indent}  source: ${artifact.sourcePath}`,
     `${indent}  form: ${formLabel(artifact.form)}`,
-    `${indent}  command: ${artifact.command}`,
+    artifact.entry === undefined
+      ? `${indent}  command: ${artifact.command}`
+      : `${indent}  entry: ${artifact.entry} (${artifact.files} file${artifact.files === 1 ? '' : 's'}, tree ${artifact.artifactHash})`,
   ]
 }
 

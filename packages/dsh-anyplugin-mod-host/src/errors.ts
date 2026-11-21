@@ -19,6 +19,13 @@ export type ModHostErrorCode =
   /** A file or specifier extension that D30 does not load. */
   | 'ERR_MOD_HOST_UNSUPPORTED_EXT'
   /**
+   * The module graph reaches a file the granted manifest does not pin (D52):
+   * a directory symlink that escaped the scan, an import of a file that no
+   * grant covers, or an entry outside the pinned set. The host refuses before
+   * the module is created, so un-granted bytes are never evaluated.
+   */
+  | 'ERR_MOD_HOST_UNGRANTED'
+  /**
    * The host could not link, evaluate or arm the mod: a specifier outside the
    * three D30 rules, a read/strip/syntax failure, a link-time named-import
    * mismatch, a missing `register(on)`, or a call after `dispose()`. The

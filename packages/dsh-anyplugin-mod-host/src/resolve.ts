@@ -25,7 +25,7 @@
  * Every miss is a typed error, never a skip.
  */
 import { statSync } from 'node:fs'
-import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { dirname, extname, isAbsolute, posix, relative, resolve, sep } from 'node:path'
 
 import { ModHostError, codeOf, messageOf } from './errors.ts'
 
@@ -119,6 +119,125 @@ export function resolveModSpecifier(options: ResolveModSpecifierOptions): Resolv
     `cannot load '${specifier}': D30/D34 define extensionless imports and .js/.jsx rewrites, not '${extension}'`,
     { file: parent },
   )
+}
+
+/**
+ * The same rules against a **snapshot** of pinned, plugin-relative paths
+ * (D52, M1). No file is stat'ed: the answer comes from the granted map, so a
+ * path rewritten between the scan and the link cannot change what loads.
+ *
+ * Every miss is a typed error, never a skip. A plausible candidate the map
+ * does not carry is `ERR_MOD_HOST_UNGRANTED`, not "missing": the bytes exist
+ * somewhere in the tree the caller is refusing to load.
+ */
+export interface ResolveSnapshotSpecifierOptions {
+  readonly specifier: string
+  /** The importing file, plugin-relative (`hooks/views/pane.ts`). */
+  readonly parent: string
+  readonly files: ReadonlySet<string>
+}
+
+export function resolveSnapshotSpecifier(options: ResolveSnapshotSpecifierOptions): ResolvedModSpecifier {
+  const { specifier, files } = options
+  const parent = options.parent
+
+  if (typeof specifier !== 'string' || specifier.length === 0) {
+    throw new ModHostError('ERR_MOD_HOST_LINK', 'empty module specifier', { file: parent })
+  }
+  if (!isRelativeSpecifier(specifier)) {
+    const kind = specifier.startsWith('node:')
+      ? 'Node builtin'
+      : URL_SCHEME.test(specifier)
+        ? 'URL'
+        : 'bare'
+    throw new ModHostError(
+      'ERR_MOD_HOST_LINK',
+      `cannot resolve ${kind} specifier '${specifier}': a mod may import only relative authored files (D30)`,
+      { file: parent },
+    )
+  }
+
+  const base = posix.dirname(parent)
+  const candidate = (spec: string): string | undefined => {
+    const joined = posix.normalize(posix.join(base, spec))
+    if (joined === '..' || joined.startsWith('../') || posix.isAbsolute(joined)) return undefined
+    return joined
+  }
+  const extension = posix.extname(specifier)
+
+  if (extension === '.js') {
+    const file = candidate(`${specifier.slice(0, -'.js'.length)}.ts`)
+    return snapshotFile(file, 'js-to-ts', specifier, parent, files)
+  }
+  if (extension === '.jsx') {
+    const file = candidate(`${specifier.slice(0, -'.jsx'.length)}.tsx`)
+    return snapshotFile(file, 'jsx-to-tsx', specifier, parent, files)
+  }
+  if (extension === '') {
+    const directoryOnly = specifier === '.' || specifier === '..' || specifier.endsWith('/')
+    const candidates = directoryOnly
+      ? [`${specifier}/index.ts`, `${specifier}/index.tsx`]
+      : [
+          `${specifier}.ts`,
+          `${specifier}.tsx`,
+          `${specifier}/index.ts`,
+          `${specifier}/index.tsx`,
+        ]
+    const seen: string[] = []
+    for (const spec of candidates) {
+      const file = candidate(spec)
+      if (file === undefined) continue
+      seen.push(file)
+      if (files.has(file)) {
+        return {
+          file,
+          behavior: posix.basename(file).startsWith('index.') ? 'directory-index' : 'extensionless-file',
+        }
+      }
+    }
+    const detail = seen.length === 0 ? `'${specifier}' leaves the packed tree` : `no pinned candidate (${seen.join(', ')})`
+    throw new ModHostError(
+      'ERR_MOD_HOST_MISSING',
+      `cannot resolve '${specifier}' (parent: "${parent}"): ${detail}`,
+      { file: parent },
+    )
+  }
+  if (extension === '.tsx') {
+    throw new ModHostError(
+      'ERR_MOD_HOST_TSX',
+      `a direct .tsx specifier is not a D30/D34 resolution rule: '${specifier}' names ${candidate(specifier) ?? specifier}; authored JSX imports spell '.jsx' (D30)`,
+      { file: parent },
+    )
+  }
+  throw new ModHostError(
+    'ERR_MOD_HOST_UNSUPPORTED_EXT',
+    `cannot load '${specifier}': D30/D34 define extensionless imports and .js/.jsx rewrites, not '${extension}'`,
+    { file: parent },
+  )
+}
+
+function snapshotFile(
+  file: string | undefined,
+  behavior: ModResolutionBehavior,
+  specifier: string,
+  parent: string,
+  files: ReadonlySet<string>,
+): ResolvedModSpecifier {
+  if (file === undefined) {
+    throw new ModHostError(
+      'ERR_MOD_HOST_MISSING',
+      `cannot resolve '${specifier}' (parent: "${parent}"): it leaves the packed tree`,
+      { file: parent },
+    )
+  }
+  if (!files.has(file)) {
+    throw new ModHostError(
+      'ERR_MOD_HOST_UNGRANTED',
+      `'${specifier}' resolves to "${file}", which the granted snapshot does not pin`,
+      { file },
+    )
+  }
+  return { file, behavior }
 }
 
 /**

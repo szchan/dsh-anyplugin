@@ -212,6 +212,7 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
   for (const agent of ir.agents) considered.push(`agents/${agent.name}`)
   for (const server of ir.mcpServers) considered.push(`mcpServers/${server.name}`)
   for (const hook of ir.hooks) considered.push(`hooks/${hook.event}#${hook.index}`)
+  for (const mod of ir.mods ?? []) considered.push(`mods/${mod.entry}`)
 
   const modelFace = (skill: IrSkill) => skill.faces?.model ?? skill.annotation
   const skills = ir.skills.filter((skill) => {
@@ -281,15 +282,31 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       hook.artifactHash !== undefined
     )
   })
+  // A mod is a tree, not a command line: the gate resolved one manifest over
+  // the authored module tree. Emit copies it; the materializer re-reads the
+  // same paths before `loadMod`, so changed bytes refuse instead of loading.
+  const mods = (ir.mods ?? []).filter((mod) => {
+    return (
+      isCarried(mod.annotation) &&
+      trusted.has(`mod:${mod.entry}`) &&
+      mod.artifact !== undefined &&
+      mod.artifactHash !== undefined
+    )
+  })
   const hooksMaterializer = options.materializers.hooks
-  if (hooks.length > 0 && hooksMaterializer !== undefined) {
+  if ((hooks.length > 0 || mods.length > 0) && hooksMaterializer !== undefined) {
     children.push({
       id: 'hook',
       name: hooksMaterializer,
       config: {
+        // Mods are attributed to the plugin by name in the kernel trace and
+        // the log (D31: one realm per mod, one owner per registration). A row
+        // that carries only classic hooks keeps its historic shape, so adding
+        // this key names mod sources without moving any hook golden.
+        ...(mods.length === 0 ? {} : { plugin: ir.plugin.name }),
         pluginRoot: ir.plugin.root,
         ...(options.dataDir === undefined ? {} : { pluginData: options.dataDir }),
-        hooks: hooks.map((hook) => ({
+        ...(hooks.length === 0 ? {} : { hooks: hooks.map((hook) => ({
           event: hook.event,
           index: hook.index,
           ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
@@ -302,10 +319,21 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
           artifactMode: hook.artifact?.mode,
           artifactRoot: ir.plugin.root,
           artifact: hook.artifact,
-        })),
+        })) }),
+        ...(mods.length === 0
+          ? {}
+          : {
+              mods: mods.map((mod) => ({
+                entry: mod.entry,
+                artifactHash: mod.artifactHash,
+                artifactMode: mod.artifact?.mode,
+                artifact: mod.artifact,
+              })),
+            }),
       },
     })
     emitted.push('hooks')
+    if (mods.length > 0) emitted.push('mods')
   }
   for (const hook of ir.hooks) {
     const name = `hooks/${hook.event}#${hook.index}`
@@ -318,6 +346,18 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       hook.artifactHash === undefined
     ) {
       // Trusted but unresolved fails closed: never emit a child emit cannot pin.
+      refused.push(name)
+    }
+  }
+  for (const mod of ir.mods ?? []) {
+    const name = `mods/${mod.entry}`
+    if (!isCarried(mod.annotation) || hooksMaterializer === undefined) {
+      skipped.push(name)
+    } else if (
+      !trusted.has(`mod:${mod.entry}`) ||
+      mod.artifact === undefined ||
+      mod.artifactHash === undefined
+    ) {
       refused.push(name)
     }
   }

@@ -30,7 +30,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { readInstalls, serializeInstalls } from '../../dsh-anyplugin-install/src/index.ts'
+import { INSTALLS_SCHEMA, readInstalls, serializeInstalls } from '../../dsh-anyplugin-install/src/index.ts'
 import { InstallCliError } from '../src/install-cli.ts'
 import { parseMarketplace } from '../src/marketplace.ts'
 
@@ -165,7 +165,7 @@ test('install by name writes the same canonical YAML as `rig install <dir>`, plu
 
     const marketplaceLock = readInstalls(viaMarketplace.lock)
     const directoryLock = readInstalls(viaDirectory.lock)
-    assert.equal(marketplaceLock.schema, 'dsh-anyplugin/installs@1')
+    assert.equal(marketplaceLock.schema, INSTALLS_SCHEMA)
     assert.equal(marketplaceLock.plugins.length, 1)
     const record = marketplaceLock.plugins[0]
     assert.equal(record.dialect, 'claude-code')

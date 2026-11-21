@@ -15,8 +15,9 @@
  * caller (installer UI) shows the new hash and asks again.
  */
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
-import { classify, pluginIdentity, type ArtifactRow } from './classify.ts'
+import { classify, modTarget, pluginIdentity, type ArtifactRow } from './classify.ts'
 import { SCOPES, type GrantRecord, type Grants, type RevokeRecord, type Scope } from './grants.ts'
+import type { TreeOptions } from './hash.ts'
 
 export type RefusalCode = 'no-grant' | 'revoked' | 'hash-mismatch' | 'unsupported'
 
@@ -124,42 +125,60 @@ function invocation(command: string, args?: readonly string[]): string {
  * Rows that are actually candidates for emission. Hooks already annotated
  * `planned` (unsupported event, non-command handler) are not gated — they are
  * not going to run either way, and reporting them as refused would confuse a
- * refusal with an unsupported capability.
+ * refusal with an unsupported capability. A mod the host refuses
+ * (`unsupported`) is a declaration too, so it gets no row and no refusal; a
+ * carried mod is exec-class and is gated like a hook.
  */
-function candidates(plugin: ClaudePluginIr): ArtifactRow[] {
-  const emittableHooks = new Set(
-    plugin.hooks
+function candidates(plugin: ClaudePluginIr, options: TreeOptions = {}): ArtifactRow[] {
+  const emittable = new Set<string>([
+    ...plugin.hooks
       .filter((hook) => hook.command !== undefined && carried(hook.annotation.fidelity))
       .map((hook) => `hook:${hook.event}#${hook.index}`),
-  )
-  return classify(plugin).filter((row) => emittableHooks.has(row.target))
+    ...(plugin.mods ?? [])
+      .filter((mod) => carried(mod.annotation.fidelity))
+      .map((mod) => modTarget(mod)),
+  ])
+  return classify(plugin, options).filter((row) => emittable.has(row.target))
 }
 
-export function authorize(plugin: ClaudePluginIr, grants: Grants): TrustDecision {
+/** What a prompt should show for one row: a command line, or a mod's tree. */
+function describe(row: ArtifactRow, plugin: ClaudePluginIr): { suffix: string; fields: Partial<Refusal> } {
+  const hook = plugin.hooks.find((candidate) => `hook:${candidate.event}#${candidate.index}` === row.target)
+  if (hook !== undefined && hook.command !== undefined) {
+    const shown = invocation(hook.command, hook.args)
+    return {
+      suffix: `; command: ${shown}`,
+      fields: { command: hook.command, ...(hook.args === undefined ? {} : { args: hook.args }) },
+    }
+  }
+  if (row.target.startsWith('mod:')) {
+    // A mod has no command line. The entry and the tree digest are what a
+    // person can compare, and they are exactly what the grant prints.
+    const files = row.manifest.files.length
+    return {
+      suffix: `; entry: ${row.target.slice('mod:'.length)} (${files} file${files === 1 ? '' : 's'}, tree ${row.artifactHash})`,
+      fields: {},
+    }
+  }
+  return { suffix: '', fields: {} }
+}
+
+export function authorize(plugin: ClaudePluginIr, grants: Grants, options: TreeOptions = {}): TrustDecision {
   const id = pluginIdentity(plugin)
-  const rows = candidates(plugin)
-  const hooks = new Map(
-    plugin.hooks
-      .filter((hook) => hook.command !== undefined)
-      .map((hook) => [`hook:${hook.event}#${hook.index}`, hook] as const),
-  )
+  const rows = candidates(plugin, options)
   const allowed: string[] = []
   const refused: Refusal[] = []
 
   for (const row of rows) {
-    const hook = hooks.get(row.target)
-    const shown = hook === undefined || hook.command === undefined ? undefined : invocation(hook.command, hook.args)
-    const commandFields: Partial<Refusal> =
-      hook === undefined || hook.command === undefined
-        ? {}
-        : { command: hook.command, ...(hook.args === undefined ? {} : { args: hook.args }) }
-    const suffix = shown === undefined ? '' : `; command: ${shown}`
+    const { suffix, fields } = describe(row, plugin)
+    const suffixText = suffix
+    const commandFields: Partial<Refusal> = fields
     if (row.unsupported !== undefined) {
       refused.push(
         refusal(
           row,
           'unsupported',
-          `cannot pin ${row.target} of ${id}: ${row.unsupported}${suffix}`,
+          `cannot pin ${row.target} of ${id}: ${row.unsupported}${suffixText}`,
           commandFields,
         ),
       )
@@ -172,7 +191,7 @@ export function authorize(plugin: ClaudePluginIr, grants: Grants): TrustDecision
         refusal(
           row,
           'no-grant',
-          `no ${row.capability} grant for ${row.target} of ${id}; grant it before it can run${suffix}`,
+          `no ${row.capability} grant for ${row.target} of ${id}; grant it before it can run${suffixText}`,
           commandFields,
         ),
       )
@@ -185,7 +204,7 @@ export function authorize(plugin: ClaudePluginIr, grants: Grants): TrustDecision
         refusal(
           row,
           'revoked',
-          `${row.capability} grant for ${row.target} of ${id} is revoked at ${scope} scope${suffix}`,
+          `${row.capability} grant for ${row.target} of ${id} is revoked at ${scope} scope${suffixText}`,
           { scope, ...commandFields },
         ),
       )
@@ -198,7 +217,7 @@ export function authorize(plugin: ClaudePluginIr, grants: Grants): TrustDecision
         refusal(
           row,
           'hash-mismatch',
-          `${row.capability} grant for ${row.target} of ${id} pins ${grantAtScope.artifactHash} but the artifact is now ${row.artifactHash}; review it and re-grant${suffix}`,
+          `${row.capability} grant for ${row.target} of ${id} pins ${grantAtScope.artifactHash} but the artifact is now ${row.artifactHash}; review it and re-grant${suffixText}`,
           { ...commandFields, grantedHash: grantAtScope.artifactHash, grantedAt: grantAtScope.grantedAt, scope },
         ),
       )

@@ -27,7 +27,7 @@ import { AGENT_PLUGINS_PIN, readCodexPlugin } from '../../dsh-anyplugin-dialect-
 import { emitPlugin, type EntryOptions, type Materializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { emptyGrants, gate, type Grants, type TrustDecision } from '../../dsh-anyplugin-trust/src/index.ts'
 
-import type { InstallRecord, Installs } from './installs.ts'
+import type { InstallRecord, InstalledMod, Installs } from './installs.ts'
 import { sourceText, validateInstalls } from './installs.ts'
 import { readEnablements, resolveEnablement, type Enablements } from './enablements.ts'
 import { childEntryId, pluginEntryId, pluginScope } from './identity.ts'
@@ -40,6 +40,11 @@ import {
   type ActivationStyle,
   type OutputStylesFile,
 } from './output-styles.ts'
+
+// The IR type is the reader's return, not a second import of dsh-anyplugin-ir
+// (R1: the install layer may depend only on the dialects, emit and trust).
+type ClaudePluginIr = ReturnType<typeof readClaudePlugin>
+type IrMod = NonNullable<ClaudePluginIr['mods']>[number]
 
 export interface CompileOptions {
   /** Absolute module specifiers for the materializers this build ships. */
@@ -67,6 +72,80 @@ export interface CompileOptions {
    * file is no explicit activation, and a malformed one is an error at load.
    */
   activation?: OutputStylesFile
+  /**
+   * Require every carried mod to be recorded in the lock (D52, M1).
+   *
+   * The lock is the install decision. A mod the dialect can read but the lock
+   * does not record must not boot: otherwise a 0.1.0/empty-known `@1` lock plus
+   * a `mod:` grant runs a tree the install never recorded. **True is the
+   * default**: `list`, the controller and uninstall all enforce it without
+   * saying so. Only the install path (`buildTransplantReport`, which is
+   * creating the record) omits the flag, which is the same as `false`.
+   */
+  requireRecordedMods?: boolean
+}
+
+/** One carried mod the lock does not record; emitted by no path. */
+export interface ModRecordingRefusal {
+  plugin: string
+  code: 'not-recorded'
+  /** Plugin-relative entry. */
+  name: string
+  reason: string
+}
+
+function sameRecordedMod(mod: IrMod, record: InstalledMod): boolean {
+  if (mod.entry !== record.entry || mod.rootRelative !== record.rootRelative) return false
+  if (mod.artifactHash !== record.artifactHash) return false
+  if (mod.artifact === undefined || mod.artifact.mode !== record.mode) return false
+  if (mod.artifact.files.length !== record.files.length) return false
+  const now = [...mod.artifact.files].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+  const then = [...record.files].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+  return now.every(
+    (file, index) =>
+      file.path === then[index]?.path && file.sha256 === then[index]?.sha256 && file.bytes === then[index]?.bytes,
+  )
+}
+
+/**
+ * Drop every carried mod the lock does not record (D52, M1). A grant authorizes
+ * bytes; the lock records that the install saw them. A boot has neither the
+ * installer UI nor a second chance to ask, so an unrecorded tree is refused
+ * with a typed `not-recorded` reason and never emitted.
+ */
+export function requireRecordedMods(
+  ir: ClaudePluginIr,
+  recorded: readonly InstalledMod[],
+): { ir: ClaudePluginIr; refused: { name: string; reason: string }[] } {
+  if (ir.mods === undefined || ir.mods.length === 0) return { ir, refused: [] }
+  const mods: IrMod[] = []
+  const refused: { name: string; reason: string }[] = []
+  const pending = [...ir.pending]
+  for (const mod of ir.mods) {
+    if (mod.artifact === undefined || mod.artifactHash === undefined) {
+      mods.push(mod)
+      continue
+    }
+    const record = recorded.find((candidate) => candidate.entry === mod.entry)
+    if (record !== undefined && sameRecordedMod(mod, record)) {
+      mods.push(mod)
+      continue
+    }
+    const recordedHash = record === undefined ? undefined : record.artifactHash
+    const where =
+      recordedHash === undefined
+        ? `no mod for this entry`
+        : `the recorded tree is ${recordedHash}`
+    const reason = `not-recorded: the lock does not record this module tree (entry: ${mod.entry}, granted tree: ${mod.artifactHash}; ${where}); a grant alone does not install it — reinstall so \`installs.yml\` carries the pinned tree (D52)`
+    refused.push({ name: mod.entry, reason })
+    pending.push({
+      surface: 'mods',
+      name: mod.entry,
+      sourcePath: mod.sourcePath,
+      annotation: { fidelity: 'planned', reason: `Not emitted: ${reason}` },
+    })
+  }
+  return { ir: { ...ir, mods, pending }, refused }
 }
 
 /**
@@ -197,8 +276,23 @@ export function prepareInstalledRecord(
 
   // Gate before emit: refused exec artifacts become `planned` pending nodes and
   // the emitter is given only the targets whose current hash is granted.
-  const gated = gate(ir, options.grants ?? emptyGrants())
-  return { record, decision: gated.decision, ir: gated.ir, ungated: ir }
+  // The data directory is written by the host after the plugin starts, so it
+  // is not part of the artifact (D52); the loader's scan makes the same
+  // exclusion, or the digest would move the first time a mod writes data.
+  const gated = gate(ir, options.grants ?? emptyGrants(), { exclude: [record.dataDir] })
+  // Safe by default (M2): an omitted flag still enforces the record. The one
+  // caller that may skip it is the install path, which is writing that record.
+  if (options.requireRecordedMods === false) {
+    return { record, decision: gated.decision, ir: gated.ir, ungated: ir, refusals: [] }
+  }
+  const recorded = requireRecordedMods(gated.ir, record.mods ?? [])
+  return {
+    record,
+    decision: gated.decision,
+    ir: recorded.ir,
+    ungated: ir,
+    refusals: recorded.refused.map((refusal) => ({ plugin: id, code: 'not-recorded' as const, ...refusal })),
+  }
 }
 
 function activationStyle(style: {
@@ -232,6 +326,7 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
   const entries: EntryOptions[] = []
   const decisions: TrustDecision[] = []
   const problems: CompileProblem[] = []
+  const refusals: ModRecordingRefusal[] = []
   const prepared: PreparedRecord[] = []
   const activationPlugins: ActivationPlugin[] = []
   const records = [...installs.plugins].sort((a, b) => {
@@ -253,6 +348,7 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
       const compiled = prepareInstalledRecord(record, options)
       prepared.push(compiled)
       decisions.push(compiled.decision)
+      refusals.push(...compiled.refusals)
       activationPlugins.push({
         name: record.name,
         enabled: true,
@@ -312,7 +408,7 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
     })
   }
 
-  return { entries, decisions, problems, activation }
+  return { entries, decisions, problems, refusals, activation }
 }
 
 /**

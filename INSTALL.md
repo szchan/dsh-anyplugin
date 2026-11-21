@@ -17,7 +17,7 @@ What 0.2.0 ships:
 | Hooks | the events the host actually fires; `exec`-class hooks need a grant |
 | Agents | one scoped tool per `agents/*.md` |
 | Output styles | activated from `$DSH_HOME/anyplugin/output-styles.yml` (one style, `agent/created`); the `/<plugin>:<name>` command face stays `planned` (D42) |
-| `mods` | **kernel shipped** in `lib/materialize/hook.js` (D30/D31/D34), but **not lock-reachable**: a hand-written hook row may carry `mods: [{ entry }]`, while `installs.yml` has no `mods` field, so `dsh plugin add` does not install mods |
+| `mods` | loadable through the lock: a `mods` entry pins the authored module tree (`dsh-anyplugin/installs@2`), `rig install` writes it, `rig list` names the entry and tree digest, and the tree runs only under a hash-pinned grant (D25/D30/D31/D34). Node's `--experimental-vm-modules` is required |
 | Codex plugins | **not shipped** in 0.2.0 (v0.3) |
 
 ## Requirements and the version claim
@@ -118,6 +118,15 @@ lines and writes no byte. `--json` prints typed refusals as
 `{ok:false, refusals:[{code, reason, hint?}]}` and exits 1; the reason is the
 parser's own message, never a paraphrase.
 
+A mod is granted before it is installed. `rig report <plugin-dir>` (or an
+install that refuses) names the entry and the tree digest, e.g.
+`mods/hooks/register.ts refused:exec (entry: hooks/register.ts (606 files, tree
+sha256:…))`; `rig grant --plugin <plugin-dir> --grants
+$DSH_HOME/anyplugin/grants.yml` prints the same entry and digest and writes only
+with `--yes`; the next `rig install <plugin-dir>` records the tree in
+`installs.yml`. `rig revoke ... --target mod:hooks/register.ts` works after
+`uninstall` too.
+
 What `install` does **not** do:
 
 - It does not touch `PATH`; a plugin is data the controller reconciles, not an
@@ -125,9 +134,16 @@ What `install` does **not** do:
 - It does not write profile config. Adding the bundle to a profile is still
   `dsh plugin add` in §1; the installer only writes `installs.yml`, the scope
   layer named by `--scope`, and (through the controller) `grants.yml`.
-- It does not seat mods. `installs.yml` has no `mods` field (D43/D46); the mod
-  kernel is reachable only from a hand-written hook row carrying `mods`, and
-  that is not an install path.
+- It does not rewrite a mod. The tree is loaded as authored (D30; `.tsx` is the
+  one declared transform, D34), and the lock pins every file under the plugin
+  root except `.git/`, `node_modules/` and the plugin data directory. A later
+  edit moves the tree hash and the old grant no longer applies; a file added
+  later changes the file set, so the materializer refuses the load instead of
+  running a tree the grant never saw.
+- It does not seat an ungranted mod. A plugin whose only surface is a refused
+  module is refused by default (the refusal names the entry and tree digest) and
+  can be recorded with `--allow-empty`; nothing reaches `loadMod` without the
+  pinned grant.
 - It does not grant `exec` artifacts. Hooks stay `refused:exec` until a
   hash-pinned grant exists (D27); a plugin whose compile yields only refusals
   is refused by default and can be recorded with `--allow-empty`, which
@@ -147,7 +163,7 @@ The lock is still the contract, so here is the record `install` writes:
 
 ```yaml
 # $DSH_HOME/anyplugin/installs.yml
-schema: "dsh-anyplugin/installs@1"
+schema: "dsh-anyplugin/installs@2"
 plugins:
   - dialect: "claude-code"
     name: "my-plugin"
@@ -156,6 +172,18 @@ plugins:
     dataDir: "/absolute/path/to/dsh-anyplugin-data/my-plugin"
     pin: "claude-code@2.1.329"
     source: "plugin-dir:plugins/my-plugin"
+    mods:
+      - entry: "hooks/register.ts"
+        rootRelative: "hooks"
+        mode: "composite"
+        artifactHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        files:
+          - path: "hooks/register.ts"
+            sha256: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            bytes: "33891"
+          - path: "hooks/views/pane.ts"
+            sha256: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            bytes: "1024"
 ```
 
 `root` must be absolute and point at the plugin directory; `dataDir` is the
@@ -166,11 +194,28 @@ not an error. `name` and `version` are the identity in the lock; the
 model-facing ids are namespaced under `anyplugin.` and cannot collide with the
 profile's own rows.
 
-The lock schema is strict. It has no `mods` field in 0.2.0: a record carrying
-`mods` (or any unknown field) fails with `unknown field "mods"` and a line
-number. The kernel is shipped, but it is reachable **only** from a hand-written
-hook row (`mods: [{ entry }]`) until the lock gains that field; this is not an
-install path, and a lock record never loads mods silently.
+A `mods` entry is the plugin tree, hashed as one artifact. `entry` is the
+plugin-relative loader entry and `rootRelative` the directory Claude resolves
+it from (`hooks/` at this pin); `files` lists every file under the plugin root
+except `.git/`, `node_modules/` and the plugin data directory, with its
+plugin-relative path, sha256 and byte count, so the digest does not depend on a
+checkout location. `mode` is `file` when the tree holds exactly one file and
+`composite` otherwise; the invocation is the entry and there is no command line.
+The files are framed in ascending plugin-relative path order before hashing — a
+*derived* rule: D25 fixes code-as-manifest and says order matters, and sorted
+paths are our definition for a tree, not an upstream one. A symlink whose real
+path leaves the plugin root, or a directory symlink, is refused when the tree is
+scanned. `rig grant` prints the entry and the tree digest before writing with
+`--yes`; without that grant the tree stays `refused:exec`.
+
+The lock schema is strict, and it is versioned. `dsh-anyplugin/installs@2` adds
+`mods` as a first-class field with the shape above; an unknown field (including
+a mis-shaped `mods` entry) fails with an `unknown field`/validation message and
+a line number. A `@1` file still loads — it has no mods, so it reads as one with
+`mods` absent, and the next write normalizes it to `@2`. That is the downgrade
+story stated rather than hidden: a 0.1.x reader given a `@2` file carrying
+`mods` refuses it with `unknown field "mods"` and the line, instead of silently
+dropping the module.
 
 ### Installing by name from a marketplace
 
@@ -281,19 +326,34 @@ are kept without writing.
 
 ## 4. Trust gate for `exec` artifacts
 
-Hooks (and any future `monitor`, `bin`, or `mod`) are `exec`-class: they run
-commands, so they are **off by default**. Compiling such a plugin without a
-grant leaves the hook out and records a refusal with the exact command line; the
-rest of the plugin still loads. Grants are pinned to the artifact's SHA-256, so
-editing the hook invalidates the grant and asks again.
+Hooks, `monitor`/`bin` files and `mods` are `exec`-class: they run code, so
+they are **off by default**. Compiling such a plugin without a grant leaves the
+artifact out and records a refusal with the exact command line (for a mod: the
+resolved entry, the file count and the tree digest); the rest of the plugin
+still loads. Grants are pinned to the artifact's SHA-256, so editing the hook —
+or any file under a granted module tree — invalidates the grant and asks again.
+The materializer re-lists the plugin tree and reads the pinned files once,
+then hands those bytes to the loader as a snapshot; the loader and linker
+compile the snapshot, never the path, so a change between the gate and the load
+cannot run (a tree over 64 MiB is refused). The same snapshot bounds the
+linker: a module that imports a file outside the manifest is refused
+(`ERR_MOD_HOST_UNGRANTED`) rather than evaluated.
 
 Grants live in `$DSH_HOME/anyplugin/grants.yml` (canonical form, keyed by
 `plugin`, `capability`, `target`, `artifactHash`, `grantedAt`, `scope`). Grant
 issuance is `rig grant`'s job: it prints the target, mode, hash and exact
-command line before writing with `--yes`, and `install` never grants one for
-you. A hand-written grant is only acceptable when you have read the command
-line in the refusal log and accept it. A grant for a different byte sequence
-does nothing.
+command line — or, for a mod, the resolved entry and tree digest — before
+writing with `--yes`, and `install` never grants one for you. A hand-written
+grant is only acceptable when you have read the entry in the refusal log and
+accept it. A grant for a different byte sequence does nothing. The hook row's
+`mods` config is written by the controller from the granted lock record; a row
+the lock does not record is refused as `not-recorded` even when a grant
+exists (a `@1` lock boots no mod until it is reinstalled as `@2`), and a row
+edited by hand is refused unless it carries a pin that matches on re-read. That
+is a byte check, not a consent check: a hand-edited row that recomputes a
+consistent pin is indistinguishable from the controller's, so the consent
+boundary is the grant store plus the lock record, and you should not hand-edit a
+hook row to add mods.
 
 ## 5. Remove it
 

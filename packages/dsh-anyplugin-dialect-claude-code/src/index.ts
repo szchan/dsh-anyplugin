@@ -11,7 +11,7 @@
  * how faithfully we expect to carry it.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   Annotation,
   ClaudePluginIr,
@@ -20,6 +20,7 @@ import type {
   IrAgentSkill,
   IrHook,
   IrMcpServer,
+  IrMod,
   IrOutputStyle,
   IrOutputStyleFaces,
   IrPin,
@@ -973,18 +974,114 @@ function readHooks(root: string): { hooks: IrHook[]; pending: IrUnmaterialized[]
       })
     }
   }
-  if (Array.isArray(document.modules) && document.modules.length > 0) {
+  return { hooks, pending }
+}
+
+/** Extensions the pinned host reads as authored (D30/D34). */
+const MODULE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs'])
+
+/**
+ * The `equivalent` reason for an entry the host can load. It states both the
+ * carry (as authored, no rewrite) and the limit of the claim: this row is the
+ * entry, not the import graph, so a graph module the host refuses is reported
+ * as a typed load error with the file named.
+ */
+function modLoadableReason(): string {
+  return 'The pinned host loads this module as authored (D30/D34): .js and .mjs unchanged, .ts type-stripped in memory, .tsx through the one classic-pragma transform; nothing is bundled, minified or rewritten, and one vm realm holds the mod (D31). Its registrations ride the shared interception kernel (D32/D36) — the same event points, matcher grammar and tier order as classic hooks — and a $ noun the host does not serve is a typed refusal naming the namespace and method, never a silent drop. This row is the entry, not the import graph: a graph module the host refuses at link time is a typed ERR_MOD_HOST_* refusal with the file named.'
+}
+
+/**
+ * `hooks/hooks.json` `"modules"` is the pinned manifest shape for a mod: an
+ * array of module paths relative to the `hooks/` directory (`["./register.ts"]`
+ * in every fetched mod). One entry is one `IrMod`; the host's `loadMod` takes
+ * `{ root, entry }`, so `entry` is stored plugin-relative (`hooks/register.ts`)
+ * and `rootRelative` is the directory the manifest resolves against.
+ */
+function readMods(root: string): { mods: IrMod[]; pending: IrUnmaterialized[] } {
+  const mods: IrMod[] = []
+  const pending: IrUnmaterialized[] = []
+  const text = readIfFile(join(root, 'hooks', 'hooks.json'))
+  if (!text) return { mods, pending }
+  let document: Record<string, unknown>
+  try {
+    document = JSON.parse(text) as Record<string, unknown>
+  } catch {
+    // The hooks reader already reports the malformed file; one row is enough.
+    return { mods, pending }
+  }
+  if (!('modules' in document)) return { mods, pending }
+  const declared = document.modules
+  const sourcePath = 'hooks/hooks.json'
+  if (!Array.isArray(declared)) {
     pending.push({
       surface: 'mods',
       name: 'modules',
-      sourcePath: 'hooks/hooks.json',
-      annotation: {
-        fidelity: 'planned',
-        reason: 'In-process mods are seated and live (D32 §4/§9): the 23 $ sites the pinned diff mod calls across 10 namespaces are covered (#46): fs resolves in the session cwd, store confines to plugin data, and settings.read serves only a host merged snapshot; ui.*, process.run and settings.read without a merged reader are typed refusals. Remaining gaps are the element runtime, the rest of the ~21 namespaces, the unmapped engine and classic events, and classic command-hook updatedInput schema validation. Loaded as authored, never transpiled (D30/D34).',
-      },
+      sourcePath,
+      annotation: { fidelity: 'unsupported', reason: '`modules` is not an array of module paths; the host cannot load it either.' },
     })
+    return { mods, pending }
   }
-  return { hooks, pending }
+  const hooksDir = resolve(root, 'hooks')
+  const rootRelative = 'hooks'
+  declared.forEach((spec, index) => {
+    if (typeof spec !== 'string' || spec.trim() === '') {
+      pending.push({
+        surface: 'mods',
+        name: `modules[${index}]`,
+        sourcePath,
+        annotation: { fidelity: 'unsupported', reason: `\`modules[${index}]\` is not a non-empty path string; the host cannot load it either.` },
+      })
+      return
+    }
+    const refuse = (entry: string, reason: string): void => {
+      mods.push({ kind: 'mod', entry, rootRelative, sourcePath, annotation: { fidelity: 'unsupported', reason } })
+    }
+    if (isAbsolute(spec)) {
+      refuse(spec, `\`${spec}\` is an absolute path; a mod module is resolved under hooks/ and the host refuses anything that leaves it.`)
+      return
+    }
+    const absolute = resolve(hooksDir, spec)
+    const inside = relative(hooksDir, absolute)
+    if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+      refuse(spec, `\`${spec}\` resolves outside hooks/; the host refuses an entry that leaves the mod root.`)
+      return
+    }
+    const entry = `${rootRelative}/${inside.split(sep).join('/')}`
+    let stat
+    try {
+      stat = statSync(absolute)
+    } catch {
+      refuse(entry, `\`${spec}\` does not exist under hooks/; the host refuses a missing entry (ERR_MOD_HOST_MISSING).`)
+      return
+    }
+    if (!stat.isFile()) {
+      refuse(entry, `\`${spec}\` is not a file; the host's entry must name a module file (ERR_MOD_HOST_MISSING).`)
+      return
+    }
+    const extension = extname(absolute)
+    if (!MODULE_EXTENSIONS.has(extension)) {
+      refuse(entry, `\`${extension === '' ? '(no extension)' : extension}\` is not loadable: D30/D34 permits .ts, .tsx, .js and .mjs only (ERR_MOD_HOST_UNSUPPORTED_EXT).`)
+      return
+    }
+    if (extension === '.tsx') {
+      // D34 loads .tsx only when its leading comment block declares the classic
+      // pragma. The dialect does not parse JSX, so it does not promise that
+      // check passed; the row is planned and the host's typed refusal stands.
+      mods.push({
+        kind: 'mod',
+        entry,
+        rootRelative,
+        sourcePath,
+        annotation: {
+          fidelity: 'planned',
+          reason: 'The entry is a .tsx module: D34 loads it only when its leading comment block declares the classic pragma (@jsx h), and the dialect does not parse JSX to verify that. The host applies the transform and refuses with ERR_MOD_HOST_TSX when the pragma is absent; the authored bytes are the trust surface either way.',
+        },
+      })
+      return
+    }
+    mods.push({ kind: 'mod', entry, rootRelative, sourcePath, annotation: { fidelity: 'equivalent', reason: modLoadableReason() } })
+  })
+  return { mods, pending }
 }
 
 /**
@@ -1278,10 +1375,11 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { skills, emptySkills: skillEmpty, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
   const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName, skills, skillEmpty)
   const { hooks, pending: hookPending } = readHooks(root)
+  const { mods, pending: modPending } = readMods(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
 
-  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...mcpPending, ...stylePending]
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...stylePending]
   const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
@@ -1324,6 +1422,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
     skills,
     agents,
     hooks,
+    ...(mods.length === 0 ? {} : { mods }),
     mcpServers: servers,
     outputStyles,
     pending,

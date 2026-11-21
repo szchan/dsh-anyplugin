@@ -11,11 +11,15 @@
  * What is shipped in 0.2.0 is the *compile path* — skills (a slash command
  * lands as a skill on its model face), MCP servers, hooks whose host events
  * exist, agents, one activated output style — and the *mods kernel* in
- * `lib/materialize/hook.js`. A hook row's config may carry `mods: [{ entry }]`,
- * which the packaged materializer loads as authored (D30/D31/D34); mods need
- * Node's `--experimental-vm-modules`. The lock schema has no `mods` field (a
- * record carrying one is a schema error), so the kernel is reachable only from
- * a hand-written hook row, not from `dsh plugin add`.
+ * `lib/materialize/hook.js`. The lock (`dsh-anyplugin/installs@2`) carries a
+ * module as one `mods` entry with its tree manifest; a granted tree reaches
+ * the hook row's `mods` config from here, and the packaged materializer loads
+ * it as authored (D30/D31/D34) after re-listing and re-hashing the plugin tree
+ * against the recorded manifest. A granted tree the lock does not record is
+ * refused as `not-recorded` (a `@1` lock boots no mod until reinstalled).
+ * Mods need Node's `--experimental-vm-modules`. A row config written by hand is refused
+ * unless it carries the same pin, so the controller passes mods; nothing
+ * reaches `loadMod` on the strength of a hand-edited row.
  */
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -128,10 +132,17 @@ export async function apply(ctx: { loader: LoaderLike; get?: (name: string) => u
     ...(grants === undefined ? {} : { grants }),
     home,
     projectDir,
+    // M1: a grant authorizes bytes; the lock records that the install saw the
+    // tree. Booting a carried mod the lock does not record would run a tree
+    // this profile never installed, so the controller requires the record.
+    requireRecordedMods: true,
   })
 
   for (const problem of report.problems) {
     log?.error?.(`${problem.plugin}: ${problem.reason}`)
+  }
+  for (const refusal of report.refusals) {
+    log?.warn?.(`${refusal.plugin}: ${refusal.reason}`)
   }
 
   // A style is a profile selection (D42): say which one won, and why a record

@@ -19,7 +19,7 @@
  * layer, never the lock, and `uninstall` removes the lock row while leaving
  * the layers alone — a workspace's policy outlives a reinstall.
  */
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -54,6 +54,7 @@ import {
   writeInstalls,
   type EnablementLayer,
   type Enablements,
+  type InstalledMod,
   type InstallRecord,
   type InstallSource,
   type Installs,
@@ -234,6 +235,32 @@ function identity(record: { dialect: string; name: string }): string {
   return `${record.dialect}:${record.name}`
 }
 
+/**
+ * The lock's copy of the exec pin: the manifest trust hashed at install time,
+ * with plugin-relative paths, so `hashManifest({mode, invocation: entry, command: '',
+ * files})` recomputes `artifactHash` without touching the plugin again.
+ */
+function recordedMods(report: TransplantReport): InstalledMod[] {
+  return report.mods.map((mod) => {
+    if (mod.manifest.mode !== 'file' && mod.manifest.mode !== 'composite') {
+      throw new InstallCliError('invalid-record', `${mod.entry}: a mod artifact is a tree, not ${mod.manifest.mode}`)
+    }
+    return {
+      entry: mod.entry,
+      rootRelative: mod.rootRelative,
+      mode: mod.manifest.mode,
+      artifactHash: mod.artifactHash,
+      files: mod.manifest.files.map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes })),
+    }
+  })
+}
+
+/** Short, diffable description of a record's mod set for `record-differs`. */
+function describeMods(mods: InstalledMod[] | undefined): string {
+  if (mods === undefined || mods.length === 0) return 'none'
+  return mods.map((mod) => `${mod.entry} (${mod.mode}, ${mod.files.length} file(s), ${mod.artifactHash})`).join(', ')
+}
+
 function totalsLine(totals: TransplantReport['totals']): string {
   return `${totals.declared} declared, ${totals.emitted} emitted, ${totals.refused} refused, ${totals.skipped} skipped`
 }
@@ -333,6 +360,13 @@ export interface InstallOptions extends PathOptions {
   force?: boolean
   /** Record a plugin whose compile emits nothing (all components refused). */
   allowEmpty?: boolean
+  /**
+   * Replace a recorded module set. A reinstall without a `mod:` grant (or with
+   * a different tree) would otherwise drop or swap the lock's `mods` record
+   * silently, which is outside D49's root/version/dataDir scope: the install
+   * names the missing grant and needs this flag, or `uninstall`, to proceed.
+   */
+  dropMods?: boolean
   dryRun?: boolean
   /**
    * Provenance override. A marketplace install passes the catalog identity so
@@ -377,14 +411,19 @@ export function installPlugin(options: InstallOptions): InstallResult {
   // missing relative target as a wrong-directory error.
   const state = readLifecycle(paths, { allowMissingConfig: true })
 
-  const root = resolve(options.pluginDir)
+  // Install records the directory the loader will open, not the link the user
+  // typed: the materializer refuses a root whose realpath differs, so recording
+  // a symlink would write a grant + lock that can never boot (MUST 1). Resolve
+  // once here; every later read uses `root`.
+  let root: string
   let stat
   try {
+    root = realpathSync(resolve(options.pluginDir))
     stat = statSync(root)
   } catch (error) {
     throw new InstallCliError(
       'unreadable-directory',
-      `${root}: ${(error as Error).message}`,
+      `${resolve(options.pluginDir)}: ${(error as Error).message}`,
       'pass a directory that exists and contains a plugin manifest',
     )
   }
@@ -433,7 +472,14 @@ export function installPlugin(options: InstallOptions): InstallResult {
   }
   const id = identity(record)
 
-  const report = buildTransplantReport(ir, { materializers, grants: state.grants })
+  // The install path is the one caller that may report without a recorded
+  // tree: it is about to write that record. Every other reader passes
+  // `recorded` (the default in compileReport is to require it, M2).
+  const report = buildTransplantReport(ir, {
+    materializers,
+    grants: state.grants,
+    exclude: [record.dataDir],
+  })
   if (report.problems.length > 0) {
     throw new InstallCliError('invalid-plugin', `${id}: ${report.problems.join('; ')}`)
   }
@@ -447,7 +493,9 @@ export function installPlugin(options: InstallOptions): InstallResult {
   if (report.totals.emitted === 0 && options.allowEmpty !== true) {
     const refused = report.components
       .filter((component) => component.refused !== undefined)
-      .map((component) => `${component.surface}/${component.name} refused:${component.refused}`)
+      .map((component) =>
+        `${component.surface}/${component.name} refused:${component.refused}` +
+        ` (${component.reason.replace(/^Not emitted:\\s*/, '')})`)
     throw new InstallCliError(
       'nothing-emitted',
       `${id}: nothing would be emitted (${totalsLine(report.totals)})${refused.length === 0 ? '' : `; ${refused.join(', ')}`}`,
@@ -455,18 +503,36 @@ export function installPlugin(options: InstallOptions): InstallResult {
     )
   }
 
+  // Only a mod the gate allowed and emit carried becomes a lock record: an
+  // ungranted tree is not "installed but inert", it is not installed at all.
+  const mods = recordedMods(report)
+  if (mods.length > 0) record.mods = mods
+
   const existing = state.installs.plugins.find((candidate) => identity(candidate) === id)
   let action: InstallResult['action']
   if (existing === undefined) {
     action = 'added'
   } else {
-    const same =
+    const modsSame = JSON.stringify(existing.mods ?? []) === JSON.stringify(record.mods ?? [])
+    const otherSame =
       existing.root === record.root &&
       existing.version === record.version &&
       existing.pin === record.pin &&
       existing.dataDir === record.dataDir
+    const same = otherSame && modsSame
     action = same ? 'unchanged' : 'updated'
-    if (!same && options.force !== true) {
+    if (!modsSame && options.dropMods !== true) {
+      const dropped = (existing.mods ?? []).length > 0 && (record.mods ?? []).length === 0
+      const help = dropped
+        ? 'the install has no granted module tree, so it would drop the recorded one; grant the tree and reinstall, pass --drop-mods, or uninstall first'
+        : 'grant the new tree and reinstall, pass --drop-mods, or uninstall first'
+      throw new InstallCliError(
+        'record-differs',
+        `"${id}" is already recorded at ${existing.root} with a different module set (${describeMods(existing.mods)} → ${describeMods(record.mods)})`,
+        help,
+      )
+    }
+    if (!same && options.force !== true && !(otherSame && options.dropMods === true)) {
       if (existing.root !== record.root) {
         throw new InstallCliError(
           'cross-root',
@@ -478,6 +544,7 @@ export function installPlugin(options: InstallOptions): InstallResult {
       if (existing.version !== record.version) changed.push(`version ${existing.version} → ${record.version}`)
       if (existing.pin !== record.pin) changed.push(`pin ${existing.pin} → ${record.pin}`)
       if (existing.dataDir !== record.dataDir) changed.push(`dataDir ${existing.dataDir} → ${record.dataDir}`)
+      if (!modsSame) changed.push(`mods ${describeMods(existing.mods)} → ${describeMods(record.mods)}`)
       throw new InstallCliError(
         'record-differs',
         `"${id}" is already recorded at ${existing.root} with a different ${changed.join(', ')}`,
@@ -562,6 +629,9 @@ export function formatInstall(result: InstallResult): string {
   }
   lines.push(`  root: ${result.record.root}`)
   lines.push(`  version: ${result.record.version}  pin: ${result.record.pin}`)
+  for (const mod of result.record.mods ?? []) {
+    lines.push(`  mod: ${mod.entry} (${mod.mode}, ${mod.files.length} file${mod.files.length === 1 ? '' : 's'}) ${mod.artifactHash}`)
+  }
   lines.push(`  report: ${totalsLine(result.report.totals)}`)
   const enablement =
     result.enablement.state === 'kept'
@@ -569,7 +639,13 @@ export function formatInstall(result: InstallResult): string {
       : `${result.enablement.scope} ${result.enablement.state === 'written' ? 'written' : 'would be written'} (enabled: true)`
   lines.push(`  enablement: ${enablement}`)
   lines.push(`  lock: ${result.lockFile} (${result.lockAfter} plugin${result.lockAfter === 1 ? '' : 's'})`)
-  for (const line of result.lockDiff) lines.push(`  ${line}`)
+  // A mod record carries its whole tree manifest (diff: ~1800 lines). The
+  // lock is the place to read it; the terminal summary stays readable.
+  const shown = result.lockDiff.slice(0, 12)
+  for (const line of shown) lines.push(`  ${line}`)
+  if (result.lockDiff.length > shown.length) {
+    lines.push(`  … ${result.lockDiff.length - shown.length} more lock line(s) in ${result.lockFile}`)
+  }
   if (result.warning !== undefined) lines.push(`  WARNING: ${result.warning}`)
   return lines.join('\n')
 }
@@ -595,6 +671,8 @@ export interface ListedPlugin {
   enabledScopes: Scope[]
   /** Hash-pinned grants still stored for this identity (D25). */
   grants: number
+  /** Mods the lock records, with the manifest trust pinned at install (D23). */
+  mods: InstalledMod[]
   effective: ResolvedEnablement
   report?: TransplantReport
   error?: { code: 'record-unusable'; reason: string }
@@ -628,11 +706,19 @@ export function listPlugins(options: ListOptions = {}): ListResult {
       ...(record.source === undefined ? {} : { source: record.source }),
       enabledScopes,
       grants: state.grants.grants.filter((grant) => grant.plugin === id).length,
+      mods: record.mods ?? [],
       effective: resolveEnablement(id, state.layers),
     }
     try {
       const prepared = prepareInstalledRecord(record, { grants: state.grants })
-      const report = buildTransplantReport(prepared.ungated, { materializers, grants: state.grants })
+      const report = buildTransplantReport(prepared.ungated, {
+        materializers,
+        grants: state.grants,
+        // The lock is the install decision (M1): a 0.1-style record that
+        // grants a tree still boots nothing until the tree is in the record.
+        recorded: record.mods ?? [],
+        exclude: [record.dataDir],
+      })
       return { ...base, report }
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).replace(/^compileEntries:\s*/, '')
@@ -662,6 +748,30 @@ export function formatList(result: ListResult): string {
         : `${plugin.effective.enabled ? 'enabled' : 'disabled'} at ${plugin.effective.scope}`
     lines.push(`  enabled scopes: ${scopes}; effective: ${effective}`)
     lines.push(`  grants: ${plugin.grants} retained`)
+    // What the lock records, with the drift the current tree implies.
+    for (const mod of plugin.mods) {
+      const component = plugin.report?.components.find(
+        (candidate) => candidate.surface === 'mods' && candidate.name === mod.entry,
+      )
+      const drift =
+        component === undefined
+          ? '  ← not emitted now; the plugin tree no longer declares this entry'
+          : component.refused !== undefined
+            ? `  ← the recorded pin is not granted now: ${component.reason}`
+            : component.grantedHash !== undefined && component.grantedHash !== mod.artifactHash
+              ? `  ← recorded pin is stale; the granted tree is now ${component.grantedHash}`
+              : ''
+      lines.push(`  mod: ${mod.entry} (${mod.mode}, ${mod.files.length} file${mod.files.length === 1 ? '' : 's'}) ${mod.artifactHash}${drift}`)
+    }
+    // What the current tree + grants would actually emit (M1). A recorded mod
+    // is listed above; this is the compile decision, so a lock that lost its
+    // record, or a grant that moved, is visible without booting.
+    for (const mod of plugin.report?.mods ?? []) {
+      lines.push(`  mod (emitted): ${mod.entry} (${mod.manifest.mode}, ${mod.manifest.files.length} file${mod.manifest.files.length === 1 ? '' : 's'}) ${mod.artifactHash}`)
+    }
+    for (const refusal of plugin.report?.notRecorded ?? []) {
+      lines.push(`  mod not recorded: ${refusal.name} — ${refusal.reason}`)
+    }
     if (plugin.error !== undefined) lines.push(`  ERROR: ${plugin.error.reason}`)
     if (plugin.report !== undefined) {
       lines.push(`  report: ${totalsLine(plugin.report.totals)}${plugin.report.ok ? '' : ' — validation FAIL'}`)
@@ -831,6 +941,7 @@ function desiredEntries(
     enablements: layers,
     grants,
     activation: { file: '<uninstall>' },
+    requireRecordedMods: true,
   })
   return {
     entries: report.entries.map((entry) => ({

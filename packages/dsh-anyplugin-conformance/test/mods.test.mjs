@@ -20,7 +20,7 @@ import { apply as applyMaterializer, applyToolInputRewrite } from '../../dsh-any
 import { createModBridge, loadMod } from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { DIFF_MOD_PIN, UPSTREAM_MODS_PIN } from '../../dsh-anyplugin-mod-host/src/pin.ts'
 import { scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
-import { hashManifest } from '../../dsh-anyplugin-trust/src/index.ts'
+import { hashManifest, treeArtifact } from '../../dsh-anyplugin-trust/src/index.ts'
 import { probeLifecycleWithDsh } from '../src/oracles/dsh.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
@@ -58,6 +58,7 @@ function pinned(hook) {
 }
 
 function modsEntry(dataDir, traceFile, overrides = {}) {
+  const pluginRoot = overrides.pluginRoot ?? fixture
   const commands = overrides.commands ?? (harness === undefined
     ? []
     : [{
@@ -74,15 +75,27 @@ function modsEntry(dataDir, traceFile, overrides = {}) {
         id: 'hook',
         name: materializerUrl('dsh-anyplugin-materialize-hook'),
         config: {
-          pluginRoot: overrides.pluginRoot ?? fixture,
+          pluginRoot,
           pluginData: dataDir,
           plugin: overrides.plugin ?? 'synthetic',
-          mods: overrides.mods ?? [{ entry: 'seat.ts' }],
+          mods: (overrides.mods ?? [{ entry: 'seat.ts' }]).map((row) => pinnedModRow(pluginRoot, row)),
           hooks: overrides.hooks ?? [pinned(commandHook), pinned(sessionStartHook)],
           traceFile,
         },
       },
     ],
+  }
+}
+
+/** The emitter's D25 pin, computed the way `treeArtifact` does at install. */
+function pinnedModRow(pluginRoot, row) {
+  const tree = treeArtifact(pluginRoot, row.entry)
+  if (!tree.ok) throw new Error(`cannot pin ${row.entry}: ${tree.refusal.path}: ${tree.refusal.reason}`)
+  return {
+    ...row,
+    artifactHash: tree.artifact.artifactHash,
+    artifactMode: tree.artifact.mode,
+    artifact: tree.artifact.manifest,
   }
 }
 
@@ -485,7 +498,7 @@ test('two plugins load mods with their own $ and registrations', { skip }, async
           pluginRoot: fixture,
           pluginData: dataDir,
           plugin: 'alpha',
-          mods: [{ entry: 'alpha.ts' }],
+          mods: [pinnedModRow(fixture, { entry: 'alpha.ts' })],
           hooks: [pinned(sessionStartHook)],
           traceFile: traceA,
         },
@@ -497,7 +510,7 @@ test('two plugins load mods with their own $ and registrations', { skip }, async
           pluginRoot: fixture,
           pluginData: join(dataDir, 'second'),
           plugin: 'beta',
-          mods: [{ entry: 'beta.ts' }],
+          mods: [pinnedModRow(fixture, { entry: 'beta.ts' })],
           hooks: [pinned(sessionStartHook)],
           traceFile: traceB,
         },
