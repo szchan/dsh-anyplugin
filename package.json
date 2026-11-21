@@ -1,11 +1,41 @@
 {
   "name": "dsh-anyplugin",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Run Claude Code plugins inside DeepSeek Harness, at declared 100% fidelity.",
   "type": "module",
-  "description": "Run Claude Code / Codex plugins inside DeepSeek Harness, at declared 100% fidelity.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/szchan/dsh-anyplugin.git"
+  },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.14",
+    "dsh": "0.2.2-rc.2 || 0.2.2-rc.5"
+  },
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./materialize/agents": "./lib/materialize/agents.js",
+    "./materialize/hook": "./lib/materialize/hook.js",
+    "./materialize/mcp": "./lib/materialize/mcp.js",
+    "./materialize/skill": "./lib/materialize/skill.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./materialize/output-style": "./lib/materialize/output-style.js"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "assets",
+    "README.md",
+    "README_cn.md",
+    "INSTALL.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "scripts": {
     "spike:s1": "node spikes/s1-loader/run.mjs",
@@ -18,7 +48,10 @@
     "extract:hooks": "node scripts/extract-hook-payloads.mjs",
     "check:arch": "node scripts/check-architecture.mjs",
     "gh-bot": "node scripts/gh-bot.mjs",
-    "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm test",
+    "build": "node scripts/build.mjs",
+    "check:pack": "node scripts/build.mjs && node scripts/check-pack.mjs",
+    "prepack": "npm run build",
+    "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm run check:pack && npm test",
     "spike:s9": "node spikes/s9-host-events/run.mjs",
     "spike:s10": "node spikes/s10-agents/run.mjs",
     "spike:s11": "node spikes/s11-prompt-scope/run.mjs",
@@ -28,10 +61,17 @@
     "triage": "node scripts/triage.mjs",
     "check:decisions": "node scripts/check-decisions.mjs"
   },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.2.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
     "@deepseek-ai/cordis-plugin-group": "1.1.0",
-    "@deepseek-ai/cordis-plugin-loader": "1.1.0"
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0",
+    "esbuild": "0.28.2"
   },
   "workspaces": [
     "packages/*"

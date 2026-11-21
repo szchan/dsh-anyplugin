@@ -8,9 +8,11 @@
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-当前状态)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-010-包含什么)
 
-**让 DeepSeek Harness 跑 Claude Code / Codex 的插件 —— 按声明的“100% 保真”。**
+**让 DeepSeek Harness 跑 Claude Code 的插件 —— 只按本仓库对每类能力声明的
+保真度，不多一分。** Codex 是第二个 dialect，在 v0.3 发布；0.1.0 是 Claude
+Code 的编译路径。
 
 一个 Claude Code 插件是一堆文件：skills、斜杠命令、agents、hooks、MCP server、
 output styles，还有 `mods`（跑在宿主进程里的 JavaScript）。DeepSeek Harness
@@ -56,24 +58,63 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 分母是一条**覆盖率棘轮**：每个 fixture 的每个已声明组件一行。补上缺口的那次提交
 必须同时移动那一行，于是回归会在同一行上失败。
 
-```
-当前，对照 DSH 0.2.2-rc.5 与 Claude Code 2.1.329：
-  声明 25 · 匹配 24 · 缺失 0 · 拒绝 1
-```
 
-## ✅ 当前状态
+## ✅ 0.1.0 包含什么
 
-| 能力 | 状态 |
+下表描述的是**已发布的产物**，不是仓库里的开发树：每一行都是安装
+`dsh-anyplugin@0.1.0` 后真正得到的能力，`npm run verify` 会启动打出的
+tarball 来验证它。
+
+| 能力 | 在 0.1.0 中 |
 | --- | --- |
 | Skills | `exact`（正文、信封、base-directory 前导，以及在宿主有通道时的参数替换） |
-| 斜杠命令 | 模型面 `equivalent`，人类面 `planned`（缺命令名接缝） |
-| MCP server | `equivalent`：stdio 与 Streamable HTTP，Claude 的工具名逐字保留 |
-| Hooks | 宿主真的会触发的那批事件是 `equivalent`；其余 `planned` 并点缺失的宿主事件 |
-| Agents | `exact` 目录：每个 `agents/*.md` 成为名为 `<plugin>:<agent>` 的 scoped 工具 |
-| Output styles | 逐字节携带，激活在进行中 |
-| `mods` | 按原样加载（只允许一次变换，见 D34）：19 个事件已路由、7 个上游 mod 可加载、文件/会话/设置命名空间的 `$` 已桥接 |
-| Codex 插件 | 第二个 dialect，共用同一份 IR |
-| 安装 / 启用 / 发布 | 进行中（尚未发布 npm 包） |
+| 斜杠命令 | 以 **skills** 形式发布（模型面 `equivalent`）；人类 `/…` 面是 `planned`，需要宿主的命令名接缝（`D10`） |
+| MCP server | `equivalent`：stdio 与 Streamable HTTP；可调用名由 DSH 加命名空间（`mcp__plugin_<plugin>_<server>__<tool>`），Claude 的名字作为后缀保留 |
+| Hooks | 宿主真的会触发的那批工具/生命周期事件是 `equivalent`；其余 `planned` 并点缺失的宿主事件 |
+| Agents | `exact`：每个 `agents/*.md` 成为名为 `<plugin>:<agent>` 的 scoped 工具 |
+| Output styles | **已发布**：profile 的激活记录选择一个 style（`D42`）；`/<plugin>:<name>` 别名仍缺命令名接缝（`D10`） |
+| `mods` | **不在 0.1.0**：内核在 v0.2 发布；在 lock 记录里写 `mods` 是 schema 错误 |
+| Codex 插件 | **不在 0.1.0**：第二个 dialect 在 v0.3 发布 |
+| 安装 / 启用 / 发布 | `dsh-anyplugin@0.1.0`（bundle + 控制器 + 协调器） |
+
+### 仓库里（尚未发布）
+
+下面的保真度工作存在于代码树中并由测试套件执行，但它**不在** 0.1.0 产物里，
+也不是安装时的承诺：
+
+- 对照 DSH `0.2.2-rc.5` 与 Claude Code `2.1.329`：声明 25 · 匹配 24 ·
+  缺失 0 · 拒绝 1（被拒绝的是上表点名的命令名接缝）；
+- `mods` 按原样加载（只允许一次变换，见 `D34`）：19 个事件已路由、7 个
+  上游 mod 可加载、文件/会话/设置命名空间的 `$` 已桥接 —— 这是 v0.2 要发布的
+  内核；
+- Codex 是共用同一份 IR 的第二个 dialect（v0.3）。
+
+分母是一条**覆盖率棘轮**：每个 fixture 的每个已声明组件一行。补上缺口的那次
+提交必须同时移动那一行，于是回归会在同一行上失败。
+
+## 📦 安装
+
+`dsh-anyplugin@0.1.0` 以一个 **bundle** 的形式发布给 DSH profile：
+
+```bash
+dsh plugin --profile <profile> add dsh-anyplugin
+```
+
+在 profile 的 bundle 列表里启用它（Web 的插件页会代劳；手工方式是在
+`<profile>/package.json` 里加一项），然后启动 profile。bundle 的
+`cordis.patch.yml` 只插入一行控制器；控制器读取
+`$DSH_HOME/anyplugin/installs.yml`，把已安装的插件协调进 loader。它不写
+profile 配置，也不生成代码。
+
+0.1.0 只包含**编译路径**：skills（斜杠命令以 skills 的模型面落地）、MCP、
+hooks、agents、由 profile 记录激活的 output style（D42）、安装/协调与信任门。
+mods 内核与 Codex 方言**不在**本版本内。版本声明为 DSH
+`0.2.2-rc.2 || 0.2.2-rc.5`（`engines.dsh`：恰好是测试套件启动的两个版本，
+其他运行时都会被拒绝，直到它被测过 —— `dsh plugin
+allow-version` 可授予精确版本豁免）与 Claude Code `2.1.329`。
+
+lock、启用层、行配置覆盖、`exec` 授权文件，以及如何移除 bundle 或单个插件，
+见 [**INSTALL.md**](INSTALL.md)。
 
 ## 🧪 如何验证
 
@@ -85,7 +126,7 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
    不接受自报。
 
 钉死版本是 claim 的一部分：DSH `0.2.2-rc.5`（以及 `rc.2`）、Claude Code
-`2.1.329`、`mods` 提交 `f9e4d1e`。没有 pin 的数字只是传闻。
+`2.1.329`，以及仓库内 mods 工作的 `mods` 提交 `f9e4d1e`。没有 pin 的数字只是传闻。
 
 ## 🚀 参与开发
 
@@ -102,7 +143,7 @@ ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
 npm run verify
 ```
 
-`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 463 个测试。它必须报告
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 482 个测试。它必须报告
 **0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
 
 ## 📚 接下来读什么
@@ -127,4 +168,4 @@ npm run verify
 
 ## 📄 许可证
 
-MIT。`LICENSE` 文件随首个版本落地。
+MIT，见 [LICENSE](LICENSE)。

@@ -126,6 +126,27 @@ test('the first reconcile creates, the second keeps and writes nothing', async (
   assert.deepEqual(loader.calls, [['create', GROUP_ID]])
 })
 
+test('settle: false skips the loader-wide await but still writes and verifies', async () => {
+  const loader = new FakeLoader()
+  let awaits = 0
+  const realAwait = loader.await.bind(loader)
+  loader.await = () => {
+    awaits += 1
+    return realAwait()
+  }
+
+  const created = await reconcile(loader, desiredEntries(), { settle: false })
+  assert.deepEqual(created.created, [GROUP_ID])
+  assert.equal(awaits, 0, 'no loader-wide wait while an apply is in flight')
+
+  const removed = await reconcile(loader, [], { settle: false })
+  assert.deepEqual(removed.removed, [GROUP_ID])
+  assert.equal(awaits, 0, 'removal still waits for its own subtree, not the loader')
+
+  await reconcile(loader, desiredEntries())
+  assert.equal(awaits, 2, 'the default waits after writes and after removals')
+})
+
 test('a changed desired config updates the entry in place', async () => {
   const loader = new FakeLoader()
   await reconcile(loader, desiredEntries(materializer('one')))
