@@ -23,6 +23,7 @@ import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { AGENT_PLUGINS_PIN, readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { emitPlugin, type EntryOptions, type Materializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { emptyGrants, gate, type Grants, type TrustDecision } from '../../dsh-anyplugin-trust/src/index.ts'
 
@@ -68,8 +69,24 @@ export interface CompileOptions {
   activation?: OutputStylesFile
 }
 
-const SUPPORTED_DIALECT = 'claude-code'
-const EXPECTED_PIN = `${CLAUDE_CODE_PIN.tool}@${CLAUDE_CODE_PIN.version}`
+/**
+ * The dialect registry. A lock row names its dialect; the row owns the reader
+ * and the pin that reader stamps on the IR. Adding a source agent is one row
+ * here, not another branch in `prepareRecord`.
+ *
+ * `read` is typed as the Claude reader: both dialects return the same
+ * `ClaudePluginIr`, and the point of the registry is that the install path
+ * never cares which one produced it.
+ */
+interface DialectRegistryEntry {
+  readonly pin: { tool: string; version: string }
+  readonly read: typeof readClaudePlugin
+}
+
+const DIALECTS: Readonly<Record<string, DialectRegistryEntry>> = {
+  'claude-code': { pin: CLAUDE_CODE_PIN, read: readClaudePlugin },
+  codex: { pin: AGENT_PLUGINS_PIN, read: readCodexPlugin },
+}
 
 function fail(message: string): never {
   throw new Error(`compileEntries: ${message}`)
@@ -126,11 +143,15 @@ interface PreparedRecord {
 
 function prepareRecord(record: InstallRecord, options: CompileOptions): PreparedRecord {
   const id = `${record.dialect}:${record.name}`
-  if (record.dialect !== SUPPORTED_DIALECT) {
-    fail(`plugin "${id}" uses unsupported dialect "${record.dialect}" (only ${SUPPORTED_DIALECT} is installed)`)
+  const dialect = DIALECTS[record.dialect]
+  if (dialect === undefined) {
+    fail(
+      `plugin "${id}" uses unsupported dialect "${record.dialect}" (installed dialects: ${Object.keys(DIALECTS).join(', ')})`,
+    )
   }
-  if (record.pin !== EXPECTED_PIN) {
-    fail(`plugin "${id}" was installed against pin "${record.pin}", this build reads "${EXPECTED_PIN}"`)
+  const expectedPin = `${dialect.pin.tool}@${dialect.pin.version}`
+  if (record.pin !== expectedPin) {
+    fail(`plugin "${id}" was installed against pin "${record.pin}", this build reads "${expectedPin}"`)
   }
   if (!isAbsolute(record.root)) fail(`plugin "${id}" has a non-absolute root "${record.root}"`)
   try {
@@ -143,12 +164,12 @@ function prepareRecord(record: InstallRecord, options: CompileOptions): Prepared
     fail(`plugin "${id}" root ${JSON.stringify(record.root)} could not be read (${code}): ${(error as Error).message}`)
   }
 
-  const ir = readClaudePlugin(record.root, record.source === undefined ? {} : { source: record.source })
+  const ir = dialect.read(record.root, record.source === undefined ? {} : { source: record.source })
   if (ir.plugin.name !== record.name) {
     fail(`plugin "${id}" claims name "${record.name}" but ${record.root} declares "${ir.plugin.name}"`)
   }
-  if (ir.pin.tool !== CLAUDE_CODE_PIN.tool || ir.pin.version !== CLAUDE_CODE_PIN.version) {
-    fail(`plugin "${id}" was read at ${ir.pin.tool}@${ir.pin.version}, expected ${EXPECTED_PIN}`)
+  if (ir.pin.tool !== dialect.pin.tool || ir.pin.version !== dialect.pin.version) {
+    fail(`plugin "${id}" was read at ${ir.pin.tool}@${ir.pin.version}, expected ${expectedPin}`)
   }
 
   // Gate before emit: refused exec artifacts become `planned` pending nodes and

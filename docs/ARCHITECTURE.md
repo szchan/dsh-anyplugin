@@ -1257,7 +1257,8 @@ Implemented in `packages/dsh-anyplugin-install` (v0.1). The pipeline is:
 ```
 installs.yml + scope layers
   → compileReport(installs, { projectDir, enablements, grants })
-       per plugin: read → gate(ir, grants) → authorize + attach artifact
+       per plugin: resolve dialect (reader + pin) → read → gate(ir, grants)
+                 → authorize + attach artifact
                  → emitPlugin(attached, { trusted })
        → { entries, decisions, problems }   (compileEntries fails closed on problems)
   → one group per enabled plugin with an emittable surface, children from emitPlugin
@@ -1465,7 +1466,15 @@ layout, whose `$schema` must be
 `.codex-plugin/plugin.json` when there is no Claude manifest, selects
 `dsh-anyplugin-dialect-codex`. Both return the same `ClaudePluginIr`; the rig's
 `report`, `grant` and `revoke` commands use the same detection, so a Codex
-plugin is not silently read as a Claude one. The Codex fixture's golden is
+plugin is not silently read as a Claude one. The install compiler
+(`packages/dsh-anyplugin-install/src/compile.ts`) resolves a lock row's
+`dialect` through the same two-entry registry, and each row owns the pin the
+reader stamps and the compiler checks (`claude-code@2.1.329`,
+`agent-plugins@1.0.0`). Identity, gating and emission stay dialect-agnostic:
+the registry decides which reader runs, and nothing after it branches on the
+dialect. `packages/dsh-anyplugin-conformance/test/codex-e2e.test.mjs` compiles
+the portable fixture through `compileEntries` and boots the result in the same
+`probeWithDsh` oracle. The Codex fixture's golden is
 **hand-authored** from the 1.0.0 schemas and the Codex hook documentation —
 there is no offline `codex plugin details` to capture from — so it is excluded
 from the upstream-observed totals below and carries that provenance in its
@@ -1529,7 +1538,9 @@ carries none of the numbers the test asserts.
 
 The Codex fixture is not in that matrix because its golden is a declaration,
 not an upstream observation; its rows are asserted in
-`packages/dsh-anyplugin-conformance/test/codex.test.mjs`. Adding them to the
+`packages/dsh-anyplugin-conformance/test/codex.test.mjs`, and the install path
+is asserted end to end in
+`packages/dsh-anyplugin-conformance/test/codex-e2e.test.mjs`. Adding them to the
 Claude totals would make a hand-authored surface look observed.
 
 `claude-commands-flat` moved on its **model face alone**. A command
