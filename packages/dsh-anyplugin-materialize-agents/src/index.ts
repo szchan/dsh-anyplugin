@@ -192,7 +192,8 @@ export function agentTool(agent: MaterialAgent, ctx: any, config: Config): unkno
       // None of it is ever a tool description. The envelope is byte-for-byte
       // the host's own `renderSkillContent` output for a skill with no
       // resource base (S16); the conformance test renders the expected bytes
-      // with the pinned host function, so a prefix or suffix addition reddens.
+      // with the pinned host function and asserts the whole child message, so
+      // an insertion anywhere between the blocks reddens.
       const blocks: { type: 'text'; text: string }[] = [{ type: 'text', text: agent.content }]
       for (const preload of agent.skillContents ?? []) {
         if (typeof preload?.name !== 'string' || typeof preload?.content !== 'string') {

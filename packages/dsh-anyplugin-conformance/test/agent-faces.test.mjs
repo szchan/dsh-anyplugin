@@ -93,6 +93,21 @@ function makeEmptyBodyPlugin() {
   return root
 }
 
+const ZERO_PLUGIN = 's16-zero-skill-plugin'
+
+/** An agent whose only `skills:` entry ships a zero-byte SKILL.md. */
+function makeZeroBytePlugin() {
+  const root = join(mkdtempSync(join(tmpdir(), 'anyplugin-agent-faces-')), ZERO_PLUGIN)
+  mkdirSync(join(root, 'agents'), { recursive: true })
+  mkdirSync(join(root, 'skills', 'blank'), { recursive: true })
+  writeFileSync(join(root, 'skills', 'blank', 'SKILL.md'), '')
+  writeFileSync(
+    join(root, 'agents', 'zerobody.md'),
+    '---\nname: zerobody\ndescription: Helper whose skill file is zero bytes.\nskills: [blank]\n---\nYou are the zero-byte helper.\n',
+  )
+  return root
+}
+
 const LOOP_PLUGIN = 's16-max-turns-plugin'
 
 /** An agent with `maxTurns: 1`, used to observe whether the host caps turns. */
@@ -161,6 +176,19 @@ test(
     const envelopeStart = user.text.indexOf(expectedEnvelope)
     assert.equal(user.text.slice(0, envelopeStart).trimEnd(), BODY, 'nothing but the persona precedes the envelope')
     assert.equal(user.text.split(expectedEnvelope).length - 1, 1, 'the envelope appears exactly once')
+    // The whole message, not just the pieces: a suffix inserted between the
+    // envelope and the task, or a duplicated block, reddens this line. The
+    // host's own closing note (dsh-subagent/lib/index.js:422 @ 0.2.2-rc.5) is
+    // not ours, so it is pinned verbatim rather than ignored.
+    const HOST_NOTE =
+      'Your final answer is delivered automatically if your parent is still online. ' +
+      'Include the result and relevant evidence in that answer; the parent does not receive your full transcript, tool output, or reasoning. ' +
+      'If your last action is a message to your parent, the completion notice omits your final answer; include the result and relevant evidence in that message.'
+    assert.equal(
+      user.text,
+      [BODY + '\n', expectedEnvelope, TASK, HOST_NOTE].join('\n'),
+      'the child user message is exactly the persona, the envelope, the task, and the host note',
+    )
     // One child request: the agent answered, it did not loop. The maxTurns face
     // would be observable here if the host capped a child, and S16 proves it does not.
     assert.equal(probe.childRequests, 1)
@@ -188,6 +216,32 @@ test('a zero-byte SKILL.md is reported as empty, not as missing', () => {
   assert.match(row.annotation.reason, /SKILL\.md is empty/)
   assert.doesNotMatch(row.annotation.reason, /no SKILL\.md/)
 })
+
+test(
+  'a zero-byte SKILL.md attached to an agent is planned as empty, not as missing',
+  { skip: harness ? false : harnessSkipReason() },
+  async () => {
+    const root = makeZeroBytePlugin()
+    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-zero-byte' })
+    const agent = ir.agents.find((item) => item.name === 'zerobody')
+    assert.ok(agent, 'zerobody is in the IR')
+    assert.equal(agent.faces.skills.fidelity, 'planned', 'an empty file is not a preload')
+    assert.match(agent.faces.skills.reason, /no body/, 'the reason says the skill has no body')
+    assert.doesNotMatch(agent.faces.skills.reason, /not shipped/, 'the file is shipped, so it is not missing')
+    assert.equal(agent.skillContents, undefined, 'a zero-byte body is not a preload')
+
+    const { entry } = emitPlugin(ir, { materializers })
+    const probe = await probeAgentInvocationWithDsh({
+      harnessDir: harness.harnessDir,
+      entry,
+      toolName: `${ZERO_PLUGIN}:zerobody`,
+      task: TASK,
+    })
+    const user = probe.child.messages.find((message) => message.role === 'user')
+    assert.ok(user, 'the child sent a user request')
+    assert.equal(user.text.includes('<skill_content'), false, 'the child request carries no skill claim it cannot keep')
+  },
+)
 
 test('every frontmatter face is carried to the materializer as data, not silently dropped', () => {
   const root = makePlugin()

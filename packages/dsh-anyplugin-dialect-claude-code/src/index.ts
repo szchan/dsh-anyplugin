@@ -323,10 +323,14 @@ function skillFromFile(
 
 function readSkillsAndCommands(root: string): {
   skills: IrSkill[]
+  // Names whose SKILL.md exists but has no body. Kept separately from `skills`
+  // so an agent face can tell "shipped, but empty" from "not shipped at all".
+  emptySkills: string[]
   pending: IrUnmaterialized[]
   unsupported: IrUnmaterialized[]
 } {
   const skills: IrSkill[] = []
+  const emptySkills: string[] = []
   const pending: IrUnmaterialized[] = []
   const unsupported: IrUnmaterialized[] = []
 
@@ -335,6 +339,7 @@ function readSkillsAndCommands(root: string): {
     if (rootSkill.trim() === '') {
       // A zero-byte file is present but carries nothing; saying it is missing
       // would be false, and calling it a skill would claim a body it lacks.
+      emptySkills.push(basename(root))
       pending.push({
         surface: 'skills',
         name: basename(root),
@@ -375,6 +380,7 @@ function readSkillsAndCommands(root: string): {
         if (text.trim() === '') {
           // `readIfFile` returns '' for a zero-byte file, which used to fall
           // into the "no SKILL.md" branch and report a false reason.
+          emptySkills.push(entry.name)
           pending.push({
             surface: 'skills',
             name: entry.name,
@@ -420,7 +426,7 @@ function readSkillsAndCommands(root: string): {
     }
   }
 
-  return { skills, pending, unsupported }
+  return { skills, emptySkills, pending, unsupported }
 }
 
 /**
@@ -631,17 +637,24 @@ export function agentFaces(
 function resolveAgentSkills(
   names: readonly string[] | undefined,
   available: readonly IrSkill[],
+  emptySkills: readonly string[],
 ): { contents: IrAgentSkill[]; empty: string[] } {
   if (names === undefined) return { contents: [], empty: [] }
   const byName = new Map(available.filter((skill) => skill.origin !== 'commands-dir').map((skill) => [skill.name, skill]))
   const contents: IrAgentSkill[] = []
   const empty: string[] = []
   for (const name of names) {
+    // A zero-byte SKILL.md never reaches `available` (it has no body to carry),
+    // so `emptySkills` is the only record that the file exists. Testing this
+    // before the lookup avoids calling a shipped-but-empty file "not shipped".
+    if (emptySkills.includes(name)) {
+      empty.push(name)
+      continue
+    }
     const skill = byName.get(name)
     if (skill === undefined) continue
     if (skill.content.trim() === '') {
-      // An empty body is not a preload. Report it as empty rather than
-      // silently dropping the name: `equivalent` would then be a lie.
+      // A frontmatter-only skill is the same case in a different shape.
       empty.push(name)
       continue
     }
@@ -650,7 +663,12 @@ function resolveAgentSkills(
   return { contents, empty }
 }
 
-function readAgents(root: string, plugin: string, availableSkills: readonly IrSkill[]): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
+function readAgents(
+  root: string,
+  plugin: string,
+  availableSkills: readonly IrSkill[],
+  emptySkillNames: readonly string[],
+): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
   const agents: IrAgent[] = []
   const unsupported: IrUnmaterialized[] = []
   const seen = new Map<string, string>()
@@ -725,7 +743,7 @@ function readAgents(root: string, plugin: string, availableSkills: readonly IrSk
     // Only skills this plugin ships can be read at compile time. A name that
     // resolves to a command is not a skill; it stays unresolved so the face
     // reports what is missing instead of preloading the wrong content.
-    const resolvedSkills = resolveAgentSkills(skills, availableSkills)
+    const resolvedSkills = resolveAgentSkills(skills, availableSkills, emptySkillNames)
     const skillContents = resolvedSkills.contents
     const faces = agentFaces(
       {
@@ -1257,8 +1275,8 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const manifest = readManifest(root)
   const pin = options.pin ?? CLAUDE_CODE_PIN
   const pluginName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root)
-  const { skills, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
-  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName, skills)
+  const { skills, emptySkills: skillEmpty, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
+  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName, skills, skillEmpty)
   const { hooks, pending: hookPending } = readHooks(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
