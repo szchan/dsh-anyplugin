@@ -1,0 +1,5 @@
+{
+  "name": "local-hello",
+  "description": "Fixture plugin installed through a marketplace catalog.",
+  "version": "0.1.0"
+}

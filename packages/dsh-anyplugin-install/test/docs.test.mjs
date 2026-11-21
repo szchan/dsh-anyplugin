@@ -30,7 +30,22 @@ test('the ARCHITECTURE §5 and D23 examples parse with the shipped reader', () =
 
   const archLock = parseInstalls(fromArch[0], 'ARCHITECTURE.md')
   const decisionLock = parseInstalls(fromDecision[0], 'DECISIONS.md')
-  assert.deepEqual(decisionLock, archLock, 'both snippets describe the same lock')
+  assert.equal(archLock.schema, decisionLock.schema)
+  // D23 names `source` as optional provenance but its ratified snippet does not
+  // show it; ARCHITECTURE's example demonstrates the field. Compare the
+  // required fields for equality, then pin the demonstrated optional value so
+  // the example cannot silently lose what it teaches.
+  const required = archLock.plugins.map((record) => {
+    const rest = { ...record }
+    delete rest.source
+    return rest
+  })
+  assert.deepEqual(decisionLock.plugins, required, 'both snippets describe the same required fields')
+  assert.deepEqual(
+    archLock.plugins.map((record) => record.source),
+    [{ marketplace: 'my-marketplace', entry: 'skills-only' }],
+    'ARCHITECTURE shows the optional source provenance line',
+  )
   assert.equal(archLock.schema, 'dsh-anyplugin/installs@1')
   assert.deepEqual(
     archLock.plugins.map((record) => [record.dialect, record.name, record.pin]),
