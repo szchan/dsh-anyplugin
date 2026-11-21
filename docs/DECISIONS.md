@@ -1958,3 +1958,59 @@ decision), `packages/dsh-anyplugin-materialize-hook/src/index.ts` (the deny
 conversion and its model-facing text), `test/mods.test.mjs` (deny text asserted,
 run-unchanged measured), the two route-rename mutations, and 463/463 with zero
 skips on both DSH pins. Merge `c42b234`.
+
+---
+
+## D42 — Output-style activation is a profile record, and an explicit record outranks `force-for-plugin`
+
+**Status.** Ratified 2026-11-21. Pins: DSH `0.2.2-rc.5` / `0.2.2-rc.2`,
+claude-code `2.1.329`.
+
+**What was decided.** The activation record is
+`$DSH_HOME/anyplugin/output-styles.yml`, schema `dsh-anyplugin/output-styles@1`,
+read-only. It is validated when entries are materialized. An unknown plugin, a
+disabled plugin, an unreadable plugin, an unknown style, or an empty or
+whitespace-only body is a typed refusal reported on `compileReport.activation`,
+never a silent no-op — and a refusal is final: it does not fall back to a
+plugin's `force-for-plugin` declaration. A record that exists but cannot be read
+is a load error naming the errno (`EACCES`, `EISDIR`), not "no style", and
+`outputStyles: {}` followed by an `active` row is contradictory. Without an
+explicit record, the first enabled plugin in name order declaring
+`force-for-plugin: true` with a non-empty body applies, and the trace names it;
+force is never injected as a hidden default, and a whitespace-only forced body is
+skipped in favour of a later valid one, or refused when it is the only candidate.
+`compileEntries` throws `OutputStyleActivationError` on a refusal, so only
+`compileReport`'s caller can choose to continue.
+
+The body is applied as authored (untrimmed) through the agent-scoped
+`SystemPrompt.section(..., { complete: keep-coding-instructions === false,
+interpolate: false })` seam at `agent/created`. An absent
+`keep-coding-instructions` appends, which is stated because Claude's documented
+default is `false`. The section is applied to top-level agents and forks; a
+`subagent` child is skipped, because upstream scopes styles to the main
+conversation and forks ("Other subagents run their own system prompt, so styles
+don't change how they respond").
+
+**Why this diverges from Claude Code.** Claude documents that
+`force-for-plugin` overrides the user's `outputStyle` setting
+(<https://code.claude.com/docs/en/output-styles> @ 2.1.329). This layer has no
+host setting to override: the profile record is the operator's explicit
+statement, and the only alternative would be a hidden activation channel. So an
+explicit record outranks force, and the trace always names which rule won.
+
+**Consequences.** The row stays `planned` overall because the `/<plugin>:<name>`
+command face is blocked by D10; the two faces are `activation: equivalent` and
+`command: planned`. The `agent/created` listener is scoped to the created
+agent's context, so it cannot mutate another agent's prompt, and the section
+unwinds when that agent is disposed. A subagent therefore observes the host's
+own prompt, which is the upstream behaviour and the reason we skip it rather
+than treat it as an unrelated sibling.
+
+**Evidence.** `packages/dsh-anyplugin-install/src/output-styles.ts` (parser,
+refusals, errno-named load error, forced selection), `src/compile.ts`
+(`OutputStyleActivationError`), `packages/dsh-anyplugin-materialize-output-style`
+(the seam and the subagent skip), the activation suite in
+`packages/dsh-anyplugin-conformance/test/output-styles-activation.test.mjs`
+(18 tests, including main/sibling/fork/subagent and the forced-empty cases),
+mutations M1–M8 each reddening a named test, and 481/481 with zero skips on both
+DSH pins. Merge `62238bf`.
