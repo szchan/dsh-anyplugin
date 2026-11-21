@@ -17,6 +17,7 @@
     "test": "node --experimental-vm-modules --test 'packages/**/*.test.mjs'",
     "extract:hooks": "node scripts/extract-hook-payloads.mjs",
     "check:arch": "node scripts/check-architecture.mjs",
+    "gh-bot": "node scripts/gh-bot.mjs",
     "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm test",
     "spike:s9": "node spikes/s9-host-events/run.mjs",
     "spike:s10": "node spikes/s10-agents/run.mjs",

@@ -16,6 +16,28 @@ Only the master merges. Only a worker pushes a branch. `main` is protected: PRs
 only, the `verify` check must be green, history is linear (squash), no force
 pushes.
 
+### Identity
+
+An agent never posts as the human. Every GitHub write — issue comment, review,
+label, branch, PR — goes through the bot account:
+
+```bash
+node scripts/gh-bot.mjs --whoami                      # login + its repository permissions
+node scripts/gh-bot.mjs issue comment 80 --body "…"   # any `gh` verb passes through
+node scripts/gh-bot.mjs pr create --title … --body …
+```
+
+The token lives in `~/.config/dsh-anyplugin/gh-bot.token` (classic PAT, scopes
+`repo` and `workflow`, created on `szchan-bot`), never in the repository and
+never in an Actions secret: the agents that need it run on this machine, and a
+secret in Actions is invisible to them.
+
+Two consequences worth stating: a PR authored by `szchan-bot` was written by an
+agent, and a comment by `szchan` is a human decision. If a bot write fails with
+`Resource not accessible by personal access token`, the token is read-only or its
+repository access is empty — check `--whoami` before assuming a permission
+problem in the repository.
+
 ## Isolation: one worktree per ticket
 
 Never work in the primary checkout. It is the master's, and parallel workers in

@@ -41,6 +41,7 @@ npm run check:arch    # structural rules (layer graph, R1–R13)
 npm run rig -- report <plugin-dir>   # the fidelity report for one plugin
 npm run capture:fixtures             # re-record goldens (needs CLAUDE_BIN; never for hand-authored)
 npm run triage                       # the GitHub queue, read-only
+npm run gh-bot -- --whoami           # the bot login agents must write GitHub as
 ```
 
 ## 3. Doing a ticket
