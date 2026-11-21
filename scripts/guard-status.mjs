@@ -15,9 +15,11 @@ import {
   PATCH_FILE,
   composeGuard,
   defaultProfileDir,
+  duplicateGuardId,
   readBlock,
   readGitWorktrees,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
+import { hookTargets, prePushStatus } from './guard-hooks.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const argv = process.argv.slice(2)
@@ -25,11 +27,12 @@ const json = argv.includes('--json')
 
 function usage(message) {
   if (message !== undefined) console.error(`guard:status: ${message}`)
-  else console.log('usage: guard:status [--profile-dir <dir>] [--json]')
+  else console.log('usage: guard:status [--profile-dir <dir>] [--worktree <path>] [--json]')
   process.exit(message === undefined ? 0 : 2)
 }
 
 let profileDir
+const extraWorktrees = []
 for (let index = 0; index < argv.length; index += 1) {
   const arg = argv[index]
   if (arg === '--help' || arg === '-h') usage()
@@ -38,6 +41,11 @@ for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) usage('--profile-dir needs a value')
     profileDir = resolve(value)
+    index += 1
+  } else if (arg === '--worktree') {
+    const value = argv[index + 1]
+    if (value === undefined || value.startsWith('--')) usage('--worktree needs a value')
+    extraWorktrees.push({ path: resolve(value), branch: 'ticket/manual', main: false })
     index += 1
   } else usage(`unknown argument ${arg}`)
 }
@@ -56,7 +64,14 @@ function firstDifference(installed, current) {
   return undefined
 }
 
-const composition = composeGuard({ repoRoot: root, worktrees: readGitWorktrees(root) })
+const gitWorktrees = readGitWorktrees(root)
+const known = new Set(gitWorktrees.map((entry) => resolve(entry.path)))
+const worktrees = [...gitWorktrees, ...extraWorktrees.filter((entry) => !known.has(resolve(entry.path)))]
+const composition = composeGuard({
+  repoRoot: root,
+  worktrees,
+  ...(extraWorktrees[0] === undefined ? {} : { preferredWorktree: extraWorktrees[0].path }),
+})
 const sourceExists = existsSync(composition.source)
 const fileExists = existsSync(patchFile)
 const text = fileExists ? readFileSync(patchFile, 'utf8') : ''
@@ -72,8 +87,14 @@ try {
 // part of what the tree composes, so it is ignored when comparing.
 const comparable = (block) => block.split('\n').filter((line) => !line.startsWith('# dsh-anyplugin guard state:')).join('\n')
 const difference = installed.present ? firstDifference(comparable(installed.block), composition.block) : undefined
-const current = installed.present && difference === undefined
-const status = !installed.present ? 'not-installed' : current ? 'current' : 'stale'
+// A duplicate `- id:` outside the block is a second entry, not a stale one.
+const outside = installed.present ? text.replace(installed.block, '') : text
+const duplicate = duplicateGuardId(outside)
+const hooks = hookTargets(composition.config.worktrees ?? [])
+const hookStates = hooks.map((entry) => ({ file: entry.file, status: prePushStatus(entry.file) }))
+const hooksCurrent = hookStates.every((entry) => entry.status === 'current')
+const current = installed.present && difference === undefined && !duplicate
+const status = !installed.present ? 'not-installed' : current && hooksCurrent ? 'current' : 'stale'
 
 const report = {
   profileDir,
@@ -83,6 +104,8 @@ const report = {
   sourceExists,
   worktrees: composition.config.worktrees ?? [],
   protectedRoots: composition.config.protectedRoots ?? [],
+  duplicateId: duplicate,
+  hooks: hookStates,
   ...(difference === undefined ? {} : { difference }),
 }
 
@@ -95,6 +118,8 @@ if (json) {
   console.log(`guard: source  ${composition.source}${sourceExists ? '' : ' (missing)'}`)
   console.log(`guard: worktrees ${report.worktrees.length === 0 ? 'none' : report.worktrees.join(', ')}`)
   console.log(`guard: protected ${report.protectedRoots.length === 0 ? 'none' : report.protectedRoots.join(', ')}`)
+  for (const hook of hookStates) console.log(`guard: hook ${hook.file} ${hook.status}`)
+  if (duplicate) console.log('guard: duplicate - id: "anyplugin-guard" outside the managed block; remove it first')
   if (difference !== undefined) {
     console.log(`guard: first difference at line ${difference.line}`)
     console.log(`  installed: ${difference.installed}`)
@@ -104,4 +129,4 @@ if (json) {
   if (status === 'current') console.log('guard: the block is what this tree would write; the host applies it when the profile recomposes')
 }
 
-process.exit(status === 'current' && sourceExists ? 0 : 1)
+process.exit(status === 'current' && sourceExists && hooksCurrent && !duplicate ? 0 : 1)

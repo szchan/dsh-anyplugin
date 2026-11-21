@@ -24,7 +24,7 @@ codex plugin spec `1.0.0`.
 
 The one number the project reports: **25 declared / 24 matched / 0 missing /
 1 refused** rows in the coverage ratchet
-(`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`), across 14
+(`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`), across 11
 fixtures. It only moves when a row moves; see `docs/TODO.md` for the queue behind
 it.
 

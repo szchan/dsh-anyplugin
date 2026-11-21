@@ -3,7 +3,8 @@
  * command into segments, tokenizes a segment, and follows the two ways a
  * command hides another one — the `bash -c '<cmd>'` form and a leading
  * `sudo`/`env`/`command` prefix. It is not a shell: expansions, aliases and
- * functions are out of scope, and the guard's deny reasons say so.
+ * functions are out of scope, and the policy refuses constructs it cannot
+ * model instead of judging a partial parse (the `shell-unmodelled` rule).
  *
  * Why it exists at all: the model runs `git push` and `gh pr merge` through a
  * shell tool, and the guard has to see the same words the shell will execute,
@@ -81,6 +82,40 @@ export function splitSegments(command: string): string[] {
   }
   segments.push(current)
   return segments.map((segment) => segment.trim()).filter((segment) => segment.length > 0)
+}
+
+/**
+ * The segment with quoted regions blanked out. Redirect operators and control
+ * characters only count outside quotes: `git commit -m "fix: a > b"` is one
+ * quote, not a write, while `git commit -m x > out` really redirects.
+ */
+export function unquotedText(segment: string): string {
+  let result = ''
+  let quote: string | null = null
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index]
+    if (quote !== null) {
+      result += ' '
+      if (char === quote) quote = null
+      else if (char === '\\' && quote === '"' && index + 1 < segment.length) {
+        result += ' '
+        index += 1
+      }
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      result += ' '
+      continue
+    }
+    if (char === '\\' && index + 1 < segment.length) {
+      result += ' '
+      index += 1
+      continue
+    }
+    result += char
+  }
+  return result
 }
 
 /** Shell-word split of one segment. Quotes group, they do not survive. */
@@ -206,7 +241,7 @@ export function stripPrefix(tokens: string[]): string[] {
       }
       continue
     }
-    if (token === 'command' || token === 'nohup' || token === 'time' || token === 'exec' || token === 'builtin' || token === 'stdbuf') {
+    if (token === 'command' || token === 'nohup' || token === 'time' || token === 'exec' || token === 'builtin') {
       index += 1
       continue
     }
@@ -255,12 +290,6 @@ export function parseSegments(command: string, depth = 0): ShellSegment[] {
   for (const raw of splitSegments(stripHeredocs(command))) {
     const tokens = tokenize(raw)
     if (tokens.length === 0) continue
-    // A subshell is still a command list: `(cd repo && touch x)` arrives as
-    // `(cd repo` / `touch x)`, so the grouping parentheses are syntax, not
-    // words. Stripping them lets the same cd-tracking and write rules apply.
-    tokens[0] = tokens[0].replace(/^\(+/u, '')
-    tokens[tokens.length - 1] = tokens[tokens.length - 1].replace(/\)+$/u, '')
-    if (tokens.every((token) => token.length === 0)) continue
     const head = stripPrefix(tokens)
     const children: ShellSegment[] = []
     if (depth < 4 && head.length > 1 && SHELLS.has(baseCommand(head[0]))) {

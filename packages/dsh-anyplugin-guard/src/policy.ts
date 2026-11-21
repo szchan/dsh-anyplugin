@@ -26,15 +26,18 @@
  *
  * The guard is a policy check on top of the host: it reads the same
  * `tools/pre-execute` payload the host dispatches and returns `deny` with a
- * reason. It is not a sandbox. A command can hide its intent from any reader
- * (`eval "$(printf …)"`), and the guard says so instead of pretending
- * otherwise; DSH's own file sandbox remains the enforced boundary.
+ * reason. It is a convention checker for honest mistakes, not a containment
+ * boundary: the real boundary is branch protection, DSH's own sandbox and CI.
+ * A command can hide its intent from any reader, so this reader refuses
+ * constructs it does not model (`shell-unmodelled`) instead of judging a
+ * partial parse. The `pre-push` hook installed with the composition is the
+ * authoritative push check, because git resolves the refspec itself.
  */
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isMainRef } from './git.ts'
-import { baseCommand, parseSegments, stripPrefix, type ShellSegment } from './shell.ts'
+import { baseCommand, parseSegments, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
 
 /** The brief the guard injects into a spawned worker (see `brief.ts`). */
 export interface BriefConfig {
@@ -324,7 +327,11 @@ export function pushArguments(args: string[]): { positionals: string[]; all: boo
 
 /** The remote ref a push refspec writes: `+HEAD:refs/heads/main` → `main`. */
 export function destinationRef(refspec: string, branch: string | undefined): string | undefined {
-  const spec = refspec.replace(/^\+/u, '')
+  const spec = refspec
+    .replace(/^\+/u, '')
+    .replace(/^\$/u, '')
+    .replace(/^['"`]+|['"`]+$/gu, '')
+    .replace(/[&;)}\]]+$/u, '')
   const colon = spec.lastIndexOf(':')
   if (colon >= 0) {
     const destination = spec.slice(colon + 1)
@@ -426,6 +433,50 @@ export function gitWriteVerb(tokens: string[]): string | undefined {
   return subcommand !== undefined && GIT_WRITE_SUBCOMMANDS.has(subcommand) ? subcommand : undefined
 }
 
+/**
+ * Commands the parser models well enough to judge. An unknown command is
+ * refused: a default-allow reader is exactly how `stdbuf -o0 git push …` or
+ * `{ git push …; }` slips past a list of known-bad spellings. The allowlist is
+ * deliberately broad enough for ordinary repository work.
+ */
+const ALLOWED_COMMANDS = new Set([
+  'npm', 'npx', 'pnpm', 'yarn', 'node', 'bun', 'deno',
+  'git', 'gh', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find',
+  'sed', 'awk', 'sort', 'uniq', 'cut', 'tr', 'tee', 'echo', 'printf', 'test',
+  'true', 'false', 'pwd', 'cd', 'mkdir', 'rmdir', 'rm', 'cp', 'mv', 'touch',
+  'chmod', 'chown', 'ln', 'truncate', 'patch', 'dd', 'diff', 'date', 'which',
+  'printenv', 'basename', 'dirname', 'realpath', 'readlink', 'stat', 'file',
+  'du', 'df', 'sleep', 'kill', 'ps', 'uname', 'id', 'whoami', 'hostname',
+  'jq', 'curl', 'wget', 'tar', 'unzip', 'zip', 'gzip', 'gunzip',
+  'python', 'python3', 'ruby', 'php', 'go', 'cargo', 'make', 'tsc', 'eslint',
+  'prettier', 'vitest', 'jest', 'sha256sum', 'shasum', 'base64', 'xxd', 'od',
+  'nl', 'comm', 'join', 'split', 'seq',
+])
+
+const SHELL_BASES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell'])
+const FIND_EXEC_FLAGS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+const WRITE_PAYLOAD =
+  /writeFileSync|appendFileSync|createWriteStream|writeFile\s*\(|fs\.write|open\s*\([^)]*['"][wa]|shutil\.|os\.(?:remove|rename|unlink|mkdir)|write_text\s*\(/u
+
+/** A single unquoted `&` backgrounds a command; the guard models only `&&`. */
+function hasSingleAmpersand(command: string): boolean {
+  const text = unquotedText(command).replace(/&&/gu, ' ').replace(/&>>?/gu, ' ')
+  return text.includes('&')
+}
+
+/**
+ * The interpreter cargo-cult: `node -e` and `python3 -c` can write anywhere
+ * without a shell redirect, so a worker's payload is refused when it carries a
+ * write call. This is the documented limit of shell-level confinement; a
+ * committed script can still write, and the sandbox is the boundary.
+ */
+function interpreterWrite(tokens: string[]): boolean {
+  const head = stripPrefix(tokens)
+  if (head.length === 0 || !INTERPRETERS.has(baseCommand(head[0]))) return false
+  const payload = head.slice(1).find((token) => !token.startsWith('-'))
+  return payload !== undefined && WRITE_PAYLOAD.test(payload)
+}
+
 /** Constructs whose effects the segment parser cannot see. Refused, not guessed. */
 function shellHazard(command: string, segments: ShellSegment[]): Verdict | undefined {
   if (/\$\(|`/u.test(command)) {
@@ -434,14 +485,54 @@ function shellHazard(command: string, segments: ShellSegment[]): Verdict | undef
       `refusing "${excerpt(command)}": command substitution hides what will run; write the command out literally`,
     )
   }
+  if (/\$'/u.test(command)) {
+    return deny(
+      'shell-unmodelled',
+      `refusing "${excerpt(command)}": ANSI-C quoting ($'…') can change the words the shell sees; quote the value plainly`,
+    )
+  }
+  if (hasSingleAmpersand(command)) {
+    return deny(
+      'shell-unmodelled',
+      `refusing "${excerpt(command)}": a single & backgrounds a command the guard cannot follow; use && or a separate call`,
+    )
+  }
   for (const segment of flatten(segments)) {
     const head = stripPrefix(segment.tokens)
+    if (head.length === 0) continue
     const name = baseCommand(head[0])
-    if (name === 'eval' || name === 'source') {
+    if (name === 'eval' || name === 'source' || name === '.') {
       return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": ${name} executes text the guard cannot judge`)
     }
     if (SHELL_KEYWORDS.has(name)) {
       return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": the shell keyword ${name} hides a command list; use a plain sequence`)
+    }
+    if (name === '!' || /[(){}]/u.test(head[0])) {
+      return deny(
+        'shell-unmodelled',
+        `refusing "${excerpt(segment.raw)}": shell grouping (parentheses, braces, !) is not modelled; run the commands as plain segments`,
+      )
+    }
+    if (!ALLOWED_COMMANDS.has(name) && !SHELL_BASES.has(name)) {
+      return deny(
+        'shell-unmodelled',
+        `refusing "${excerpt(segment.raw)}": the guard does not model ${name === '' ? 'this command' : name}; use a plain, known command`,
+      )
+    }
+    if (SHELL_BASES.has(name)) {
+      const flag = head.findIndex((token, index) => index > 0 && (token === '-c' || /^-[A-Za-z]*c$/u.test(token)))
+      if (flag < 0 || head[flag + 1] === undefined) {
+        return deny(
+          'shell-unmodelled',
+          `refusing "${excerpt(segment.raw)}": a shell reading stdin/heredoc is not modelled; pass the command with sh -c '<command>'`,
+        )
+      }
+    }
+    if (name === 'find' && head.some((token) => FIND_EXEC_FLAGS.has(token))) {
+      return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": find -exec runs an unmodelled command`)
+    }
+    if (head.some((token) => token.includes('$'))) {
+      return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": shell expansion is not modelled; write the literal value`)
     }
   }
   return undefined
@@ -466,11 +557,57 @@ export function isSanctionedUpdate(tokens: string[]): boolean {
   return nodeDirect || npmRun
 }
 
+/**
+ * Redirect targets, scanned outside quotes only. `git commit -m "fix: a > b"`
+ * is a message, not a write; `git commit -m x > out` is a redirect. The
+ * earlier regex read the quoted text too and denied ordinary commits.
+ */
 function redirectTargets(raw: string): string[] {
   const targets: string[] = []
-  for (const match of raw.matchAll(/(?:^|\s)(?:\d?>>?\|?|&>>?)\s*("([^"]*)"|'([^']*)'|([^\s;|&]+))/gu)) {
-    const value = match[2] ?? match[3] ?? match[4] ?? ''
+  let quote: string | null = null
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index]
+    if (quote !== null) {
+      if (char === quote) quote = null
+      else if (char === '\\' && quote === '"') index += 1
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (char === '\\') {
+      index += 1
+      continue
+    }
+    if (char === '&' && raw[index + 1] === '>') {
+      index += 1
+      if (raw[index + 1] === '>') index += 1
+    } else if (char === '>') {
+      if (raw[index + 1] === '|' || raw[index + 1] === '>') index += 1
+    } else {
+      continue
+    }
+    let cursor = index + 1
+    while (cursor < raw.length && /\s/u.test(raw[cursor])) cursor += 1
+    if (cursor >= raw.length) break
+    let value = ''
+    if (raw[cursor] === '"' || raw[cursor] === "'") {
+      const opened = raw[cursor]
+      cursor += 1
+      while (cursor < raw.length && raw[cursor] !== opened) {
+        if (raw[cursor] === '\\' && opened === '"' && cursor + 1 < raw.length) cursor += 1
+        value += raw[cursor]
+        cursor += 1
+      }
+    } else {
+      while (cursor < raw.length && !/[\s;|&)]/u.test(raw[cursor])) {
+        value += raw[cursor]
+        cursor += 1
+      }
+    }
     if (value.length > 0 && value !== '/dev/null' && !value.startsWith('&')) targets.push(value)
+    index = cursor - 1
   }
   return targets
 }
@@ -631,6 +768,12 @@ function judgeCommand(
   if (!agent.worker) return ALLOW
 
   for (const segment of flat) {
+    if (interpreterWrite(segment.tokens)) {
+      return deny(
+        'interpreter-write',
+        `refusing "${excerpt(segment.raw)}": an interpreter one-liner can write outside its worktree; put the code in a committed file and run it with a plain command`,
+      )
+    }
     if (ghPrMerge(segment.tokens)) {
       return deny(
         'gh-pr-merge-worker',

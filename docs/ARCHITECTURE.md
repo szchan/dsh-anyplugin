@@ -1236,12 +1236,16 @@ run degraded *by design*.
 The repository runs a first-party policy on itself (`packages/dsh-anyplugin-guard`,
 issue #80). It is a plugin like any other — one package, `inject: ['tools']`, one
 handler per seam, mounted at the app level and on each `agent.ctx` — and it
-deliberately does **not** introduce a second event path (§3.6). The second mount
-is required, not optional: the loops dispatch both seams through the agent's
-scope carrier (`dsh-agent/lib/index.js:358`, `dsh-agent-loop/lib/index.js:551`),
-so an app-level listener sees the root but never a child (`materialize-hook`
-seats its listeners the same way). It reads the same payloads the hook
-materializer reads and returns the host's own verdict shape.
+deliberately does **not** introduce a second event path (§3.6). The app-level
+listener is the authoritative one: the loops dispatch both seams through the
+agent's scope carrier (`dsh-agent/lib/index.js:385-386`,
+`dsh-agent-loop/lib/index.js:551`), and the harness delivers those dispatches
+to an app-level listener as well as to the agent's own scope. The per-agent
+seat is therefore additive, never a replacement: it mounts only
+`agent/pre-step`, so a child still receives the brief even if one delivery
+path changes; a missing seat cannot make the `tools/pre-execute` judgment
+silently disappear. It reads the same payloads the hook materializer reads and
+returns the host's own verdict shape.
 
 | seam | payload read at pin `0.2.2-rc.5` | what the guard does |
 | --- | --- | --- |
@@ -1260,11 +1264,21 @@ anything but the sanctioned `node scripts/check-decisions.mjs --update`.
 the spawn prompt or from a cwd that is itself a configured worktree. A branch
 name in the prompt (the review prompt names the branch under review) never
 implies a path; with no recorded worktree a worker's writes are refused rather
-than checked against every configured worktree. The policy is a check, not a
-sandbox: command substitution, backticks, `eval`/`source` and unmodelled shell
-keywords are refused as `shell-unmodelled` instead of guessed at, git write
-verbs are refused for workers, symlinks are resolved before confinement, and
-the DSH file sandbox remains the boundary. It is written for the commands this
+than checked against every configured worktree. The policy is a
+**convention checker for honest mistakes, not a containment boundary**: the
+real boundary is branch protection, the DSH file sandbox and CI. The tool call
+layer defaults to deny on syntax it cannot model — command substitution,
+backticks, single `&`, grouping, `!`, `$'` quoting, `eval`/`source`/dot,
+`find -exec`, a shell reading stdin, and any command outside its allowlist —
+instead of guessing, and interpreter `-c`/`-e` payloads that look like
+writes are refused. Git write verbs are refused for workers and symlinks are
+resolved before confinement. Because a shell layer can always be spelled
+around, `guard:install` also writes a real git `pre-push` hook into the
+worktrees' hooks directory: git itself resolves the refspec, so every
+spelling (bare, `--all`, `--mirror`, `remote.<name>.push`,
+`push.default=upstream`, a delete) is refused before the network when the
+destination is `main`/`master`. `guard:status` checks the hook and
+`--uninstall` removes it. The layer is written for the commands this
 repository's agents actually run, not as a general shell interpreter.
 
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with

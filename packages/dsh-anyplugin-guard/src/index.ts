@@ -15,12 +15,13 @@
  *   worker is told to read.
  *
  * Both seams are dispatched through the *agent's* scope carrier
- * (`dsh-agent/lib/index.js:358`: `ctx.waterfall(carrier, …)`; the loop builds
- * the carrier in `dsh-agent-loop/lib/index.js:551`), so an app-level listener
- * never sees a child's step. The guard therefore mounts the same two handlers
- * on each `agent.ctx`, the way the classic-hook materializer seats its
- * listeners, and keeps the app-level pair as the root/fallback mount. That is
- * still one policy and one event path — not a second kernel.
+ * (`dsh-agent/lib/index.js:385-386` is the waterfall call; the loop builds the
+ * carrier in `dsh-agent-loop/lib/index.js:551`). The app-level listener does
+ * receive a child's call — an instrumented run confirmed it — so the app-level
+ * `tools/pre-execute` mount is the authoritative one for every carrier. The
+ * per-agent seat is an addition for the `agent/pre-step` brief only; it never
+ * replaces the app-level listener. That is still one policy and one event
+ * path — not a second kernel.
  *
  * The guard is deliberately *not* a hook kernel: it has no matcher grammar, no
  * hook registrations and no event translation. It is a first-party policy that
@@ -137,22 +138,15 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
     return { ...result, messages: [...result.messages, brief] }
   }
 
-  // Agent-scoped seats. The seams are dispatched through the agent's carrier,
-  // so this is the mount that actually reaches a child's steps.
+  // Agent-scoped seats for the brief. The seams are dispatched through the
+  // agent's carrier, but the app-level listener below receives child calls too;
+  // a seat is an addition, not a replacement, and `state.resolved` keeps the
+  // brief to one delivery when both mounts see the same step.
   const seats = new Map<string, { agent: unknown; dispose: () => void }>()
 
-  // App-level mount: root calls when no agent seat exists, plus early calls
-  // that arrive before `agent/created`.
-  ctx.effect(() =>
-    ctx.on('tools/pre-execute', async (exec: any, next: () => Promise<unknown>) =>
-      seats.has(agentId(exec?.agent) ?? '') ? next() : decideTool(exec, next),
-    ),
-  )
-  ctx.effect(() =>
-    ctx.on('agent/pre-step', async (payload: any, next: () => Promise<unknown>) =>
-      seats.has(agentId(payload?.agent) ?? '') ? next() : decideStep(payload, next),
-    ),
-  )
+  // App-level mounts: authoritative for every carrier, root or child.
+  ctx.effect(() => ctx.on('tools/pre-execute', decideTool))
+  ctx.effect(() => ctx.on('agent/pre-step', decideStep))
 
   const mountAgent = (agent: any): void => {
     const id = agentId(agent)
@@ -164,7 +158,8 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
       const dispose = ctx.effect(listener)
       if (typeof dispose === 'function') disposers.push(dispose as () => void)
     }
-    mount(() => agentCtx.on('tools/pre-execute', decideTool))
+    // The pre-execute mount is app-level only; mounting it again here used to
+    // make the app-level listener skip the call (seats.has(...) ? next()).
     mount(() => agentCtx.on('agent/pre-step', decideStep))
     seats.set(id, {
       agent,

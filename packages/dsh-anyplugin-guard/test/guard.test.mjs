@@ -5,11 +5,12 @@
 // block). They are deliberately adversarial: every deny case has an allow case
 // one flag away, so a rule that fires on the wrong thing fails here.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { execFileSync, spawnSync } from 'node:child_process'
 
 import { apply, agentCwd, isWorker } from '../src/index.ts'
 import {
@@ -29,6 +30,13 @@ import {
 import { currentBranch, isMainRef } from '../src/git.ts'
 import { messageText, renderBrief } from '../src/brief.ts'
 import { judgeCall, resolvePolicy } from '../src/policy.ts'
+import {
+  hooksDirectory,
+  installPrePushHook,
+  prePushStatus,
+  removePrePushHook,
+  renderPrePushHook,
+} from '../../../scripts/guard-hooks.mjs'
 
 const checkout = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/u, '')
 const repo = '/work/repo'
@@ -38,7 +46,7 @@ const config = {
   protectedRoots: [repo],
   brief: {
     ratchet: ['25 declared / 24 matched / 0 missing / 1 refused'],
-    fixtures: '14 fixtures',
+    fixtures: '11 fixtures',
     open: ['mcpServers:a-server-name-that-is-long-enough:refused'],
   },
 }
@@ -102,7 +110,7 @@ test('gh pr merge is denied for a worker and allowed for the root', () => {
 test('DECISIONS.md is append-only: every writer is denied except the sanctioned update', () => {
   assert.equal(verdict('write', { file_path: `${worktree}/docs/DECISIONS.md`, content: '## D99' }).kind, 'deny')
   assert.equal(verdict('edit', { file_path: `${worktree}/docs/DECISIONS.md`, old_string: 'a', new_string: 'b' }).kind, 'deny')
-  assert.equal(shell(`${worktree}/docs/DECISIONS.md`).kind, 'allow')
+  assert.equal(shell(`${worktree}/docs/DECISIONS.md`).kind, 'deny', 'a bare path is not a command the guard can judge')
   assert.equal(shell('printf x >> docs/DECISIONS.md').kind, 'deny')
   assert.equal(shell('sed -i s/a/b/ docs/DECISIONS.md').kind, 'deny')
   assert.equal(shell('git checkout -- docs/DECISIONS.md').kind, 'deny')
@@ -199,7 +207,7 @@ test('the brief is appended to the worker continuation once, and never to the ro
   assert.match(brief, /<anyplugin-guard-brief>/u)
   assert.match(brief, new RegExp(worktree.replaceAll('/', '\\/'), 'u'))
   assert.match(brief, /25 declared \/ 24 matched \/ 0 missing \/ 1 refused/u)
-  assert.match(brief, /14 fixtures/u)
+  assert.match(brief, /11 fixtures/u)
   const message = first.messages[1]
   assert.match(message.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u, 'the loop reads message.source; the id is a real UUID')
   assert.equal(message.source.kind, 'user', 'runtime-context is the snapshot kind; a queued prompt is user')
@@ -311,6 +319,123 @@ test('shell bypasses are refused: >|, subshells, git write verbs and launchers',
   assert.equal(shell(`tee ${worktree}/x.md < /tmp/in`).kind, 'allow', 'the read source is not a write target')
 })
 
+test('the reviewer bypass spellings are refused; ordinary commits are allowed', () => {
+  const denied = (command, rule = 'shell-unmodelled') => {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, rule, command)
+  }
+  denied('git push origin main&')
+  denied('{ git push origin main; }')
+  denied('! git push origin main')
+  denied('( git push origin main )')
+  denied("git push origin $'main'")
+  denied('find . -exec git push origin main +')
+  denied("sh -s <<'EOF'\ngit push origin main\nEOF")
+  denied('echo "git push origin main" | sh')
+  denied('stdbuf -o0 git push origin main')
+  denied('. /tmp/evil.sh')
+  denied('sudo --preserve-env git push origin main', 'git-push-main')
+  assert.equal(shell('git commit -m "fix: a > b"').kind, 'allow', 'quoted commit text is not a redirect')
+  assert.equal(shell('git commit -m "fix: a -> b"').kind, 'allow')
+  assert.equal(shell('git commit -m "guard: a && b"').kind, 'allow', 'quoted && is text, not a separator')
+  assert.equal(shell('git push origin HEAD:refs/heads/ticket/80').kind, 'allow')
+  assert.equal(shell('node -e "console.log(1)"').kind, 'allow')
+  denied('node -e "require(\'fs\').writeFileSync(\'/tmp/x\', \'y\')"', 'interpreter-write')
+  denied('python3 -c "open(\'/tmp/x\', \'w\').write(\'y\')"', 'interpreter-write')
+})
+
+test('the installed pre-push hook refuses every spelling git resolves to main', () => {
+  const data = mkdtempSync(join(tmpdir(), 'guard-hook-'))
+  const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  try {
+    const remote = join(data, 'remote.git')
+    const local = join(data, 'repo')
+    git(['init', '--bare', remote], data)
+    git(['init', '-b', 'ticket/80', local], data)
+    git(['config', 'user.email', 'guard@example.invalid'], local)
+    git(['config', 'user.name', 'guard test'], local)
+    writeFileSync(join(local, 'README.md'), 'guard hook test\n')
+    git(['add', 'README.md'], local)
+    git(['commit', '-m', 'seed'], local)
+    git(['branch', 'main'], local)
+    git(['remote', 'add', 'origin', remote], local)
+    // Seed the remote main before the hook exists, so the delete case has a ref.
+    git(['push', 'origin', 'main'], local)
+    git(['checkout', 'main'], local)
+    writeFileSync(join(local, 'MAIN.md'), 'ahead of the remote\n')
+    git(['add', 'MAIN.md'], local)
+    git(['commit', '-m', 'main is ahead'], local)
+    git(['checkout', 'ticket/80'], local)
+    git(['merge', '--ff-only', 'main'], local)
+    writeFileSync(join(local, 'TICKET.md'), 'ticket work\n')
+    git(['add', 'TICKET.md'], local)
+    git(['commit', '-m', 'ticket is ahead'], local)
+
+    const target = join(hooksDirectory(local), 'pre-push')
+    assert.equal(prePushStatus(target), 'missing')
+    installPrePushHook(target, renderPrePushHook())
+    assert.equal(prePushStatus(target), 'current')
+    assert.match(readFileSync(target, 'utf8'), /refs\/heads\/main/u)
+
+    const push = (args) => spawnSync('git', ['push', ...args], { cwd: local, encoding: 'utf8' })
+    for (const args of [
+      ['origin', 'main'],
+      ['origin', 'HEAD:main'],
+      ['origin', '--all'],
+      ['origin', '--mirror'],
+      ['origin', ':main'],
+    ]) {
+      const result = push(args)
+      assert.notEqual(result.status, 0, args.join(' '))
+      assert.match(result.stderr, /anyplugin-guard/u, args.join(' '))
+    }
+
+    // A bare push is the config-dependent spelling: resolve it through the hook.
+    git(['config', 'remote.origin.push', 'refs/heads/main'], local)
+    assert.notEqual(push(['origin']).status, 0, 'remote.origin.push=refs/heads/main')
+    git(['config', '--unset', 'remote.origin.push'], local)
+    git(['config', 'push.default', 'upstream'], local)
+    git(['config', 'branch.ticket/80.remote', 'origin'], local)
+    git(['config', 'branch.ticket/80.merge', 'refs/heads/main'], local)
+    assert.notEqual(push(['origin']).status, 0, 'push.default=upstream resolves to main')
+    git(['config', '--unset', 'push.default'], local)
+    git(['config', '--unset', 'branch.ticket/80.merge'], local)
+    git(['config', '--unset', 'branch.ticket/80.remote'], local)
+
+    const allowed = push(['origin', 'HEAD:refs/heads/ticket/80'])
+    assert.equal(allowed.status, 0, allowed.stderr)
+
+    removePrePushHook(target)
+    assert.equal(prePushStatus(target), 'missing')
+  } finally {
+    rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('guard:status refuses a duplicate id outside the block and a lone end marker', () => {
+  const data = mkdtempSync(join(tmpdir(), 'guard-status-'))
+  const patch = join(data, 'cordis.patch.yml')
+  const status = () =>
+    spawnSync(process.execPath, [join(checkout, 'scripts/guard-status.mjs'), '--profile-dir', data], {
+      encoding: 'utf8',
+    })
+  try {
+    writeFileSync(patch, '- id: "anyplugin-guard"\n')
+    const duplicate = status()
+    assert.notEqual(duplicate.status, 0)
+    assert.match(duplicate.stdout, /duplicate - id/u)
+
+    writeFileSync(patch, `${BLOCK_END}\n`)
+    const marker = status()
+    assert.notEqual(marker.status, 0)
+    assert.match(marker.stderr, /end marker without a start marker/u)
+    assert.doesNotMatch(marker.stderr, /\n\s+at /u, 'a broken profile is a clean refusal, not a stack')
+  } finally {
+    rmSync(data, { recursive: true, force: true })
+  }
+})
+
 test('the dry-run table proves every payload against the same judge', () => {
   const cases = guardTable({ worktree, protectedRoot: repo })
   assert.ok(cases.length >= 20)
@@ -359,20 +484,23 @@ test('the install block is marked, idempotent and refused when it would duplicat
 })
 
 test('uninstall restores an absent, empty, [] or content file exactly', () => {
-  const state = (file, newline = false) => ({ file, newline })
+  const state = (file, trailing = 0) => ({ file, trailing })
   const render = (installState) => renderBlock('guard.ts', { worktrees: [] }, installState)
 
   const absent = applyBlock('', render(state('absent')))
   assert.deepEqual(uninstallText(absent), { action: 'delete', content: '' })
 
-  const empty = applyBlock('', render(state('empty', true)))
-  assert.deepEqual(uninstallText(empty), { action: 'write', content: '' })
+  const empty = applyBlock('', render(state('empty', 1)))
+  assert.deepEqual(uninstallText(empty), { action: 'write', content: '\n' })
 
-  const array = applyBlock('[]\n', render(state('array', true)))
+  const array = applyBlock('[]\n', render(state('array', 1)))
   assert.deepEqual(uninstallText(array), { action: 'write', content: '[]\n' })
 
+  const arrayBlank = applyBlock('[]\n', render(state('array', 2)))
+  assert.deepEqual(uninstallText(arrayBlank), { action: 'write', content: '[]\n\n' }, 'trailing blank lines are restored byte-for-byte')
+
   const original = '- id: "other"'
-  assert.equal(captureState(original).newline, false)
+  assert.equal(captureState(original).trailing, 0)
   const installed = applyBlock(original, render(captureState(original)))
   assert.deepEqual(uninstallText(installed), { action: 'write', content: original })
   assert.equal(readState(readBlock(installed).block)?.file, 'content')

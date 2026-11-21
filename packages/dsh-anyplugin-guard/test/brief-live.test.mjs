@@ -175,7 +175,7 @@ test(
           protectedRoots: [],
           brief: {
             ratchet: ['25 declared / 24 matched / 0 missing / 1 refused'],
-            fixtures: '14 fixtures',
+            fixtures: '11 fixtures',
             open: ['mcpServers:a-server-name-that-is-long-enough:refused'],
           },
         },
@@ -224,7 +224,16 @@ test(
       assert.equal(briefMessages[0].source?.kind, 'user', 'the loop reads message.source.kind; the brief is a user source')
       assert.match(briefMessages[0].content.map((block) => block.text ?? '').join('\n'), /25 declared \/ 24 matched/u)
       assert.ok(requests.length >= 3, `the denied tool was not run; the child took another model step (saw ${requests.length})`)
+      const toolResults = (requests[2]?.messages ?? []).flatMap((message) =>
+        Array.isArray(message.content)
+          ? message.content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text)
+          : [],
+      )
       assert.equal(executed, 0, 'the guard denied the child\'s write before the tool executed')
+      assert.ok(
+        toolResults.some((text) => /anyplugin-guard: refusing.*write-outside-worktree/u.test(text)),
+        `the denial reason reaches the model (saw ${JSON.stringify(toolResults.slice(-2))})`,
+      )
     } finally {
       loaderFiber?.dispose?.()
       rmSync(dataDir, { recursive: true, force: true })

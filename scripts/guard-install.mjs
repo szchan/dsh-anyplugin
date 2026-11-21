@@ -36,6 +36,7 @@ import {
   runTable,
   uninstallText,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
+import { hookTargets, installPrePushHook, prePushStatus, removePrePushHook } from './guard-hooks.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const argv = process.argv.slice(2)
@@ -79,7 +80,22 @@ function writeAtomically(file, content) {
 console.log(`guard: profile ${profileDir}`)
 console.log(`guard: patch   ${patchFile}`)
 
+// The hook lives in the worktree's git directory (shared by every worktree),
+// and is the only check git itself cannot be talked out of by spelling.
+const gitWorktrees = readGitWorktrees(root)
+
+const known = new Set(gitWorktrees.map((entry) => resolve(entry.path)))
+const synthetic = options.worktrees.filter((entry) => !known.has(resolve(entry.path)))
+const worktrees = [...gitWorktrees, ...synthetic]
+const composition = composeGuard({ repoRoot: root, worktrees, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
+const ticketWorktrees = composition.config.worktrees ?? []
+const hooks = hookTargets(ticketWorktrees)
+
 if (options.uninstall) {
+  for (const entry of hookTargets(gitWorktrees.map((worktree) => worktree.path))) {
+    const outcome = removePrePushHook(entry.file)
+    console.log(`guard: hook ${entry.file} ${outcome}`)
+  }
   if (!existsSync(patchFile)) {
     console.log('guard: not installed (no patch file); nothing to remove')
     process.exit(0)
@@ -105,9 +121,6 @@ if (options.uninstall) {
   process.exit(0)
 }
 
-const worktrees = [...readGitWorktrees(root), ...options.worktrees]
-const composition = composeGuard({ repoRoot: root, worktrees })
-const ticketWorktrees = composition.config.worktrees ?? []
 if (ticketWorktrees.length === 0) {
   console.error('guard: no ticket worktree found (branch ticket/*); create one with `git worktree add`, or pass --worktree <path>')
   process.exit(1)
@@ -117,7 +130,7 @@ if (!existsSync(composition.source)) {
   process.exit(1)
 }
 const protectedRoot = composition.config.protectedRoots?.[0] ?? root
-const tableWorktree = ticketWorktrees.includes(resolve(root)) ? resolve(root) : ticketWorktrees[0]
+const tableWorktree = ticketWorktrees[0] ?? resolve(root)
 
 console.log(`guard: worktrees ${ticketWorktrees.length} ticket worktree(s); protected root ${protectedRoot}`)
 const existing = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : undefined
@@ -152,12 +165,24 @@ if (failures.length > 0) {
 }
 
 if (options.dryRun) {
-  console.log('guard: dry run; the profile was not touched')
+  console.log(`guard: hooks ${hooks.length} target(s)`)
+  for (const entry of hooks) {
+    console.log(`guard: hook ${entry.file} (${prePushStatus(entry.file)} -> would be ${prePushStatus(entry.file) === 'current' ? 'left as is' : 'written'})`)
+  }
+  console.log('guard: dry run; the profile, the hooks and the worktrees were not touched')
   process.exit(0)
 }
 if (!existsSync(profileDir)) {
   console.error(`guard: profile directory ${profileDir} does not exist; pass --profile-dir`)
   process.exit(1)
+}
+for (const entry of hooks) {
+  try {
+    console.log(`guard: hook ${entry.file} ${installPrePushHook(entry.file)}`)
+  } catch (error) {
+    printError(error)
+    process.exit(1)
+  }
 }
 const before = existing ?? ''
 let next
