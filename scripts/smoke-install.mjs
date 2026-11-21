@@ -126,6 +126,18 @@ function until(predicate, label, timeout = 5000) {
 }
 
 /** A hook descriptor whose artifact hash the materializer re-checks (D25). */
+/** The lock/emitter pin for a mod tree: entry plus every authored file under it. */
+function pinnedModRow(treeArtifact, pluginRoot, entry) {
+  const tree = treeArtifact(pluginRoot, '', entry)
+  return {
+    entry,
+    artifactHash: tree.artifactHash,
+    artifactMode: tree.mode,
+    artifactRoot: pluginRoot,
+    artifact: tree.manifest,
+  }
+}
+
 function pinnedCommandHook(hashManifest, event, command) {
   const artifact = { mode: 'command', invocation: command, command, files: [] }
   return { event, index: 0, command, artifactHash: hashManifest(artifact), artifactMode: 'command', artifact }
@@ -258,7 +270,7 @@ async function modsProof({ harnessDir, hookEntry, scratch }) {
     {
       pluginRoot: secRoot,
       plugin: 'sec-default',
-      mods: [{ entry: 'hooks/register.ts' }],
+      mods: [pinnedModRow(trust.treeArtifact, secRoot, 'hooks/register.ts')],
       hooks: [pinnedCommandHook(trust.hashManifest, 'PreToolUse', classicCommand)],
     },
     // The classic hook's line is the completion marker: the probe waits for it,
@@ -267,12 +279,12 @@ async function modsProof({ harnessDir, hookEntry, scratch }) {
   )
   const probe = await run(
     'kernel-probe',
-    { pluginRoot: probeRoot, plugin: 'kernel-probe', mods: [{ entry: 'register.mjs' }] },
+    { pluginRoot: probeRoot, plugin: 'kernel-probe', mods: [pinnedModRow(trust.treeArtifact, probeRoot, 'register.mjs')] },
     [],
   )
   const guard = await run(
     'guard',
-    { pluginRoot: join(root, 'fixtures', 'mods', 'guard'), plugin: 'guard', mods: [{ entry: 'register.ts' }] },
+    { pluginRoot: join(root, 'fixtures', 'mods', 'guard'), plugin: 'guard', mods: [pinnedModRow(trust.treeArtifact, join(root, 'fixtures', 'mods', 'guard'), 'register.ts')] },
     [],
   )
 

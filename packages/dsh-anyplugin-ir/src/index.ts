@@ -191,6 +191,30 @@ export interface IrHook {
   artifactHash?: string
 }
 
+/**
+ * A Claude in-process mod: one `modules` entry from `hooks/hooks.json`.
+ *
+ * A mod is a *tree*, not a command line. The entry is authored TypeScript that
+ * the resolver follows through extensionless sibling imports (D30/D39), so
+ * every file the tree contains is code the host may evaluate. The grant
+ * therefore pins the tree, not just the entry (D25's composite mode).
+ *
+ * Claude's scanner sees literal `on('event')` / `$.ns.method` call sites; keep
+ * the node pointing at the authored bytes and never rewrite them (D30).
+ */
+export interface IrMod {
+  kind: 'mod'
+  /** The entry, exactly as `modules` names it (relative to `rootRelative`). */
+  entry: string
+  /** The plugin-relative directory the entry resolves from, e.g. `hooks`. */
+  rootRelative: string
+  sourcePath: string
+  annotation: Annotation
+  /** Resolved by the trust gate; emit copies it and never re-hashes. */
+  artifact?: IrArtifact
+  artifactHash?: string
+}
+
 export interface IrMcpServer {
   kind: 'mcp-server'
   name: string
@@ -292,6 +316,13 @@ export interface ClaudePluginIr {
   skills: IrSkill[]
   agents: IrAgent[]
   hooks: IrHook[]
+  /**
+   * `hooks/hooks.json` `"modules"` rows (D30/D31). A mod is carried when the
+   * host can evaluate it (D34 makes `.tsx` in the graph loadable); anything the
+   * host refuses stays here annotated `unsupported` with the reason. Optional
+   * because an IR produced before mods carried this field is still readable.
+   */
+  mods?: IrMod[]
   mcpServers: IrMcpServer[]
   /**
    * `output-styles/*.md` rows. The body is carried, but nothing is emitted:
@@ -435,6 +466,15 @@ export function validateIr(ir: ClaudePluginIr): string[] {
   for (const hook of ir.hooks ?? []) {
     problems.push(...annotationProblems(`hook ${hook.event}#${hook.index}`, hook.annotation))
   }
+  for (const mod of ir.mods ?? []) {
+    const where = `mod ${JSON.stringify(mod.entry)}`
+    if (!mod.entry?.trim()) problems.push(`${where}: empty entry`)
+    if (!mod.rootRelative?.trim()) problems.push(`${where}: empty rootRelative`)
+    // The tree hash is resolved at gate time; a mod that never gets one is
+    // either `unsupported` (host refuses) or a producer bug. An unsupported mod
+    // is a declaration, so it may sit here next to the carried rows.
+    problems.push(...annotationProblems(where, mod.annotation))
+  }
   for (const server of ir.mcpServers ?? []) {
     const where = `mcp ${JSON.stringify(server.name)}`
     problems.push(...annotationProblems(where, server.annotation))
@@ -492,6 +532,7 @@ export function summarizeIr(ir: ClaudePluginIr): FidelityReport {
   for (const skill of ir.skills) push('skills', skill.name, skill.annotation)
   for (const agent of ir.agents) push('agents', agent.name, agent.annotation)
   for (const hook of ir.hooks) push('hooks', `${hook.event}#${hook.index}`, hook.annotation)
+  for (const mod of ir.mods ?? []) push('mods', mod.entry, mod.annotation)
   for (const server of ir.mcpServers) push('mcpServers', server.name, server.annotation)
   for (const style of ir.outputStyles ?? []) push(style.surface, style.name, style.annotation)
   for (const item of ir.pending) push(item.surface, item.name, item.annotation)

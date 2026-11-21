@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { apply } from '../src/index.ts'
+import { pinnedMod } from './pinned.mjs'
 
 const harness = () => {
   const listeners = new Map()
@@ -92,7 +93,7 @@ test('invalidating prompt.context drops the seat cache and re-runs the mod', asy
   try {
     await apply(ctx, {
       hooks: [],
-      mods: [{ entry: 'prompt-cache.ts' }],
+      mods: [pinnedMod(dir, 'prompt-cache.ts')],
       plugin: 'mod',
       pluginRoot: dir,
     })

@@ -1,0 +1,4 @@
+{
+  "description": "One module entry, relative to hooks/ as upstream writes it.",
+  "modules": ["./register.ts"]
+}

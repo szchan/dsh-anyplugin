@@ -12,6 +12,7 @@ import test from 'node:test'
 
 import { apply } from '../src/index.ts'
 import { hashManifest } from '../../dsh-anyplugin-trust/src/index.ts'
+import { pinnedMod } from './pinned.mjs'
 
 /** A pinned command hook whose whole effect is the shell command. */
 const pinned = (event, command, { matcher, index = 0 } = {}) => {
@@ -272,7 +273,7 @@ test('a dispatch abort reaches the mod as next.signal', async () => {
       ].join('\n'),
     )
     const { ctx, listeners, config } = harness()
-    await apply(ctx, { ...config([]), mods: [{ entry: 'signal-probe.ts' }], pluginRoot: dir })
+    await apply(ctx, { ...config([]), mods: [pinnedMod(dir, 'signal-probe.ts')], pluginRoot: dir })
     const seatListeners = new Map()
     const seat = {
       on(event, listener) {

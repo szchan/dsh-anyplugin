@@ -11,11 +11,13 @@
  * What is shipped in 0.2.0 is the *compile path* — skills (a slash command
  * lands as a skill on its model face), MCP servers, hooks whose host events
  * exist, agents, one activated output style — and the *mods kernel* in
- * `lib/materialize/hook.js`. A hook row's config may carry `mods: [{ entry }]`,
- * which the packaged materializer loads as authored (D30/D31/D34); mods need
- * Node's `--experimental-vm-modules`. The lock schema has no `mods` field (a
- * record carrying one is a schema error), so the kernel is reachable only from
- * a hand-written hook row, not from `dsh plugin add`.
+ * `lib/materialize/hook.js`. The lock (`dsh-anyplugin/installs@2`) carries a
+ * module as one `mods` entry with its tree manifest; a granted tree reaches
+ * the hook row's `mods` config from here, and the packaged materializer loads
+ * it as authored (D30/D31/D34) after re-reading the pinned files. Mods need
+ * Node's `--experimental-vm-modules`. A row config written by hand is refused
+ * unless it carries the same pin, so the controller passes mods; nothing
+ * reaches `loadMod` on the strength of a hand-edited row.
  */
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'

@@ -267,7 +267,7 @@ The lock is `installs.yml` under the profile's anyplugin dir, one record per
 installed plugin (D23):
 
 ```yaml
-schema: "dsh-anyplugin/installs@1"
+schema: "dsh-anyplugin/installs@2"
 plugins:
   - dialect: "claude-code"
     name: "skills-only"
@@ -292,6 +292,53 @@ sorts, quotes and writes atomically; the reader accepts only these fields — th
 six required above plus an optional `source` provenance line (D23) — and
 rejects anything else with a line number rather than repairing it — "cannot
 parse" must never become "uninstalled".
+
+A record that installs a module carries `mods` (schema `@2`), one entry per
+declared module entry:
+
+```yaml
+schema: "dsh-anyplugin/installs@2"
+plugins:
+  - dialect: "claude-code"
+    name: "mods"
+    version: "0.0.1"
+    root: "/…/artifacts/claude-code/mods/0.0.1"
+    dataDir: "/…/data/claude-code/mods"
+    pin: "claude-code@2.1.329"
+    mods:
+      - entry: "hooks/register.ts"
+        rootRelative: "hooks"
+        mode: "composite"
+        artifactHash: "sha256:bc53e143ff7368e00463080d56f64c5c3f312912cd54f3d55ab26188d4069bb5"
+        files:
+          - path: "/…/artifacts/claude-code/mods/0.0.1/hooks/hooks.json"
+            sha256: "sha256:939f03f60edc3527e5cf5165eeae78ecac8941d6fa56bd3122970ec0c85401a3"
+            bytes: "115"
+          - path: "/…/artifacts/claude-code/mods/0.0.1/hooks/support/note.ts"
+            sha256: "sha256:7cbf2cb22612789feba769db254818e08c459dd0ba23bbcc7381be5426fd0002"
+            bytes: "51"
+          - path: "/…/artifacts/claude-code/mods/0.0.1/hooks/register.ts"
+            sha256: "sha256:0f8d95361739d5c3a427b75062d47220b5d5e7edf1682a0c02b83765f59a0b96"
+            bytes: "310"
+```
+
+`entry` is the authored entry file, plugin-relative; `rootRelative` is the
+directory upstream resolves it from (`hooks`, the directory of `hooks.json`);
+`files` lists every authored file under that directory with its absolute path,
+sha256 and byte length. The tree is hashed as one artifact: `mode` is `file` for
+a one-file tree and `composite` otherwise, `invocation` is `entry`, there is no
+command line, and the files are framed **in ascending path order**. That order
+is a *derived* rule, not an upstream one: D25 fixes a manifest as code and says
+order matters, and sorting the plugin-relative paths is this layer's definition
+of a tree, so two checkouts of the same bytes pin the same digest. `rig grant`
+prints the entry and that digest before asking for `--yes`; `rig revoke` takes
+the same `mod:<entry>` target and keeps working after uninstall.
+
+The reader accepts `@1` (no `mods`): a 0.1.0 lock loads as if it had no mods,
+and the next write normalizes it to `@2`. The other direction is refused rather
+than ignored — a 0.1.0-only reader rejects a `@2` record's `mods` as an unknown
+field with a line number, which is the downgrade story: no silent drop of the
+paragraph that gates `loadMod`.
 
 **Axis 2 — enablement (user or project, user's choice).**
 
@@ -1246,10 +1293,16 @@ README does not name it. Classic hooks still run in that state.
 
 Using the existing hook entry rather than a new subpath **amends D43's
 "mods need their own entry" consequence**: the entry a hook row already names
-is where the kernel lands, so 0.2.0 adds no published subpath. A hook
-row's `mods` config is the only door the kernel has: the lock has no `mods`
-field, so 0.2.0 ships the kernel and the row-level config, not a
-plugin-install path for mods. A real
+is where the kernel lands, so 0.2.0 adds no published subpath. A mod reaches
+that row as data: the lock carries `mods` (§5, `dsh-anyplugin/installs@2`), the
+compiler emits one entry per granted module tree, and reconcile passes it to the
+materializer. Before `loadMod` the materializer re-reads the manifest's files
+and refuses a tree whose bytes moved since the grant — a hand-written `mods`
+entry without a pin is refused, never loaded (`D25`, fail closed). That refusal
+is a byte check, not a consent check: a hand-edited row that recomputes a
+consistent pin is indistinguishable from the controller's, so the consent
+boundary stays the grant store plus the lock's granted record; do not hand-edit
+a hook row to add mods. A real
 `npm install` of the tarball pulls the two declared Babel packages — 60
 packages / ~35 MB for a tarball of about 99 KiB — while the smoke links the
 checkout's copies and proves only that the packaged entry imports the declared
@@ -1261,9 +1314,9 @@ registrations) and the repository's mod fixtures, and observes a registration
 count per mod, a `$` round-trip through the headless bridge, a `classic.*`
 handler next to a classic hook in the same turn, and a mod deny at
 `tools/pre-execute`, and a classic-pragma `.tsx` module through the Babel
-path. The lock schema still has no `mods` field: 0.2.0 ships the kernel and the
-row-level `mods` config, not the install path for mods, so the kernel is
-reachable only from a hand-written hook row.
+path. The lock's `mods` paragraph is the install path for mods; the row-level
+`mods` config remains the seam, but only reconcile writes it from a granted
+record, and the materializer refuses any entry the record did not pin.
 
 ## 8. Seam capability matrix (P4)
 

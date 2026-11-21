@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { pinnedMod } from './pinned.mjs'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const applyUrl = new URL('../src/index.ts', import.meta.url).href
@@ -34,7 +35,7 @@ test('without --experimental-vm-modules: one warning for two apply() calls, one 
       }
       await apply(ctx, {
         hooks: [],
-        mods: [{ entry: 'a.ts' }, { entry: 'b.ts' }, { entry: 'c.ts' }],
+        mods: ${JSON.stringify(['a.ts', 'b.ts', 'c.ts'].map((entry) => pinnedMod(dir, entry)))},
         plugin: 'flag-probe',
         pluginRoot: ${JSON.stringify(dir)},
         pluginData: ${JSON.stringify(join(dir, 'data'))},
@@ -42,7 +43,7 @@ test('without --experimental-vm-modules: one warning for two apply() calls, one 
       })
       await apply(ctx, {
         hooks: [],
-        mods: [{ entry: 'd.ts' }, { entry: 'e.ts' }],
+        mods: ${JSON.stringify(['d.ts', 'e.ts'].map((entry) => pinnedMod(dir, entry)))},
         plugin: 'flag-probe-2',
         pluginRoot: ${JSON.stringify(dir)},
         pluginData: ${JSON.stringify(join(dir, 'data-2'))},

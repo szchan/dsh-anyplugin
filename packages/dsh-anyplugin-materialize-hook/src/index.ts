@@ -54,6 +54,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import * as vm from 'node:vm'
+import { resolve } from 'node:path'
 import {
   CONTINUE,
   MOD_SPEC_LABEL,
@@ -127,6 +128,18 @@ export interface MaterialMod {
   tier?: 'prepend' | 'user' | 'append' | 'builtin'
   /** Kernel budget for every registration this mod declares. */
   timeoutMs?: number
+  /**
+   * D25 pin carried by the emitter: the tree digest over the authored module
+   * tree under `rootRelative`. Absent on a hand-written config, and then the
+   * mod is refused before `loadMod` — a mod is `exec`-class and default-off.
+   */
+  artifactHash?: string
+  /** `file` for a one-file tree, `composite` otherwise. */
+  artifactMode?: ArtifactMode
+  /** The plugin root the manifest paths are resolved from; must equal pluginRoot. */
+  artifactRoot?: string
+  /** The resolved manifest: entry plus every authored file and its hash. */
+  artifact?: ArtifactManifest
 }
 
 export interface Config {
@@ -495,6 +508,48 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     }
     if (current === hook.artifactHash) return undefined
     return `refused ${label}: artifact changed since the grant (pinned ${hook.artifactHash}, now ${current}); command: ${invocation}`
+  }
+
+  /**
+   * The mod twin of `artifactChange`: a mod is a tree, so the pinned manifest
+   * is the whole authored module tree. Checked once, before `loadMod` — a mod
+   * that changed since the grant must not evaluate a single module (D25/D30).
+   */
+  const modArtifactChange = (mod: MaterialMod): string | undefined => {
+    const label = `mod ${mod.entry}`
+    if (mod.artifactHash === undefined) {
+      return `refused ${label}: no hash-pinned grant was carried; entry: ${mod.entry}`
+    }
+    const manifest = mod.artifact
+    if (manifest === undefined) {
+      return `refused ${label}: no artifact manifest was carried with the grant; pinned ${mod.artifactHash}; entry: ${mod.entry}`
+    }
+    const pinnedManifest = hashManifest(manifest)
+    if (pinnedManifest !== mod.artifactHash) {
+      return `refused ${label}: the carried manifest does not match the grant (granted ${mod.artifactHash}, manifest ${pinnedManifest}); entry: ${mod.entry}`
+    }
+    if (mod.artifactMode !== undefined && manifest.mode !== mod.artifactMode) {
+      return `refused ${label}: artifact mode changed since the grant (pinned ${mod.artifactMode}, now ${manifest.mode}); entry: ${mod.entry}`
+    }
+    if (manifest.invocation !== mod.entry) {
+      return `refused ${label}: the config no longer names the pinned entry (pinned ${String(manifest.invocation)}, config ${mod.entry})`
+    }
+    // The manifest is a set of absolute paths, and loadMod is handed a *root*
+    // plus a relative entry. Pin the join: a config whose pluginRoot no longer
+    // resolves the entry to the pinned file would load bytes the grant never
+    // saw, even though every manifest file still hashes correctly.
+    const entryFile = resolve(mod.artifactRoot === undefined ? (config.pluginRoot ?? process.cwd()) : mod.artifactRoot, mod.entry)
+    if (!manifest.files.some((file) => resolve(file.path) === entryFile)) {
+      return `refused ${label}: the manifest does not pin the entry ${entryFile}; entry: ${mod.entry}`
+    }
+    let current: string
+    try {
+      current = hashManifestAtSpawn(manifest)
+    } catch (error) {
+      return `refused ${label}: artifact cannot be re-hashed (${(error as Error).message}); pinned ${mod.artifactHash}; entry: ${mod.entry}`
+    }
+    if (current === mod.artifactHash) return undefined
+    return `refused ${label}: artifact changed since the grant (pinned ${mod.artifactHash}, now ${current}); entry: ${mod.entry}`
   }
 
   /**
@@ -1397,6 +1452,14 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       // invocation.
       let handle: LoadedMod | undefined
       const surfaceLabel = `${pluginName}/${mod.entry}`
+      // Trust before allocation: a mod whose bytes moved since the grant is
+      // refused before a single module is evaluated (D25/D30, fail closed).
+      const changed = modArtifactChange(mod)
+      if (changed !== undefined) {
+        trace(`anyplugin mod ${surfaceLabel}: load refused (${changed})`)
+        warn(`anyplugin mod ${surfaceLabel}: load refused (${changed})`)
+        continue
+      }
       // The pin's `ui.resolve` is a load-time read (d.ts:2809-2821, :5041-5047
       // @ 2.1.329): the hooks run once per surface, component and plugin, and
       // `$.ui.resolve(e)` then only reads the table. Precompute after the load

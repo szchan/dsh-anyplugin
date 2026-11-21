@@ -1,25 +1,39 @@
 /**
  * `classify(plugin)` — one row per exec-class artifact (D25).
  *
- * Exec-class is `hook`, `monitor`, `bin`, `mod` (AGENTS.md §3.5). The IR has a
- * per-hook shape already; `bin/`, `monitors/` and `mods/` are still opaque
- * `pending` directories in the dialect, so this walks those directories itself.
+ * Exec-class is `hook`, `monitor`, `bin`, `mod` (AGENTS.md §3.5). Hooks and
+ * mods have an IR shape; the dialect also walks `bin/` and `monitors/` itself
+ * because those remain opaque `pending` directories.
  *
  * Targets are stable, plugin-local names:
  *   hook:<event>#<index>   monitor:<path inside monitors/>
- *   bin:<path inside bin/>  mod:<path inside mods/>
+ *   bin:<path inside bin/>  mod:<plugin-relative entry>
  *
  * A target names the slot, not the bytes. The manifest includes every file's
  * absolute path, so moving a hook script to another path invalidates the grant
  * even when the bytes are identical; for bin/monitor/mod the relative path is
  * also the target, so a move is a new target. The hash, never the path or mtime,
  * is what the grant actually pins.
+ *
+ * A mod is a tree: its row pins every authored file under the entry's
+ * directory, in sorted path order (the derived rule documented in `hash.ts`).
+ * Mods the host refuses (`unsupported` annotation) are declarations, not
+ * artifacts; they get no row, exactly like a planned hook.
  */
-import { readdirSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { statSync } from 'node:fs'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 
-import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
-import { fileArtifact, hashHook, type ArtifactManifest, type ArtifactMode, type HookArtifact } from './hash.ts'
+import type { ClaudePluginIr, IrMod } from '../../dsh-anyplugin-ir/src/index.ts'
+import {
+  fileArtifact,
+  hashHook,
+  hashManifest,
+  listTreeFiles,
+  treeArtifact,
+  type ArtifactManifest,
+  type ArtifactMode,
+  type HookArtifact,
+} from './hash.ts'
 import { EXEC_CAPABILITY } from './grants.ts'
 
 export interface ArtifactRow {
@@ -40,39 +54,68 @@ export function pluginIdentity(plugin: ClaudePluginIr): string {
   return `${plugin.pin.tool}:${plugin.plugin.name}`
 }
 
-function listFiles(root: string, dir: string): string[] {
-  let entries
-  try {
-    entries = readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return []
-  }
-  const files: string[] = []
-  for (const entry of entries) {
-    const path = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      files.push(...listFiles(root, path))
-    } else if (entry.isFile() || entry.isSymbolicLink()) {
-      try {
-        if (!statSync(path).isFile()) continue
-      } catch {
-        continue
-      }
-      files.push(relative(root, path).split(sep).join('/'))
-    }
-  }
-  return files.sort()
-}
-
 const EXEC_DIRS: ReadonlyArray<{ dir: string; prefix: string }> = [
   { dir: 'bin', prefix: 'bin' },
   { dir: 'monitors', prefix: 'monitor' },
   { dir: 'mods', prefix: 'mod' },
 ]
 
+function carried(fidelity: string): boolean {
+  return fidelity === 'exact' || fidelity === 'equivalent'
+}
+
+/**
+ * The entry path inside `rootRelative`. The IR stores `entry` plugin-relative
+ * (`hooks/register.ts`) because that is what `loadMod({ root, entry })` takes;
+ * the manifest directory is `rootRelative`, so the tree is hashed from here.
+ */
+function entryWithin(mod: IrMod): string {
+  const root = mod.rootRelative.replace(/\/+$/, '')
+  const prefix = root === '' ? '' : `${root}/`
+  return prefix !== '' && mod.entry.startsWith(prefix) ? mod.entry.slice(prefix.length) : mod.entry
+}
+
+/** The stable target of a mod: its entry, plugin-relative. */
+export function modTarget(mod: IrMod): string {
+  const root = mod.rootRelative.replace(/\/+$/, '')
+  const inside = entryWithin(mod)
+  return `mod:${root === '' ? inside : `${root}/${inside}`}`
+}
+
+/**
+ * Why a mod's tree cannot be pinned, or `undefined` when it can.
+ *
+ * The checks are hostile on purpose: `rootRelative` and `entry` come from a
+ * foreign manifest, and the grant must never hash files outside the plugin
+ * root or silently pin an entry that does not exist.
+ */
+function modUnsupported(root: string, mod: IrMod): string | undefined {
+  if (isAbsolute(mod.entry) || isAbsolute(mod.rootRelative)) {
+    return `the manifest path is absolute (${mod.entry}); a mod entry must be plugin-relative`
+  }
+  const base = resolve(root)
+  const dir = resolve(base, mod.rootRelative)
+  const dirRelative = relative(base, dir)
+  if (dirRelative.startsWith('..') || isAbsolute(dirRelative)) {
+    return `"${mod.rootRelative}" is outside the plugin root`
+  }
+  const entry = resolve(base, mod.entry)
+  const entryRelative = relative(dir, entry)
+  if (entryRelative === '' || entryRelative.startsWith('..') || isAbsolute(entryRelative)) {
+    return `"${mod.entry}" is outside "${mod.rootRelative}"`
+  }
+  try {
+    if (!statSync(entry).isFile()) return `"${mod.entry}" is not a file`
+  } catch {
+    return `"${mod.entry}" does not exist under "${mod.rootRelative}"`
+  }
+  return undefined
+}
+
 /**
  * Classify every exec artifact that the plugin declares. Hooks without a
- * command (prompt/agent handlers) have nothing to run and are not rows.
+ * command (prompt/agent handlers) and mods the host refuses have nothing to
+ * run and are not rows.
  */
 export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
   const rows: ArtifactRow[] = []
@@ -92,8 +135,38 @@ export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
     })
   }
 
+  for (const mod of plugin.mods ?? []) {
+    if (!carried(mod.annotation.fidelity)) continue
+    const unsupported = modUnsupported(root, mod)
+    if (unsupported !== undefined) {
+      // Nothing could be read, so nothing is pinned. The refusal path uses
+      // `code: 'unsupported'` before the hash matters; keeping a well-formed
+      // manifest means every row has the same shape.
+      const manifest: ArtifactManifest = { mode: 'text', invocation: mod.entry, command: '', files: [] }
+      rows.push({
+        capability: EXEC_CAPABILITY,
+        target: modTarget(mod),
+        artifactHash: hashManifest(manifest),
+        manifest,
+        sourcePath: `${mod.rootRelative}/${entryWithin(mod)}`,
+        mode: 'text',
+        unsupported,
+      })
+      continue
+    }
+    const tree = treeArtifact(root, mod.rootRelative, mod.entry)
+    rows.push({
+      capability: EXEC_CAPABILITY,
+      target: modTarget(mod),
+      artifactHash: tree.artifactHash,
+      manifest: tree.manifest,
+      sourcePath: `${mod.rootRelative}/${entryWithin(mod)}`,
+      mode: tree.mode,
+    })
+  }
+
   for (const { dir, prefix } of EXEC_DIRS) {
-    for (const file of listFiles(root, join(root, dir))) {
+    for (const file of listTreeFiles(root, join(root, dir))) {
       const inside = file.slice(dir.length + 1)
       const artifact = fileArtifact(join(root, file))
       rows.push({
@@ -108,9 +181,10 @@ export function classify(plugin: ClaudePluginIr): ArtifactRow[] {
   }
 
   rows.sort((left, right) => (left.target < right.target ? -1 : left.target > right.target ? 1 : 0))
-  // Identity must be unique. The dialect promises a flat per-event index; a
-  // regression there would silently let one grant authorize two hooks, or one
-  // grant overwrite another, so fail loudly at the boundary instead.
+  // Identity must be unique. The dialect promises a flat per-event index and
+  // mods name their own entry; a regression there would silently let one grant
+  // authorize two hooks, or one grant overwrite another, so fail loudly at the
+  // boundary instead.
   const seen = new Set<string>()
   for (const row of rows) {
     if (seen.has(row.target)) throw new Error(`classify: duplicate exec target "${row.target}"`)

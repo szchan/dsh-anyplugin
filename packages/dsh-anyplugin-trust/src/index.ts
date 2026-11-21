@@ -4,7 +4,7 @@
  * Entry points:
  *   classify(plugin)            one row per exec artifact, hash over the bytes that run
  *   authorize(plugin, grants)   allowed targets + refusals (hash mismatch reports the new hash)
- *   gate(plugin, grants)        IR with refused hooks moved to `pending` as `planned`
+ *   gate(plugin, grants)        IR with refused hooks/mods moved to `pending` as `planned`
  *   readGrants / writeGrants    the canonical `grants.yml` store (D25)
  *   grant / revoke              record edits at a scope
  *   grantFor / revokeFor        the same, with the target checked against classify()
@@ -39,13 +39,16 @@ export {
   hashManifest,
   hashManifestAtSpawn,
   hookArtifactText,
+  listTreeFiles,
   shellWords,
+  treeArtifact,
   type ArtifactFile,
   type ArtifactManifest,
   type ArtifactMode,
   type HookArtifact,
+  type TreeArtifact,
 } from './hash.ts'
-export { classify, pluginIdentity, type ArtifactRow } from './classify.ts'
+export { classify, modTarget, pluginIdentity, type ArtifactRow } from './classify.ts'
 export {
   authorize,
   resolveGrant,
@@ -55,5 +58,5 @@ export {
   type ScopedRecord,
   type TrustDecision,
 } from './authorize.ts'
-export { gate, hookEntryName, type Gated } from './gate.ts'
+export { gate, hookEntryName, modEntryName, type Gated } from './gate.ts'
 export { GrantTargetError, grantFor, revokeFor } from './grant-target.ts'

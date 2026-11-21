@@ -64,6 +64,7 @@ it.
 | Install records + three scopes + idempotent reconcile | `derived` | `packages/dsh-anyplugin-install/src/index.ts`, D23 |
 | Marketplace catalogs: list, install a local entry by name | `derived` | `packages/dsh-anyplugin-conformance/src/marketplace.ts`, `fixtures/marketplace-local` |
 | Enable/disable per project, narrowest scope wins | `derived` | `packages/dsh-anyplugin-install/src/enablements.ts` |
+| Mod through the lock: granted tree in `mods`, emitted to the hook row, re-read before `loadMod` | `derived` | `packages/dsh-anyplugin-install/src/installs.ts`, `packages/dsh-anyplugin-emit/src/index.ts`, `packages/dsh-anyplugin-conformance/test/mods-installed.test.mjs`, D25/D30 |
 
 ## 5. Repository guard (call-time policy, not a seam)
 

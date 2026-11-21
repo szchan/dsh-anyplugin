@@ -92,7 +92,7 @@ test('install → list → disable → enable → uninstall moves the record and
     assert.match(first.stdout, /enablement: user written \(enabled: true\)/)
 
     const lock = readInstalls(box.lock)
-    assert.equal(lock.schema, 'dsh-anyplugin/installs@1')
+    assert.equal(lock.schema, 'dsh-anyplugin/installs@2')
     assert.equal(lock.plugins.length, 1)
     assert.equal(lock.plugins[0].dialect, 'claude-code')
     assert.equal(lock.plugins[0].name, 'skills-only')
@@ -142,7 +142,7 @@ test('install → list → disable → enable → uninstall moves the record and
     assert.match(removed.stdout, /record: removed/)
     assert.match(removed.stdout, /lock: .* \(0 plugins left\)/)
     assert.match(removed.stdout, /enablement: user still mention\(s\) it/)
-    assert.deepEqual(readInstalls(box.lock), { schema: 'dsh-anyplugin/installs@1', plugins: [] })
+    assert.deepEqual(readInstalls(box.lock), { schema: 'dsh-anyplugin/installs@2', plugins: [] })
     assert.equal(
       existsSync(box.userLayer),
       true,
@@ -607,3 +607,90 @@ test(
       }
     }),
 )
+
+// --- a mod is an installable component, gated exactly like a hook ----------
+
+const modsFixture = join(repoRoot, 'packages', 'dsh-anyplugin-dialect-claude-code', 'test', 'fixtures', 'claude-mods')
+const modTarget = 'mod:hooks/register.ts'
+
+test('installing a mod without a grant refuses before the lock is written', () => {
+  const box = sandbox()
+  try {
+    const plugin = copyFixture(modsFixture, box.dir, 'mods')
+    const refused = run(box, ['install', plugin])
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr)
+    assert.match(refused.stdout + refused.stderr, /nothing-emitted/)
+    assert.match(refused.stdout + refused.stderr, /mods\/hooks\/register\.ts/)
+    assert.equal(existsSync(box.lock), false, 'a refused install writes no lock')
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a granted mod installs, the lock carries its tree, and list names the entry and digest', () => {
+  const box = sandbox()
+  try {
+    const plugin = copyFixture(modsFixture, box.dir, 'mods')
+    const grants = join(box.home, 'anyplugin', 'grants.yml')
+    const granted = run(box, ['grant', '--plugin', plugin, '--grants', grants, '--yes'])
+    assert.equal(granted.status, 0, granted.stdout + granted.stderr)
+    assert.match(granted.stdout, new RegExp(modTarget))
+    assert.match(granted.stdout, /entry: hooks\/register\.ts \(3 files, tree sha256:[0-9a-f]{64}\)/)
+
+    const installed = run(box, ['install', plugin])
+    assert.equal(installed.status, 0, installed.stdout + installed.stderr)
+    assert.match(installed.stdout, /mod: hooks\/register\.ts \(composite, 3 files\) sha256:[0-9a-f]{64}/)
+    const lock = readInstalls(box.lock)
+    assert.equal(lock.schema, 'dsh-anyplugin/installs@2')
+    assert.deepEqual(lock.plugins[0].mods.map((mod) => [mod.entry, mod.rootRelative, mod.mode]), [
+      ['hooks/register.ts', 'hooks', 'composite'],
+    ])
+    assert.equal(lock.plugins[0].mods[0].files.length, 3)
+    assert.match(lock.plugins[0].mods[0].artifactHash, /^sha256:[0-9a-f]{64}$/)
+
+    const listed = JSON.parse(run(box, ['list', '--json']).stdout)
+    assert.deepEqual(listed.plugins[0].mods.map((mod) => mod.entry), ['hooks/register.ts'])
+    assert.equal(listed.plugins[0].report.totals.emitted, 1)
+    const text = run(box, ['list']).stdout
+    assert.match(text, /mod: hooks\/register\.ts \(composite, 3 files\) sha256:[0-9a-f]{64}/)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('changed module bytes invalidate the grant: install refuses and names the refusal', () => {
+  const box = sandbox()
+  try {
+    const plugin = copyFixture(modsFixture, box.dir, 'mods')
+    const grants = join(box.home, 'anyplugin', 'grants.yml')
+    assert.equal(run(box, ['grant', '--plugin', plugin, '--grants', grants, '--yes']).status, 0)
+    writeFileSync(join(plugin, 'hooks', 'support', 'note.ts'), 'export function note(): string {\n  return "changed"\n}\n')
+    const refused = run(box, ['install', plugin])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stdout + refused.stderr, /mods\/hooks\/register\.ts refused:exec/)
+    assert.match(refused.stdout + refused.stderr, /hash|changed|re-grant/)
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('revoke works after uninstall, when the plugin directory is already gone', () => {
+  const box = sandbox()
+  try {
+    const plugin = copyFixture(modsFixture, box.dir, 'mods')
+    const grants = join(box.home, 'anyplugin', 'grants.yml')
+    assert.equal(run(box, ['grant', '--plugin', plugin, '--grants', grants, '--yes']).status, 0)
+    assert.equal(run(box, ['install', plugin]).status, 0)
+    assert.equal(run(box, ['uninstall', 'claude-code:mods']).status, 0)
+
+    rmSync(plugin, { recursive: true, force: true })
+    const revoked = run(box, ['revoke', '--plugin', plugin, '--grants', grants, '--target', modTarget])
+    assert.equal(revoked.status, 0, revoked.stdout + revoked.stderr)
+    assert.match(revoked.stdout, new RegExp(modTarget))
+    assert.match(revoked.stdout, /revoke written at user scope/)
+    assert.match(revoked.stdout, /REVOKED \(artifact unavailable\)/)
+  } finally {
+    cleanup(box.dir)
+  }
+})

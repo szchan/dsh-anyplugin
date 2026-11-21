@@ -27,8 +27,8 @@
  * cwd decides what it means. Nothing is sorted, and duplicate words are kept.
  */
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync } from 'node:fs'
-import { basename, isAbsolute, relative, resolve } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { IrHook } from '../../dsh-anyplugin-ir/src/index.ts'
 
@@ -139,6 +139,72 @@ export function fileArtifact(file: string): { artifactHash: string; manifest: Ar
     files: [fileEntry(file)],
   }
   return { artifactHash: hashManifest(manifest), manifest }
+}
+
+/**
+ * Every authored file under `dir` (recursive), as paths relative to `root`,
+ * POSIX separators, **sorted in path order**. Directories are descended;
+ * symlinks to files are included, symlinks to directories are not followed.
+ *
+ * Sorted paths are this repository's definition for a *tree* artifact. D25
+ * fixes the manifest-is-code rule and says the file order is hashed; it does not
+ * name an order, because until trees arrived every artifact was a resolved
+ * program list. Path order is deterministic across filesystems and independent
+ * of readdir order, which is the property a grant needs.
+ */
+export function listTreeFiles(root: string, dir: string): string[] {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const files: string[] = []
+  for (const entry of entries) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...listTreeFiles(root, path))
+    } else if (entry.isFile() || entry.isSymbolicLink()) {
+      try {
+        if (!statSync(path).isFile()) continue
+      } catch {
+        continue
+      }
+      files.push(relative(root, path).split(sep).join('/'))
+    }
+  }
+  return files.sort()
+}
+
+export interface TreeArtifact {
+  artifactHash: string
+  manifest: ArtifactManifest
+  mode: ArtifactMode
+  /** Number of files the tree pinned. */
+  files: number
+}
+
+/**
+ * Resolve a mod's authored tree into one manifest (D25 + D30).
+ *
+ * `rootRelative` is the directory the entry resolves from (`hooks` for a mod
+ * declared in `hooks/hooks.json`); `entry` is what the manifest names inside
+ * it. `invocation` is the entry text, `command` is empty — a mod is evaluated
+ * by the host, never spawned, and has no command line. A tree of one file is
+ * `file` mode; anything larger is `composite`, so the mode byte in the hash
+ * distinguishes the shapes.
+ */
+export function treeArtifact(root: string, rootRelative: string, entry: string): TreeArtifact {
+  const base = resolve(root)
+  const dir = resolve(base, rootRelative)
+  const files = listTreeFiles(base, dir).map((file) => fileEntry(resolve(base, file)))
+  const manifest: ArtifactManifest = {
+    mode: files.length === 1 ? 'file' : 'composite',
+    invocation: entry,
+    command: '',
+    files,
+  }
+  return { artifactHash: hashManifest(manifest), manifest, mode: manifest.mode, files: files.length }
 }
 
 /**

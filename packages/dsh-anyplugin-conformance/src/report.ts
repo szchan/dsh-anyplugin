@@ -16,7 +16,12 @@ import {
   type ClaudePluginIr,
   type Fidelity,
 } from '../../dsh-anyplugin-ir/src/index.ts'
-import { emptyGrants, gate, type Grants } from '../../dsh-anyplugin-trust/src/index.ts'
+import {
+  emptyGrants,
+  gate,
+  type ArtifactManifest,
+  type Grants,
+} from '../../dsh-anyplugin-trust/src/index.ts'
 
 const STATUS_MARK: Record<DiffRow['status'], string> = {
   match: 'ok  ',
@@ -93,6 +98,13 @@ export interface TransplantReport {
   totals: { declared: number; emitted: number; refused: number; skipped: number }
   /** `validateIr` problems; a non-empty list is what makes the command exit non-zero. */
   problems: string[]
+  /**
+   * Mods trust allowed and emit carried, with the exact manifest the tree
+   * digest was taken over. `rig install` copies this into `installs.yml`
+   * (D23), so the lock records the bytes a human granted, not a second hash
+   * computed later; `rig list` compares it with what the tree hashes to now.
+   */
+  mods: { entry: string; rootRelative: string; artifactHash: string; manifest: ArtifactManifest }[]
 }
 
 function identityKey(surface: string, name: string): string {
@@ -162,8 +174,14 @@ export function buildTransplantReport(
   })
   const considered = new Set(emit.considered)
   const skippedEntries = new Set(emit.skipped)
+  // A mod's report identity is `mods/<entry>`, mirroring summarizeIr's row;
+  // the refusal target is `mod:<entry>`, so the two are one prefix apart.
   const refusedTargets = new Map(
-    gated.decision.refused.map((refusal) => [`hooks/${refusal.target.slice('hook:'.length)}`, refusal.capability]),
+    gated.decision.refused.map((refusal) =>
+      refusal.target.startsWith('mod:')
+        ? [`mods/${refusal.target.slice('mod:'.length)}`, refusal.capability]
+        : [`hooks/${refusal.target.slice('hook:'.length)}`, refusal.capability],
+    ),
   )
   const allowedTargets = new Set(gated.decision.allowed)
   const grantedHashes = new Map<string, string>()
@@ -173,12 +191,22 @@ export function buildTransplantReport(
       grantedHashes.set(target, hook.artifactHash)
     }
   }
+  for (const mod of gated.ir.mods ?? []) {
+    if (mod.artifactHash !== undefined && allowedTargets.has(`mod:${mod.entry}`)) {
+      grantedHashes.set(`mods/${mod.entry}`, mod.artifactHash)
+    }
+  }
   const faces = facesByName(gated.ir)
 
   const components: ReportComponent[] = summary.entries.map((entry) => {
     const key = identityKey(entry.surface, entry.name)
     const refused = refusedTargets.get(`${entry.surface}/${entry.name}`)
-    const grantedHash = entry.surface === 'hooks' ? grantedHashes.get(`hook:${entry.name}`) : undefined
+    const grantedHash =
+      entry.surface === 'hooks'
+        ? grantedHashes.get(`hook:${entry.name}`)
+        : entry.surface === 'mods'
+          ? grantedHashes.get(`mods/${entry.name}`)
+          : undefined
     return {
       surface: entry.surface,
       name: entry.name,
@@ -196,6 +224,13 @@ export function buildTransplantReport(
     }
   })
 
+  const mods = (gated.ir.mods ?? []).flatMap((mod) => {
+    if (mod.artifact === undefined || mod.artifactHash === undefined) return []
+    if (!allowedTargets.has(`mod:${mod.entry}`)) return []
+    if (!considered.has(`mods/${mod.entry}`) || skippedEntries.has(`mods/${mod.entry}`)) return []
+    return [{ entry: mod.entry, rootRelative: mod.rootRelative, artifactHash: mod.artifactHash, manifest: mod.artifact }]
+  })
+
   const emitted = components.filter((component) => component.carried).length
   const refused = components.filter((component) => component.refused !== undefined).length
   const problems = validateIr(gated.ir)
@@ -211,6 +246,7 @@ export function buildTransplantReport(
       skipped: components.length - emitted - refused,
     },
     problems,
+    mods,
   }
 }
 

@@ -609,7 +609,7 @@ async function main(argv: string[]): Promise<number> {
   throw new Error(`unknown command "${args.command}"\n${USAGE}`)
 }
 
-export type ArtifactForm = 'shell' | 'argv'
+export type ArtifactForm = 'shell' | 'argv' | 'mod'
 
 /** One classified artifact as the CLI shows it. */
 export interface ArtifactPlan {
@@ -623,6 +623,10 @@ export interface ArtifactPlan {
    * where the host spawns words without a shell.
    */
   command: string
+  /** Present for a mod: the resolved entry `loadMod` would take. */
+  entry?: string
+  /** Present for a mod: how many authored files the tree digest covers. */
+  files?: number
   /** Present on an already-granted artifact: the scope whose record allows it. */
   grantedScope?: Scope
   grantedAt?: string
@@ -802,6 +806,11 @@ function artifactPlan(plugin: ClaudePluginIr, row: ArtifactRow): ArtifactPlan {
       form = 'argv'
       command = renderArgv([hook.command, ...hook.args])
     }
+  } else if (row.target.startsWith('mod:')) {
+    // A mod has no command line: what a human consents to is the entry and the
+    // digest over every authored file under it (D25/D30).
+    form = 'mod'
+    command = ''
   } else if (typeof row.manifest.invocation === 'string') {
     command = renderArgv([row.manifest.invocation])
   } else {
@@ -814,6 +823,7 @@ function artifactPlan(plugin: ClaudePluginIr, row: ArtifactRow): ArtifactPlan {
     sourcePath: row.sourcePath,
     form,
     command,
+    ...(form === 'mod' ? { entry: row.target.slice('mod:'.length), files: row.manifest.files.length } : {}),
   }
 }
 
@@ -1384,6 +1394,7 @@ export function revokeJson(run: RevokeRun): Record<string, unknown> {
 }
 
 function formLabel(form: ArtifactForm): string {
+  if (form === 'mod') return 'module tree (loaded as authored; no command line)'
   return form === 'shell' ? 'shell (sh -c; ${CLAUDE_PLUGIN_ROOT} expanded)' : 'argv (no shell; words passed literally)'
 }
 
@@ -1394,7 +1405,9 @@ function formatArtifact(artifact: ArtifactPlan, indent: string): string[] {
     `${indent}  artifact: ${artifact.artifactHash}`,
     `${indent}  source: ${artifact.sourcePath}`,
     `${indent}  form: ${formLabel(artifact.form)}`,
-    `${indent}  command: ${artifact.command}`,
+    artifact.entry === undefined
+      ? `${indent}  command: ${artifact.command}`
+      : `${indent}  entry: ${artifact.entry} (${artifact.files} file${artifact.files === 1 ? '' : 's'}, tree ${artifact.artifactHash})`,
   ]
 }
 
