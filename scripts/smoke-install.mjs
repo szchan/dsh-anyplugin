@@ -12,10 +12,18 @@
  *      with the harness' own YAML reader, and compose it with `dsh-app-boot`'s
  *      `composeEntries` — the same call boot makes;
  *   4. create the composed row through the real loader, let the controller
- *      reconcile `installs.yml`, and assert the fixture's skill is listed by
+ *      reconcile `installs.yml`, and assert that a fixture with a skill, an
+ *      MCP server, a PostToolUse hook, an agent and an output style produces
+ *      **five active materializer children**, that the tools service lists the
+ *      agent tool and the namespaced MCP tool, and that the skill is in
  *      `ctx.skills.list()`;
  *   5. import every published subpath through a resolver anchored in the
  *      profile's package scope, so a broken `exports` map fails here.
+ *
+ * The lock's `grants.yml` is authored with the repository's own trust code
+ * (the same call an installer UI makes). That is fixture setup only: the
+ * packaged controller must still re-hash the hook and match the recorded
+ * artifact hash, or the hook child would be absent.
  *
  * A missing harness is a failure, not a skip: skipping the install smoke is
  * exactly the silent-success mode it exists to prevent.
@@ -159,6 +167,55 @@ async function main() {
       '---\nname: concise\ndescription: Answer in as few words as possible.\n---\n\nBe terse.\n',
     )
 
+    // An MCP server the materializer must actually connect to (the probe is
+    // dependency-free and speaks JSON-RPC on stdio).
+    writeFileSync(join(fixture, 'probe-server.mjs'), readFileSync(join(root, 'fixtures', 'claude-hooks-mcp', 'probe-server.mjs')))
+    writeFileSync(
+      join(fixture, '.mcp.json'),
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            probe: { type: 'stdio', command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/probe-server.mjs'] },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    )
+
+    // One exec-class hook: emitted only when its recorded artifact hash matches
+    // the bytes the controller re-reads (D25).
+    mkdirSync(join(fixture, 'hooks'), { recursive: true })
+    writeFileSync(
+      join(fixture, 'hooks', 'hooks.json'),
+      `${JSON.stringify(
+        {
+          hooks: {
+            PostToolUse: [
+              {
+                matcher: 'Write|Edit',
+                hooks: [{ type: 'command', command: 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/format.sh"' }],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    mkdirSync(join(fixture, 'scripts'), { recursive: true })
+    writeFileSync(
+      join(fixture, 'scripts', 'format.sh'),
+      '#!/usr/bin/env bash\ncat >/dev/null\nprintf \'%s\\n\' \'{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"anyplugin-hook: PostToolUse fired"}}\'\n',
+    )
+
+    // One agent persona: the materializer turns it into <plugin>:<agent>.
+    mkdirSync(join(fixture, 'agents'), { recursive: true })
+    writeFileSync(
+      join(fixture, 'agents', 'persona.md'),
+      '---\nname: persona\ndescription: Reviews a diff.\n---\nYou review diffs.\n',
+    )
+
     // The lock and the enabled layer, in the canonical forms the installer writes.
     const anypluginDir = join(process.env.DSH_HOME, 'anyplugin')
     mkdirSync(anypluginDir, { recursive: true })
@@ -182,6 +239,33 @@ async function main() {
       ['plugins:', '  claude-code:skill-smoke: { enabled: true }', ''].join('\n'),
     )
 
+    // Exec artifacts are default-off. Author the grant the way the installer
+    // does (classify -> grant -> canonical grants.yml), then let the packaged
+    // controller prove it: the hook child exists only if the hash still matches.
+    {
+      const { readClaudePlugin } = await import(
+        pathToFileURL(join(root, 'packages', 'dsh-anyplugin-dialect-claude-code', 'src', 'index.ts')).href
+      )
+      const trust = await import(pathToFileURL(join(root, 'packages', 'dsh-anyplugin-trust', 'src', 'index.ts')).href)
+      const ir = readClaudePlugin(fixture)
+      const rows = trust.classify(ir)
+      if (rows.length === 0) fail('the fixture hook was not classified, so there is nothing to grant')
+      let store = trust.emptyGrants()
+      for (const row of rows) {
+        store = trust.grant(
+          store,
+          {
+            plugin: trust.pluginIdentity(ir),
+            capability: row.capability,
+            target: row.target,
+            artifactHash: row.artifactHash,
+          },
+          { scope: 'user', grantedAt: '2026-01-01T00:00:00.000Z' },
+        )
+      }
+      trust.writeGrants(trust.grantsPath(join(anypluginDir, 'installs.yml')), store)
+    }
+
     // D42: the activation record is the profile's explicit choice of one style.
     writeFileSync(
       join(anypluginDir, 'output-styles.yml'),
@@ -199,10 +283,17 @@ async function main() {
     const { Context } = await load('cordis/lib/index.js')
     const Loader = (await load('cordis-plugin-loader/lib/index.js')).default
     const SkillRegistry = (await load('dsh-skill/lib/index.js')).default
+    const SystemPrompt = (await load('dsh-system-prompt/lib/index.js')).default
+    const ToolRuntime = (await load('dsh-tools/lib/index.js')).default
     const ctx = new Context()
     const loaderFiber = ctx.plugin(Loader, { baseUrl: pathToFileURL(`${profile}/`).href })
     ctx.plugin(SkillRegistry, {})
-    await until(() => Boolean(ctx.loader) && Boolean(ctx.skills), 'the loader and skills services')
+    ctx.plugin(SystemPrompt, {})
+    ctx.plugin(ToolRuntime, {})
+    await until(
+      () => Boolean(ctx.loader) && Boolean(ctx.skills) && Boolean(ctx.systemPrompt) && Boolean(ctx.tools),
+      'the loader, skills, prompt and tools services',
+    )
 
     try {
       step('composing the published bundle patch')
@@ -245,20 +336,45 @@ async function main() {
       if (group.fiber?.state !== 2) fail(`the reconciled group ${group.options.id} is not active (state ${group.fiber?.state})`)
       const children = group.options.config
       if (!Array.isArray(children) || children.length === 0) fail(`the reconciled group ${group.options.id} has no children`)
-      for (const child of children) {
-        if (!String(child.name).startsWith('dsh-anyplugin/')) {
-          fail(`child ${child.id} was not created from a published subpath: ${JSON.stringify(child.name)}`)
+      // One fixture row must exercise every published materializer: a bundling
+      // regression in an apply() would otherwise pass with only an import check.
+      const expected = [
+        'dsh-anyplugin/materialize/skill',
+        'dsh-anyplugin/materialize/mcp',
+        'dsh-anyplugin/materialize/hook',
+        'dsh-anyplugin/materialize/agents',
+        'dsh-anyplugin/materialize/output-style',
+      ]
+      const childNames = children.map((child) => String(child.name))
+      for (const name of childNames) {
+        if (!name.startsWith('dsh-anyplugin/')) {
+          fail(`a child was not created from a published subpath: ${JSON.stringify(name)}`)
         }
+      }
+      for (const name of expected) {
+        if (!childNames.includes(name)) fail(`the reconciled group is missing ${name}: ${JSON.stringify(childNames)}`)
+      }
+      if (children.length !== expected.length) {
+        fail(`expected ${expected.length} materializer children, found ${children.length}: ${JSON.stringify(childNames)}`)
+      }
+      for (const child of children) {
         if (ctx.loader.resolve(child.id).fiber?.state !== 2) fail(`child ${child.id} is not active`)
       }
-      const styleChild = children.find((child) => child.name === 'dsh-anyplugin/materialize/output-style')
-      if (styleChild === undefined) {
-        fail(
-          'the activated output style did not become a published materializer child: ' +
-            JSON.stringify(children.map((child) => child.name)),
-        )
+      const hookChild = children.find((child) => child.name === 'dsh-anyplugin/materialize/hook')
+      const hookHash = hookChild.config?.hooks?.[0]?.artifactHash
+      if (typeof hookHash !== 'string' || !hookHash.startsWith('sha256:')) {
+        fail('the hook child does not carry the granted artifact hash')
       }
-      if (ctx.loader.resolve(styleChild.id).fiber?.state !== 2) fail(`output-style child ${styleChild.id} is not active`)
+
+      // The services the two tool-shaped surfaces register into: the MCP tool
+      // keeps Claude's name as the suffix behind DSH's namespace, and the agent
+      // becomes <plugin>:<agent>.
+      const agentToolName = 'skill-smoke:persona'
+      const mcpToolName = 'mcp__plugin_skill-smoke_probe__create_issue'
+      // The MCP child connects in the background after its apply returns, so
+      // the tool appears once the server answers tools/list — not at settle.
+      await until(() => ctx.tools.get(agentToolName) !== undefined, `the agent tool ${agentToolName}`)
+      await until(() => ctx.tools.get(mcpToolName) !== undefined, `the MCP tool ${mcpToolName}`)
 
       step('importing every published subpath from the profile scope')
       // Resolve from a module that lives in the profile scope: a bare
@@ -281,8 +397,9 @@ async function main() {
       }
 
       process.stdout.write(
-        `install smoke: ok — ${manifest.name}@${manifest.version}, skill "hello" and output style ` +
-          `"concise" via ${group.options.id}, ${PUBLISHED_SUBPATHS.length} subpaths resolved from ${harness}\n`,
+        `install smoke: ok — ${manifest.name}@${manifest.version}; skill "hello", MCP "probe", hook ` +
+          `"PostToolUse", agent "persona" and output style "concise" across ${expected.length} active materializer ` +
+          `children; tools "${agentToolName}" + "${mcpToolName}"; ${PUBLISHED_SUBPATHS.length} subpaths resolved from ${harness}\n`,
       )
       ok = true
     } finally {
