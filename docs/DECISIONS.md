@@ -2374,3 +2374,56 @@ path says the host will actually run them.
   reason naming Node 22.15 rather than failing to link.
 - If `PluginPackages` becomes exercisable in CI, that is a new decision with its
   own evidence, not a silent upgrade of this one.
+
+## D51 — The vcs bridge reads git, and the event table has no "missing bridge" left
+
+`$.vcs.detect` and `$.vcs.diff` are served; the other four pinned members
+(`isolate`, `list`, `status`, `release`) are typed refusals, because their pinned
+semantics are writes or bulk operations the read-only path cannot express. The
+refusal is a member that throws with a named reason, never `undefined`.
+
+`detect` records the real repository root from the caller's `cwd`. `diff` accepts
+`{path}` only for a root that a prior `detect` recorded in the same seat, after
+realpath confinement. That deliberately grants read over the **whole ancestor
+repository**, not just the session subdirectory: it is what the `diff` mod's
+`vcs-backend-of.ts` call graph does (`detect()` then `diff({path: copy.root})`),
+and narrowing it would break the plugin. A relative `path` resolves against the
+caller's cwd — the pinned prose at `claude-code.d.ts:4451-4453` @ 2.1.329 — and
+must still land inside a detected root. The allowed set is host-side and exact;
+a caller cannot widen it.
+
+Every git invocation is `execFile` with a fixed argv: `--no-ext-diff`,
+`--no-textconv`, no `--git-dir`/`--work-tree`, no network transport flag, a 10 s
+timeout, a 32 MiB output cap, and `GIT_*` stripped from the environment.
+
+`--no-ext-diff` and `--no-textconv` are **not** sufficient. A repository-local
+`filter.<driver>.clean` still runs under them, which is arbitrary code execution
+during a *read*. The bridge therefore enumerates `filter.` keys and overrides
+each one through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`,
+applied to the stat, `ls-files`, untracked and patch invocations, after the
+environment is stripped. The `-c key=value` form was rejected: git splits it at
+the first `=`, so a driver whose key contains `=` escaped the override. Both
+escapes are pinned by regressions with a raw-git control that shows the driver
+does run when the override is removed.
+
+**D40's counts are superseded.** At the 2.1.329 pin the enumerated table has 167
+names, **19 routed**, **148** unmapped, and **0 `missing bridge`**: the six `vcs`
+names are no longer absent from the bridge. D40's `17 routed / 150 / 6 missing
+bridge` and its `sec-default 16 routed + 61 unmapped` split are history; the
+split is no longer quoted anywhere, because it moves with the table.
+
+**Evidence.** `packages/dsh-anyplugin-mod-host/src/bridge.ts` (vcs section and
+the override environment), `packages/dsh-anyplugin-mod-host/test/vcs.test.mjs`
+(tracked, untracked and `filter=a=b` regressions plus the raw-git control),
+the mutation that empties `vcsFilterEnv` and reddens both filter tests, and
+`spikes/s15-mod-demand/run.mjs`, which prints `111 lines; invocations 17; $
+groups 17; $ calls 22` and `24 served + 3 typed refusals + 3 absent`.
+
+**Consequences.**
+
+- A new `vcs` member needs its own entry here, not a quiet widening of the
+  read-only path.
+- A pin bump that changes `filter.` semantics must re-run the filter
+  regressions; the override set is derived at runtime, not hard-coded.
+- The bridge is not a sandbox for mods. It removes one execution channel from a
+  read; a mod already runs with the authority its grant records (D25).
