@@ -2014,3 +2014,21 @@ refusals, errno-named load error, forced selection), `src/compile.ts`
 (18 tests, including main/sibling/fork/subagent and the forced-empty cases),
 mutations M1–M8 each reddening a named test, and 481/481 with zero skips on both
 DSH pins. Merge `62238bf`.
+
+---
+
+## D43 — A published build is packaging-only, and the package is one bundle with subpath entries
+
+**Status.** Ratified 2026-11-21. Pins: DSH `0.2.2-rc.2`, `0.2.2-rc.5`; claude-code `2.1.329`.
+
+`dsh-anyplugin@0.1.0` is one published package. `src/` stays the development entry: every workspace manifest keeps `exports["."] = "./src/index.ts"`, so tests and spikes run sources directly. `scripts/build.mjs` bundles each runtime entry into `lib/<name>.js` for a consumer's Node. That build is a packaging step, not runtime code generation: the compiler still emits a pure-data `EntryTree` (D1), and install and boot write or evaluate no generated JavaScript.
+
+`exports` publishes only entries a patch row or the reconciler names: `.` (the controller) and one subpath per materializer (`./materialize/skill`, `./materialize/mcp`, `./materialize/hook`, `./materialize/agents`, `./materialize/output-style`). `ir`, `emit`, `trust`, `install`, `intercept`, `hook-runner` and the template packages are bundled into those entries and are not separate subpaths. There is no `./materialize/command` subpath: command files land as skills on their model face, and publishing an entry nothing emits would freeze a surface that does not exist.
+
+`cordis.patch.yml` inserts exactly one row (`id` and `name` `dsh-anyplugin`); every other loader entry is created at runtime by the reconciler from `installs.yml`. The controller names materializers by published subpath, never by file URL, so the tarball can move. `engines.dsh` is the version claim and names only the two pins the suite boots (`0.2.2-rc.2 || 0.2.2-rc.5`); when present, app-boot's compatibility check decides on it alone.
+
+**Why.** A consumer's Node cannot run a TypeScript development entry, and the workspace manifests are private, so something has to produce importable JavaScript; doing it at publish time keeps the development loop unchanged. Subpath entries give the loader bare specifiers resolved from the profile's `node_modules` — the same path any dependency uses — instead of absolute file URLs that pin a checkout. Publishing only named entries keeps the public surface equal to the contract: a module the loader is never told to import is implementation detail, and exporting it would freeze it.
+
+**Consequences.** `check:pack` is the gate: it builds, packs, asserts the lib/no-`.ts`/exports-resolve/no-undeclared-import/no-`@babel` invariants, checks that every local image a README names is in the tarball, and runs a real-loader install smoke over all five materializers, so the artifact and its declaration cannot drift apart. The mods kernel (v0.2) needs its own entry and the `@babel/*` dependencies; the 0.1 tarball deliberately ships neither and refuses a `mods` row with a recorded warning, while classic hooks in the same row still run. The ARCHITECTURE §13 question about bundle-versus-profile-dependency is answered by the bundle, with the profile's resolution model kept through subpaths.
+
+**Evidence.** `packages/dsh-anyplugin-install/src/controller.ts`, `scripts/build.mjs`, `scripts/check-pack.mjs`, `scripts/smoke-install.mjs`, `.github/workflows/release.yml` (tag == version, tag on `origin/main` via `merge-base --is-ancestor`, both pins verified with zero skips, then publish), `INSTALL.md`, and the 14-entry tarball exercised by the smoke. Merge `3083596`.

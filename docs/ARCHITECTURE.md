@@ -148,8 +148,26 @@ shape itself today), and
 but do have one — `dsh-anyplugin-materialize-output-style` applies the selected
 body through the agent-scoped prompt seam (S11). The host-controller surface the old row
 called `dsh-anyplugin` — the `anyplugin` command family and an API for the UI —
-is not built either: the root package is the private workspace root, and
+is not built: the root package ships a controller row, not a command family, and
 reconcile lives in `dsh-anyplugin-install`.
+
+### The published package
+
+The root package is `dsh-anyplugin` (0.1.0), and it is the one published artifact.
+`src/` remains the development entry: every workspace manifest keeps
+`exports["."] = "./src/index.ts"` so tests and spikes run the sources directly.
+`scripts/build.mjs` bundles each runtime entry to `lib/<name>.js` for a
+consumer's Node; that build is packaging, not code generation — the compiler
+still emits a pure-data `EntryTree` (`D1`), and nothing is written or evaluated
+at install time.
+
+`exports` publishes only what a patch row or the reconciler can name: `.` (the
+controller) and `./materialize/{skill,mcp,hook,agents,output-style}`.
+The other runtime modules are bundled into those entries rather than published
+as separate subpaths, and the reconciler names materializers by published
+subpath (never by file URL), so the tarball can move without rewriting config.
+`cordis.patch.yml` inserts exactly one row; every other entry is created at
+runtime from `installs.yml`.
 
 ## 3. AgentPlugin IR
 
@@ -1729,9 +1747,11 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   untouched, and durability comes from `installs.yml` + the scope layers being
   replayed on boot. (Verified necessary: the dynamic-package registry is
   session-scoped, so anything written only there cannot be a source of truth.)
-- Do materializer packages ship inside the anyplugin bundle, or as profile-level
-  dependencies? Resolution from the profile's `node_modules` argues for the
-  latter; bundle ergonomics argue for the former.
+- ~~Do materializer packages ship inside the anyplugin bundle, or as
+  profile-level dependencies?~~ **Resolved** (ticket #79; decision proposed as
+  D43): one bundle. The materializers are subpath entries of `dsh-anyplugin`,
+  so they are resolved from the profile's `node_modules` like any dependency
+  while staying one install unit.
 - Should a project scope be able to *pin* a version, or only enable the
   profile's installed version? (Pinning makes shared repos reproducible.)
 - Do we vendor the pinned `claude-code.d.ts` into this repo to drive the mod

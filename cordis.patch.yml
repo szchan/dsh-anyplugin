@@ -1,0 +1,16 @@
+# dsh-anyplugin 0.1.0 — the bundle patch.
+#
+# This is the whole bundle contract: one row. `dsh-anyplugin` is the controller;
+# it reads the installs lock and the enabled layers, compiles each enabled
+# plugin, and reconciles the loader subtree (`anyplugin.*`) from that data
+# (D1, D42). Nothing else is inserted here — skills, commands, MCP servers,
+# hooks and agents are runtime entries created by the controller, not code
+# generated into the profile.
+#
+# The lock path defaults to `$DSH_HOME/anyplugin/installs.yml`, which is where
+# the installer writes. A launcher that keeps it elsewhere can override it with
+# `config: { installs: "…" }`; no config is needed for the default profile
+# layout, and a static path cannot name `$DSH_HOME`.
+- insert:
+    - id: dsh-anyplugin
+      name: dsh-anyplugin

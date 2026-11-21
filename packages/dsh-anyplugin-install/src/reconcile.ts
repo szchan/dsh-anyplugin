@@ -93,6 +93,16 @@ export interface ReconcileOptions {
   /** How long to wait for a removed subtree to settle disposed. Default 2000 ms. */
   disposeTimeoutMs?: number
   /**
+   * Wait for the whole loader to settle (`loader.await()`) after the writes.
+   * Default `true`. The controller sets it to `false` because it reconciles
+   * from inside its own `apply`: `loader.await()` there waits for the entry
+   * whose apply is currently running, which is a self-deadlock. Every mutation
+   * this function makes is already awaited, and the group + child fibers are
+   * verified active below, so the loader-wide wait adds nothing for that
+   * caller; the boot that loaded the controller awaits the tree itself.
+   */
+  settle?: boolean
+  /**
    * Trust decisions from `compileReport`. Reconcile cannot put a refused
    * artifact in the loader (there is no entry to carry it), so the caller gets
    * them through `onRefused` and can print/prompt without inventing a group.
@@ -351,7 +361,7 @@ export async function reconcile(
       result.failed.push({ id, reason: describeError(error) })
     }
   }
-  await loader.await()
+  if (options.settle !== false) await loader.await()
 
   const removedIds = [...actualById.keys()].filter((id) => !desiredById.has(id)).sort()
   for (const id of removedIds) {
@@ -379,7 +389,7 @@ export async function reconcile(
       result.removed.push(id)
     }
   }
-  await loader.await()
+  if (options.settle !== false) await loader.await()
 
   for (const id of desiredIds) {
     if (result.failed.some((failure) => failure.id === id)) continue

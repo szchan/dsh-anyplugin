@@ -8,9 +8,11 @@ English | [中文](README_cn.md)
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-status-today)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-what-010-does)
 
-**Run Claude Code and Codex plugins on DeepSeek Harness — at declared 100 % fidelity.**
+**Run Claude Code plugins on DeepSeek Harness — at the fidelity this repository
+declares for each surface, and never more.** Codex is the second dialect and ships
+in v0.3; 0.1.0 is the Claude Code compile path.
 
 A Claude Code plugin is a bundle of files: skills, slash commands, agents, hooks,
 MCP servers, output styles, and `mods` (JavaScript that runs inside the harness).
@@ -60,24 +62,64 @@ The denominator is a **coverage ratchet**: one row per declared component per
 fixture. Closing a gap edits the ratchet in the same commit that makes it true,
 so a regression fails in the same place.
 
-```
-today, against DSH 0.2.2-rc.5 and Claude Code 2.1.329:
-  25 declared · 24 matched · 0 missing · 1 refused
-```
 
-## ✅ Status today
+## ✅ What 0.1.0 does
 
-| area | state |
+This table describes the **published artifact**, not the repository: every row
+is what installing `dsh-anyplugin@0.1.0` gives you, and `npm run verify` boots
+the packed tarball to check it.
+
+| surface | in 0.1.0 |
 | --- | --- |
-| Skills | `exact` (content, envelope, base-directory preamble, argument substitution where the host has a channel) |
-| Slash commands | model face `equivalent`, human face `planned` (needs a host command-name seam) |
-| MCP servers | `equivalent`: stdio and Streamable HTTP, Claude's tool names kept verbatim |
-| Hooks | `equivalent` for the tool and lifecycle events the host actually fires; the rest are `planned` with the missing host event named |
-| Agents | `exact` catalog: each `agents/*.md` becomes a scoped tool named `<plugin>:<agent>` |
-| Output styles | carried byte-for-byte, activation in flight |
-| `mods` | loaded as authored (one transform, `D34`): 19 events routed, 7 upstream mods load, `$` bridges for the file/session/settings namespaces |
-| Codex plugins | second dialect, sharing the same IR |
-| Install / enable / release | in flight (no published package yet) |
+| Skills | `exact` — content, envelope, base-directory preamble, argument substitution where the host has a channel |
+| Slash commands | shipped as **skills** (the model face, `equivalent`); the human `/…` face is `planned` and needs a host command-name seam (`D10`) |
+| MCP servers | `equivalent` — stdio and Streamable HTTP; DSH namespaces the callable name (`mcp__plugin_<plugin>_<server>__<tool>`) and keeps Claude's name as the suffix |
+| Hooks | `equivalent` for the tool and lifecycle events DSH fires; other events are `planned` with the missing host event named |
+| Agents | `exact` — each `agents/*.md` becomes a scoped tool named `<plugin>:<agent>` |
+| Output styles | **shipped** — the profile's activation record selects one style (`D42`); the `/<plugin>:<name>` alias still needs the command-name seam (`D10`) |
+| `mods` | **not in 0.1.0** — the kernel ships in v0.2; a `mods` field in a lock record is a schema error |
+| Codex plugins | **not in 0.1.0** — the second dialect ships in v0.3 |
+| Install / enable / release | `dsh-anyplugin@0.1.0` — bundle + controller + reconciler |
+
+### In the repository (unreleased)
+
+The fidelity work below is in the tree and exercised by the suites, but it is
+**not** in the 0.1.0 artifact and is not an install-time promise:
+
+- against DSH `0.2.2-rc.5` and Claude Code `2.1.329`: 25 declared · 24 matched ·
+  0 missing · 1 refused (the refused row is the command-name seam named above);
+- `mods` load as authored (one transform, `D34`): 19 events routed, 7 upstream
+  mods load, `$` bridges for the file/session/settings namespaces — the kernel
+  is what v0.2 ships;
+- Codex is a second dialect on the same IR (v0.3).
+
+## 📦 Install it
+
+`dsh-anyplugin@0.1.0` is published as **one bundle** for a DSH profile:
+
+```bash
+dsh plugin --profile <profile> add dsh-anyplugin
+```
+
+Enable it in the profile's bundle list (the Web Plugins page does this; by hand
+it is one entry in `<profile>/package.json`), then boot the profile. The
+bundle's `cordis.patch.yml` inserts a single controller row; the controller
+reads `$DSH_HOME/anyplugin/installs.yml` and reconciles the installed plugins
+into the loader. Nothing is written to your profile config, and no code is
+generated.
+
+0.1.0 ships the **compile path**: skills (a slash command lands as a skill on
+its model face), MCP servers, hooks, agents, an output style activated from the
+profile record (D42), install/reconcile, and the trust gate. The mods kernel and
+the Codex dialect are **not** part of this release. The version claim is DSH
+`0.2.2-rc.2 || 0.2.2-rc.5` (`engines.dsh`; exactly the two pins the suite boots,
+so any other runtime is refused until it is tested —
+`dsh plugin allow-version` grants an exact-version exemption) and Claude Code
+`2.1.329`.
+
+[**INSTALL.md**](INSTALL.md) has the lock and enablement formats, how to
+override the row's config, the grant file for `exec` artifacts, and how to
+remove the bundle or one plugin.
 
 ## 🧪 How it is verified
 
@@ -91,7 +133,8 @@ Three layers, and a claim is only accepted when all three agree:
    denied tool, an injected context), never taken from a self-report.
 
 The pinned versions are part of the claim: DSH `0.2.2-rc.5` (and `rc.2`), Claude
-Code `2.1.329`, `mods` commit `f9e4d1e`. A number without its pin is a rumour.
+Code `2.1.329`, and, for the repository-only mods work, `mods` commit
+`f9e4d1e`. A number without its pin is a rumour.
 
 ## 🚀 Develop it
 
@@ -109,7 +152,7 @@ npm run verify
 ```
 
 `verify` runs the structural rules, the capability map check, the append-only
-decision check, and 463 tests. It must report **0 skipped**: a skip means an
+decision check, and 482 tests. It must report **0 skipped**: a skip means an
 environment variable is missing, and on CI a skip is a failure by design.
 
 ## 📚 Read next
@@ -135,4 +178,4 @@ credentials, billing, rights, and irreversible actions.
 
 ## 📄 License
 
-MIT. The `LICENSE` file lands with the first release.
+MIT — see [LICENSE](LICENSE).
