@@ -2142,17 +2142,20 @@ peer left out because `autoInstallPeers` is false — the case the launcher's
 runtime interception exists for). Corepack's pnpm 12.21.0 cannot open a store
 lock in this sandbox, which is why the test does not shell out to pnpm.
 
-The test then boots through the same host primitives, in the order
-`@deepseek-ai/dsh`'s `runProfile` performs them:
-`loadProfile('dsh', 'profile-mount', installAnchor, home)` (manifest bundles →
-`resolveBundleDir` → patch paths), write `<profile>/cordis.yml` as an empty
-root, `readProfilePatches`, `createRuntimeResolution`, then
+The test then performs the boot steps `@deepseek-ai/dsh`'s `runProfile`
+performs: `loadProfile('dsh', 'profile-mount', installAnchor, home)` (manifest
+bundles → `resolveBundleDir` → patch paths), write `<profile>/cordis.yml` as an
+empty root, `readProfilePatches`, `createRuntimeResolution`, then
 `boot('dsh', rootConfig, patches, prepare)` with `prepare` providing
 `profileContext`, an exporter and the `SkillRegistry` — the profile lists only
 `dsh-anyplugin`, so these are the test's host services, as the launcher's
 `prepare` provides its own. It does not supply the launcher's application
-object (`app.current`), its launch environment or command line, the stock base
-bundle, or the real `PluginPackages` (the host limitation below).
+object (`app.current`), its launch environment or command line, or the stock
+base bundle. It supplies the real `PluginPackages` when the Node under test can
+initialize it (measured by probing the addon at boot, not inferred from a
+version), and otherwise catches exactly that error and links the scope (the
+patch boundary below, and S18); the host path it actually used is the
+diagnostic the Answer reports.
 `module.registerHooks({resolve})` records the URL each `dsh-anyplugin`
 resolution returns. There are five top-level tests — the valid lock, the three
 failure modes, and a boundary control that re-runs the valid profile with its
@@ -2160,10 +2163,18 @@ package replaced by a link to this checkout. They are top-level rather than
 one parent with subtests so a Node without `registerHooks` reports five skips
 instead of a link-time failure.
 
-**Answer (pinned `0.2.2-rc.5`, `claude-code@2.1.329`, Node 24.22.2; one
-positive test carrying five positives, three negative tests and one boundary
-control — all green; on Node older than 22.15 the five skip with a reason
-naming the version, and the package's published engine floor stays 22.14).** The harness boots; the controller entry
+**Answer (pinned `0.2.2-rc.5`, `claude-code@2.1.329`; measured on the CI Node
+24.22.3 and the local gate Node 24.22.2; one positive test carrying five
+positives, three negative tests and one boundary control — all green; on Node
+older than 22.15 the five skip with a reason naming the version, and the
+package's published engine floor stays 22.14).**
+The same five tests also pass on the Desktop's Node 24.21.0, where
+`PluginPackages` initializes and the host path is `PluginPackages` (S18). On a
+Node that initializes `PluginPackages`, the positive test also asserts the
+interception's effect — no scope link, and the group entry's URL under the
+installation tree — so the gate's result is closure, not the scope-link
+stand-in.
+The harness boots; the controller entry
 `dsh-anyplugin` is active; the controller creates exactly one root group entry
 `anyplugin.claude-code…skills-only` with one active
 `dsh-anyplugin/materialize/skill` child; `ctx.skills.list()` contains the
@@ -2189,40 +2200,155 @@ row's `config.installs` at another file → the positive and the boundary contro
 mount zero groups, the missing-lock scenario loses its `no lock at
 <installs.yml>` log, and the corrupt scenario stays active instead of failing.
 
-**Host limitation (measured, not assumed).** `PluginPackages` — the launcher's
-runtime interception, which resolves the bundle's `@deepseek-ai/*` imports from
-the installation — cannot initialize under this test: its constructor fails in
-`installRuntimeInterception` with
-`node-addon-require-builtin unsupported: Unsupported/no-getter (x64 sysv getter
-is not a recognized this->field accessor …)`, target
-`internal/modules/esm/loader`, on both Node builds measured (24.12.0 and
-24.22.2). `boot` turns that into `dsh: host preparation failed: …`. The test
-catches exactly that error, links the harness `@deepseek-ai` scope into the
-profile as the install smoke does, and reports
-`host path: scope-link (PluginPackages unsupported)` as a diagnostic. The
-controller itself imports only Node builtins (its cordis dependency is
+**Patch boundary (measured, not assumed).** On Nodes where the addon's x64
+getter prologue does not match, `PluginPackages` — the launcher's runtime
+interception, which resolves the bundle's `@deepseek-ai/*` imports from the
+installation — cannot initialize: its constructor fails in
+`installRuntimeInterception` with `node-addon-require-builtin unsupported:
+Unsupported/no-getter (x64 sysv getter is not a recognized this->field accessor
+…)`, target `internal/modules/esm/loader`. `boot` turns that into `dsh: host
+preparation failed: …`. The test catches exactly that error, links the harness
+`@deepseek-ai` scope into the profile as the install smoke does, and reports
+`host path: scope-link (PluginPackages unsupported)`. The boundary is a Node
+patch, not the harness pin: 24.12.0 and 24.22.2 fail, while 24.22.3 (what CI's
+`node-version: '24'` resolves to today; run 44955431971's S17 logs show
+`host path: PluginPackages` at both pins) and the Desktop's 24.21.0 initialize
+and let the test assert closure (S18). On a capable Node the positive test
+probes the addon at boot and requires three effects: `host path:
+PluginPackages`, no `@deepseek-ai` scope link in the profile, and the group
+entry's module URL under `<installation>/node_modules/@deepseek-ai/`. A capable
+Node that falls back fails the test, and under `CI=true` a Node that cannot
+initialize fails it too, so the gate cannot silently stop asserting closure.
+The controller itself imports only Node builtins (its cordis dependency is
 type-only), which is why the rest of the path does not need the interception.
 The controller can also log `failed 1` while the group it created settles
 active in the same boot, because the include's load pass runs after
 `loader.await()` collected its tasks; the test asserts the settled tree, not
 that count.
 
-**What this does not prove.** The installation-closure containment that
-`PluginPackages` would provide: with the scope link, an `@deepseek-ai/*` import
-succeeds because the scope is present, not because the installation resolved
-it. It is not a template profile — the stock base application bundle is not in
-the fetched harness union, so the controller is the profile's only bundle and a
-base bundle's rows mounting before/after it are not exercised. The pnpm install
-path is the spike's measured comparison, not the test's install step. What is
-proven is the profile row's contract: profile manifest → bundle patch → root
-include → boot → controller resolved from the profile → one active group → its
-skill child serving the fixture's skills, with the three failure modes the docs
-declare. The decision this earns — the profile path, not a hand-composed row,
-is the claim for the profile row — is proposed as **D50**. D49 is the
-lifecycle CLI's contract, ratified as #116; D50 does not change it. D50 must
-not be read as proving install closure: the scope link stands in for the
-launcher's `PluginPackages` interception, so the installation-closure
-containment is the part that remains smoke-tested, not asserted.
+**What this does not prove.** Closure on Nodes where the binding fails: with
+the scope link, an `@deepseek-ai/*` import succeeds because the scope is
+present, not because the installation resolved it, and S17 does not run the
+closure assertions there. CI's Node is on the working side, so the gate asserts
+closure; a CI Node that moves to the failing side fails the test rather than
+silently keeping the diagnosis. It is not a template profile — the stock base
+application bundle is not in the fetched harness union, so the controller is
+the profile's only bundle and a base bundle's rows mounting before/after it are
+not exercised. The pnpm install path is the spike's measured comparison, not
+the test's install step. What is proven is the profile row's contract: profile
+manifest → bundle patch → root include → boot → controller resolved from the
+profile → one active group → its skill child serving the fixture's skills, with
+the three failure modes the docs declare. The decision this earns — the profile
+path, not a hand-composed row, is the claim for the profile row — is **D50**.
+D49 is the lifecycle CLI's contract, ratified as #116; D50 does not change it.
+Installation closure is asserted on the Node CI runs (S18): D50's install
+claim holds on that Node, and the install row names the patch condition.
+
+
+### S18 — installation closure is asserted on the Node CI runs
+
+**Question.** S17 mounts the packed bundle through a real profile but falls back
+to a scope link when `PluginPackages` cannot initialize. Can the pinned harness
+be booted with `PluginPackages` actually intercepting the bundle's
+`@deepseek-ai/*` imports on a Node this repo can run its gate on — and if so,
+does that turn S17's fallback into a closure check?
+
+**Method.** `spikes/s18-install-closure/run.mjs` creates a scratch home with the
+host's `initProfile`, writes a child probe **inside** `<home>/profiles/s18/`
+(the launcher's `ResolutionRouter` only intercepts importers in the profiles
+tree; a probe outside it sees `ERR_MODULE_NOT_FOUND` in both directions), and
+runs it under each Node binary. The child probes the addon first
+(`requireBuiltin` for the five internal modules `internalModules()` needs), then
+the negative/positive pair: `import('@deepseek-ai/cordis-plugin-group')` must
+fail before `new PluginPackages(context, { resolution })` and must resolve
+**from the installation** after it, with no scope link in the profile. The
+spike also boots the five tests in
+`packages/dsh-anyplugin-conformance/test/profile-mount.test.mjs` under each
+binary and records the `host path` diagnostic, so the minimal probe and the
+profile boot cannot disagree without showing up in the table.
+
+The verdict is derived from the rows, not hardcoded: a row proves closure only
+when all five builtins load, the constructor succeeds, the import is unresolved
+before and resolved from the installation after, and S17's five tests pass with
+`host path: PluginPackages`. The spike asserts every row is wholly on one side,
+the known failing patches (24.22.2, 24.12.0) and working patches (24.22.3,
+24.21.0) when those rows are present, the gate row's own side, the absence of a
+separate `@deepseek-ai/dsh-plugin-packages` package, and — on the gate Node — the
+default plus seven options (`--jitless`, `--no-sparkplug`, `--no-maglev`,
+`--no-turbofan`, `--interpreted-frames-native-stack`, `--no-opt`,
+`--no-concurrent-recompilation`). The spike clears ambient `CI` before it
+spawns S17, so the incapable rows exercise S17's local fallback instead of its
+CI guard.
+
+Reproduce the boundary with the CI Node and a failing Node named explicitly:
+
+```
+node scripts/fetch-harness.mjs 0.2.2-rc.5
+DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
+DSH_HARNESS_VERSION=0.2.2-rc.5 \
+DSH_NODE_EXECUTABLE=<desktop node 24.21> \
+S18_EXTRA_NODES=/path/to/node-24.22.3:/path/to/node-24.12 \
+  env -u CI node spikes/s18-install-closure/run.mjs
+```
+
+**Answer (pinned `0.2.2-rc.5`, `claude-code@2.1.329`; measured 2026-11-21;
+the same rows were re-run at `0.2.2-rc.2`).**
+
+| Node | source | `requireBuiltin` | `PluginPackages` | group import | S17 host path |
+| --- | --- | --- | --- | --- | --- |
+| 24.22.3 | official tarball, named by `S18_EXTRA_NODES`; CI's `node-version: '24'` today | 5/5 | initializes | fails before, resolves from the installation after | `PluginPackages` (S17 5/5) |
+| 24.21.0 | Desktop `$DSH_NODE_EXECUTABLE` | 5/5 | initializes | fails before, resolves from the installation after | `PluginPackages` (S17 5/5) |
+| 24.22.2 | system `node` (the local gate) | 0/5 `Unsupported/no-getter` | throws | unresolved both ways | `scope-link (…)` (S17 5/5) |
+| 24.12.0 | nix store, named by `S18_EXTRA_NODES` | 0/5 `Unsupported/no-getter` | throws | unresolved both ways | `scope-link (…)` (S17 5/5) |
+
+The interception is not a separate package at this pin: there is no
+`@deepseek-ai/dsh-plugin-packages` directory; `PluginPackages` is a top-level
+export of `@deepseek-ai/dsh-app-boot` (`src/profile-resolution/service.ts:60`).
+Its constructor calls `installRuntimeInterception` synchronously
+(`service.ts:70`), which calls `internalModules()` (`resolver.ts:733`) and
+requires the five builtins; the only config key is `resolution` (an early
+return when it is absent, `service.ts:67`), and `src/profile-resolution` reads
+no `process.env`. Ordering another plugin first cannot help: `ctx.plugin(…)`
+constructs the service immediately, before any registration, and the failure is
+the constructor's first act. The addon is
+`node-addon-require-builtin` (declared as `^0.1.9` by `dsh-app-boot`; the
+fetched trees used here resolve `0.1.10`, and the declared range is all the
+harness pin fixes); the failure is in its x64 getter
+prologue for `internal/modules/esm/loader`, and none of the seven options
+measured changes it. `.harness/<pin>` ships no Node binary.
+
+**Patch boundary.** 24.22.2 fails and 24.22.3 works: the same minor, one patch
+apart. The difference is in the addon's access to the Node internal getter
+(`Unsupported/no-getter` from the x64 sysv getter prologue), not in the harness
+pin, the profile, or this repository's code. CI's `actions/setup-node@v4` with
+`node-version: '24'` resolved to 24.22.3 in run 44955431971 (both pins' S17 logs
+already printed `host path: PluginPackages`); the spike's 24.22.3 row was run
+from the official `node-v24.22.3-linux-x64.tar.xz`
+(sha256 `4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb`,
+matching `SHASUMS256.txt`). No pin moved: CI still floats `24`, and the test
+probes the capability instead of reading a version.
+
+**Decision (closure asserted; D54 proposed in the PR).** On the Node CI runs,
+`PluginPackages` initializes and S17 asserts installation closure: the positive
+test probes the addon at boot, then requires `host path: PluginPackages`, no
+scope link in the profile, and the group entry's module URL under
+`<installation>/node_modules/@deepseek-ai/`. A capable Node that falls back
+fails the test, and a CI Node (`CI=true` or `CI=1`) that cannot initialize fails
+it too, so the gate cannot silently stop asserting closure. The claim is conditional and stated:
+it holds on the Node the gate actually runs; a Node change to the failing side
+of the patch boundary fails the gate rather than downgrading the claim. The
+install row in `docs/FEATURES.md` names the condition and S18. The TODO line
+that asked for the proof is deleted. D54 records the decision (proposed in the
+PR; this file is not edited here).
+
+**What this does not prove.** Every import shape the launcher intercepts: the
+minimal probe covers one bare `@deepseek-ai/*` package import plus S17's boot of
+the controller and its group entry. Node platforms other than linux-x64 are
+not measured. The spike is not a CI job; CI's evidence is the S17 assertion on
+whatever `node-version: '24'` resolves to, and the spike's boundary table is
+the reproduction. If the addon or harness pin moves the boundary, the spike's
+per-version assertions fail and D54 must be revisited rather than silently
+kept.
 
 
 ## 11. Non-goals
