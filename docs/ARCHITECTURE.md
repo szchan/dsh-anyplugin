@@ -275,12 +275,18 @@ plugins:
     root: "/…/artifacts/claude-code/skills-only/0.0.1"
     dataDir: "/…/data/claude-code/skills-only"
     pin: "claude-code@2.1.322"
-    source: "{\"marketplace\":\"my-marketplace\",\"entry\":\"skills-only\"}"
+    source: "{\"marketplace\":\"my-marketplace\",\"entry\":\"skills-only\",\"integrity\":\"git:9f1c2ab3d4e5f60718293a4b5c6d7e8f90123456\",\"resolvedAt\":\"2026-11-21T00:00:00Z\"}"
 ```
 
 `source` is optional provenance (D23): a `plugin-dir:` label for a directory
 install, or a JSON object inside the quoted string naming the marketplace and
-entry a catalog install came from.
+entry a catalog install came from. A fetched entry adds the artifact's
+`integrity` (`git:<commit>`, `npm:<sha512>` or `sha256:<bytes>`) and the
+`resolvedAt` time it was first written. The two are recorded together inside
+the same quoted value; the schema moved to `@2` for `mods`, not for this
+field: every value is still one double-quoted JSON string, so a reader that
+only requires `source` to be non-empty reads the file, while the fields are
+validated like every other field.
 
 The example above is an illustrative lock written at the 2.1.322 pin; the
 live pin is `CLAUDE_CODE_PIN` in the conformance package.

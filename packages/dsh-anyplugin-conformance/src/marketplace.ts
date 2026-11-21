@@ -15,30 +15,40 @@
  * 1. A malformed entry is a recorded problem naming its index and, when the
  *    raw text allows it, its line — it never aborts the catalog. The Claude
  *    reference validates each entry on its own for exactly this reason.
- * 2. Only `local` sources are installable in this slice. The other kinds are
- *    valid catalog entries, so they are listed and refused with the missing
- *    piece named (a fetch, a content hash and consent — D27), never skipped
- *    silently and never fetched here. There is no network in this module.
+ * 2. Four source kinds are installable: `local` (resolved under the catalog's
+ *    root), and `url`, `git-subdir` and `npm` (fetched by `marketplace-fetch.ts`
+ *    into a content-addressed cache under a `network` grant — D27/D52). The
+ *    remaining kinds (`github`, `archive`, `command`) are valid catalog entries
+ *    and are refused with the missing piece named, never skipped silently and
+ *    never fetched here.
  * 3. Install delegates to `installPlugin`: the lock and the enablement layer
  *    still have exactly one writer each (D49). The only thing this module adds
  *    is the resolved directory and the record's `source` provenance.
- * 4. Containment is a resolution fact, not a parse fact. `..` and symlinks are
+ * 4. A fetch is consent, not a side effect. Without a `network` grant the
+ *    command refuses before opening a socket and prints exactly what it would
+ *    run; `--dry-run` never fetches and never creates the cache directory.
+ *    A grant pins the content address, so a moved ref is a typed refusal that
+ *    names both pins until the user passes `--yes`.
+ * 5. Containment is a resolution fact, not a parse fact. `..` and symlinks are
  *    allowed through normalization so `resolveLocalSource` can refuse them by
  *    comparing the real paths against the marketplace root.
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
+import { SCOPES } from '../../dsh-anyplugin-install/src/index.ts'
+import { NETWORK_CAPABILITY, grant, readGrants, resolveGrant, updateGrants, type Scope } from '../../dsh-anyplugin-trust/src/index.ts'
 import {
   InstallCliError,
   formatInstall,
+  installCliPaths,
   installPlugin,
   type InstallOptions,
   type InstallResult,
-  type PathOptions,
 } from './install-cli.ts'
+import { fetchEntry, remoteTarget, type RemoteSourceKind } from './marketplace-fetch.ts'
 
-/** Source kinds either ecosystem declares. Only `local` is installable here. */
+/** Source kinds either ecosystem declares. Four are installable; the rest refuse. */
 export type MarketplaceSourceKind = 'local' | 'url' | 'github' | 'git-subdir' | 'npm' | 'archive' | 'command'
 
 /**
@@ -50,8 +60,8 @@ export type MarketplaceSource =
   | { kind: 'local'; path: string }
   | { kind: 'url'; url: string }
   | { kind: 'github'; repo: string }
-  | { kind: 'git-subdir'; url: string; path: string }
-  | { kind: 'npm'; package: string }
+  | { kind: 'git-subdir'; url: string; path: string; ref?: string; sha?: string }
+  | { kind: 'npm'; package: string; version?: string }
   | { kind: 'archive'; url: string }
   | { kind: 'command'; command: string }
 
@@ -192,7 +202,7 @@ function entryStartLine(text: string, index: number): number | undefined {
 
 /** Why a known source kind is not installable in this slice. */
 export function unsupportedReason(kind: Exclude<MarketplaceSourceKind, 'local'>): string {
-  return `${kind} sources are not installable yet: installing one needs a fetch, a content hash pin and explicit consent (D27); this slice resolves "./" local sources only. ${FOLLOW_UP}`
+  return `${kind} sources are not installable: this slice fetches url, git-subdir and npm sources; a ${kind} source needs its own fetch policy (a content hash and consent, D27). ${FOLLOW_UP}`
 }
 
 function localPath(value: unknown): string {
@@ -338,15 +348,30 @@ function normalizeSource(value: unknown, notes: string[]): MarketplaceSource {
       case 'git-subdir': {
         carried.add('url')
         carried.add('path')
+        const sha = optionalString(value.sha, 'source.sha')
+        if (sha !== undefined && !/^[0-9a-f]{40}$/u.test(sha)) {
+          throw new EntryError('"source.sha" must be a 40-character commit')
+        }
+        const ref = optionalString(value.ref, 'source.ref')
+        if (ref !== undefined && /\s/u.test(ref)) {
+          throw new EntryError('"source.ref" must contain no whitespace')
+        }
         return {
           kind: 'git-subdir',
           url: requiredString(value.url, 'source.url'),
           path: requiredString(value.path, 'source.path'),
+          ...(sha === undefined ? {} : { sha }),
+          ...(sha === undefined && ref !== undefined ? { ref } : {}),
         }
       }
       case 'npm': {
         carried.add('package')
-        return { kind: 'npm', package: requiredString(value.package, 'source.package') }
+        carried.add('version')
+        const version = optionalString(value.version, 'source.version')
+        if (version !== undefined && /\s/u.test(version)) {
+          throw new EntryError('"source.version" must contain no whitespace')
+        }
+        return { kind: 'npm', package: requiredString(value.package, 'source.package'), ...(version === undefined ? {} : { version }) }
       }
       case 'archive': {
         carried.add('url')
@@ -470,21 +495,52 @@ export function resolveLocalSource(file: string, entry: MarketplaceEntry): Resol
   return { root, pluginDir }
 }
 
+/** A URL as it may be printed: no credentials, no query (a token is not display text). */
+function displayUrl(raw: string): string {
+  try {
+    const url = new URL(raw)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return raw
+  }
+}
+
 function sourceTarget(source: MarketplaceSource): string {
   switch (source.kind) {
     case 'local':
       return source.path
     case 'github':
       return source.repo
-    case 'git-subdir':
-      return `${source.url} (${source.path})`
+    case 'git-subdir': {
+      const pin = source.sha ?? source.ref
+      return `${displayUrl(source.url)} (${source.path})${pin === undefined ? '' : ` @ ${pin}`}`
+    }
     case 'npm':
-      return source.package
+      return source.version === undefined ? source.package : `${source.package}@${source.version}`
     case 'command':
       return source.command
     default:
-      return source.url
+      return displayUrl(source.url)
   }
+}
+
+/**
+ * The catalog entry as a result may carry it: the name and metadata are
+ * public, but a source URL may hold a token in its query and must not reach
+ * `--json` (or a log line) intact.
+ */
+function redactEntry(entry: MarketplaceEntry): MarketplaceEntry {
+  const source = entry.source
+  if (source.kind === 'url') return { ...entry, source: { ...source, url: displayUrl(source.url) } }
+  if (source.kind === 'git-subdir') return { ...entry, source: { ...source, url: displayUrl(source.url) } }
+  if (source.kind === 'github') {
+    return { ...entry, source: { ...source, repo: /^https?:/u.test(source.repo) ? displayUrl(source.repo) : source.repo } }
+  }
+  return entry
 }
 
 function problemText(problem: MarketplaceProblem): string {
@@ -527,8 +583,11 @@ export function listMarketplace(options: MarketplaceListOptions): MarketplaceLis
   const file = resolve(options.from)
   const marketplace = readMarketplace(file)
   const entries: ListedMarketplaceEntry[] = marketplace.entries.map((entry) => {
-    if (entry.source.kind === 'local') return { ...entry, installable: true }
-    return { ...entry, installable: false, unsupported: unsupportedReason(entry.source.kind) }
+    const shown = redactEntry(entry)
+    if (entry.source.kind === 'local' || entry.source.kind === 'url' || entry.source.kind === 'git-subdir' || entry.source.kind === 'npm') {
+      return { ...shown, installable: true }
+    }
+    return { ...shown, installable: false, unsupported: unsupportedReason(entry.source.kind) }
   })
   return {
     /** Malformed entries are problems; a remote entry is a valid catalog row. */
@@ -565,24 +624,94 @@ export function formatMarketplaceList(result: MarketplaceListResult): string {
 // install
 // ---------------------------------------------------------------------------
 
+export interface MarketplaceMetadata {
+  name: string
+  file: string
+  entry: MarketplaceEntry
+  /** The directory the install reads: the local plugin dir, or the cache artifact. */
+  root: string
+}
+
 export interface MarketplaceInstallOptions extends Omit<InstallOptions, 'pluginDir' | 'name' | 'source'> {
   /** The catalog file; relative paths resolve against the cwd (D49). */
   from: string
   /** Entry name as the catalog spells it (Claude: the name users type before `@`). */
   entry: string
+  /** Consent to the fetch, per invocation. Without it a remote entry is refused. */
+  yes?: boolean
 }
 
-export interface MarketplaceInstallResult extends InstallResult {
-  marketplace: {
-    name: string
-    file: string
-    entry: MarketplaceEntry
-    root: string
+export interface MarketplaceFetchPreview {
+  ok: true
+  dryRun: true
+  marketplace: MarketplaceMetadata
+  fetch: {
+    kind: RemoteSourceKind
+    /** The grant target, e.g. `git:https://…@main#plugins/x`. */
+    target: string
+    /** The exact command the fetch would run (URL query redacted). */
+    command: string
+    consent: 'none' | 'granted' | 'revoked'
+    /** The scope of the deciding grant/revoke, when one exists. */
+    scope?: Scope
+    /**
+     * The current artifact integrity. A dry run fetches nothing, so it cannot
+     * check whether a floating ref moved: this is always `unknown` here.
+     */
+    integrity: 'unknown'
+    /** The content address an existing grant pins, when there is one. */
+    pinnedIntegrity?: string
   }
 }
 
-export function installFromMarketplace(options: MarketplaceInstallOptions): MarketplaceInstallResult {
-  const { from, entry: requested, ...install } = options
+export interface MarketplaceInstallResult extends InstallResult {
+  marketplace: MarketplaceMetadata
+}
+
+export type MarketplaceInstallOutcome = MarketplaceInstallResult | MarketplaceFetchPreview
+
+/**
+ * The grant identity for a catalog entry. It is deliberately not the installed
+ * plugin identity: consent is to fetch *this catalog entry*, and the artifact
+ * may legitimately call itself something else. The name is the marketplace
+ * slug plus the entry name, both validated by the catalog parser.
+ */
+export function marketplaceIdentity(marketplace: string, entry: string): string {
+  const slug = marketplace.toLowerCase().replace(/[^a-z0-9-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'marketplace'
+  return `${slug}:${entry}`
+}
+
+function consentRequired(identity: string, target: { kind: RemoteSourceKind; target: string; command: string }): InstallCliError {
+  return new InstallCliError(
+    'network-consent-required',
+    `entry "${identity}" is fetched, not read: ${target.command}`,
+    `re-run with --yes to fetch it and record a network grant pinned to the resolved bytes (target ${target.target}); this grant never authorizes exec/mod`,
+  )
+}
+
+function consentRevoked(identity: string, target: string, scope: Scope | undefined): InstallCliError {
+  return new InstallCliError(
+    'network-consent-revoked',
+    `${identity} has a network revoke${scope === undefined ? '' : ` at ${scope} scope`} for ${target}`,
+    'a revoke beats a grant at the same or a narrower scope; delete the revoke before fetching again (--yes does not override it)',
+  )
+}
+
+function pinMoved(
+  identity: string,
+  target: string,
+  previous: { artifactHash: string; grantedAt: string },
+  fetched: string,
+): InstallCliError {
+  return new InstallCliError(
+    'network-pin-moved',
+    `${identity} resolved to ${fetched}, but the grant (granted ${previous.grantedAt}) pins ${previous.artifactHash} for ${target}; the pin moved`,
+    're-run with --yes to accept the new pin and install the fetched bytes',
+  )
+}
+
+export async function installFromMarketplace(options: MarketplaceInstallOptions): Promise<MarketplaceInstallOutcome> {
+  const { from, entry: requested, yes, ...install } = options
   const file = resolve(from)
   const marketplace = readMarketplace(file)
   // A duplicated name is not "the first one": the caller asked for a name the
@@ -595,7 +724,7 @@ export function installFromMarketplace(options: MarketplaceInstallOptions): Mark
   if (duplicate !== undefined) {
     throw new InstallCliError(
       'ambiguous-marketplace-entry',
-      `${file}:${duplicate.line ?? 1}: ${problemText(duplicate)}`,
+      `${file}: ${problemText(duplicate)}`,
       'rename one of the entries in the catalog; an install never picks between duplicates',
     )
   }
@@ -619,20 +748,126 @@ export function installFromMarketplace(options: MarketplaceInstallOptions): Mark
       'the catalog owner must change the entry policy before it can be installed',
     )
   }
-  const resolved = resolveLocalSource(file, entry)
+  const root = marketplaceRoot(file)
+  const metadata: MarketplaceMetadata = { name: marketplace.name, file, entry: redactEntry(entry), root }
+
+  if (entry.source.kind === 'local') {
+    const resolved = resolveLocalSource(file, entry)
+    const source = {
+      marketplace: marketplace.name,
+      entry: entry.name,
+      ...(entry.version === undefined ? {} : { version: entry.version }),
+    }
+    const result = installPlugin({ ...install, pluginDir: resolved.pluginDir, source })
+    return { ...result, marketplace: { ...metadata, root: resolved.root } }
+  }
+
+  const remote = entry.source
+  if (remote.kind !== 'url' && remote.kind !== 'git-subdir' && remote.kind !== 'npm') {
+    throw new InstallCliError(
+      'unsupported-marketplace-source',
+      `entry "${entry.name}" installs from ${remote.kind}: ${unsupportedReason(remote.kind)}`,
+    )
+  }
+
+  const scope = install.scope ?? 'user'
+  if (!SCOPES.includes(scope)) {
+    throw new InstallCliError('invalid-record', `--scope must be one of ${SCOPES.join(', ')}`)
+  }
+  const target = remoteTarget(remote, root)
+  const paths = installCliPaths(install)
+  const cacheRoot = join(dirname(paths.installs), 'marketplace-cache')
+  const identity = marketplaceIdentity(marketplace.name, entry.name)
+  const resolution = resolveGrant(readGrants(paths.grants), identity, NETWORK_CAPABILITY, target.target)
+  const deciding = resolution.record
+  const revoke = deciding?.kind === 'revoke'
+  const prior = deciding?.kind === 'grant' ? deciding.record : undefined
+
+  if (install.dryRun === true) {
+    return {
+      ok: true,
+      dryRun: true,
+      marketplace: { ...metadata, root: cacheRoot },
+      fetch: {
+        kind: target.kind,
+        target: target.target,
+        command: target.command,
+        consent: revoke ? 'revoked' : prior === undefined ? 'none' : 'granted',
+        ...(resolution.scope === undefined ? {} : { scope: resolution.scope }),
+        integrity: 'unknown',
+        ...(prior === undefined ? {} : { pinnedIntegrity: prior.artifactHash }),
+      },
+    }
+  }
+
+  if (revoke) throw consentRevoked(identity, target.target, resolution.scope)
+  if (prior === undefined && yes !== true) throw consentRequired(identity, target)
+
+  const artifact = await fetchEntry({
+    marketplace: marketplace.name,
+    entry: entry.name,
+    source: remote,
+    root,
+    cacheRoot,
+  })
+  const moved = prior !== undefined && prior.artifactHash !== artifact.integrity
+  if (moved && yes !== true) throw pinMoved(identity, target.target, prior, artifact.integrity)
+
+  const version = entry.version ?? artifact.version
   const source = {
     marketplace: marketplace.name,
     entry: entry.name,
-    ...(entry.version === undefined ? {} : { version: entry.version }),
+    ...(version === undefined ? {} : { version }),
+    integrity: artifact.integrity,
+    resolvedAt: artifact.resolvedAt,
   }
-  const result = installPlugin({ ...install, pluginDir: resolved.pluginDir, source })
-  return {
-    ...result,
-    marketplace: { name: marketplace.name, file, entry, root: resolved.root },
+  // A moved pin resolves to a different cache directory, so accepting it is
+  // also the consent to repoint the record's root: --force here is implied by
+  // --yes on a pin move, not a second user decision.
+  const result = installPlugin({
+    ...install,
+    ...(moved && yes === true ? { force: true } : {}),
+    pluginDir: artifact.pluginDir,
+    source,
+  })
+  // The grant is written only after the install succeeded. A fetch that is
+  // followed by a refused install leaves no standing network authorization.
+  if (prior === undefined || moved) {
+    updateGrants(paths.grants, (current) =>
+      grant(
+        current,
+        {
+          plugin: identity,
+          capability: NETWORK_CAPABILITY,
+          target: target.target,
+          artifactHash: artifact.integrity,
+        },
+        { scope },
+      ),
+    )
   }
+  return { ...result, marketplace: { ...metadata, root: artifact.root } }
 }
 
-export function formatMarketplaceInstall(result: MarketplaceInstallResult): string {
+export function formatMarketplaceInstall(outcome: MarketplaceInstallOutcome): string {
+  if ('fetch' in outcome) {
+    const plan = outcome.fetch
+    const consent =
+      plan.consent === 'none'
+        ? `none — pass --yes to fetch and record ${plan.target}`
+        : plan.consent === 'granted'
+          ? `granted (grant pins ${plan.pinnedIntegrity ?? 'not recorded'}; current integrity unknown — a dry run fetches nothing)`
+          : `revoked${plan.scope === undefined ? '' : ` at ${plan.scope} scope`}`
+    return [
+      `marketplace: ${outcome.marketplace.name}  ${outcome.marketplace.file}`,
+      `  entry: ${outcome.marketplace.entry.name}`,
+      '  dry run — nothing fetched, nothing written',
+      `  would fetch: ${plan.command}`,
+      '  integrity: unknown — a dry run fetches nothing',
+      `  network grant: ${consent}`,
+    ].join('\n')
+  }
+  const result = outcome
   const lines = [
     `marketplace: ${result.marketplace.name}  ${result.marketplace.file}`,
     `  entry: ${result.marketplace.entry.name}`,

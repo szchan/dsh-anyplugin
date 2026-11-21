@@ -205,6 +205,34 @@ test('a marketplace source is a JSON object inside the canonical quoted string',
   assert.deepEqual(parseInstalls(text, 'installs.yml'), lock(sample({ source })))
 })
 
+test('a fetched source records its integrity and the first resolvedAt', () => {
+  const source = {
+    marketplace: 'fetch-marketplace',
+    entry: 'git-plugin',
+    version: '0.1.0',
+    integrity: 'git:0123456789abcdef0123456789abcdef01234567',
+    resolvedAt: '2026-11-21T12:00:00.000Z',
+  }
+  const text = serializeInstalls(lock(sample({ source })))
+  // On disk the object's quotes are escaped by the outer canonical string.
+  assert.ok(text.includes('\\"integrity\\":\\"git:0123456789abcdef0123456789abcdef01234567\\"'))
+  assert.ok(text.includes('\\"resolvedAt\\":\\"2026-11-21T12:00:00.000Z\\"'))
+  assert.match(text, /schema: "dsh-anyplugin\/installs@2"/u)
+  assert.deepEqual(parseInstalls(text, 'installs.yml'), lock(sample({ source })))
+})
+
+test('the other integrity kinds are accepted; anything else is refused', () => {
+  const withSource = (extra) => sample({ source: { marketplace: 'm', entry: 'e', ...extra } })
+  for (const integrity of ['npm:' + 'a'.repeat(128), 'sha256:' + 'b'.repeat(64)]) {
+    assert.doesNotThrow(() => validateInstalls(lock(withSource({ integrity, resolvedAt: '2026-11-21T12:00:00Z' }))))
+  }
+  const refuse = (extra, pattern) => assert.throws(() => validateInstalls(lock(withSource(extra))), pattern)
+  refuse({ integrity: 'git:abc', resolvedAt: '2026-11-21T12:00:00Z' }, /"source\.integrity" must look like/u)
+  refuse({ integrity: 'git:' + 'a'.repeat(40) }, /"source\.integrity" and "source\.resolvedAt" must be recorded together/u)
+  refuse({ resolvedAt: '2026-11-21T12:00:00Z' }, /"source\.integrity" and "source\.resolvedAt" must be recorded together/u)
+  refuse({ integrity: 'git:' + 'a'.repeat(40), resolvedAt: 'yesterday' }, /"source\.resolvedAt" must be an ISO-8601 UTC instant/u)
+})
+
 test('a legacy string source still round-trips unchanged', () => {
   const parsed = parseInstalls(serializeInstalls(lock(sample({ source: 'plugin-dir:plugins/x' }))), 'installs.yml')
   assert.equal(parsed.plugins[0].source, 'plugin-dir:plugins/x')

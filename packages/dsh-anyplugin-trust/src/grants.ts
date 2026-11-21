@@ -24,11 +24,19 @@ export type Scope = 'local' | 'project' | 'user'
 /** Narrowest first. Index in this list is the precedence rank. */
 export const SCOPES: readonly Scope[] = ['local', 'project', 'user']
 
-/** The only capability this package can classify today. */
+/** The capability that gates running foreign code (hooks, mods, bins). */
 export const EXEC_CAPABILITY = 'exec'
 
+/**
+ * The capability that gates a marketplace fetch (D27, D52). It is deliberately
+ * a different capability than `exec`: consenting to download a plugin is not
+ * consenting to run anything, and a network grant must never satisfy an exec
+ * target.
+ */
+export const NETWORK_CAPABILITY = 'network'
+
 /** Capabilities a store may name. A typo must not become an inert grant. */
-const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set([EXEC_CAPABILITY])
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set([EXEC_CAPABILITY, NETWORK_CAPABILITY])
 
 export interface GrantRecord {
   /** Install identity, `<dialect>:<plugin>` (D23). */
@@ -36,7 +44,7 @@ export interface GrantRecord {
   capability: string
   /** Artifact identity within the plugin, e.g. `hook:PostToolUse#0`. */
   target: string
-  /** `sha256:<hex>` over the bytes that will run. */
+  /** Content address of the bytes that will run: `sha256:<hex>`, `git:<commit>` or `npm:<sha512>`. */
   artifactHash: string
   /** ISO-8601 UTC instant the grant was issued. */
   grantedAt: string
@@ -76,7 +84,13 @@ export class GrantsFileError extends Error {
 const PLUGIN = /^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@-]*$/
 const CAPABILITY = /^[a-z][a-z0-9-]*$/
 const TARGET = /^[a-z][a-z0-9-]*:\S+$/
-const HASH = /^sha256:[0-9a-f]{64}$/
+/**
+ * Artifact hashes this store can pin. `sha256:` is a local file; `git:` names
+ * the commit a git source resolved to; `npm:` is the sha512 of the tarball the
+ * registry (or a local path) produced. All three are content addresses, so a
+ * grant that names one is invalidated by any change to the artifact.
+ */
+const HASH = /^(?:sha256:[0-9a-f]{64}|git:[0-9a-f]{40}|npm:[0-9a-f]{128})$/
 const GRANTED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
 const SCOPE = /^(?:local|project|user)$/
 const FIELD = /^([a-z][A-Za-z0-9]*):\s+("(?:[^"\\]|\\.)*")\s*$/
@@ -153,7 +167,10 @@ function validateGrantRecord(
   }
   for (const field of GRANT_FIELDS) checkShared(field, raw[field], file, at(field))
   if (!HASH.test(raw.artifactHash)) {
-    throw new GrantsFileError('"artifactHash" must look like "sha256:<64 lowercase hex>"', { file, line: at('artifactHash') })
+    throw new GrantsFileError(
+      '"artifactHash" must look like "sha256:<64 lowercase hex>", "git:<40 lowercase hex>" or "npm:<128 lowercase hex>"',
+      { file, line: at('artifactHash') },
+    )
   }
   if (!GRANTED_AT.test(raw.grantedAt) || Number.isNaN(Date.parse(raw.grantedAt))) {
     throw new GrantsFileError('"grantedAt" must be an ISO-8601 UTC instant (…Z)', { file, line: at('grantedAt') })

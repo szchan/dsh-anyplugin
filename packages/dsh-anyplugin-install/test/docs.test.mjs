@@ -50,9 +50,18 @@ test('the ARCHITECTURE §5 and D23 examples parse with the shipped reader', () =
   assert.deepEqual(decisionLock, { ...archLock, plugins: required }, 'both snippets describe the same required fields')
   assert.deepEqual(
     archLock.plugins.map((record) => record.source),
-    [{ marketplace: 'my-marketplace', entry: 'skills-only' }],
+    [
+      {
+        marketplace: 'my-marketplace',
+        entry: 'skills-only',
+        integrity: 'git:9f1c2ab3d4e5f60718293a4b5c6d7e8f90123456',
+        resolvedAt: '2026-11-21T00:00:00Z',
+      },
+    ],
     'ARCHITECTURE shows the optional source provenance line',
   )
+  assert.match(archLock.plugins[0].source.integrity, /^git:[0-9a-f]{40}$/u)
+  assert.match(archLock.plugins[0].source.resolvedAt, /^\d{4}-\d{2}-\d{2}T/u)
   assert.match(fromArch[0], /"dsh-anyplugin\/installs@2"/, 'the architecture example is current')
   assert.match(fromDecision[0], /"dsh-anyplugin\/installs@1"/, 'D23 keeps the version it ratified')
   assert.deepEqual(
