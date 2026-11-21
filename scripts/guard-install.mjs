@@ -17,6 +17,7 @@
 // `--profile-dir` defaults to DSH_PROFILE_DIR, then $DSH_HOME/profiles/$DSH_PROFILE.
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -38,8 +39,31 @@ import {
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
 import { configuredHooksPath, hookTargets, installPrePushHook, prePushStatus, readPrePushHook, removePrePushHook, writePrePushHook } from './guard-hooks.mjs'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
+const scriptRoot = fileURLToPath(new URL('..', import.meta.url))
 const argv = process.argv.slice(2)
+
+function gitToplevel(start) {
+  try {
+    return execFileSync('git', ['-C', start, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return undefined
+  }
+}
+
+function isLinkedWorktree(path) {
+  try {
+    const common = execFileSync('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return resolve(common, '..') !== resolve(path)
+  } catch {
+    return false
+  }
+}
 
 function usage(message) {
   if (message !== undefined) console.error(`guard:install: ${message}`)
@@ -65,6 +89,21 @@ if (options.dryRun && options.uninstall) usage('--dry-run and --uninstall are di
 
 const profileDir = options.profileDir ?? resolve(defaultProfileDir())
 const patchFile = join(profileDir, PATCH_FILE)
+
+// The target checkout is the caller's: `--worktree`, else the cwd's repository,
+// else the checkout this script lives in. A linked worktree shares its git
+// directory with the main checkout, so installing from one would write the
+// main checkout's hooks; refuse that instead of surprising the caller.
+const cwdRoot = gitToplevel(process.cwd())
+const root = resolve(options.worktrees[0]?.path ?? cwdRoot ?? scriptRoot)
+if (!options.dryRun && isLinkedWorktree(root)) {
+  console.error(
+    `guard:install: ${root} is a linked worktree, and git shares one hooks directory with the main checkout. ` +
+      'Run from the main checkout or a scratch clone, or use --dry-run (which writes nothing).',
+  )
+  process.exit(1)
+}
+console.log(`guard: root ${root}`)
 
 function printError(error) {
   const message = error instanceof Error ? error.message : String(error)

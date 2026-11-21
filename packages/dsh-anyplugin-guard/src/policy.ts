@@ -821,11 +821,28 @@ function hasSingleAmpersand(command: string): boolean {
  * write call. This is the documented limit of shell-level confinement; a
  * committed script can still write, and the sandbox is the boundary.
  */
+function maskedCode(payload: string): string {
+  // A quoted sentence that merely contains a token is data, not a call. Mask
+  // the quoted spans (keeping byte positions) and require a match to start in
+  // code, so a real `open(…, 'w')` still counts while `"open("` as text does not.
+  return payload.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/gu, (match) => ' '.repeat(match.length))
+}
+
+function payloadMatches(payload: string, pattern: RegExp): boolean {
+  const masked = maskedCode(payload)
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+  for (const match of payload.matchAll(new RegExp(pattern.source, flags))) {
+    if (match.index === undefined) continue
+    if (masked.slice(match.index, match.index + match[0].length).trim().length > 0) return true
+  }
+  return false
+}
+
 function interpreterWrite(tokens: string[]): boolean {
   const head = stripPrefix(tokens)
   if (head.length === 0 || !INTERPRETERS.has(baseCommand(head[0]))) return false
   const payload = head.slice(1).find((token) => !token.startsWith('-'))
-  return payload !== undefined && WRITE_PAYLOAD.test(payload)
+  return payload !== undefined && payloadMatches(payload, WRITE_PAYLOAD)
 }
 
 /**
@@ -834,13 +851,13 @@ function interpreterWrite(tokens: string[]): boolean {
  * and a downloaded script remain possible, and the docs say so.
  */
 const SPAWN_PAYLOAD =
-  /child_process|\bexec[a-z]*\s*\(|\bpopen\b|Kernel\.exec|os\.exec|spawn|os\.system|subprocess|system\(/u
+  /child_process|\bexec[A-Za-z]*\s*\(|\bpopen\b|\bspawn[A-Za-z]*\s*\(|Kernel\.exec|os\.exec|os\.system|subprocess|system\(/u
 
 function interpreterExec(tokens: string[]): boolean {
   const head = stripPrefix(tokens)
   if (head.length === 0 || !INTERPRETERS.has(baseCommand(head[0]))) return false
   const payload = head.slice(1).find((token) => !token.startsWith('-'))
-  return payload !== undefined && SPAWN_PAYLOAD.test(payload)
+  return payload !== undefined && payloadMatches(payload, SPAWN_PAYLOAD)
 }
 
 /** Constructs whose effects the segment parser cannot see. Refused, not guessed. */
@@ -986,6 +1003,9 @@ function segmentWriteTargets(segment: ShellSegment): string[] {
         if (value !== undefined) targets.push(value)
       } else if (args[index].startsWith('--directory=')) {
         targets.push(args[index].slice('--directory='.length))
+      } else if (args[index].startsWith('-C') && args[index].length > 2) {
+        // GNU tar accepts the directory attached: `-C.git`, `-C/tmp/out`.
+        targets.push(args[index].slice(2))
       }
     }
   }
@@ -1112,14 +1132,19 @@ function collectShellWrites(segments: ShellSegment[], cwd: string | undefined): 
 }
 
 /**
- * True when the command that actually runs is `sudo`, after `env` options and
- * leading assignments. Matching the first four tokens instead would refuse
- * `git commit -m sudo` and `grep sudo README.md`, which are ordinary work.
+ * True when the command that actually runs is `sudo`, after launchers such as
+ * `env`, `command`, `exec`, `nice`, `timeout` and `xargs`. Matching the first
+ * four tokens instead would refuse `git commit -m sudo` and `grep sudo
+ * README.md`, which are ordinary work.
  */
 function sudoAtCommandPosition(tokens: string[]): boolean {
   let index = 0
   while (index < tokens.length) {
     const token = tokens[index]
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+      index += 1
+      continue
+    }
     if (token === 'env' || token === 'command') {
       index += 1
       while (index < tokens.length) {
@@ -1136,8 +1161,34 @@ function sudoAtCommandPosition(tokens: string[]): boolean {
       }
       continue
     }
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+    if (token === 'exec') {
       index += 1
+      if (tokens[index] === '-a') index += 2
+      continue
+    }
+    if (token === 'nice') {
+      index += 1
+      while (index < tokens.length && tokens[index].startsWith('-')) {
+        index += tokens[index] === '-n' || tokens[index] === '--adjustment' ? 2 : 1
+      }
+      continue
+    }
+    if (token === 'timeout') {
+      index += 1
+      while (index < tokens.length && tokens[index].startsWith('-')) {
+        const flag = tokens[index]
+        index += flag === '-s' || flag === '--signal' || flag === '-k' || flag === '--kill-after' ? 2 : 1
+      }
+      index += 1 // the duration
+      continue
+    }
+    if (token === 'xargs') {
+      index += 1
+      while (index < tokens.length && tokens[index].startsWith('-')) {
+        const flag = tokens[index]
+        const takesValue = ['-I', '--replace', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '-L', '--max-lines', '-d', '--delimiter', '-E', '-a', '--arg-file']
+        index += takesValue.includes(flag) && !flag.includes('=') ? 2 : 1
+      }
       continue
     }
     return token === 'sudo'

@@ -1301,18 +1301,21 @@ reading stdin, unknown commands, unquoted `$` expansion — and refuses a
 worker's interpreter `-c`/`-e` payload that looks like a write
 (`writeFileSync`, `renameSync`, `copyFileSync`, `cpSync`, `linkSync`, `symlinkSync`,
 `truncateSync`, Python/Ruby/PHP equivalents) or contains a literal process-spawn
-token (`exec`, `popen`, `spawn`, `system`, `subprocess`; `interpreter-exec`). A
-worker may not run a **shell** script file either (`shell-script-unverified`):
+token (`exec`, `popen`, `spawn`, `system`, `subprocess`; `interpreter-exec`).
+String literals are masked before the match, so `node -e 'console.log("exec(")'`
+is ordinary code, not a spawn; a call written outside the quotes is still denied.
+A worker may not run a **shell** script file either (`shell-script-unverified`):
 the bytes are writable and the reader does not read them, so the script could be
 rewritten to push main between the check and the run. Symlinks are resolved
 before confinement. A worker cannot write inside `.git` through a modelled
 write — shell redirects and write verbs, structured `write`/`edit`/`apply_patch`,
-interpreter mutation literals (`interpreter-write`) and `tar -C <dir>`
-extraction (`git-dir-write`): appending a diff driver, a filter or a hook to
-`.git/config` would run on the next git command, which no command-line key
-check can see. `sudo` is refused for workers when it is the command that runs,
-after `env` options and leading assignments: it is not parsed, and on a host
-with passwordless sudo it would be root. The shell subset is deliberately narrow and is stated in the
+interpreter mutation literals (`interpreter-write`) and `tar -C <dir>` or GNU's
+attached `tar -C<dir>` extraction (`git-dir-write`): appending a diff driver, a
+filter or a hook to `.git/config` would run on the next git command, which no
+command-line key check can see. `sudo` is refused for workers when it is the
+command that runs, after the launchers we model (`env`, `command`, `exec`,
+`nice`, `timeout`, `xargs`) and leading assignments: it is not parsed, and on a
+host with passwordless sudo it would be root. The shell subset is deliberately narrow and is stated in the
 brief: one command list per call; `&&`, `||`, `|` and redirections
 (including `2>&1`) are modelled, everything else is refused.
 
@@ -1352,15 +1355,16 @@ open a PR, which is the workflow we want anyway. What the guard buys is that the
 
 The residual holes are named rather than papered over: worker interpreter
 payloads (only literal spawn spellings — including `exec` and `popen` — are
-denied, so `String.fromCharCode`, `globalThis['pro'+'cess']` or a downloaded
-script remain possible),
+denied, and quoted spans are masked rather than analysed, so a spelling built at
+runtime, or hidden behind `eval` of a string, remains possible),
 `node scripts/*.mjs` and `npm run *` (both editable, so unverified), a
 `--no-verify` inside a command the reader did not model, non-git file writes
 from allowed tools, a root-run shell script, a root-written exec key that a host
 later runs, config already present in the repository or written by a process
 outside the guard (the guard models the tool call, not the filesystem),
-`sudo` on a host where it succeeds without a password, and any git feature
-outside the modelled subcommands. The guard decision is recorded on merge; this
+`sudo` on a host where it succeeds without a password, a launcher spelling the
+command-position skipper does not model, and any git feature outside the
+modelled subcommands. The guard decision is recorded on merge; this
 paragraph is its framing, not a second decision. Branch protection, the DSH
 file sandbox and CI are the boundary.
 
@@ -1388,6 +1392,14 @@ marker are refused rather than silently rewritten. `--dry-run` composes the
 same block, prints it and runs the payload→verdict table through the same judge,
 writing nothing; `guard:status` re-composes and compares (ignoring the state
 line), so a stale block is visible without loading the profile.
+
+The installer's target checkout is the caller's, not the script's: `--worktree`
+if given, else the git top level of the cwd, else the checkout the script lives
+in. A linked worktree shares its hooks directory with the main checkout, so a
+real install from one is refused before anything is written (the message names
+the checkout); `--dry-run` still works because it writes nothing. This is what
+keeps a review worktree from installing a hook into the checkout it is
+reviewing.
 
 ### Why dynamic packages cannot be the reconcile substrate
 

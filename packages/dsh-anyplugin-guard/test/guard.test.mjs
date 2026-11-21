@@ -5,7 +5,7 @@
 // block). They are deliberately adversarial: every deny case has an allow case
 // one flag away, so a rule that fires on the wrong thing fails here.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +42,29 @@ import {
 const checkout = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/u, '')
 const repo = '/work/repo'
 const worktree = '/work/wt/ticket-80'
+
+// A minimal main checkout that carries the current sources: a linked worktree
+// refuses installs (its hooks dir is the main checkout's), so the rollback path
+// has to run in an ordinary repository.
+function scratchCheckout() {
+  const dir = mkdtempSync(join(tmpdir(), 'guard-scratch-checkout-'))
+  mkdirSync(join(dir, 'packages/dsh-anyplugin-guard'), { recursive: true })
+  mkdirSync(join(dir, 'packages/dsh-anyplugin-conformance/test'), { recursive: true })
+  mkdirSync(join(dir, 'scripts'), { recursive: true })
+  mkdirSync(join(dir, 'docs'), { recursive: true })
+  cpSync(join(checkout, 'packages/dsh-anyplugin-guard/src'), join(dir, 'packages/dsh-anyplugin-guard/src'), { recursive: true })
+  cpSync(
+    join(checkout, 'packages/dsh-anyplugin-conformance/test/coverage.test.mjs'),
+    join(dir, 'packages/dsh-anyplugin-conformance/test/coverage.test.mjs'),
+  )
+  cpSync(join(checkout, 'docs/FEATURES.md'), join(dir, 'docs/FEATURES.md'))
+  cpSync(join(checkout, 'scripts/guard-install.mjs'), join(dir, 'scripts/guard-install.mjs'))
+  cpSync(join(checkout, 'scripts/guard-hooks.mjs'), join(dir, 'scripts/guard-hooks.mjs'))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'guard-scratch', private: true, type: 'module' }))
+  execFileSync('git', ['init', '-q', dir])
+  return dir
+}
+
 const config = {
   worktrees: [worktree],
   protectedRoots: [repo],
@@ -592,7 +615,37 @@ test('interpreter file mutations and tar extraction cannot write .git', () => {
   const tar = shell('tar -xf /tmp/evil.tar -C .git')
   assert.equal(tar.kind, 'deny')
   assert.equal(tar.rule, 'git-dir-write')
+  const attached = shell('tar -xf /tmp/evil.tar -C.git')
+  assert.equal(attached.kind, 'deny', 'GNU tar accepts -C.git attached')
+  assert.equal(attached.rule, 'git-dir-write')
+  const outside = shell('tar -xf /tmp/evil.tar -C/tmp/tarout7')
+  assert.equal(outside.kind, 'deny')
+  assert.equal(outside.rule, 'write-outside-worktree')
   assert.equal(shell('tar -xf /tmp/evil.tar').kind, 'allow', 'extracting into the worktree is ordinary')
+
+  // The payload is live, not hypothetical: the same attached form really does
+  // replace `.git/config` when the guard is not in the way.
+  const staging = mkdtempSync(join(tmpdir(), 'guard-tar-src-'))
+  const destination = mkdtempSync(join(tmpdir(), 'guard-tar-dst-'))
+  try {
+    writeFileSync(join(staging, 'config'), '[diff "foo"]\n  command = sh -c "git push origin HEAD:main"\n')
+    mkdirSync(join(destination, '.git'))
+    writeFileSync(join(destination, '.git', 'config'), 'original\n')
+    execFileSync('tar', ['-cf', join(staging, 'evil.tar'), '-C', staging, 'config'])
+    execFileSync('tar', ['-xf', join(staging, 'evil.tar'), '-C.git'], { cwd: destination })
+    assert.match(readFileSync(join(destination, '.git', 'config'), 'utf8'), /git push origin HEAD:main/u)
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(destination, { recursive: true, force: true })
+  }
+})
+
+test('spawn and write tokens inside string literals are data, not calls', () => {
+  assert.equal(shell(`node -e 'console.log("exec(")'`).kind, 'allow')
+  assert.equal(shell(`python3 -c 'print("exec(")'`).kind, 'allow')
+  assert.equal(shell(`node -e 'console.log("renameSync(")'`).kind, 'allow')
+  // The literal call next to the string is still refused.
+  assert.equal(shell(`node -e 'console.log("exec("); exec("git push origin main")'`).rule, 'interpreter-exec')
 })
 
 test('sudo is matched at command position, not as a word', () => {
@@ -603,6 +656,10 @@ test('sudo is matched at command position, not as a word', () => {
   assert.equal(shell('sudo --preserve-env git status').rule, 'sudo-refused')
   assert.equal(shell('env -i -u X sudo git status').rule, 'sudo-refused')
   assert.equal(shell('FOO=1 sudo git status').rule, 'sudo-refused')
+  for (const command of ['exec sudo git status', 'nice sudo git status', 'timeout 5 sudo git status', 'xargs sudo true']) {
+    assert.equal(shell(command).rule, 'sudo-refused', command)
+  }
+  assert.equal(shell('nice -n 5 git status').kind, 'allow', 'nice without sudo stays ordinary')
 })
 
 test('the installed pre-push hook refuses every spelling git resolves to main', () => {
@@ -720,23 +777,40 @@ test('the tool layer refuses hook bypasses before a remote can move', () => {
 })
 
 test('a failed profile write rolls the pre-push hook back', () => {
+  const scratch = scratchCheckout()
   const profile = mkdtempSync(join(tmpdir(), 'guard-rollback-'))
-  const hooks = hooksDirectory(checkout)
+  const hooks = hooksDirectory(scratch)
   const target = join(hooks, 'pre-push')
-  const before = readPrePushHook(target)
+  assert.equal(readPrePushHook(target), undefined)
   chmodSync(profile, 0o500)
+  try {
+    const result = spawnSync(process.execPath, ['scripts/guard-install.mjs', '--profile-dir', profile], {
+      cwd: scratch,
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 1, result.stdout + result.stderr)
+    assert.match(result.stderr, /EACCES|permission denied|operation not permitted/iu)
+    assert.equal(readPrePushHook(target), undefined, 'the hook was rolled back when the patch could not be written')
+  } finally {
+    chmodSync(profile, 0o700)
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('an install from a linked worktree is refused before it can touch the main hooks', () => {
+  const before = readPrePushHook(join(hooksDirectory(checkout), 'pre-push'))
+  const profile = mkdtempSync(join(tmpdir(), 'guard-linked-'))
   try {
     const result = spawnSync(process.execPath, ['scripts/guard-install.mjs', '--profile-dir', profile], {
       cwd: checkout,
       encoding: 'utf8',
     })
     assert.equal(result.status, 1, result.stdout + result.stderr)
-    assert.equal(readPrePushHook(target), before, 'the hook was restored when the patch could not be written')
+    assert.match(result.stderr, /linked worktree/u)
+    assert.equal(readPrePushHook(join(hooksDirectory(checkout), 'pre-push')), before)
   } finally {
-    chmodSync(profile, 0o700)
     rmSync(profile, { recursive: true, force: true })
-    if (before !== undefined) installPrePushHook(target, before)
-    else removePrePushHook(target)
   }
 })
 
