@@ -2427,3 +2427,69 @@ groups 17; $ calls 22` and `24 served + 3 typed refusals + 3 absent`.
   regressions; the override set is derived at runtime, not hard-coded.
 - The bridge is not a sandbox for mods. It removes one execution channel from a
   read; a mod already runs with the authority its grant records (D25).
+
+## D52 — A mod is a tree, a digest and a grant; the lock records the tree it booted
+
+**Date:** 2026-11-21. **Supersedes D25 for mods only** on two sentences — “files:
+the program only” and “There is no sorting”. Hooks keep D25 unchanged.
+
+A mod is an artifact of its whole plugin tree, not of its entry file. A tree is
+framed in sorted plugin-relative path order (`.git/`, `node_modules/` and the
+data directory excluded), so one digest survives a different checkout location.
+Every file under the root is part of the artifact: a mod may import any of them.
+
+- **Dialect.** `hooks/hooks.json`'s `modules` become `IrMod {entry,
+  rootRelative, annotation}`. A module is `equivalent` only when the host could
+  load that tree (D30, D34); otherwise it is `unsupported` with the refusal it
+  would hit named in the reason.
+- **Lock.** `installs@2` records `mods` as plugin-relative paths in sorted order
+  with `{mode, invocation, files}`. An `@1` lock reads as “no mods” and
+  normalizes on write; a `@2` lock replayed as `@1` is refused with
+  `unknown field "mods"` and a line number, so a downgrade cannot silently drop
+  the record.
+- **Trust.** Mods are `exec`-class (D25). The grant's artifact is the tree
+  digest. Install refuses before evaluation without a grant; boot refuses
+  without the lock record (`not-recorded`) even when a grant exists;
+  `--drop-mods` is the only path that drops the block, and `--force` never does.
+- **Load.** The materializer requires an absolute, real `pluginRoot`, compares
+  the file set and bytes against the grant, and hands the scan's **byte map** to
+  `loadMod` and the linker. No path is re-opened after the check, and an import
+  the grant does not name is `ERR_MOD_HOST_UNGRANTED`. This closes the
+  gate/load window rather than narrowing it.
+- **Churn.** Touching any file in the tree — a README, a fixture — changes the
+  digest and invalidates the grant. That is the cost of the whole-tree framing
+  and is deliberate.
+
+**What D52 does not claim.** Each item below is a named gap, not an oversight:
+
+- **Runtime reads are unconfined.** `$.fs.read` still serves absolute paths,
+  `../` escapes and symlinks outside the tree; `bridge.test.mjs` pins that
+  pass-through. Read confinement is proposed as **D53** and must not be read
+  into this entry.
+- `.tsx` entries stay `planned` in the dialect (D34 defines the transform, not
+  a bundler).
+- `modules` declared outside `hooks/hooks.json` are out of scope.
+- A file added after the grant is caught at the next load, not by a watcher.
+- A hand-edited lock row with a recomputed, self-consistent digest is
+  indistinguishable from the controller's; the consent boundary is
+  `grants.yml` plus the lock.
+- The 64 MiB snapshot cap has no over-cap fixture.
+
+**Evidence.** `packages/dsh-anyplugin-dialect-claude-code/src/index.ts` (modules
+to `IrMod`), `packages/dsh-anyplugin-install/src/installs.ts` (`@2` reader and
+normalizer), `packages/dsh-anyplugin-materialize-hook/src/index.ts` (real root,
+digest comparison, byte-map hand-off), `packages/dsh-anyplugin-mod-host/src/
+loader.ts` (`ERR_MOD_HOST_UNGRANTED`), `install-cli.test.mjs` (symlinked root
+records the real path and boots), `pinned.test.mjs` (both digests; added file)
+and the mutations that redden the controller flag, the linker bound and the
+snapshot hand-off.
+
+**Consequences.**
+
+- A new mod surface is a new record shape here, not a quiet widening of the
+  tree.
+- Any tool that rewrites a plugin tree invalidates its grant; the installer
+  reports the digest change, it does not re-grant.
+- Read confinement is its own decision (D53); until then a mod reads what its
+  process can read, and the grant must not be described as content
+  confinement.
