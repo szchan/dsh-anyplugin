@@ -54,11 +54,15 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `env` field (`dsh-tool-bash/src/index.ts:515-521`,
       `dsh-tool-pwsh/src/index.ts:542`); the child PATH is the inherited process
       PATH (`dsh-bash-local/src/index.ts:172`,
-      `dsh-subprocess-local/src/spawn.ts:45-46`). Proposal: an append-only
-      `extraPath` (or equivalent) on `ShellExecRequest`/`ShellEnvRegistry`,
-      applied *after* the inherited PATH so the user's own entries still win
-      (Claude's order), owned by plugin scope, and gated by the `bin/` files'
-      exec grant (D25). Until it exists, `bin/` is `unsupported` (S19).
+      `dsh-subprocess-local/src/spawn.ts:45-46`). A per-call
+      `tools/pre-execute` rewrite can prepend the directory (S19 proves it runs
+      a command), but it diverges: the rewritten text is the `tool_input` later
+      hooks and the transcript see, pwsh syntax differs, and the ordering rule
+      becomes an in-rewrite choice. Proposal: an append-only `extraPath` (or
+      equivalent) on `ShellExecRequest`/`ShellEnvRegistry`, applied *after* the
+      inherited PATH so the user's own entries still win (Claude's order),
+      owned by plugin scope, and gated by the `bin/` files' exec grant (D25).
+      Until it exists, `bin/` is `planned` (S19).
 - [ ] Monitor notifications: a background process's stdout reaching the model.
 - [ ] Terminal ANSI palette (F2).
 

@@ -1249,21 +1249,40 @@ function readMcp(root: string, plugin: string): {
 }
 
 /**
+ * Why `bin/` is `planned`, not `unsupported`.
+ *
+ * S19 measured that the managed environment cannot carry it: `dsh-shell-env`
+ * accepts declared `DSH_*` keys only, and the model-facing shell tools send
+ * only that overlay, with no `env` parameter. But the surface is expressible
+ * without a core change: a `tools/pre-execute` listener can rewrite the bash
+ * command before dispatch (this repository's classic-hook materializer does
+ * exactly that for `updatedInput`, packages/dsh-anyplugin-materialize-hook/
+ * src/index.ts:224-257, applied at :1716). That route diverges, so it is
+ * declined for now rather than shipped silently:
+ *
+ * - the rewritten command is the `tool_input` later hooks and the transcript
+ *   see, so the plugin's PATH prefix becomes part of the observed call;
+ * - PowerShell syntax differs, so one rewrite grammar cannot serve both tools;
+ * - Claude appends plugin bins after the user's entries; a rewrite has to make
+ *   that ordering decision itself, and a prepend would win where Claude loses.
+ *
+ * What remains is the union-only PATH contribution proposed in docs/TODO.md.
+ * Exec classification (D25) already pins the files; this row claims only that
+ * the surface is expressible, not that it is carried.
+ */
+const BIN_REASON =
+  'bin/ needs the model shell PATH. The managed environment cannot supply it: at 0.2.2-rc.5 and 0.2.2-rc.2 on Linux, dsh-shell-env accepts declared DSH_* keys only (register() throws `bash env contributor "s19-path" declared invalid key "PATH"`) and refuses an undeclared key at resolve with SHELL_ENV_CONTRIBUTION_INVALID; the model-facing bash and pwsh tools (pwsh was source-read only on Linux) send only that overlay and expose no env parameter. ' +
+  'It is expressible only as a per-call rewrite through the tools/pre-execute seam (packages/dsh-anyplugin-materialize-hook/src/index.ts:224-257 rewrites exec.arguments before next()), which we decline for now because it diverges: later hooks and the transcript see the rewritten command as tool_input, pwsh syntax differs, and Claude\'s rule that plugin bins follow the user\'s entries becomes an ordering choice inside the rewrite. ' +
+  'Planned for the union-only PATH contribution proposed in docs/TODO.md.'
+
+/**
  * Surfaces that exist only as a fixed file or a directory and have no
  * materializer at the pin. This is read next to the other surface readers, not
  * inside `readMcp()`: when it lived there, a plugin with `themes/` (or, now,
  * `bin/`) but no `.mcp.json` returned early and reported nothing at all.
- *
- * `bin/` is `unsupported` rather than `planned`: S19 measured at 0.2.2-rc.5 that
- * the shell tools take their managed env from `dsh-shell-env`, which accepts
- * declared `DSH_*` keys only, and the tool request has no caller `env` field to
- * smuggle a PATH through. Exec classification (D25) already pins the files;
- * what is missing is a host seam that would put them on PATH, tracked in
- * docs/TODO.md.
  */
-function readOptionalSurfaces(root: string): { pending: IrUnmaterialized[]; unsupported: IrUnmaterialized[] } {
+function readOptionalSurfaces(root: string): IrUnmaterialized[] {
   const pending: IrUnmaterialized[] = []
-  const unsupported: IrUnmaterialized[] = []
   for (const [surface, dir, reason] of [
     ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
     ['themes', 'themes', 'Terminal colour palettes have no DSH palette seam yet (F2); planned for v0.4.'],
@@ -1280,17 +1299,14 @@ function readOptionalSurfaces(root: string): { pending: IrUnmaterialized[]; unsu
     })
   }
   if (existsSync(join(root, 'bin'))) {
-    unsupported.push({
+    pending.push({
       surface: 'bin',
       name: 'bin',
       sourcePath: 'bin',
-      annotation: {
-        fidelity: 'unsupported',
-        reason: 'bin/ must join the model shell PATH, and the pinned host has no seam for it: dsh-shell-env accepts DSH_* keys only (register() throws `declared invalid key "PATH"`) and the model-facing bash/pwsh tools expose no env parameter. S19 proved a bin/ command never resolves (exit 127). Needs the upstream PATH-contribution seam tracked in docs/TODO.md.',
-      },
+      annotation: { fidelity: 'planned', reason: BIN_REASON },
     })
   }
-  return { pending, unsupported }
+  return pending
 }
 
 /**
@@ -1407,10 +1423,10 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { mods, pending: modPending } = readMods(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
-  const { pending: surfacePending, unsupported: surfaceUnsupported } = readOptionalSurfaces(root)
+  const surfacePending = readOptionalSurfaces(root)
 
-  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...stylePending, ...surfacePending]
-  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported, ...surfaceUnsupported]
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...surfacePending, ...stylePending]
+  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
     if (key in manifest) {

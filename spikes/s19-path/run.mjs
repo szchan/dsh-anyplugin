@@ -17,7 +17,11 @@
 //   4. try to register `PATH` and try to smuggle it from `resolve()`, and keep
 //      the exact errors;
 //   5. put `probecmd` and `ls` in a probe `bin/`, then try the bare names and
-//      check who wins.
+//      check who wins;
+//   6. prove the second host path: a synthetic `tools/pre-execute` listener
+//      rewrites the command to prepend that bin, so the bare name runs, and
+//      disposing the listener restores the 127. This is the per-call rewrite
+//      the dialect declines for now, measured rather than assumed.
 //
 // The spike does not mutate `process.env.PATH`: issue #131 forbids it, and a
 // measurement that changes the thing it measures would not answer the question.
@@ -198,11 +202,10 @@ async function main() {
     `dsh-bash-local/src/index.ts:${lineOf(bashLocalSource, 'env: { ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv },')}`,
   )
   check(
-    'the child environment is the scrubbed parent environment plus that overlay, and PATH survives the scrub',
+    'the child environment starts from scrubbedParentEnv() and layers the overlay on top',
     spawnSource.includes('const env = scrubbedParentEnv()') &&
       spawnSource.includes('return { ...env, ...extra }') &&
-      subprocessSource.includes('!key.toUpperCase().startsWith(DSH_ENV_PREFIX)') &&
-      !/KEY|PASSWORD|SECRET|TOKEN/i.test('PATH'),
+      subprocessSource.includes('!key.toUpperCase().startsWith(DSH_ENV_PREFIX)'),
     `dsh-subprocess-local/src/spawn.ts:${lineOf(spawnSource, 'const env = scrubbedParentEnv()')}-${lineOf(spawnSource, 'const env = scrubbedParentEnv()') + 1}; dsh-subprocess/src/index.ts:${lineOf(subprocessSource, '!key.toUpperCase().startsWith(DSH_ENV_PREFIX)')}`,
   )
 
@@ -364,18 +367,55 @@ async function main() {
         !lsRun.text.includes('shadow-ls-ran'),
       `command -v ls -> ${whichLs.text.trim()}; ls output: ${JSON.stringify(lsRun.text)}`,
     )
+
+    // The second host path: `tools/pre-execute` may replace `exec.arguments`
+    // before dispatch. This is the route the dialect declines for now (see
+    // §10 S19); the check proves it exists and that it is per call, not a
+    // silent process-wide PATH write.
+    const offRewrite = ctx.on('tools/pre-execute', (exec, next) => {
+      if (exec.name === 'bash') {
+        const command = String(exec.arguments?.command ?? '')
+        exec.arguments = { ...exec.arguments, command: `PATH=${probeBin}:"$PATH" ${command}` }
+      }
+      return next()
+    })
+    let rewritten
+    try {
+      rewritten = await bash('probecmd')
+    } finally {
+      offRewrite()
+    }
+    const afterDispose = await bash('probecmd')
+    check(
+      'a synthetic tools/pre-execute rewrite can prepend the probe bin for one call, and disposing it returns to 127',
+      rewritten.exitCode === 0 &&
+        rewritten.text === 'probecmd-ran' &&
+        afterDispose.exitCode === 127,
+      `rewritten exit ${rewritten.exitCode}: ${JSON.stringify(rewritten.text)}; after dispose exit ${afterDispose.exitCode}`,
+    )
   } finally {
     rmSync(probeRoot, { recursive: true, force: true })
   }
 
-  // `scrubbedParentEnv()` is the same function the child env starts from; the
-  // check above proves the model shell's PATH equals it, so the inherited PATH
-  // is the only source. This pins the mechanism, not just the observation.
+  // `scrubbedParentEnv()` is the same function the child env starts from. Set
+  // three ordinary names and read them back through it: a plain name and PATH
+  // survive, a DSH_* name and a credential-looking name do not. The names are
+  // restored immediately; PATH is never touched.
+  const probes = { S19_KEEP: 'keep', S19_API_TOKEN: 'do-not-leak', DSH_S19_SCRUB: 'drop' }
+  const saved = Object.fromEntries(Object.keys(probes).map((key) => [key, process.env[key]]))
+  Object.assign(process.env, probes)
   const scrubbed = scrubbedParentEnv()
+  for (const key of Object.keys(probes)) {
+    if (saved[key] === undefined) delete process.env[key]
+    else process.env[key] = saved[key]
+  }
   check(
-    'the scrub keeps PATH and strips only DSH_* and credential-looking names',
-    scrubbed.PATH === process.env.PATH && !/KEY|PASSWORD|SECRET|TOKEN/i.test('PATH'),
-    'scrubbedParentEnv().PATH === process.env.PATH',
+    'the scrub keeps ordinary names and PATH, and drops DSH_* and credential-looking names',
+    scrubbed.S19_KEEP === 'keep' &&
+      scrubbed.S19_API_TOKEN === undefined &&
+      scrubbed.DSH_S19_SCRUB === undefined &&
+      scrubbed.PATH === process.env.PATH,
+    `kept S19_KEEP=${JSON.stringify(scrubbed.S19_KEEP)}; token=${JSON.stringify(scrubbed.S19_API_TOKEN)}; dsh=${JSON.stringify(scrubbed.DSH_S19_SCRUB)}; PATH equal`,
   )
 
   const report = {
@@ -383,7 +423,7 @@ async function main() {
     source: HARNESS_SOURCE,
     version: versionOf('dsh-shell-env'),
     question: "does a plugin's bin/ reach the model shell PATH without a DSH core change?",
-    answer: 'no: PATH is outside the DSH_* namespace the only registration API accepts, and the child PATH is the inherited process PATH',
+    answer: 'not through the managed environment: PATH is outside the DSH_* namespace the only registration API accepts and the child PATH is the inherited process PATH; expressible only as a per-call tools/pre-execute rewrite, which diverges (tool_input, pwsh syntax, ordering) and is declined for now',
     anchors: {
       register: `dsh-shell-env/src/index.ts:${registryDocs.register}`,
       keyGuard: `dsh-shell-env/src/index.ts:${registryDocs.guard}-${registryDocs.guard + 2}`,

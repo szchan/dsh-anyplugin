@@ -1,11 +1,14 @@
-// `bin/` is a Claude plugin surface with no DSH seam at the pin: Claude appends
-// `<plugin>/bin` to the PATH of the shell its model calls, while DSH's managed
-// environment (dsh-shell-env) accepts declared DSH_* keys only and the
-// model-facing shell tools expose no env parameter. S19 measured that at
-// 0.2.2-rc.5 (spikes/s19-path/run.mjs), so the dialect records the surface as
-// `unsupported` with the refusal as its reason — never as `planned`, which
-// would claim a host change is only a matter of time. This test keeps the
-// annotation and the IR's own pending/unsupported invariant honest.
+// `bin/` is a Claude plugin surface whose PATH placement DSH's managed
+// environment cannot carry: dsh-shell-env accepts declared DSH_* keys only and
+// the model-facing shell tools send only that overlay (S19 measured the exact
+// refusals at 0.2.2-rc.5 and 0.2.2-rc.2, spikes/s19-path/run.mjs). The surface
+// is still expressible — a `tools/pre-execute` listener can rewrite the bash
+// command, as materialize-hook does for `updatedInput` — but that route
+// diverges (tool_input, pwsh syntax, ordering), so the dialect marks it
+// `planned` and names the divergence instead of claiming a host change is
+// imminent. These tests keep the annotation and the IR pending/unsupported
+// invariant honest, and guard the surface-reader fix that used to skip these
+// rows entirely when `.mcp.json` was absent.
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,27 +20,32 @@ import { readClaudePlugin } from '../src/index.ts'
 
 const writePlugin = (root) => {
   mkdirSync(join(root, '.claude-plugin'), { recursive: true })
-  mkdirSync(join(root, 'bin'), { recursive: true })
   writeFileSync(
     join(root, '.claude-plugin', 'plugin.json'),
     JSON.stringify({ name: 'probe', version: '0.0.1' }),
   )
-  writeFileSync(join(root, 'bin', 'probecmd'), '#!/bin/sh\necho probe\n', { mode: 0o755 })
   return root
 }
 
-test('bin/ is unsupported with the measured PATH refusal, not a pending promise', () => {
+test('bin/ is planned with the managed-env refusal and the per-call rewrite divergence', () => {
   const dir = mkdtempSync(join(tmpdir(), 'anyplugin-bin-dialect-'))
   try {
-    const ir = readClaudePlugin(writePlugin(dir))
-    const row = ir.unsupported.find((entry) => entry.surface === 'bin')
-    assert.ok(row, 'bin/ must be recorded in unsupported')
+    writePlugin(dir)
+    mkdirSync(join(dir, 'bin'), { recursive: true })
+    writeFileSync(join(dir, 'bin', 'probecmd'), '#!/bin/sh\necho probe\n', { mode: 0o755 })
+    const ir = readClaudePlugin(dir)
+    const row = ir.pending.find((entry) => entry.surface === 'bin')
+    assert.ok(row, 'bin/ must be recorded in pending')
     assert.equal(row.name, 'bin')
     assert.equal(row.sourcePath, 'bin')
-    assert.equal(row.annotation.fidelity, 'unsupported')
-    assert.match(row.annotation.reason, /dsh-shell-env accepts DSH_\* keys only/)
-    assert.match(row.annotation.reason, /exit 127/)
-    assert.equal(ir.pending.some((entry) => entry.surface === 'bin'), false)
+    assert.equal(row.annotation.fidelity, 'planned')
+    assert.match(row.annotation.reason, /declared invalid key "PATH"/)
+    assert.match(row.annotation.reason, /SHELL_ENV_CONTRIBUTION_INVALID/)
+    assert.match(row.annotation.reason, /tools\/pre-execute/)
+    assert.match(row.annotation.reason, /0\.2\.2-rc\.5/)
+    assert.match(row.annotation.reason, /0\.2\.2-rc\.2/)
+    assert.match(row.annotation.reason, /diverges/)
+    assert.equal(ir.unsupported.some((entry) => entry.surface === 'bin'), false)
     assert.deepEqual(validateIr(ir), [])
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -47,11 +55,39 @@ test('bin/ is unsupported with the measured PATH refusal, not a pending promise'
 test('a plugin without bin/ gets no bin row', () => {
   const dir = mkdtempSync(join(tmpdir(), 'anyplugin-bin-dialect-'))
   try {
-    mkdirSync(join(dir, '.claude-plugin'), { recursive: true })
-    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'probe', version: '0.0.1' }))
+    writePlugin(dir)
     const ir = readClaudePlugin(dir)
     assert.equal(ir.unsupported.some((entry) => entry.surface === 'bin'), false)
     assert.equal(ir.pending.some((entry) => entry.surface === 'bin'), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('themes/workflows/monitors/.lsp.json are read without .mcp.json, before style rows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-surfaces-dialect-'))
+  try {
+    writePlugin(dir)
+    mkdirSync(join(dir, 'themes'), { recursive: true })
+    mkdirSync(join(dir, 'workflows'), { recursive: true })
+    mkdirSync(join(dir, 'monitors'), { recursive: true })
+    writeFileSync(join(dir, '.lsp.json'), '{}')
+    // A nested output style stays pending, so it also proves the merge order:
+    // optional surfaces keep the position they had when they were tail of the
+    // MCP reader, ahead of output-style rows.
+    mkdirSync(join(dir, 'output-styles', 'nested'), { recursive: true })
+    writeFileSync(join(dir, 'output-styles', 'nested', 'inner.md'), '---\nname: inner\n---\nBody.\n')
+    const ir = readClaudePlugin(dir)
+    const surfaces = ir.pending
+      .filter((entry) => ['lspServers', 'themes', 'workflows', 'monitors'].includes(entry.surface))
+      .map((entry) => entry.surface)
+    assert.deepEqual(surfaces, ['lspServers', 'themes', 'workflows', 'monitors'])
+    for (const entry of ir.pending.filter((row) => surfaces.includes(row.surface))) {
+      assert.equal(entry.annotation.fidelity, 'planned')
+    }
+    const n = ir.pending.length
+    assert.equal(ir.pending[n - 1]?.surface, 'outputStyles')
+    assert.deepEqual(validateIr(ir), [])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
