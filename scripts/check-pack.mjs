@@ -77,7 +77,7 @@ try {
     const materialize = Object.keys(manifest.exports ?? {}).filter((key) => key.startsWith('./materialize/'))
     // These are exactly the entries the reconciler can name (MATERIALIZERS in
     // controller.ts); a missing one is a child the loader could never import.
-    for (const name of ['skill', 'command', 'mcp', 'hook', 'agents', 'output-style']) {
+    for (const name of ['skill', 'mcp', 'hook', 'agents', 'output-style']) {
       check(materialize.includes(`./materialize/${name}`), `exports is missing ./materialize/${name}`)
     }
     notes.push(`${Object.keys(manifest.exports ?? {}).length} exports, ${materialize.length} materializer subpaths`)

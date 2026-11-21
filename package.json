@@ -10,13 +10,12 @@
   },
   "engines": {
     "node": ">=22.14",
-    "dsh": "^0.2.2-rc.2"
+    "dsh": ">=0.2.2-rc.2 <0.2.2"
   },
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./materialize/agents": "./lib/materialize/agents.js",
-    "./materialize/command": "./lib/materialize/command.js",
     "./materialize/hook": "./lib/materialize/hook.js",
     "./materialize/mcp": "./lib/materialize/mcp.js",
     "./materialize/skill": "./lib/materialize/skill.js",

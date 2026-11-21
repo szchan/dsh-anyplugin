@@ -35,7 +35,6 @@ const stub = join(root, 'scripts', 'build-stubs', 'mod-host.mjs')
 const ENTRIES = {
   index: 'packages/dsh-anyplugin-install/src/controller.ts',
   'materialize/agents': 'packages/dsh-anyplugin-materialize-agents/src/index.ts',
-  'materialize/command': 'packages/dsh-anyplugin-materialize-command/src/index.ts',
   'materialize/hook': 'packages/dsh-anyplugin-materialize-hook/src/index.ts',
   'materialize/mcp': 'packages/dsh-anyplugin-materialize-mcp/src/index.ts',
   'materialize/output-style': 'packages/dsh-anyplugin-materialize-output-style/src/index.ts',

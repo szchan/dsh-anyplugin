@@ -162,7 +162,7 @@ still emits a pure-data `EntryTree` (`D1`), and nothing is written or evaluated
 at install time.
 
 `exports` publishes only what a patch row or the reconciler can name: `.` (the
-controller) and `./materialize/{skill,command,mcp,hook,agents,output-style}`.
+controller) and `./materialize/{skill,mcp,hook,agents,output-style}`.
 The other runtime modules are bundled into those entries rather than published
 as separate subpaths, and the reconciler names materializers by published
 subpath (never by file URL), so the tarball can move without rewriting config.

@@ -43,7 +43,6 @@ if (pinMatch === null) fail(`cannot read the Claude Code pin from ${pinFile}`)
 const CLAUDE_PIN = `claude-code@${pinMatch[1]}`
 const PUBLISHED_SUBPATHS = [
   'materialize/skill',
-  'materialize/command',
   'materialize/mcp',
   'materialize/hook',
   'materialize/agents',

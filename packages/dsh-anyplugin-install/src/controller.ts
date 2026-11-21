@@ -8,12 +8,12 @@
  * generated code and the controller never writes profile config: the lock and
  * the grants file are read, the loader is reconciled, and nothing is persisted.
  *
- * What is shipped in 0.1.0 is the *compile path*: skills, commands, MCP
- * servers, hooks whose host events exist, agents, and one activated output style.
- * The mods kernel is a
- * separate release; the emitted configs for 0.1 never carry mods, and a
- * hand-written `mods` list is refused by the packaged hook materializer with a
- * reason instead of loading JavaScript the package cannot describe.
+ * What is shipped in 0.1.0 is the *compile path*: skills (a slash command lands
+ * as a skill on its model face), MCP servers, hooks whose host events exist,
+ * agents, and one activated output style. The mods kernel is a separate
+ * release; the lock schema has no `mods` field (a record carrying one is a
+ * schema error), and the packaged hook materializer refuses a `mods` list it
+ * is handed rather than loading JavaScript the package cannot describe.
  */
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -58,7 +58,6 @@ export const MATERIALIZERS: Materializers = {
   agents: 'dsh-anyplugin/materialize/agents',
   mcp: 'dsh-anyplugin/materialize/mcp',
   hooks: 'dsh-anyplugin/materialize/hook',
-  command: 'dsh-anyplugin/materialize/command',
   outputStyle: 'dsh-anyplugin/materialize/output-style',
 }
 
