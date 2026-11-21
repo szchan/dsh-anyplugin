@@ -9,8 +9,8 @@
 //   npm run triage -- --json  # same data, machine-readable
 import { execFileSync } from 'node:child_process'
 
-const AGENT_MARK = '<!-- dsh-anyplugin-agent -->'
-const BOT_LOGIN = process.env.DSH_ANYPLUGIN_BOT_LOGIN ?? 'szchan-bot'
+import { AGENT_MARK, BOT_LOGIN, classifyIssue, hasLabel, labelsOf, roleOf, roleOfPullRequest } from './triage-rules.mjs'
+
 const json = process.argv.includes('--json')
 
 const gh = (args) => {
@@ -37,26 +37,18 @@ try {
   process.exit(1)
 }
 
-const isMaintainer = (author) => author !== undefined && author !== '' && maintainers.includes(author)
-const labelsOf = (node) => (node.labels ?? []).map((label) => (typeof label === 'string' ? label : label.name))
-const hasLabel = (node, name) => labelsOf(node).includes(name)
+const identity = { get maintainers() { return maintainers }, botLogin: BOT_LOGIN }
 
-// Labels are authoritative when present; the author is the fallback so that a
-// maintainer's issue is never queued as external just because labelling lagged.
-const role = (node) => (hasLabel(node, 'from-maintainer') ? 'maintainer' : hasLabel(node, 'external') ? 'external' : isMaintainer(node.author?.login) ? 'maintainer' : 'external')
 
-const comments = (number) =>
-  ghJson(['issue', 'view', String(number), '--json', 'comments'])[0]?.comments ??
-  ghJson(['api', `repos/{owner}/{repo}/issues/${number}/comments`, '--jq', 'map({author: {login: .user.login}, body, createdAt})'])
-
-// Identity first: the bot login is what makes an agent's comment machine-made
-// after the fact. The marker stays as a fallback for threads written before the
-// bot account existed (docs/TRIAGE.md §1).
-const isAgentComment = (comment) =>
-  comment.author?.login === BOT_LOGIN || (comment.body ?? '').includes(AGENT_MARK)
-
-const lastAgent = (list) => [...list].reverse().find(isAgentComment)
-const lastMaintainer = (list) => [...list].reverse().find((c) => isMaintainer(c.author?.login))
+const comments = (number) => {
+  // `gh issue view --json comments` already carries createdAt; the REST
+  // fallback spells it `created_at`, which used to arrive as null and quietly
+  // inverted every "who spoke last" comparison.
+  const view = ghJson(['issue', 'view', String(number), '--json', 'comments'])
+  const list = Array.isArray(view) ? view[0]?.comments : view.comments
+  if (Array.isArray(list)) return list
+  return ghJson(['api', `repos/{owner}/{repo}/issues/${number}/comments`, '--jq', 'map({author: {login: .user.login}, body, createdAt: .created_at})'])
+}
 
 const sections = {
   'Maintainer asks (new)': [],
@@ -71,7 +63,7 @@ const sections = {
 
 let issues = []
 try {
-  issues = ghJson(['issue', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,author,labels,updatedAt'])
+  issues = ghJson(['issue', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,author,labels,createdAt,body'])
 } catch (error) {
   console.error(`triage: ${error.message}`)
   process.exit(1)
@@ -96,14 +88,14 @@ for (const pr of prs) {
 
 for (const issue of issues) {
   if (linkedIssues.has(issue.number)) {
-    sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: role(issue), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
     continue
   }
   if (hasLabel(issue, 'ticket/in-progress')) {
     // Claimed work with no PR yet is in flight too. Without this the queue
     // undercounts WIP and the next round dispatches a second worker onto a
     // ticket that is already moving (docs/TRIAGE.md §2).
-    sections['In progress (no PR yet)'].push({ number: issue.number, title: issue.title, role: role(issue), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    sections['In progress (no PR yet)'].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
     continue
   }
   let list = []
@@ -112,23 +104,12 @@ for (const issue of issues) {
   } catch {
     list = []
   }
-  const who = role(issue)
-  const agent = lastAgent(list)
-  const human = lastMaintainer(list)
-  const agentAfterHuman = agent !== undefined && (human === undefined || agent.createdAt > human.createdAt)
-  const item = { number: issue.number, title: issue.title, role: who, labels: labelsOf(issue), lastSpeaker: agent === undefined ? 'none' : agent.createdAt > (human?.createdAt ?? '') ? 'agent' : 'maintainer' }
-
-  if (who === 'maintainer') {
-    if (agent === undefined) sections['Maintainer asks (new)'].push(item)
-    else if (!agentAfterHuman) {
-      sections['Maintainer answers (resume)'].push(item)
-      if (hasLabel(issue, 'maintainer-question')) sections['Blocked on a human'].push(item)
-    }
-  } else if (agent === undefined) {
-    sections['External, untriaged'].push(item)
-  } else if (!agentAfterHuman && hasLabel(issue, 'needs-evidence')) {
-    sections['External, awaiting evidence'].push(item)
-  }
+  // The issue body is the agent's (or the reporter's) first word: an escalation
+  // opened by the bot with no comments yet is still blocked on the human.
+  const first = { author: { login: issue.author?.login }, createdAt: issue.createdAt, body: issue.body ?? '' }
+  const verdict = classifyIssue(issue, [first, ...list], { ...identity, linkedPr: false })
+  if (verdict.section === null) continue
+  sections[verdict.section].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: verdict.lastSpeaker })
 }
 
 for (const pr of prs) {
@@ -137,7 +118,7 @@ for (const pr of prs) {
   sections['Pull requests'].push({
     number: pr.number,
     title: pr.title,
-    role: isMaintainer(pr.author?.login) ? 'maintainer' : 'external',
+    role: roleOfPullRequest(pr, identity),
     draft: pr.isDraft,
     checks: failing.length === 0 ? 'green' : `${failing.length} not green`,
     review: pr.reviewDecision ?? 'none',
