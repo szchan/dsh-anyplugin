@@ -5,7 +5,8 @@ mods `f9e4d1e5753ccffcffdd832f047d72be000396a6` / claude-code `2.1.329`
 (`UPSTREAM_MODS_PIN`). Sections 4–8 below are the original `6e1e44f` /
 `2.1.322` baseline and keep their numbers; §0 records the 2.1.329 re-run and
 says exactly which numbers moved, with its `$` partition updated for the #75
-and #119 host changes (the turn numbers are the measured 2.1.329 re-run).
+and #119 host changes (the turn numbers and the partition line are the measured
+2.1.329 re-run at DSH `0.2.2-rc.5` and `0.2.2-rc.2`).
 **Question.** Which events and which `$`
 members do the five pinned mods actually use, and which of those does the host
 serve?
@@ -28,7 +29,7 @@ change moved the load surface, and the host resolver caught up with it:
   (`<spec>.ts`, `<spec>.tsx`, `<spec>/index.ts`, `<spec>/index.tsx`;
   D39 proposal). It now loads with **45 registrations**, including one
   `classic.*` wildcard.
-- The turn is back to **11 handler invocations** and 16 `$` calls, with
+- The turn is back to **17 handler invocations** and 22 `$` calls, with
   **0 handler errors**. The eight routed classic events (`SessionStart`,
   `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
   `SubagentStop`, `SessionEnd`) invoke sec-default's handler, and its
@@ -39,6 +40,13 @@ change moved the load surface, and the host resolver caught up with it:
   `namespace.method` pairs / 11 namespaces**. The 30 pairs partition exactly:
   **24 served + 3 typed refusals + 3 absent = 30** at the current bridge
   (#75 served the six `ui` members, #119 served `vcs.detect`/`vcs.diff`).
+  `run.mjs` generates the line
+  `authored $ partition: 24 served + 3 typed refusals + 3 absent = 30 pairs`;
+  the same line was measured at DSH `0.2.2-rc.5` and `0.2.2-rc.2` against the
+  `2.1.329` mod tree. The `$` surface table in `run.mjs` was stale after #75
+  and #119 (`ui: []`, no `vcs` namespace, six served `ui` members still listed
+  as refusals); it now mirrors the shipped bridge, so the partition is printed
+  from the classifier rather than edited into this report by hand.
   - served (24): `env.get`, `fs.list`, `fs.read`, `fs.stat`, `store.get`,
     `store.set`, `telemetry.log`, `telemetry.mark`, `clock.after`,
     `clock.every`, `clock.now`, `command.register`, `session.cwd`,
@@ -53,16 +61,21 @@ change moved the load surface, and the host resolver caught up with it:
   (`ERR_MOD_HOST_VCS_UNSUPPORTED`), so the bridge's whole `vcs` table is
   served-or-refused with a named code; they are not among the 30 authored
   pairs, which is why the partition above counts 24 rather than 28.
+  This partition describes the **bridge surface** the five mods author
+  against, not which pairs the turn exercised: the executed path makes 22 `$`
+  calls across 17 groups (below), and the served `vcs.detect`/`vcs.diff` pair
+  is exercised by a separate booted turn in the conformance suite, not by
+  these five mods.
   `vcs.detect`/`vcs.diff` are cited at the pin
   (`mods/diff/hooks/register.ts:962-963`) and were measured absent before
   #119; the earlier `16 served + 8 typed refusals + 6 absent` line is the
   pre-#75/#119 state, kept in the historical sections below.
-- `$` calls on the executed path: 16 across 11 invocation groups (sec-default's
+- `$` calls on the executed path: 22 across 17 invocation groups (sec-default's
   eight classic calls add `session.cwd` on each event), all resolved; 0 typed
   refusals reached.
 - Output tail: `tool: 1 Bash call; child agent: started; SubagentStart chain:
-  observed`; `session.start: 3 handler invocation(s)`; `trace: 105 lines;
-  invocations: 11; $ groups: 11; $ calls: 16`; `handler errors: 0`;
+  observed`; `session.start: 3 handler invocation(s)`; `trace: 111 lines;
+  invocations: 17; $ groups: 17; $ calls: 22`; `handler errors: 0`;
   `result: OK (turn assertions passed; handler errors are recorded above)`.
 
 ## 1. Run it

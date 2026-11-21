@@ -66,8 +66,15 @@ test('vcs.detect answers the pinned working copy for a git repository', async ()
     git(root, 'remote', 'add', 'origin', 'https://user:secret@example.com/o/r.git')
     assert.equal((await $.vcs.detect({ path: root })).remote, 'https://example.com/o/r.git')
     // A token in the query string is a credential too, and the pin says the
-    // remote has credentials stripped; the harmless parameter survives.
-    git(root, 'remote', 'set-url', 'origin', 'https://example.com/o/r.git?ref=main&access_token=SECRET')
+    // remote has credentials stripped; the harmless parameter survives, and a
+    // presigned signature or a credential-bearing fragment cannot ride along.
+    git(
+      root,
+      'remote',
+      'set-url',
+      'origin',
+      'https://example.com/o/r.git?ref=main&access_token=SECRET&X-Amz-Signature=SIG#access_token=FRAG',
+    )
     assert.equal((await $.vcs.detect({ path: root })).remote, 'https://example.com/o/r.git?ref=main')
 
     // `default` needs refs/remotes/origin/HEAD; until it exists, null is the
@@ -78,6 +85,27 @@ test('vcs.detect answers the pinned working copy for a git repository', async ()
   } finally {
     bridge.dispose()
     remove(root)
+  }
+})
+
+test('vcs.detect reports no main root for a submodule checkout', async () => {
+  const inner = makeRepo()
+  const superRoot = makeDir('anyplugin-vcs-super-')
+  const sub = join(superRoot, 'sub')
+  try {
+    git(superRoot, 'init', '-b', 'main')
+    git(superRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--', inner, 'sub')
+    const bridge = createModBridge({ plugin: 'unit/vcs.ts', cwd: sub })
+    try {
+      const copy = await bridge.dollar().vcs.detect({ path: '.' })
+      assert.equal(copy.root, realpathSync(sub))
+      assert.equal(copy.mainRoot, null)
+    } finally {
+      bridge.dispose()
+    }
+  } finally {
+    remove(superRoot)
+    remove(inner)
   }
 })
 
@@ -325,6 +353,50 @@ test('a repository filter driver cannot execute on the stat, patch or untracked 
     const stat = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head', isStatOnly: true })
     assert.equal(existsSync(marker), false, 'the stat path must not run the driver')
     assert.ok(stat.files.some((file) => file.path === 'tracked.txt'))
+
+    const untracked = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head', paths: ['untracked.txt'] })
+    assert.equal(existsSync(marker), false, 'the --no-index untracked path must not run the driver')
+    assert.equal(untracked.files[0].isUntracked, true)
+  } finally {
+    if (previous === undefined) delete process.env.ANYPLUGIN_FILTER_MARKER
+    else process.env.ANYPLUGIN_FILTER_MARKER = previous
+    bridge.dispose()
+    remove(root)
+  }
+})
+
+test('a filter key containing = cannot escape the override', async () => {
+  const root = makeRepo()
+  writeFileSync(join(root, 'tracked.txt'), 'one\nTWO\n')
+  writeFileSync(join(root, 'untracked.txt'), 'hello\n')
+  const marker = join(root, 'filter-ran')
+  const script = join(root, 'evil-filter.sh')
+  writeFileSync(script, '#!/bin/sh\n: > "$ANYPLUGIN_FILTER_MARKER"\ncat\n', { mode: 0o755 })
+  writeFileSync(join(root, '.gitattributes'), '*.txt filter=a=b\n')
+  // `-c filter.a=b.clean=` would set key `filter.a` and leave this driver
+  // live; the environment form must carry the whole key.
+  git(root, 'config', 'filter.a=b.clean', script)
+  git(root, 'config', 'filter.a=b.required', 'true')
+
+  const previous = process.env.ANYPLUGIN_FILTER_MARKER
+  process.env.ANYPLUGIN_FILTER_MARKER = marker
+  const bridge = createModBridge({ plugin: 'unit/vcs.ts', cwd: root })
+  try {
+    execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'], {
+      cwd: root,
+      env: { ...GIT_ENV, ANYPLUGIN_FILTER_MARKER: marker },
+      encoding: 'utf8',
+    })
+    assert.equal(existsSync(marker), true, 'the raw-git control must run the driver')
+    rmSync(marker)
+
+    const $ = bridge.dollar()
+    const patched = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head' })
+    assert.equal(existsSync(marker), false, 'the patch path must not run the driver')
+    assert.ok(patched.files.some((file) => file.path === 'tracked.txt' && typeof file.patch === 'string'))
+
+    const stat = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head', isStatOnly: true })
+    assert.equal(existsSync(marker), false, 'the stat path must not run the driver')
 
     const untracked = await $.vcs.diff({ path: '.', vcs: 'git', base: 'head', paths: ['untracked.txt'] })
     assert.equal(existsSync(marker), false, 'the --no-index untracked path must not run the driver')

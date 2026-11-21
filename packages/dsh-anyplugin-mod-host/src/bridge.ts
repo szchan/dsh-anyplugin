@@ -36,7 +36,10 @@
  * verb, no write and `--no-optional-locks`; external diff drivers, textconv,
  * the fsmonitor hook and every repository-configured `filter.*` clean/process
  * driver are disabled or neutralised because the repository configures them
- * and this host does not run a program a repository chooses. A relative
+ * and this host does not run a program a repository chooses. The filter
+ * overrides travel through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` rather than
+ * `-c`, because git splits `-c key=value` at the first `=` and a driver key
+ * can itself contain one. A relative
  * `path` resolves under the session working directory, which is what the
  * pinned `$` prose says for `detect` even though the field comment says
  * absolute; a name over the pin's 4096-character bound refuses the call. The
@@ -505,21 +508,38 @@ const patchBody = (text: string): string => {
  * string is removed before the URL is handed to a mod.
  */
 const VCS_CREDENTIAL_PARAM =
-  /^(?:access[_-]?token|token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|key|auth|authorization|signature|sig|credential|credentials|x-amz-signature|x-amz-credential|x-amz-security-token)$/i
+  /^(?:access[_-]?token|token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|key|auth|authorization|signature|sig|credential|credentials|sas|sastoken|googleaccessid|x-goog-signature|x-goog-credential|x-goog-security-token|x-amz-signature|x-amz-credential|x-amz-security-token)$/i
 
-/** The pinned remote is the URL with userinfo and credential-bearing query parameters removed. */
+/**
+ * The pinned remote is the URL with userinfo, credential-bearing query
+ * parameters and a credential-bearing fragment removed. Names are matched
+ * after percent-decoding; a fragment is dropped whole when any of its
+ * parameters is credential-bearing, because a fragment has no other meaning
+ * to a remote.
+ */
 const withoutCredentials = (url: string): string => {
   const stripped = url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, '$1')
-  const query = stripped.indexOf('?')
-  if (query === -1) return stripped
-  const head = stripped.slice(0, query)
-  const params = stripped.slice(query + 1).split('&')
-  const kept = params.filter((param) => {
-    const name = param.split('=')[0] ?? ''
-    return name === '' || !VCS_CREDENTIAL_PARAM.test(name)
-  })
-  if (kept.length === params.length) return stripped
-  return kept.length === 0 ? head : `${head}?${kept.join('&')}`
+  const hashAt = stripped.indexOf('#')
+  let head = hashAt === -1 ? stripped : stripped.slice(0, hashAt)
+  const fragment = hashAt === -1 ? '' : stripped.slice(hashAt + 1)
+  const carriesCredential = (part: string): boolean => {
+    let name = part.split('=')[0] ?? ''
+    try {
+      name = decodeURIComponent(name)
+    } catch {
+      // Keep the raw name; a malformed escape cannot widen the match.
+    }
+    return name !== '' && VCS_CREDENTIAL_PARAM.test(name)
+  }
+  const queryAt = head.indexOf('?')
+  if (queryAt !== -1) {
+    const base = head.slice(0, queryAt)
+    const params = head.slice(queryAt + 1).split('&')
+    const kept = params.filter((param) => param === '' || !carriesCredential(param))
+    if (kept.length !== params.length) head = kept.length === 0 ? base : `${base}?${kept.join('&')}`
+  }
+  if (fragment === '' || fragment.split('&').some(carriesCredential)) return head
+  return `${head}#${fragment}`
 }
 
 /** First two meaningful stderr lines, bounded, so a refusal names git's own words. */
@@ -1039,15 +1059,15 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     args: readonly string[],
     cwd: string,
     allowExit: readonly number[] = [0],
-    configArgs: readonly string[] = [],
+    configEnv: Readonly<Record<string, string>> = {},
   ): Promise<GitRun> =>
     new Promise<GitRun>((resolveRun, rejectRun) => {
       execFile(
         VCS_GIT,
-        [...VCS_GLOBAL_ARGS, ...configArgs, ...args],
+        [...VCS_GLOBAL_ARGS, ...args],
         {
           cwd,
-          env: vcsEnv(),
+          env: { ...vcsEnv(), ...configEnv },
           timeout: VCS_TIMEOUT_MS,
           killSignal: 'SIGKILL',
           maxBuffer: VCS_MAX_BUFFER,
@@ -1115,16 +1135,25 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
   // it from `.gitattributes`; git would then run that command while diffing
   // the worktree, even with external diff and textconv off. Every driver key
   // found in any config scope is neutralised with an empty value on each
-  // worktree-touching invocation. Enumerating keys is a read; the git process
-  // that does it runs no filter.
-  const vcsFilterArgs = async (cwd: string): Promise<string[]> => {
+  // worktree-touching invocation. The overrides travel through the
+  // environment rather than `-c`: git splits `-c key=value` at the first `=`,
+  // so a key such as `filter.a=b.clean` cannot be addressed as `-c` at all.
+  // `GIT_CONFIG_KEY_n`/`VALUE_n` carry key and value separately. Enumerating
+  // keys is a read; the git process that does it runs no filter.
+  const vcsFilterEnv = async (cwd: string): Promise<Record<string, string>> => {
     const run = await runGit(['config', '--name-only', '-z', '--get-regexp', '^filter\\.'], cwd, [0, 1])
-    if (run.status !== 0) return []
-    return run.stdout
+    if (run.status !== 0) return {}
+    const keys = run.stdout
       .toString('utf8')
       .split('\0')
       .filter((key) => key !== '')
-      .flatMap((key) => ['-c', `${key}=`])
+    if (keys.length === 0) return {}
+    const overrides: Record<string, string> = { GIT_CONFIG_COUNT: String(keys.length) }
+    keys.forEach((key, index) => {
+      overrides[`GIT_CONFIG_KEY_${index}`] = key
+      overrides[`GIT_CONFIG_VALUE_${index}`] = ''
+    })
+    return overrides
   }
 
   const vcsText = (site: string, value: unknown, field: string): string => {
@@ -1264,8 +1293,19 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     const commonDir = realpathOfVcs(commonDirText, 'common git directory')
     // A linked worktree: the shared `.git` sits in the main working copy, so
     // its parent is `mainRoot`. A bare main repository has no main working
-    // copy, and the pin says null where it is not known.
-    const mainRoot = gitDir === commonDir ? copy.root : (basename(commonDir) === '.git' ? dirname(commonDir) : null)
+    // copy, and the pin says null where it is not known. A submodule checkout
+    // is its own repository, but the superproject is the working copy that
+    // registered it; this host does not inspect that parent, so it reports
+    // null rather than claiming the submodule root is the main copy.
+    const superproject = await gitValue(['rev-parse', '--show-superproject-working-tree'], cwd)
+    const mainRoot =
+      superproject !== undefined
+        ? null
+        : gitDir === commonDir
+          ? copy.root
+          : basename(commonDir) === '.git'
+            ? dirname(commonDir)
+            : null
     let defaultBranch: string | null = null
     if (defaultRef !== undefined && defaultRef.startsWith('refs/remotes/origin/')) {
       const candidate = defaultRef.slice('refs/remotes/origin/'.length)
@@ -1328,7 +1368,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     cwd: string,
     path: string,
     isStatOnly: boolean,
-    configArgs: readonly string[],
+    configEnv: Readonly<Record<string, string>>,
   ): Promise<Record<string, unknown>> => {
     const row: Record<string, unknown> = {
       path,
@@ -1359,7 +1399,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
         ['diff', '--no-index', '--numstat', '-z', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', absolute],
         cwd,
         [0, 1],
-        configArgs,
+        configEnv,
       )
       const parsed = parseNumstat(run.stdout.toString('utf8'))[0]
       if (parsed !== undefined) {
@@ -1373,7 +1413,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       ['diff', '--no-index', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', absolute],
       cwd,
       [0, 1],
-      configArgs,
+      configEnv,
     )
     const text = run.stdout.toString('utf8')
     if (/^Binary files /m.test(text)) {
@@ -1416,7 +1456,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       }
     }
     const cwd = copy.cwd
-    const configArgs = await vcsFilterArgs(cwd)
+    const configEnv = await vcsFilterEnv(cwd)
     const revision = await gitValue(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd)
     let treeish: string
     let baseLabel: string
@@ -1451,7 +1491,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       ['diff', '-M', '--numstat', '-z', '--no-color', '--no-ext-diff', '--no-textconv', treeish, '--'],
       cwd,
       [0],
-      configArgs,
+      configEnv,
     )
     const tracked = parseNumstat(statRun.stdout.toString('utf8'))
     // Untracked files never appear in `git diff`; `-- :/` makes the listing
@@ -1460,7 +1500,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', ':/'],
       cwd,
       [0],
-      configArgs,
+      configEnv,
     )
     const untracked = untrackedRun.stdout.toString('utf8').split('\0').filter((entry) => entry !== '')
     const files: Array<Record<string, unknown>> = []
@@ -1477,7 +1517,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     }
     for (const path of untracked) {
       if (!vcsMatches(path, null, filter)) continue
-      files.push(await vcsUntrackedFile(root, cwd, path, isStatOnly, configArgs))
+      files.push(await vcsUntrackedFile(root, cwd, path, isStatOnly, configEnv))
     }
     for (const file of files) {
       const name = String(file.path)
@@ -1510,7 +1550,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
           ['diff', '-M', '--no-color', '--no-ext-diff', '--no-textconv', treeish, ...spec],
           cwd,
           [0],
-          configArgs,
+          configEnv,
         )
         const body = patchBody(patchRun.stdout.toString('utf8'))
         if (body !== '') file.patch = body
