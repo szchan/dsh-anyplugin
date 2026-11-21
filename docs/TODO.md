@@ -59,9 +59,17 @@ with the exact anchor so the proposal is reviewable without a checkout.
   bridge is asked for 69 call sites / 30 `namespace.method` pairs in 11
   namespaces. Twenty-two methods are served; the six `ui.*` members
   `open/close/invalidate/log/status/resolve` are served through the headless
-  render sink (#75): the pinned element tree is validated against the pinned
-  schema, the latest revision per pane is kept, and one `mod_ui` tool —
-  registered only while a pane is open — reads the panes back.
+  render sink (#75): a submitted tree is checked against the pin's surface
+  tables, element keys, required members and prop allowlists before it is
+  recorded, the latest revision is kept per pane, `ui.render` and `ui.resolve`
+  hooks are dispatched through the intercept kernel's `runChain` as
+  sink-owned synthetic events (not host routes), `ui.invalidate` redraws on
+  `ui.render`, drops the seat's prompt cache on `prompt.context`/`prompt.section`
+  and refuses the other cached events it owns no cache for, and one `mod_ui`
+  tool — registered only while a pane is open — reads the panes back. Two
+  behaviours are `derived`, because this host has no drawing engine: the
+  refusal sentence is ours (the pin draws the engine's own component instead)
+  and an invalid redraw keeps the last good tree.
   `process.run`, `settings.read` and `ui.ask` are typed refusals (`ui.ask` is
   declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a
   person, which this host has no interaction for); `session.identity`,

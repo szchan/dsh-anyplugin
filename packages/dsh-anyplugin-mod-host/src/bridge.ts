@@ -50,7 +50,13 @@ import { isAbsolute, join, resolve } from 'node:path'
 
 import { codeOf, describeValue, messageOf } from './errors.ts'
 import { isWithin } from './resolve.ts'
-import { createUiSink, type ModUiSink, type UiRenderRequest } from './ui.ts'
+import {
+  createUiSink,
+  type ModUiSink,
+  type UiRenderRequest,
+  type UiResolveInput,
+  type UiSurface,
+} from './ui.ts'
 
 /** Stable codes a bridged call refuses with; the reason always names the site. */
 export type ModBridgeErrorCode =
@@ -184,7 +190,17 @@ export interface ModBridgeOptions {
    * the same tree an upstream chain returns when every hook declines.
    */
   readonly ui?: {
+    /** Declared surface the headless sink stands in for; defaults to `terminal`. */
+    readonly surface?: UiSurface
     readonly render?: (request: UiRenderRequest) => unknown | Promise<unknown>
+    /** The host's `ui.resolve` chain; without it the surface's own table is returned. */
+    readonly resolve?: (input: UiResolveInput) => unknown
+    /** Drops one host cache the seat owns; returns whether one was dropped. */
+    readonly dropCache?: (event: string) => boolean
+    /** The plugin holding a pane id, when it is not this one. */
+    readonly ownerOf?: (id: string) => string | undefined
+    readonly claim?: (id: string) => void
+    readonly release?: (id: string) => void
     readonly onChange?: () => void
   }
 }
@@ -396,7 +412,13 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
   // each `$` still rebuilds the methods that reach it.
   const uiSink = createUiSink({
     plugin,
+    ...(options.ui?.surface === undefined ? {} : { surface: options.ui.surface }),
     ...(options.ui?.render === undefined ? {} : { render: options.ui.render }),
+    ...(options.ui?.resolve === undefined ? {} : { resolve: options.ui.resolve }),
+    ...(options.ui?.dropCache === undefined ? {} : { dropCache: options.ui.dropCache }),
+    ...(options.ui?.ownerOf === undefined ? {} : { ownerOf: options.ui.ownerOf }),
+    ...(options.ui?.claim === undefined ? {} : { claim: options.ui.claim }),
+    ...(options.ui?.release === undefined ? {} : { release: options.ui.release }),
     ...(options.ui?.onChange === undefined ? {} : { onChange: options.ui.onChange }),
     warn: (message: string) => reportOnce(`ui:${message}`, message),
     refuse: fail,

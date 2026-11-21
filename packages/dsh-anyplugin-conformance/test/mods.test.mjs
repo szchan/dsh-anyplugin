@@ -1033,7 +1033,19 @@ test('a mod-painted pane is a validated tree that mod_ui returns (#75)', { skip 
     children: [{ type: 'Text', props: { color: 'green' }, children: ['headless proof 2'] }],
   })
   assert.equal(payload.status, 'ui-sink/ui-sink.ts: ui sink proof')
-  assert.deepEqual(payload.logs, [{ plugin: 'ui-sink/ui-sink.ts', text: 'ui sink proof', to: 'debug' }])
+  assert.deepEqual(payload.logs, [
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui sink proof', to: 'debug' },
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui.* render ui-proof', to: 'transcript' },
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui.* render ui-temp', to: 'transcript' },
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui.* render ui-proof', to: 'transcript' },
+  ])
+  // The tree hook's matcher names `props: { title: 'UI proof' }` and matched,
+  // which is why the tree above is its drawing; the `isFocused: true` sibling
+  // did not match, so its log is absent. Both prove the pin's matcher grammar.
+  assert.ok(
+    !payload.logs.some((entry) => String(entry.text).startsWith('props miss')),
+    'a matcher that names props must not run on a props mismatch',
+  )
 
   // The control: a mod loaded with no pane must not contribute a tool.
   const control = mkdtempSync(join(tmpdir(), 'anyplugin-mods-ui-control-'))

@@ -75,11 +75,19 @@ import {
 import {
   commandRegistryFromContext,
   createModBridge,
+  elementsForSurface,
   loadMod,
-  uiRenderChain,
+  UI_COMPONENTS,
+  UI_ENGINE_NODE,
+  UI_SURFACES,
+  uiEventPatternMatches,
+  uiRenderMatcherMatches,
   type LoadedMod,
+  type ModRegistration,
   type ModUiSink,
   type UiRenderRequest,
+  type UiResolveInput,
+  type UiSurface,
 } from '../../dsh-anyplugin-mod-host/src/index.ts'
 import { hashManifest, hashManifestAtSpawn, type ArtifactManifest, type ArtifactMode } from '../../dsh-anyplugin-trust/src/index.ts'
 
@@ -1154,6 +1162,15 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   // no ANSI, no client plumbing — the tree is data, and this is where a test
   // and a debug tool read it.
   const uiSinks: ModUiSink[] = []
+  // Pane ids are global in the pin: another plugin's open pane makes ours
+  // `isPlaced:false` with a reason naming the holder. One map across the
+  // loaded mods is what lets the second plugin be refused instead of both
+  // recording a pane the pin would only draw once.
+  const claimedPanes = new Map<string, string>()
+  // `ui.invalidate('prompt.context'|'prompt.section')` drops cached prompt
+  // answers. The only cache this host owns is the seat's `promptApplied`
+  // latch; each seat registers its reset here and removes it on dispose.
+  const promptResets = new Set<() => void>()
   let uiToolDisposer: (() => void) | undefined
   let warnedNoTools = false
 
@@ -1256,6 +1273,78 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     }
   })
 
+  // A `ui.render`/`ui.resolve` dispatch is a chain on the one kernel, not a
+  // second event path (AGENTS §3.6, D32): `ui.render` is a `$` member, not a
+  // host event, so the adapter never maps it — the sink asks here, and this
+  // builds a synthetic `runChain` over the authored registrations. `ui.resolve`
+  // is load-time in the pin (d.ts:5041-5047 @ 2.1.329), which is why the
+  // materializer runs it once per surface and component after load and hands
+  // the sink a synchronous read.
+  const runUiChain = async (
+    eventName: 'ui.render' | 'ui.resolve',
+    registrations: readonly ModRegistration[],
+    payload: unknown,
+    terminal: unknown,
+    source: { plugin: string; entry: string; timeoutMs?: number },
+  ): Promise<unknown> => {
+    const matching = registrations.filter(
+      (registration) =>
+        uiEventPatternMatches(registration.event, eventName) &&
+        uiRenderMatcherMatches(registration.matcher, payload),
+    )
+    if (matching.length === 0) return terminal
+    const timeoutMs = source.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS
+    const neverMatches = { pattern: undefined, specified: false, test: () => true, testEvent: () => true }
+    const kernelRegistrations: HandlerRegistration[] = matching.map((registration, index) => ({
+      event: eventName,
+      tier: 'user',
+      mode: 'wrap',
+      source: `${source.plugin}/${source.entry}#${index}`,
+      plugin: source.plugin,
+      timeoutMs,
+      compiledMatcher: neverMatches,
+      run: (_context, chainEvent, next) => {
+        const request = isRecord(chainEvent.data) ? chainEvent.data.payload : payload
+        return registration.handler(request, (nextPayload?: unknown) => {
+          const rewritten: ChainEvent = {
+            name: eventName,
+            subject: null,
+            data: { payload: nextPayload === undefined ? request : nextPayload },
+          }
+          return next(rewritten)
+        })
+      },
+    }))
+    // `next(e)` resolves to the engine's own drawing (ui.render) or to the
+    // surface's element table (ui.resolve), which is what the pin promises.
+    kernelRegistrations.push({
+      event: eventName,
+      tier: 'user',
+      mode: 'wrap',
+      source: `${source.plugin}/${source.entry}#engine`,
+      plugin: source.plugin,
+      timeoutMs,
+      compiledMatcher: neverMatches,
+      run: () => terminal,
+    })
+    const result = await invocation.run({ agent: invocation.getStore()?.agent }, () =>
+      runChain({ name: eventName, subject: null, data: { payload } }, kernelRegistrations, {
+        continuation: 'first-decision',
+        timeoutMs,
+        deadlineMs: timeoutMs * kernelRegistrations.length + KERNEL_GRACE_MS,
+      }),
+    )
+    try {
+      config.onTrace?.(eventName, result)
+    } catch (error) {
+      warn(`anyplugin mod ${source.plugin}: trace observer failed (${(error as Error).message})`)
+    }
+    const decision: unknown = result.decision
+    if (decision === undefined || decision === null) return terminal
+    if (isRecord(decision) && decision.kind === 'continue') return terminal
+    return decision
+  }
+
   if (modsMode) {
     const classicByEvent = (event: string): HandlerRegistration[] => {
       if (event === 'PreToolUse') return preRegistrations
@@ -1276,8 +1365,20 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       // another's command or panes. The `$` itself is still rebuilt per
       // invocation.
       let handle: LoadedMod | undefined
+      const surfaceLabel = `${pluginName}/${mod.entry}`
+      // The pin's `ui.resolve` is a load-time read (d.ts:2809-2821, :5041-5047
+      // @ 2.1.329): the hooks run once per surface, component and plugin, and
+      // `$.ui.resolve(e)` then only reads the table. Precompute after the load
+      // — and only when a hook exists — so the member stays synchronous, as
+      // the pinned mods call it.
+      const resolveTables = new Map<string, unknown>()
+      const uiSource = {
+        plugin: surfaceLabel,
+        entry: mod.entry,
+        ...(mod.timeoutMs === undefined ? {} : { timeoutMs: mod.timeoutMs }),
+      }
       const bridge = createModBridge({
-        plugin: `${pluginName}/${mod.entry}`,
+        plugin: surfaceLabel,
         ...(config.pluginData === undefined ? {} : { dataDir: config.pluginData }),
         commands: commandRegistryFromContext(ctx),
         session: (agent: unknown) => invocationAgentSession(agent),
@@ -1288,17 +1389,35 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           warn(`anyplugin mod ${record.plugin}: telemetry.${record.kind} ${textify(record.entry)}`)
         },
         ui: {
-          // The sink records; the render chain below is where a mod's own
-          // `ui.render` hooks draw into it. The chain runs the authored
-          // registrations (the kernel adapter does not map ui.render — it is
-          // not an event, it is a `$` member), in source order, and a hook
-          // that declines with next(e) hands the next hook its chance.
-          render: (request: UiRenderRequest): unknown =>
-            handle === undefined ? undefined : uiRenderChain(handle.registrations, request),
+          surface: 'terminal',
+          // The sink records; this is where a mod's own `ui.render` hooks draw
+          // into it. `ui.render` is dispatched as a synthetic chain on the one
+          // kernel (not a second event path): the adapter does not route it,
+          // so the authored registrations are selected here and ordered by
+          // `runChain` the same way a host event is.
+          render: (request: UiRenderRequest): unknown => {
+            if (handle === undefined) return UI_ENGINE_NODE
+            return runUiChain('ui.render', handle.registrations, request, UI_ENGINE_NODE, uiSource)
+          },
+          resolve: (input: UiResolveInput): unknown => {
+            const cached = resolveTables.get(`${input.surface}\u0000${input.component}`)
+            return cached === undefined ? elementsForSurface(input.surface, surfaceLabel) : cached
+          },
+          dropCache: (event: string): boolean => {
+            if (event !== 'prompt.context' && event !== 'prompt.section') return false
+            for (const reset of promptResets) reset()
+            return promptResets.size > 0
+          },
+          ownerOf: (id: string): string | undefined => claimedPanes.get(id),
+          claim: (id: string): void => {
+            claimedPanes.set(id, surfaceLabel)
+          },
+          release: (id: string): void => {
+            if (claimedPanes.get(id) === surfaceLabel) claimedPanes.delete(id)
+          },
           onChange: () => syncUiTool(),
         },
       })
-      uiSinks.push(bridge.ui)
       const modHost = {
         dollar: async (): Promise<Record<string, unknown>> =>
           pauseDollar(bridge.dollar(invocation.getStore()?.agent)) as Record<string, unknown>,
@@ -1307,8 +1426,23 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         handle = await loadMod({ root: modRoot, entry: mod.entry, host: modHost })
       } catch (error) {
         bridge.dispose()
-        warn(`anyplugin mod ${pluginName}/${mod.entry}: load refused (${(error as Error).message})`)
+        warn(`anyplugin mod ${surfaceLabel}: load refused (${(error as Error).message})`)
         continue
+      }
+      // Only a mod that loaded can open a pane: a failed load must not leave a
+      // disposed sink in the reader or a tool that points at nothing.
+      uiSinks.push(bridge.ui)
+      if (handle.registrations.some((registration) => uiEventPatternMatches(registration.event, 'ui.resolve'))) {
+        for (const surface of UI_SURFACES) {
+          for (const component of UI_COMPONENTS) {
+            const input: UiResolveInput = { surface, component }
+            const base = elementsForSurface(surface, surfaceLabel)
+            resolveTables.set(
+              `${surface}\u0000${component}`,
+              await runUiChain('ui.resolve', handle.registrations, input, base, uiSource),
+            )
+          }
+        }
       }
       // One realm per mod, owned by the plugin entry (D31): unloading the
       // plugin disposes the realm; the entries' own ctx effects remove every
@@ -1329,6 +1463,12 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         else bucket.push(registration)
       }
       for (const row of adapted.unmapped) {
+        if (row.event === 'ui.render' || row.event === 'ui.resolve') {
+          // Not a host event (the mod-events table stays untouched), but not
+          // unhandled either: the sink dispatches it as a synthetic chain.
+          warn(`anyplugin mod ${row.source}: ${row.event} is sink-dispatched, kernel-ordered (not a host event)`)
+          continue
+        }
         const where = row.category === undefined ? '' : `${row.category} at ${MOD_SPEC_LABEL}: `
         warn(`anyplugin mod ${row.source}: ${row.event} is ${where}${row.reason}`)
       }
@@ -1442,11 +1582,18 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       // agent's prompt assembly. Only the pin-named blocks (and blocks this
       // route itself added) are exposed, so a mod cannot drop DSH's
       // operational contexts. The answer is computed on the first assembly and
-      // reused until `compaction/end`, the host's re-read signal. The pin's
-      // `$.ui.invalidate("prompt.context")` is refused by the bridge
-      // (ERR_MOD_HOST_UI_UNSUPPORTED); a `/clear` is a new session/seat, not a
-      // same-seat re-read.
+      // reused until `compaction/end`, the host's re-read signal, or a mod's
+      // `$.ui.invalidate("prompt.context"|"prompt.section")` — the pin's way to
+      // drop cached answers. The reset is registered in `promptResets` so the
+      // sink can call it; a `/clear` is still a new session/seat.
       let promptApplied = false
+      const resetPrompt = (): void => {
+        promptApplied = false
+      }
+      promptResets.add(resetPrompt)
+      disposers.push(() => {
+        promptResets.delete(resetPrompt)
+      })
       const promptOwned = new Set<string>()
       mount(() =>
         agentCtx.on('session/event', (session: any, event: any) => {
