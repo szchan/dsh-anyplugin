@@ -19,7 +19,7 @@ import {
   readBlock,
   readGitWorktrees,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
-import { hookTargets, prePushStatus } from './guard-hooks.mjs'
+import { configuredHooksPath, hookTargets, prePushStatus } from './guard-hooks.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const argv = process.argv.slice(2)
@@ -96,10 +96,14 @@ const duplicate = duplicateGuardId(outside)
 const hooks = hookTargets(gitWorktrees.map((worktree) => worktree.path))
 const hookStates = hooks.map((entry) => ({ file: entry.file, status: prePushStatus(entry.file) }))
 const hooksCurrent = hookStates.length > 0 && hookStates.every((entry) => entry.status === 'current')
+const hooksPath = configuredHooksPath(root)
+const hookLocation = hookStates[0]?.file ?? 'no repository'
 const hookNote =
-  (composition.config.worktrees ?? []).length === 0
-    ? `no ticket worktrees configured; hook installed at ${hookStates[0]?.file ?? 'no repository'}`
-    : undefined
+  hooksPath !== undefined
+    ? `core.hooksPath=${hooksPath} moves the hook outside the checkout; git looks there, and deleting that config orphans it`
+    : (composition.config.worktrees ?? []).length === 0
+      ? `no ticket worktrees configured; hook ${prePushStatus(hookLocation) === 'missing' ? 'expected' : 'installed'} at ${hookLocation}`
+      : undefined
 const current = installed.present && difference === undefined && !duplicate
 const status = !installed.present ? 'not-installed' : current && hooksCurrent ? 'current' : 'stale'
 
@@ -113,6 +117,7 @@ const report = {
   protectedRoots: composition.config.protectedRoots ?? [],
   duplicateId: duplicate,
   hooks: hookStates,
+  ...(hooksPath === undefined ? {} : { hooksPath }),
   ...(hookNote === undefined ? {} : { hookNote }),
   ...(difference === undefined ? {} : { difference }),
 }

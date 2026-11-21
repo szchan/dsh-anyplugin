@@ -36,7 +36,7 @@ import {
   runTable,
   uninstallText,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
-import { hookTargets, installPrePushHook, prePushStatus, readPrePushHook, removePrePushHook, writePrePushHook } from './guard-hooks.mjs'
+import { configuredHooksPath, hookTargets, installPrePushHook, prePushStatus, readPrePushHook, removePrePushHook, writePrePushHook } from './guard-hooks.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const argv = process.argv.slice(2)
@@ -92,6 +92,7 @@ const ticketWorktrees = composition.config.worktrees ?? []
 // Every checkout shares the repository hooks directory; install it for the
 // main checkout too, so a push from there is refused as well.
 const hooks = hookTargets(gitWorktrees.map((worktree) => worktree.path))
+const hooksPath = configuredHooksPath(root)
 
 function snapshotHooks(entries) {
   return entries.map((entry) => ({ file: entry.file, content: readPrePushHook(entry.file) }))
@@ -151,18 +152,19 @@ if (options.uninstall) {
   process.exit(0)
 }
 
-if (ticketWorktrees.length === 0) {
-  console.error('guard: no ticket worktree found (branch ticket/*); create one with `git worktree add`, or pass --worktree <path>')
-  process.exit(1)
-}
 if (!existsSync(composition.source)) {
   console.error(`guard: source ${composition.source} does not exist; install the guard from a complete checkout`)
   process.exit(1)
 }
 const protectedRoot = composition.config.protectedRoots?.[0] ?? root
-const tableWorktree = ticketWorktrees[0] ?? resolve(root)
+const tableWorktree = ticketWorktrees[0] ?? resolve(root, '.guard-no-ticket-worktree')
 
 console.log(`guard: worktrees ${ticketWorktrees.length} ticket worktree(s); protected root ${protectedRoot}`)
+if (hooksPath !== undefined) {
+  console.warn(
+    `guard: note core.hooksPath=${hooksPath} moves the hook outside the checkout; the hook is installed where git looks, and deleting that config orphans it`,
+  )
+}
 const existing = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : undefined
 let installedState
 let compositionBlock

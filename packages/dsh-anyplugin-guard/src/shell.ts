@@ -118,6 +118,35 @@ export function unquotedText(segment: string): string {
   return result
 }
 
+const STDIN_FILES = new Set(['-', '/dev/stdin', '/dev/fd/0'])
+
+/**
+ * The file a shell segment would execute, if it names one. `-c` bodies are
+ * already parsed as children; a redirect (`<`, `<<`, `<<<`, `>`, `&>`) ends the
+ * scan so `bash <<< 'cmd'` is not mistaken for a script named `cmd`.
+ */
+export function shellScriptFile(tokens: string[]): string | undefined {
+  const head = stripPrefix(tokens)
+  if (head.length === 0 || !SHELLS.has(baseCommand(head[0]))) return undefined
+  if (head.some((token, index) => index > 0 && (token === '-c' || /^-[A-Za-z]*c$/u.test(token)))) return undefined
+  for (const token of head.slice(1)) {
+    if (token.startsWith('<') || token.startsWith('>') || token === '&>' || token === '&>>') {
+      return undefined
+    }
+    if (token.startsWith('-')) continue
+    return STDIN_FILES.has(token) ? undefined : token
+  }
+  return undefined
+}
+
+/** A here-string or process substitution: stdin that the reader does not see. */
+export function shellStdinHazard(command: string): string | undefined {
+  const text = unquotedText(command)
+  if (text.includes('<<<')) return 'a here-string feeds a shell from stdin, which the guard cannot read'
+  if (/[<>]\(/u.test(text)) return 'process substitution hides a command list the guard cannot read'
+  return undefined
+}
+
 /**
  * The quoting rule for `$`: inside single quotes every character is literal;
  * elsewhere a `$` starts an expansion when the next character can begin one

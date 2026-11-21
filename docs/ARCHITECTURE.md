@@ -1268,20 +1268,29 @@ than checked against every configured worktree. The policy is a
 **convention checker for honest mistakes, not a containment boundary**: the
 real boundary is branch protection, the DSH file sandbox and CI.
 
-The **tool layer is authoritative**. It refuses git configurations that would
-hide a push — `git config`/`git -c` writes to `alias.*`, and `core.hooksPath`
-in any spelling — for every role, so `git -c alias.p='push --no-verify origin
-main' p` and `git config alias.p …; git p` cannot become a second route. For a
-worker it also refuses git subcommands it does not know (`git p`), with a
-reason that names the alias hazard, and the network-writing plumbing git
-accepts directly: `send-pack` and `update-ref`, alongside the other write
-verbs (`GIT_WRITE_SUBCOMMANDS`). It defaults to deny on syntax it cannot
-model — command substitution, backticks, a background `&`, grouping, `!`,
-`$'` quoting, `eval`/`source`/dot, `find -exec`, a shell reading stdin — and
-refuses interpreter `-c`/`-e` payloads that look like writes. Symlinks are
-resolved before confinement. The shell subset is deliberately narrow and is
-stated in the brief: one command list per call; `&&`, `||`, `|` and
-redirections (including `2>&1`) are modelled, everything else is refused.
+The **tool layer is what sees a tool call**. A push is judged by shape,
+not by a list of forbidden spellings: the only accepted form is
+`git push [-u] origin <one refspec that is not main>`. A bare push, a second
+refspec, another remote, `--receive-pack`/`--exec`, `send-pack`, `update-ref`
+and any config that can rewrite the shape are refused with their own rule
+(`git-push-shape`, `git-push-bare`, `git-push-exec`, `git-push-plumbing`,
+`git-config-write`). A worker runs no `-c`/`--config-env` and no `git config`
+at all; the root may read config and may set only keys that cannot execute a
+program — `alias.*`, `filter.*`, `core.pager`, `core.fsmonitor`,
+`core.hooksPath`, `core.sshCommand` and the rest of `GIT_EXEC_KEYS` are
+refused, lowercased before comparison so `Alias.p` is the same key. For a
+worker, unknown git subcommands are refused too (`git p`), with a reason that
+names the alias hazard. The shell reader defaults to deny on syntax it cannot
+model — grouping, a background `&`, command substitution, backticks,
+here-strings, process substitution, `eval`/`source`/dot, `find -exec`, a shell
+reading stdin, unknown commands, unquoted `$` expansion — and refuses a
+worker's interpreter `-c`/`-e` payload that looks like a write. A worker may
+not run a script file either (`shell-script-unverified`): the bytes are
+writable and the reader does not read them, so the script could be rewritten
+to push main between the check and the run. Symlinks are resolved before
+confinement. The shell subset is deliberately narrow and is stated in the
+brief: one command list per call; `&&`, `||`, `|` and redirections
+(including `2>&1`) are modelled, everything else is refused.
 
 The `$` rule is per quoting context, because the tokenizer alone loses it:
 
@@ -1295,15 +1304,25 @@ The `$` rule is per quoting context, because the tokenizer alone loses it:
 
 Because a shell layer can always be spelled around, `guard:install` also writes
 a real git `pre-push` hook into the checkout's hooks directory, **as defence in
-depth, not as the authority**: git resolves the refspec itself, but the hook
-runs after refs are discovered and before objects are sent, and `--no-verify`
-or a direct `send-pack` skips it. The hook is what stops a child process that
-never went through `tools/pre-execute`; the tool layer is what stops an alias
-or a plumbing command. `guard:status` checks the hook (including the
-no-worktree case, which reports the hook path instead of claiming a vacuous
-`current`) and `--uninstall` removes it. Installation is transactional across
-the two writes: the hook is installed only after the block composes, and a
-failed profile write restores the hook to its prior bytes.
+depth, not as the authority**: git resolves the refspec itself, the hook runs
+after refs are discovered and before objects are sent, and a caller who passes
+`--no-verify` skips it by design. The hook is what stops a push that reaches
+git without passing through `tools/pre-execute`; the tool layer is what sees a
+tool call. `guard:status` checks the hook (including the no-worktree case,
+which reports the hook path instead of claiming a vacuous `current`) and
+`--uninstall` removes it. Installation is transactional across the two writes:
+a failed profile write restores the hook to its prior bytes, and a read-only
+profile leaves both the hook and the block untouched. `core.hooksPath` is
+followed by git, not overridden: install warns when it moves the hooks outside
+the checkout, and the docs say that deleting that config orphans the installed
+hook.
+
+None of this is a containment boundary. The residual holes are named rather
+than papered over: a root-run script (its bytes are not verified), a config key
+the root writes and a host later executes, a git feature outside the modelled
+subcommands reached by another path, and `--no-verify` inside a command the
+reader did not model. Branch protection, the DSH file sandbox and CI are the
+boundary; the guard is a convention checker for honest mistakes.
 
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
 no value channel, and `SubagentStartRequest` has no instructions field at this

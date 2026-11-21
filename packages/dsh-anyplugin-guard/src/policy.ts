@@ -7,40 +7,46 @@
  * `npm run guard:install -- --dry-run`, so the table in the install output
  * cannot drift from what the running plugin does.
  *
- * Four rules, in this order:
+ * Rules, in order:
  *
  * 1. `decisions-append-only` — `docs/DECISIONS.md` is a ratified, hashed log;
  *    the only writer is `node scripts/check-decisions.mjs --update`, which
- *    accepts new entries and refuses edits to old ones. A hand edit, a
- *    truncate, a redirect or an interpreter one-liner that writes it is denied
- *    for every agent, root or worker.
- * 2. `git-push-main` — no agent pushes to `main`/`master`, whether named in
- *    the refspec, implied by `--all`/`--mirror`, or implied by a bare push
- *    from a main checkout. The worktree is where the ticket lives; the PR is
- *    how it lands.
- * 3. `gh-pr-merge-worker` — a worker may open a PR, never merge one. The root
- *    (the master) is the only merger, and only after review.
+ *    accepts new entries and refuses edits to old ones.
+ * 2. `git-push-main` / `git-push-shape` / `git-push-bare` — the only modelled
+ *    push is `git push [-u] origin <one refspec that is not main>`. Bare
+ *    pushes, extra refspecs or flags, other remotes, `--receive-pack`,
+ *    `--exec`, `send-pack` and `update-ref` are refused by name. A push is
+ *    never inferred from configuration.
+ * 3. `gh-pr-merge-worker` — a worker may open a PR, never merge one.
  * 4. `write-outside-worktree` — a worker writes inside the worktree it was
- *    given and nowhere else. The main checkout is a protected root even when
- *    no worktree was recorded, so a broken brief fails closed.
+ *    given and nowhere else; with no recorded worktree, writes fail closed.
+ * 5. `shell-unmodelled` / `shell-script-unverified` — the shell reader refuses
+ *    what it cannot see: grouping, a background `&`, command substitution,
+ *    backticks, here-strings, process substitution, stdin shells, `find
+ *    -exec`, unquoted `$` expansion, unknown commands, and (for workers)
+ *    running a script file whose bytes it did not verify.
+ * 6. `git-config-write` / `git-unknown-subcommand` — a worker runs no
+ *    `-c`/`--config-env` and no `git config`; the root may not set keys that
+ *    execute a program (`alias.*`, `filter.*`, `core.pager`, `core.fsmonitor`,
+ *    hooks path, ssh command, …). Unknown git subcommands are refused for
+ *    workers because an alias can hide a push behind one.
  *
- * The guard is a policy check on top of the host: it reads the same
- * `tools/pre-execute` payload the host dispatches and returns `deny` with a
- * reason. It is a convention checker for honest mistakes, not a containment
- * boundary: the real boundary is branch protection, DSH's own sandbox and CI.
- * A command can hide its intent from any reader, so this reader refuses
- * constructs it does not model (`shell-unmodelled`) instead of judging a
- * partial parse. The tool layer is authoritative: it sees aliases (`git -c
- * alias.p=… p`), `git config` writes and `send-pack`. The managed `pre-push`
- * hook is defence in depth for a child process that never passed through
- * `tools/pre-execute`; git runs it after refs are discovered and before
- * objects are sent, so it refuses a main update before the network write.
+ * The tool layer is what sees a tool call. The managed `pre-push` hook is
+ * defence in depth for a push that reaches git without going through
+ * `tools/pre-execute`; it runs after refs are discovered and before objects
+ * are sent, and a caller who passes `--no-verify` skips it by design. Neither
+ * layer is containment: branch protection, the DSH sandbox and CI are the
+ * boundary. The shell policy is a convention checker for honest mistakes; its
+ * residual holes are a root-run script (unverified bytes), a host that later
+ * executes a config key the root wrote, a git feature outside the modelled
+ * subcommand list reached by another path, and `--no-verify` inside a command
+ * the reader did not model. They are named here rather than papered over.
  */
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isMainRef } from './git.ts'
-import { baseCommand, expansionHazard, parseSegments, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
+import { baseCommand, expansionHazard, parseSegments, shellScriptFile, shellStdinHazard, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
 
 /** The brief the guard injects into a spawned worker (see `brief.ts`). */
 export interface BriefConfig {
@@ -346,7 +352,31 @@ export function destinationRef(refspec: string, branch: string | undefined): str
   return spec.replace(/^refs\/heads\//u, '')
 }
 
+const PUSH_EXEC_FLAGS = new Set(['--receive-pack', '--exec'])
+const PUSH_ALLOWED_FLAGS = new Set(['-u', '--set-upstream'])
+
+function pushExecFlag(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]
+    if (PUSH_EXEC_FLAGS.has(token)) return token
+    if (token.startsWith('--receive-pack=') || token.startsWith('--exec=')) return token.slice(0, token.indexOf('='))
+  }
+  return undefined
+}
+
+/**
+ * The push whitelist. A worker needs one shape:
+ * `git push [-u] origin <one refspec that is not main>`.
+ * Everything else is refused by name rather than parsed for a hidden push.
+ */
 function judgePush(push: GitPush, branch: string | undefined, raw: string): Verdict | undefined {
+  const exec = pushExecFlag(push.args)
+  if (exec !== undefined) {
+    return deny(
+      'git-push-exec',
+      `refusing "${excerpt(raw)}": ${exec} runs a program from the push itself; push with an explicit origin and ticket refspec`,
+    )
+  }
   const { positionals, all } = pushArguments(push.args)
   if (all) {
     return deny(
@@ -354,8 +384,16 @@ function judgePush(push: GitPush, branch: string | undefined, raw: string): Verd
       `refusing "${excerpt(raw)}": --all/--mirror/--branches pushes main too; push the ticket branch by name`,
     )
   }
+  const flags = push.args.filter((token) => token.startsWith('-'))
+  const unexpected = flags.find((token) => !PUSH_ALLOWED_FLAGS.has(token))
+  if (unexpected !== undefined) {
+    return deny(
+      'git-push-shape',
+      `refusing "${excerpt(raw)}": only \`git push [-u] origin <ticket-refspec>\` is modelled; ${unexpected} is not part of it`,
+    )
+  }
   const refspecs = positionals.slice(1)
-  if (refspecs.length === 0) {
+  if (positionals.length < 2 || refspecs.length === 0) {
     // A bare push does not mean "the current branch": `remote.<r>.push` and
     // `push.default=upstream` can redirect it to main. The guard refuses the
     // ambiguous form instead of guessing.
@@ -364,14 +402,24 @@ function judgePush(push: GitPush, branch: string | undefined, raw: string): Verd
       `refusing "${excerpt(raw)}": a bare git push can write main through remote.<name>.push or push.default; name the destination explicitly (e.g. \`git push origin HEAD:refs/heads/ticket/80\`)`,
     )
   }
-  for (const refspec of refspecs) {
-    const destination = destinationRef(refspec, branch)
-    if (destination !== undefined && isMainRef(destination)) {
-      return deny(
-        'git-push-main',
-        `refusing "${excerpt(raw)}": it writes ${destination}; agents never push to main, they open a PR`,
-      )
-    }
+  if (positionals[0] !== 'origin') {
+    return deny(
+      'git-push-shape',
+      `refusing "${excerpt(raw)}": only the origin remote is modelled; got ${positionals[0]}`,
+    )
+  }
+  if (refspecs.length !== 1) {
+    return deny(
+      'git-push-shape',
+      `refusing "${excerpt(raw)}": push one refspec at a time, so the guard can name every destination`,
+    )
+  }
+  const destination = destinationRef(refspecs[0], branch)
+  if (destination !== undefined && isMainRef(destination)) {
+    return deny(
+      'git-push-main',
+      `refusing "${excerpt(raw)}": it writes ${destination}; agents never push to main, they open a PR`,
+    )
   }
   return undefined
 }
@@ -466,6 +514,11 @@ export function gitInvocation(tokens: string[]): GitInvocation | undefined {
       index += 2
       continue
     }
+    if (token.startsWith('--config-env=')) {
+      configs.push(token.slice('--config-env='.length))
+      index += 1
+      continue
+    }
     if (GIT_VALUE_FLAGS.has(token)) {
       index += 2
       continue
@@ -505,25 +558,62 @@ const CONFIG_READ_FLAGS = new Set([
 ])
 
 /**
- * An alias (`git -c alias.p='push --no-verify origin main' p`) or a changed
- * `core.hooksPath` hides the push from both the reader and the hook. Refused
- * for every agent, because there is no legitimate use inside a ticket.
+ * Keys that make git run a program (or a hook) the guard cannot see. They are
+ * refused for the root too; a worker may not set any config at all.
  */
-export function gitConfigViolation(tokens: string[]): Verdict | undefined {
+const GIT_EXEC_KEYS = new Set([
+  'core.hookspath',
+  'core.sshcommand',
+  'core.pager',
+  'core.editor',
+  'core.gitproxy',
+  'core.askpass',
+  'core.fsmonitor',
+  'diff.external',
+  'sequence.editor',
+  'gpg.program',
+  'credential.helper',
+])
+
+function configKey(config: string): string {
+  const equals = config.indexOf('=')
+  return (equals >= 0 ? config.slice(0, equals) : config).toLowerCase()
+}
+
+function executesProgram(key: string): boolean {
+  return key.startsWith('alias.') || key.startsWith('filter.') || GIT_EXEC_KEYS.has(key)
+}
+
+/**
+ * `git -c`/`--config-env` and `git config` can define an alias, move
+ * `core.hooksPath`, or name a program in a key such as `core.fsmonitor` — all
+ * of which hide a push from the reader. A worker runs neither form; the root
+ * may read config and may set only keys that cannot execute a program.
+ */
+export function gitConfigViolation(tokens: string[], worker: boolean): Verdict | undefined {
   const invocation = gitInvocation(tokens)
   if (invocation === undefined) return undefined
-  for (const config of invocation.configs) {
-    const key = config.slice(0, config.indexOf('=') >= 0 ? config.indexOf('=') : undefined)
-    if (/^alias\./u.test(key)) {
+  const raw = tokens.join(' ')
+  if (worker) {
+    if (invocation.configs.length > 0) {
       return deny(
         'git-config-write',
-        `refusing "${excerpt(tokens.join(' '))}": a git alias hid a push behind another name; run the git command it expands to`,
+        `refusing "${excerpt(raw)}": workers run git without -c/--config-env; a config value can name a program that pushes main`,
       )
     }
-    if (key === 'core.hooksPath') {
+    if (invocation.name === 'config') {
       return deny(
         'git-config-write',
-        `refusing "${excerpt(tokens.join(' '))}": core.hooksPath redirects the pre-push hook; keep the repository hook path`,
+        `refusing "${excerpt(raw)}": workers do not run git config; read the value you need from the file instead`,
+      )
+    }
+  }
+  for (const config of invocation.configs) {
+    const key = configKey(config)
+    if (executesProgram(key)) {
+      return deny(
+        'git-config-write',
+        `refusing "${excerpt(raw)}": ${key} names a program or alias git will execute; set it in the repository config if it is really needed`,
       )
     }
   }
@@ -532,12 +622,23 @@ export function gitConfigViolation(tokens: string[]): Verdict | undefined {
   const writes = args.some((token) => CONFIG_WRITE_FLAGS.has(token))
   const reads = args.some((token) => CONFIG_READ_FLAGS.has(token))
   const positional = args.filter((token) => !token.startsWith('-'))
-  const key = positional[0]
+  const key = positional[0]?.toLowerCase()
   if (writes || (!reads && positional.length >= 2)) {
-    const target = key === undefined ? '' : ` ${key}`
+    if (key !== undefined && executesProgram(key)) {
+      return deny(
+        'git-config-write',
+        `refusing "${excerpt(raw)}": ${key} names a program git will execute; edit the file you meant to edit instead`,
+      )
+    }
+    if (worker) {
+      return deny(
+        'git-config-write',
+        `refusing "${excerpt(raw)}": workers do not write git config`,
+      )
+    }
     return deny(
       'git-config-write',
-      `refusing "${excerpt(tokens.join(' '))}": writing git config${target} can define an alias or move core.hooksPath; edit the file you meant to edit instead`,
+      `refusing "${excerpt(raw)}": writing git config can change how git runs; edit the file you meant to edit instead`,
     )
   }
   return undefined
@@ -571,25 +672,11 @@ function sendPackPositionals(args: string[]): string[] {
   return positionals
 }
 
-function judgeSendPack(push: { dir?: string; args: string[] }, branch: string | undefined, raw: string): Verdict | undefined {
-  const positionals = sendPackPositionals(push.args)
-  const refspecs = positionals.slice(1)
-  if (refspecs.length === 0) {
-    return deny(
-      'git-push-bare',
-      `refusing "${excerpt(raw)}": git send-pack addresses the remote directly and skips pre-push; name the ticket refspec, or use git push`,
-    )
-  }
-  for (const refspec of refspecs) {
-    const destination = destinationRef(refspec, branch)
-    if (destination !== undefined && isMainRef(destination)) {
-      return deny(
-        'git-push-main',
-        `refusing "${excerpt(raw)}": git send-pack writes ${destination} and never runs pre-push; agents never push to main, they open a PR`,
-      )
-    }
-  }
-  return undefined
+function judgeSendPack(raw: string): Verdict {
+  return deny(
+    'git-push-plumbing',
+    `refusing "${excerpt(raw)}": git send-pack addresses the remote directly and skips pre-push; use \`git push origin <ticket-refspec>\``,
+  )
 }
 
 const GIT_KNOWN_SUBCOMMANDS = new Set([
@@ -724,6 +811,10 @@ function shellHazard(command: string, segments: ShellSegment[]): Verdict | undef
   if (expansion !== undefined) {
     return deny('shell-unmodelled', `refusing "${excerpt(command)}": ${expansion}; write the value literally or quote it with single quotes`)
   }
+  const stdin = shellStdinHazard(command)
+  if (stdin !== undefined) {
+    return deny('shell-unmodelled', `refusing "${excerpt(command)}": ${stdin}`)
+  }
   if (hasSingleAmpersand(command)) {
     return deny(
       'shell-unmodelled',
@@ -756,17 +847,11 @@ function shellHazard(command: string, segments: ShellSegment[]): Verdict | undef
       const flag = head.findIndex((token, index) => index > 0 && (token === '-c' || /^-[A-Za-z]*c$/u.test(token)))
       if (flag > 0 && head[flag + 1] !== undefined) {
         // `bash -c '<command>'`: the body is parsed as child segments.
-      } else {
-        // `bash script.sh` runs a file the guard does not read; that is an
-        // ordinary repository command, not a hidden command list. A bare
-        // shell, `sh -s` and `sh -` read stdin, which is a hidden list.
-        const file = head.slice(1).find((token) => !token.startsWith('-') && !token.startsWith('<') && !token.startsWith('>'))
-        if (file === undefined || file === '-') {
-          return deny(
-            'shell-unmodelled',
-            `refusing "${excerpt(segment.raw)}": a shell reading stdin/heredoc is not modelled; run a script file or pass the command with sh -c '<command>'`,
-          )
-        }
+      } else if (shellScriptFile(head) === undefined) {
+        return deny(
+          'shell-unmodelled',
+          `refusing "${excerpt(segment.raw)}": a shell reading stdin, a here-string or a heredoc is not modelled; pass the command with sh -c '<command>' or run a committed script`,
+        )
       }
     }
     if (name === 'find' && head.some((token) => FIND_EXEC_FLAGS.has(token))) {
@@ -999,7 +1084,7 @@ function judgeCommand(
   }
 
   for (const segment of flat) {
-    const violation = gitConfigViolation(segment.tokens)
+    const violation = gitConfigViolation(segment.tokens, agent.worker)
     if (violation !== undefined) return violation
   }
 
@@ -1007,7 +1092,7 @@ function judgeCommand(
     const sendPack = parseSendPack(segment.tokens)
     if (sendPack === undefined) continue
     const sendCwd = sendPack.dir === undefined ? cwd : (resolveTarget(sendPack.dir, cwd) ?? cwd)
-    const violation = judgeSendPack(sendPack, context.branch(sendCwd), segment.raw)
+    const violation = judgeSendPack(segment.raw)
     if (violation !== undefined) return violation
   }
 
@@ -1032,6 +1117,13 @@ function judgeCommand(
   }
 
   for (const segment of flat) {
+    const script = shellScriptFile(segment.tokens)
+    if (script !== undefined) {
+      return deny(
+        'shell-script-unverified',
+        `refusing "${excerpt(segment.raw)}": the guard does not read script contents, so a writable ${script} could be rewritten to push main; run the commands directly`,
+      )
+    }
     if (interpreterWrite(segment.tokens)) {
       return deny(
         'interpreter-write',

@@ -46,7 +46,7 @@ export function renderBrief(input: BriefInput): string {
     'Call-time rules: push only the ticket branch, never main; open a PR, never merge one; docs/DECISIONS.md is append-only through `node scripts/check-decisions.mjs --update` and the proposed entry text belongs in the PR body; do not move coverage totals.',
   )
   lines.push(
-    'Shell subset: one command list per call. `&&`, `||`, `|` and redirections (including `2>&1`) are modelled. Grouping, a background `&`, command substitution, backticks and unquoted `$` expansion are refused; put them in a script file and run `bash scripts/<file>`.',
+    'Shell subset: one command list per call. `&&`, `||`, `|` and redirections (including `2>&1`) are modelled. Grouping, a background `&`, command substitution, backticks, unquoted `$` expansion, here-strings and running a script file are refused.',
   )
   lines.push('</anyplugin-guard-brief>')
   return lines.join('\n')

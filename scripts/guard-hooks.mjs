@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// The authoritative push check: a real git `pre-push` hook.
+// Defence in depth: a real git `pre-push` hook.
 //
-// The tool-call policy reads a command line; git itself resolves the refspec.
-// `remote.origin.push`, `push.default`, `branch.<name>.merge` and the usual
-// spelling zoo (`main&`, `{ …; }`, `find -exec`) all end here, where the refs
-// are already resolved. The hook is installed by `guard:install`, checked by
+// The tool-call policy is what sees a tool call; this hook is the second net
+// for a push that reaches git without going through `tools/pre-execute`.
+// git itself resolves the refspec, so `remote.origin.push`, `push.default`,
+// `branch.<name>.merge` and the spelling zoo all end here — unless the caller
+// uses `--no-verify`, which skips the hook by design. The hook is installed by `guard:install`, checked by
 // `guard:status`, and removed by `guard:install --uninstall`. It is a managed
 // file: a foreign `pre-push` hook is never overwritten or deleted.
 
@@ -22,6 +23,19 @@ export function hooksDirectory(repoRoot) {
     encoding: 'utf8',
   })
   return output.trim()
+}
+
+/** The configured hooks directory, when core.hooksPath moves it out of the checkout. */
+export function configuredHooksPath(repoRoot) {
+  try {
+    const output = execFileSync('git', ['-C', repoRoot, 'config', '--get', 'core.hooksPath'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return output.trim() === '' ? undefined : output.trim()
+  } catch {
+    return undefined
+  }
 }
 
 /** Every worktree shares one hooks directory; callers install once per path. */

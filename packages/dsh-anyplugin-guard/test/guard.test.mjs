@@ -159,7 +159,8 @@ test('an alias, a git config write and an unknown subcommand cannot hide a push'
     assert.equal(outcome.kind, 'deny', command)
     assert.equal(outcome.rule, 'git-config-write', command)
   }
-  assert.equal(shell('git config --get alias.p').kind, 'allow')
+  assert.equal(shell('git config --get alias.p').kind, 'deny', 'workers do not run git config at all')
+  assert.equal(shell('git config --get alias.p', root).kind, 'allow', 'the root may read config')
   const unknown = shell('git p')
   assert.equal(unknown.kind, 'deny')
   assert.equal(unknown.rule, 'git-unknown-subcommand')
@@ -170,9 +171,54 @@ test('send-pack, update-ref and --no-verify do not get a second route to main', 
   assert.equal(shell('git push --no-verify origin main').kind, 'deny')
   const send = shell('git send-pack ../remote.git HEAD:refs/heads/main')
   assert.equal(send.kind, 'deny')
-  assert.equal(send.rule, 'git-push-main')
-  assert.match(send.reason, /pre-push/u)
+  assert.equal(send.rule, 'git-push-plumbing')
+  assert.match(send.reason, /send-pack/u)
   assert.equal(shell('git update-ref refs/heads/main HEAD').kind, 'deny')
+})
+
+test('exec config keys and the push shape are refused, not inspected', () => {
+  for (const command of [
+    "git -c core.fsmonitor='sh -c \"git push origin main\"' status",
+    'git --config-env=core.fsmonitor=ENV status',
+    "git -c Alias.p='push origin main' p",
+    'git -c core.pager=less status',
+    'git --config-env=alias.p=PAYLOAD p',
+  ]) {
+    for (const agent of [worker, root]) {
+      const outcome = shell(command, agent)
+      assert.equal(outcome.kind, 'deny', command)
+      assert.equal(outcome.rule, 'git-config-write', command)
+    }
+  }
+  assert.equal(shell('git -c core.quotepath=false status', root).kind, 'allow', 'a root may set a non-exec key')
+  for (const command of [
+    "git push --receive-pack='sh -c \"git push origin main\"' origin ticket/80",
+    'git push --exec=/tmp/x origin ticket/80',
+    'git push -o ci.skip origin main',
+    'git push origin ticket/80 ticket/81',
+    'git push ../remote.git main',
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.ok(['git-push-exec', 'git-push-shape'].includes(outcome.rule), command + ' → ' + outcome.rule)
+  }
+})
+
+test('here-strings, process substitution and /dev/stdin are refused', () => {
+  assert.match(shell("sh -s <<< 'git push origin main'").reason, /here-string/u)
+  assert.match(shell('bash <(echo git push origin main)').reason, /process substitution/u)
+
+  for (const command of [
+    "sh -s <<< 'git push origin main'",
+    "bash <<< 'git push origin main'",
+    'bash <(echo git push origin main)',
+    "bash /dev/stdin <<< 'git push origin main'",
+    "sh -c 'bash <(echo git push origin main)'",
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'shell-unmodelled', command)
+  }
 })
 
 test('redirections that capture output are not background jobs', () => {
@@ -199,11 +245,17 @@ test('$ is literal in single quotes and at a boundary that cannot start an expan
   }
 })
 
-test('a script file is an ordinary shell command; stdin is still refused', () => {
-  assert.equal(shell('bash scripts/test.sh').kind, 'allow')
-  assert.equal(shell('sh -e scripts/test.sh').kind, 'allow')
-  assert.equal(shell("bash -s <<'EOF'\nrm -rf x\nEOF").kind, 'deny')
-  assert.equal(shell("bash <<'EOF'\nrm -rf x\nEOF").kind, 'deny')
+test('script files are unverified for workers; stdin and here-strings are refused', () => {
+  const script = shell('bash scripts/test.sh')
+  assert.equal(script.kind, 'deny')
+  assert.equal(script.rule, 'shell-script-unverified')
+  assert.match(script.reason, /does not read script contents/u)
+  assert.equal(shell('bash scripts/test.sh', root).kind, 'allow', 'the root may run a committed script')
+  for (const command of ["bash -s <<'EOF'\nrm -rf x\nEOF", "bash <<'EOF'\nrm -rf x\nEOF", "sh -s <<< 'git push origin main'", "bash <(echo git push origin main)", 'bash < /dev/stdin']) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'shell-unmodelled', command)
+  }
 })
 
 test('ruby and php write payloads are refused like node and python', () => {
@@ -402,7 +454,7 @@ test('the reviewer bypass spellings are refused; ordinary commits are allowed', 
   denied('( git push origin main )')
   denied("git push origin $'main'")
   denied('find . -exec git push origin main +')
-  denied("sh -s <<'EOF'\ngit push origin main\nEOF")
+  denied("sh -s <<'EOF'\ngit push origin main\nEOF", 'shell-unmodelled')
   denied('echo "git push origin main" | sh')
   denied('stdbuf -o0 git push origin main')
   denied('. /tmp/evil.sh')
