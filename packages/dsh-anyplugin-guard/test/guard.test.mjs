@@ -5,7 +5,7 @@
 // block). They are deliberately adversarial: every deny case has an allow case
 // one flag away, so a rule that fires on the wrong thing fails here.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,14 +13,18 @@ import test from 'node:test'
 
 import { apply, agentCwd, isWorker } from '../src/index.ts'
 import {
+  BLOCK_END,
   BLOCK_START,
   applyBlock,
+  captureState,
   composeGuard,
   formatTable,
   guardTable,
   readBlock,
+  readState,
   renderBlock,
   runTable,
+  uninstallText,
 } from '../src/composition.ts'
 import { currentBranch, isMainRef } from '../src/git.ts'
 import { messageText, renderBrief } from '../src/brief.ts'
@@ -67,12 +71,17 @@ test('a push to main is denied for every role; the ticket branch is allowed', ()
   assert.equal(shell('cd /work/wt/ticket-80 && git push origin ticket/80').kind, 'allow')
 })
 
-test('a bare push is judged by the current branch, and an unknown branch is refused', () => {
-  assert.equal(shell('git push', worker, 'main').kind, 'deny')
-  assert.equal(shell('git push', worker, 'ticket/80').kind, 'allow')
-  const unknown = shell('git push', worker, null)
-  assert.equal(unknown.kind, 'deny')
-  assert.match(unknown.reason, /refspec|branch/u)
+test('a bare push is refused for every role: remote.<r>.push and push.default can retarget it', () => {
+  // The two configs a bare push obeys: `remote.origin.push=refs/heads/main`
+  // and `push.default=upstream` with `branch.ticket/80.merge=refs/heads/main`.
+  // Reading git config is not needed when the ambiguous form is refused.
+  for (const branch of ['main', 'ticket/80', null]) {
+    const outcome = shell('git push', worker, branch)
+    assert.equal(outcome.kind, 'deny')
+    assert.equal(outcome.rule, 'git-push-bare')
+    assert.match(outcome.reason, /remote.<name>.push|push.default|refspec/u)
+  }
+  assert.equal(shell('git push origin HEAD:refs/heads/ticket/80').kind, 'allow')
 })
 
 test('a nested shell in bash -c cannot smuggle the push past the guard', () => {
@@ -151,7 +160,7 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
   await apply(ctx, config)
   assert.equal(listeners.get('tools/pre-execute')?.length, 1)
   assert.equal(listeners.get('agent/pre-step')?.length, 1)
-  assert.equal(disposers.length, 2, 'one ctx.effect per seam')
+  assert.equal(disposers.length, 4, 'two seam mounts plus the created/disposed pair')
 
   const exec = (name, args, agent = worker) => ({ callId: 1, name, arguments: args, agent })
   let ran = 0
@@ -191,6 +200,10 @@ test('the brief is appended to the worker continuation once, and never to the ro
   assert.match(brief, new RegExp(worktree.replaceAll('/', '\\/'), 'u'))
   assert.match(brief, /25 declared \/ 24 matched \/ 0 missing \/ 1 refused/u)
   assert.match(brief, /14 fixtures/u)
+  const message = first.messages[1]
+  assert.match(message.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u, 'the loop reads message.source; the id is a real UUID')
+  assert.equal(message.source.kind, 'user', 'runtime-context is the snapshot kind; a queued prompt is user')
+  assert.notEqual(message.source.kind, 'runtime-context')
 
   const second = await preStep({ agent: child, step: 2, messages: [] }, continuation)
   assert.equal(second.messages.length, 1, 'the brief is delivered at most once')
@@ -204,7 +217,7 @@ test('the worktree recorded from the spawn prompt is the one a write is confined
   const other = '/work/wt/ticket-81'
   const { ctx, listeners } = harness()
   await apply(ctx, { ...config, worktrees: [worktree, other] })
-  const agent = { session: { header: { id: 'worker-2', cwd: repo, parentSession: 'root-1' } } }
+  const agent = { session: { header: { id: 'worker-2', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
   // The prompt names ticket-80, so that worktree is recorded even though two
   // are installed.
   await listeners.get('agent/pre-step')[0](
@@ -226,6 +239,76 @@ test('the worktree recorded from the spawn prompt is the one a write is confined
     ).kind,
     'accept',
   )
+})
+
+test('a reviewer prompt that names only the branch records no worktree and writes nothing', async () => {
+  // The real review prompt shape: the branch under review is in the text, the
+  // reviewer's cwd is the master checkout, and no worktree path is given.
+  const { ctx, listeners } = harness()
+  await apply(ctx, config)
+  const reviewer = { session: { header: { id: 'reviewer-1', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const text = 'Review PR #89 on branch `ticket/80`. Do not merge. Report findings in a comment.'
+  await listeners.get('agent/pre-step')[0](
+    { agent: reviewer, step: 1, messages: [{ role: 'user', content: text }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  for (const path of [`${worktree}/src/a.ts`, `${repo}/src/a.ts`, 'notes.md']) {
+    const denied = await listeners.get('tools/pre-execute')[0](
+      { callId: 9, name: 'write', arguments: { file_path: path, content: 'x' }, agent: reviewer },
+      async () => ({ kind: 'accept' }),
+    )
+    assert.equal(denied.kind, 'deny', path)
+    assert.match(denied.reason, /protected checkout|no worktree is recorded/u)
+  }
+})
+
+test('a symlink inside the worktree does not become a write into the checkout', () => {
+  const data = mkdtempSync(join(tmpdir(), 'guard-symlink-'))
+  try {
+    const inside = join(data, 'wt')
+    const checkoutDir = join(data, 'repo')
+    mkdirSync(inside, { recursive: true })
+    mkdirSync(checkoutDir, { recursive: true })
+    symlinkSync(checkoutDir, join(inside, 'link'), 'dir')
+    assert.equal(
+      judgeCall(
+        { tool: 'write', args: { file_path: join(inside, 'link', 'x.md'), content: 'x' }, agent: { cwd: inside, worker: true }, worktree: inside },
+        resolvePolicy({ worktrees: [inside], protectedRoots: [checkoutDir] }),
+        { branch: () => 'ticket/80' },
+      ).kind,
+      'deny',
+    )
+  } finally {
+    rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('a worker with no cwd cannot resolve a relative write and is refused', () => {
+  const policy = resolvePolicy({ worktrees: [worktree], protectedRoots: [repo] })
+  const call = { tool: 'write', args: { file_path: 'x.md', content: 'x' }, agent: { worker: true }, worktree }
+  const outcome = judgeCall(call, policy, { branch: () => 'ticket/80' })
+  assert.equal(outcome.kind, 'deny')
+  assert.match(outcome.reason, /no cwd|absolute/u)
+  const relative = judgeCall(
+    { tool: 'write', args: { file_path: '../../../etc/x', content: 'x' }, agent: { worker: true, cwd: worktree }, worktree },
+    policy,
+    { branch: () => 'ticket/80' },
+  )
+  assert.equal(relative.kind, 'deny')
+  assert.equal(relative.rule, 'write-outside-worktree')
+})
+
+test('shell bypasses are refused: >|, subshells, git write verbs and launchers', () => {
+  assert.equal(shell(`echo x >| ${repo}/x`).kind, 'deny')
+  assert.equal(shell(`(cd ${repo} && touch x)`).kind, 'deny')
+  assert.equal(shell(`git restore ${repo}/x`).kind, 'deny')
+  assert.equal(shell(`git clean -fd ${repo}`).kind, 'deny')
+  assert.equal(shell(`env -i git push origin main`).kind, 'deny')
+  assert.equal(shell(`timeout 5 git push origin main`).kind, 'deny')
+  assert.equal(shell(`nice -n 5 git push origin main`).kind, 'deny')
+  assert.equal(shell(`echo $(printf 'git push origin main')`).kind, 'deny')
+  assert.equal(shell('if true; then git push origin main; fi').kind, 'deny')
+  assert.equal(shell(`tee ${worktree}/x.md < /tmp/in`).kind, 'allow', 'the read source is not a write target')
 })
 
 test('the dry-run table proves every payload against the same judge', () => {
@@ -258,12 +341,58 @@ test('the install block is marked, idempotent and refused when it would duplicat
   assert.equal(readBlock(fresh).present, true)
 
   const removed = applyBlock(fresh, null)
-  assert.equal(removed, '', 'an empty patch file is invalid loader input; the script writes the [] marker')
+  assert.equal(removed, '', 'the script restores the pre-install state rather than writing an empty patch')
 
   assert.throws(
     () => applyBlock(`- id: "anyplugin-guard"\n  name: "elsewhere.ts"\n`, composition.block),
     /already appears outside/u,
   )
+  assert.throws(
+    () => applyBlock(`- id: 'anyplugin-guard'\n  name: "single-quoted.ts"\n`, composition.block),
+    /already appears outside/u,
+    'YAML accepts both quote styles; the duplicate check must too',
+  )
+  assert.doesNotThrow(
+    () => applyBlock('# - id: "anyplugin-guard" is a comment, not an entry\n', composition.block),
+    'a comment naming the id is not a conflicting entry',
+  )
+})
+
+test('uninstall restores an absent, empty, [] or content file exactly', () => {
+  const state = (file, newline = false) => ({ file, newline })
+  const render = (installState) => renderBlock('guard.ts', { worktrees: [] }, installState)
+
+  const absent = applyBlock('', render(state('absent')))
+  assert.deepEqual(uninstallText(absent), { action: 'delete', content: '' })
+
+  const empty = applyBlock('', render(state('empty', true)))
+  assert.deepEqual(uninstallText(empty), { action: 'write', content: '' })
+
+  const array = applyBlock('[]\n', render(state('array', true)))
+  assert.deepEqual(uninstallText(array), { action: 'write', content: '[]\n' })
+
+  const original = '- id: "other"'
+  assert.equal(captureState(original).newline, false)
+  const installed = applyBlock(original, render(captureState(original)))
+  assert.deepEqual(uninstallText(installed), { action: 'write', content: original })
+  assert.equal(readState(readBlock(installed).block)?.file, 'content')
+})
+
+test('a user row inside the managed block, and an unbalanced marker, are refused', () => {
+  const composition = composeGuard({ repoRoot: checkout, worktrees: [{ path: checkout, branch: 'main', main: true }] })
+  const tampered = [
+    BLOCK_START,
+    '- insert:',
+    '    - id: "anyplugin-guard"',
+    '      name: "ours.ts"',
+    '- id: "user-entry"',
+    BLOCK_END,
+    '',
+  ].join('\n')
+  assert.throws(() => applyBlock(tampered, composition.block), /did not write/u)
+
+  assert.throws(() => readBlock(`${BLOCK_START}\n- insert: []\n`), /start marker without an end marker/u)
+  assert.throws(() => uninstallText(`${BLOCK_START}\n- insert: []\n`), /start marker without an end marker/u)
 })
 
 test('renderBrief names the worktree, the ratchet and the rules; message text is flattened', () => {

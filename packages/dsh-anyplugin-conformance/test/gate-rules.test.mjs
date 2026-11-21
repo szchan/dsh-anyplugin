@@ -5,7 +5,7 @@
 // to be clean. The scripts themselves call the same helpers; the mutation that
 // reddens `npm run check:arch` / `check:features` is in the ticket's PR body.
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -28,6 +28,7 @@ test('R14: a fixture directory in neither the ratchet nor the exclusion table is
     fixtures: ['claude-agents', 'hooks', 'zzz-orphan'],
     rows: ['claude-agents'],
     exclusions: { hooks: 'owned by hooks.test.mjs' },
+    ownerExists: () => true,
   })
   assert.equal(violations.length, 1)
   assert.equal(violations[0].fixture, 'zzz-orphan')
@@ -41,12 +42,13 @@ test('R14: an exclusion for a fixture that is gone is stale, and one without a r
     fixtures: ['claude-agents'],
     rows: ['claude-agents'],
     exclusions: { ghost: 'owned by ghost.test.mjs' },
+    ownerExists: () => true,
   })
   assert.equal(stale.length, 1)
   assert.equal(stale[0].fixture, 'ghost')
   assert.match(stale[0].message, /does not exist/u)
 
-  const empty = fixtureViolations({ fixtures: ['ghost'], rows: [], exclusions: { ghost: '  ' } })
+  const empty = fixtureViolations({ fixtures: ['ghost'], rows: [], exclusions: { ghost: '  ' }, ownerExists: () => true })
   assert.equal(empty.length, 1)
   assert.equal(empty[0].fixture, 'ghost')
   assert.match(empty[0].message, /no reason/u)
@@ -57,7 +59,45 @@ test('R14: the real tree is accounted for by rows plus the six named exclusions'
   const rows = expectedRowFixtures(readFileSync(join(root, EXPECTED_ROWS_FILE), 'utf8'))
   assert.ok(fixtures.length >= 14)
   assert.ok(rows.length >= 11)
-  assert.deepEqual(fixtureViolations({ fixtures, rows, exclusions: FIXTURE_EXCLUSIONS }), [])
+  assert.deepEqual(
+    fixtureViolations({
+      fixtures,
+      rows,
+      exclusions: FIXTURE_EXCLUSIONS,
+      ownerExists: (owner) => existsSync(join(root, owner)),
+    }),
+    [],
+  )
+})
+
+test('R14: a fake owner and a row for a missing fixture are both violations', () => {
+  const fake = fixtureViolations({
+    fixtures: ['claude-agents'],
+    rows: ['claude-agents'],
+    exclusions: { 'claude-agents': 'covered by packages/dsh-anyplugin-conformance/test/does-not-exist.test.mjs' },
+    ownerExists: (owner) => existsSync(join(root, owner)),
+  })
+  assert.equal(fake.length, 1)
+  assert.match(fake[0].message, /does-not-exist\.test\.mjs, which does not exist/u)
+
+  const ghostRow = fixtureViolations({
+    fixtures: ['claude-agents'],
+    rows: ['claude-agents', 'zzz-orphan'],
+    exclusions: {},
+    ownerExists: () => true,
+  })
+  assert.equal(ghostRow.length, 1)
+  assert.equal(ghostRow[0].fixture, 'zzz-orphan')
+  assert.match(ghostRow[0].message, /does not exist/u)
+
+  const ownerless = fixtureViolations({
+    fixtures: ['claude-agents'],
+    rows: [],
+    exclusions: { 'claude-agents': 'covered by prose' },
+    ownerExists: () => true,
+  })
+  assert.equal(ownerless.length, 1)
+  assert.match(ownerless[0].message, /names no \.test\.mjs owner/u)
 })
 
 test('R15: a count in a paragraph without an owning test is a violation', () => {
@@ -78,18 +118,30 @@ test('R15: a count in a paragraph without an owning test is a violation', () => 
   assert.equal(ownedCounts(text), 2, 'the intro paragraph and the table own their counts')
 })
 
-test('R15: a count whose paragraph names the test passes, and a heading is not a claim', () => {
+test('R15: a count whose paragraph names the test passes, and a heading is a claim too', () => {
   const owned = 'The ratchet: 25 declared, see `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`.'
-  assert.deepEqual(countOwnerViolations(owned), [])
-  assert.deepEqual(countOwnerViolations('## 3 tests\n\nprose without a number\n'), [])
-  assert.equal(ownedCounts('## 3 tests\n\nprose'), 0)
+  assert.deepEqual(countOwnerViolations(owned, { ownerExists: () => true }), [])
+  const heading = countOwnerViolations('## 3 tests\n\nprose without a number\n', { ownerExists: () => true })
+  assert.equal(heading.length, 1)
+  assert.match(heading[0].claim, /3 tests/u)
+  assert.equal(ownedCounts('## 3 tests\n\nprose', { ownerExists: () => true }), 0)
+
+  const fake = countOwnerViolations('The gate has 375 total tests, see `packages/dsh-anyplugin-conformance/test/does-not-exist.test.mjs`.', {
+    ownerExists: (owner) => existsSync(join(root, owner)),
+  })
+  assert.equal(fake.length, 1)
+  assert.match(fake[0].claim, /375 total tests/u)
+  assert.match(fake[0].message, /does not exist/u)
 })
 
 test('R15: every non-decisions doc currently owns its counts', () => {
   const failures = []
   for (const name of ['FEATURES.md', 'ARCHITECTURE.md', 'TODO.md', 'WORKFLOW.md', 'TRIAGE.md', 'CONFORMANCE.md']) {
     const text = readFileSync(join(root, 'docs', name), 'utf8')
-    for (const violation of countOwnerViolations(text)) failures.push(`${name}:${violation.line}: ${violation.message}`)
+    const ownerExists = (owner) => existsSync(join(root, owner))
+    for (const violation of countOwnerViolations(text, { ownerExists })) {
+      failures.push(`${name}:${violation.line}: ${violation.message}`)
+    }
   }
   assert.deepEqual(failures, [])
 })

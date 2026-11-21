@@ -53,8 +53,9 @@ export const EXCLUSIONS_FILE = 'scripts/fixture-ratchet.mjs'
  * One violation per orphaned fixture, stale exclusion or reasonless exclusion.
  * `file` is what the architecture check reports as the location.
  */
-export function fixtureViolations({ fixtures, rows, exclusions = FIXTURE_EXCLUSIONS }) {
+export function fixtureViolations({ fixtures, rows, exclusions = FIXTURE_EXCLUSIONS, ownerExists = () => true }) {
   const rowSet = new Set(rows)
+  const fixtureSet = new Set(fixtures)
   const violations = []
   for (const fixture of fixtures) {
     if (rowSet.has(fixture)) continue
@@ -64,15 +65,50 @@ export function fixtureViolations({ fixtures, rows, exclusions = FIXTURE_EXCLUSI
       message: `fixtures/${fixture} has no EXPECTED_ROWS entry in ${EXPECTED_ROWS_FILE} and no exclusion in ${EXCLUSIONS_FILE}; add a row or name the test that owns it`,
     })
   }
+  for (const fixture of rows) {
+    if (fixtureSet.has(fixture)) continue
+    violations.push({
+      fixture,
+      file: EXPECTED_ROWS_FILE,
+      message: `EXPECTED_ROWS names fixtures/${fixture}, which does not exist; a row cannot own a directory that is gone`,
+    })
+  }
   for (const [fixture, reason] of Object.entries(exclusions)) {
     if (!fixtures.includes(fixture)) {
       violations.push({
         fixture,
+        file: EXCLUSIONS_FILE,
         message: `the exclusion for fixtures/${fixture} names a directory that does not exist; remove the stale reason`,
       })
     }
     if (typeof reason !== 'string' || reason.trim().length === 0) {
-      violations.push({ fixture, message: `the exclusion for fixtures/${fixture} has no reason; name the test that owns it` })
+      violations.push({
+        fixture,
+        file: EXCLUSIONS_FILE,
+        message: `the exclusion for fixtures/${fixture} has no reason; name the test that owns it`,
+      })
+      continue
+    }
+    // A reason is only an owner if the test it names exists. A path-shaped
+    // string is not evidence.
+    const owners = [...reason.matchAll(/[\w./-]+\.test\.mjs\b/gu)].map((match) => match[0])
+    if (owners.length === 0) {
+      violations.push({
+        fixture,
+        file: EXCLUSIONS_FILE,
+        message: `the exclusion for fixtures/${fixture} names no .test.mjs owner; name the test that reads it`,
+      })
+      continue
+    }
+    const missing = owners.filter((owner) =>
+      !ownerExists(owner.includes('/') ? owner : `packages/dsh-anyplugin-conformance/test/${owner}`),
+    )
+    if (missing.length > 0) {
+      violations.push({
+        fixture,
+        file: EXCLUSIONS_FILE,
+        message: `the exclusion for fixtures/${fixture} names ${missing.join(', ')}, which does not exist; point at the test that owns it`,
+      })
     }
   }
   return violations

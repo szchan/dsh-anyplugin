@@ -73,13 +73,14 @@ if (!/coverage\.test\.mjs/u.test(text)) problems.push('the snapshot must name th
 //    are what was true when the entry was ratified — editing them to follow
 //    the suite would falsify the record.
 let owned = 0
+const ownerExists = (relativePath) => existsSync(join(root, relativePath))
 const docs = readdirSync(join(root, 'docs'))
   .filter((name) => name.endsWith('.md') && name !== 'DECISIONS.md')
   .sort()
 for (const name of docs) {
   const document = readFileSync(join(root, 'docs', name), 'utf8')
-  owned += ownedCounts(document)
-  for (const violation of countOwnerViolations(document)) {
+  owned += ownedCounts(document, { ownerExists })
+  for (const violation of countOwnerViolations(document, { ownerExists })) {
     problems.push(`${name}:${violation.line}: ${violation.message}`)
   }
 }

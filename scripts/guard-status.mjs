@@ -60,8 +60,18 @@ const composition = composeGuard({ repoRoot: root, worktrees: readGitWorktrees(r
 const sourceExists = existsSync(composition.source)
 const fileExists = existsSync(patchFile)
 const text = fileExists ? readFileSync(patchFile, 'utf8') : ''
-const installed = readBlock(text)
-const difference = installed.present ? firstDifference(installed.block, composition.block) : undefined
+let installed
+try {
+  installed = readBlock(text)
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(message.startsWith('guard:') ? message : `guard:status: ${message}`)
+  process.exit(1)
+}
+// The state line records what the file looked like before install; it is not
+// part of what the tree composes, so it is ignored when comparing.
+const comparable = (block) => block.split('\n').filter((line) => !line.startsWith('# dsh-anyplugin guard state:')).join('\n')
+const difference = installed.present ? firstDifference(comparable(installed.block), composition.block) : undefined
 const current = installed.present && difference === undefined
 const status = !installed.present ? 'not-installed' : current ? 'current' : 'stale'
 

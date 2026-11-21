@@ -128,10 +128,41 @@ function emitList(lines: string[], indent: number, key: string, values: string[]
   for (const value of values) lines.push(`${pad}  - ${quote(value)}`)
 }
 
+/**
+ * What the patch file looked like before the block was written. Recorded inside
+ * the managed block so `--uninstall` can restore an absent file as absent and
+ * an empty file as empty instead of leaving the empty-array marker behind.
+ */
+export interface InstallState {
+  file: 'absent' | 'empty' | 'array' | 'content'
+  /** Whether the pre-install content ended with a newline. */
+  newline: boolean
+}
+
+export function captureState(existing: string | undefined): InstallState {
+  if (existing === undefined) return { file: 'absent', newline: false }
+  if (existing.trim() === '') return { file: 'empty', newline: existing.endsWith('\n') }
+  if (existing.trim() === '[]') return { file: 'array', newline: existing.endsWith('\n') }
+  return { file: 'content', newline: existing.endsWith('\n') }
+}
+
+const STATE_LINE = '# dsh-anyplugin guard state:'
+
+export function readState(block: string): InstallState | undefined {
+  const line = block.split('\n').find((entry) => entry.startsWith(STATE_LINE))
+  if (line === undefined) return undefined
+  const match = line.match(/file=(absent|empty|array|content); newline=(yes|no)/u)
+  if (match === null) return undefined
+  return { file: match[1] as InstallState['file'], newline: match[2] === 'yes' }
+}
+
 /** Render the one entry this guard installs. Deterministic: status compares strings. */
-export function renderBlock(source: string, config: GuardConfig): string {
+export function renderBlock(source: string, config: GuardConfig, state?: InstallState): string {
   const lines: string[] = [
     `${BLOCK_START} — managed by \`npm run guard:install\`; \`npm run guard:status\` reads this block and nothing else.`,
+    ...(state === undefined
+      ? []
+      : [`${STATE_LINE} file=${state.file}; newline=${state.newline ? 'yes' : 'no'}`]),
     '- insert:',
     `    - id: ${quote(PLUGIN_ID)}`,
     `      name: ${quote(source)}`,
@@ -160,7 +191,9 @@ export function readBlock(text: string): { present: boolean; block: string } {
   const start = lines.findIndex((line) => line.startsWith(BLOCK_START))
   if (start < 0) return { present: false, block: '' }
   const end = lines.findIndex((line, index) => index > start && line.startsWith(BLOCK_END))
-  if (end < 0) return { present: true, block: lines.slice(start).join('\n') + '\n' }
+  if (end < 0) {
+    throw new Error('guard: the managed block has a start marker without an end marker; fix cordis.patch.yml first')
+  }
   return { present: true, block: `${lines.slice(start, end + 1).join('\n')}\n` }
 }
 
@@ -180,8 +213,17 @@ export function applyBlock(existing: string, block: string | null): string {
   while (before.length > 0 && before[before.length - 1].trim() === '') before.pop()
   while (after.length > 0 && after[0].trim() === '') after.shift()
   const outside = `${before.join('\n')}\n${after.join('\n')}`
-  if (outside.includes(`id: ${quote(PLUGIN_ID)}`) || outside.includes(`id: ${PLUGIN_ID}`)) {
+  const duplicate = /^\s*-\s+id:\s*(?:"anyplugin-guard"|'anyplugin-guard'|anyplugin-guard)\s*(?:#.*)?$/mu
+  if (duplicate.test(outside)) {
     throw new Error(`guard: ${quote(PLUGIN_ID)} already appears outside the managed block; remove that entry first`)
+  }
+  if (start >= 0) {
+    // The block is ours. A top-level row inside it that we did not write is a
+    // user edit; replacing the block would delete it without saying so.
+    const managed = lines.slice(start, end + 1).filter((line) => /^-\s/u.test(line))
+    if (managed.length > 1 || (managed.length === 1 && managed[0].trim() !== '- insert:')) {
+      throw new Error('guard: the managed block contains rows this tool did not write; move them out of the block first')
+    }
   }
   const blockLines = block === null ? [] : block.replace(/\n+$/u, '').split('\n')
   // A fresh profile may hold the empty-array marker. Two root collections in
@@ -195,6 +237,28 @@ export function applyBlock(existing: string, block: string | null): string {
   const next = parts.join('\n').replace(/\n{3,}$/u, '').replace(/^\n+/u, '')
   if (next.length === 0) return ''
   return `${next.replace(/\n+$/u, '')}\n`
+}
+
+/**
+ * What `--uninstall` should leave behind. The managed block records the
+ * pre-install state, so absent stays absent, empty stays empty, `[]` stays
+ * `[]`, and a file without a trailing newline does not silently gain one.
+ */
+export function uninstallText(existing: string): { action: 'delete' | 'write'; content: string } {
+  const installed = readBlock(existing)
+  if (!installed.present) throw new Error('guard: not installed (no managed block); nothing to remove')
+  const state = readState(installed.block)
+  let next = applyBlock(existing, null)
+  if (state === undefined) {
+    // An older block did not record its state; the canonical empty patch is
+    // `[]`, which the loader accepts and an empty file does not.
+    return next.trim() === '' ? { action: 'write', content: '[]\n' } : { action: 'write', content: next }
+  }
+  if (state.file === 'absent') return { action: 'delete', content: '' }
+  if (state.file === 'empty') return { action: 'write', content: '' }
+  if (state.file === 'array') return { action: 'write', content: '[]\n' }
+  if (!state.newline && next.endsWith('\n')) next = next.slice(0, -1)
+  return { action: 'write', content: next }
 }
 
 /** Compose the current installable entry from the tree. */
@@ -244,10 +308,13 @@ export function guardTable(options: { worktree: string; protectedRoot: string })
     { tool: 'bash', payload: 'git push origin HEAD:main', role: 'worker', expect: 'deny', rule: 'git-push-main', note: 'destination ref is main' },
     { tool: 'bash', payload: 'git push --all origin', role: 'worker', expect: 'deny', rule: 'git-push-main', note: '--all pushes main too' },
     { tool: 'bash', payload: 'git push origin --delete main', role: 'worker', expect: 'deny', rule: 'git-push-main', note: 'deletes main' },
-    { tool: 'bash', payload: 'git push', role: 'worker', expect: 'deny', rule: 'git-push-main', branch: 'main', note: 'bare push on main' },
-    { tool: 'bash', payload: 'git push', role: 'worker', expect: 'allow', rule: 'allow', branch: 'ticket/80', note: 'bare push on ticket branch' },
-    { tool: 'bash', payload: 'git push', role: 'worker', expect: 'deny', rule: 'git-push-main', unknownBranch: true, note: 'bare push, branch unknown' },
+    { tool: 'bash', payload: 'git push', role: 'worker', expect: 'deny', rule: 'git-push-bare', branch: 'main', note: 'bare push on main' },
+    { tool: 'bash', payload: 'git push', role: 'worker', expect: 'deny', rule: 'git-push-bare', branch: 'ticket/80', note: 'bare push is refused even on the ticket branch: remote.origin.push/push.default can retarget it' },
+    { tool: 'bash', payload: 'git push', role: 'worker', expect: 'deny', rule: 'git-push-bare', unknownBranch: true, note: 'bare push, branch unknown' },
+    { tool: 'bash', payload: 'git push origin HEAD:refs/heads/ticket/80', role: 'worker', expect: 'allow', rule: 'allow', note: 'explicit destination refspec' },
     { tool: 'bash', payload: "bash -c 'git push origin main'", role: 'worker', expect: 'deny', rule: 'git-push-main', note: 'nested bash -c' },
+    { tool: 'bash', payload: 'env -i git push origin main', role: 'worker', expect: 'deny', rule: 'git-push-main', note: 'launcher stripped' },
+    { tool: 'bash', payload: 'echo "git push origin main"', role: 'worker', expect: 'allow', rule: 'allow', note: 'quoted text is not a command' },
     { tool: 'bash', payload: 'gh pr merge 82 --squash', role: 'worker', expect: 'deny', rule: 'gh-pr-merge-worker', note: 'worker merge' },
     { tool: 'bash', payload: 'gh pr merge 82 --squash', role: 'root', expect: 'allow', rule: 'allow', note: 'master merge' },
     { tool: 'bash', payload: 'node scripts/check-decisions.mjs --update', role: 'worker', expect: 'allow', rule: 'allow', note: 'sanctioned writer' },
@@ -255,6 +322,10 @@ export function guardTable(options: { worktree: string; protectedRoot: string })
     { tool: 'bash', payload: 'git checkout -- docs/DECISIONS.md', role: 'worker', expect: 'deny', rule: 'decisions-append-only', note: 'restores the file' },
     { tool: 'bash', payload: `cd ${worktree} && touch notes.md`, role: 'worker', expect: 'allow', rule: 'allow', note: 'cd into the worktree first' },
     { tool: 'bash', payload: `touch ${protectedRoot}/notes.md`, role: 'worker', expect: 'deny', rule: 'write-outside-worktree', note: 'absolute master path' },
+    { tool: 'bash', payload: `echo x >| ${protectedRoot}/x`, role: 'worker', expect: 'deny', rule: 'write-outside-worktree', note: 'clobber redirect' },
+    { tool: 'bash', payload: `(cd ${protectedRoot} && touch x)`, role: 'worker', expect: 'deny', rule: 'write-outside-worktree', note: 'subshell cd is tracked' },
+    { tool: 'bash', payload: `git restore ${protectedRoot}/x`, role: 'worker', expect: 'deny', rule: 'git-write-verb', note: 'git write verb' },
+    { tool: 'bash', payload: `tee ${worktree}/x.md < /tmp/in`, role: 'worker', expect: 'allow', rule: 'allow', note: 'read source is not a write target' },
     { tool: 'bash', payload: 'npm run verify', role: 'worker', expect: 'allow', rule: 'allow', note: 'no write target' },
     { tool: 'write', payload: `${worktree}/notes.md`, role: 'worker', expect: 'allow', rule: 'allow', note: 'inside the worktree' },
     { tool: 'write', payload: `${protectedRoot}/notes.md`, role: 'worker', expect: 'deny', rule: 'write-outside-worktree', note: 'master checkout' },

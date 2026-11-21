@@ -30,8 +30,9 @@
  * (`eval "$(printf …)"`), and the guard says so instead of pretending
  * otherwise; DSH's own file sandbox remains the enforced boundary.
  */
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isMainRef } from './git.ts'
 import { baseCommand, parseSegments, stripPrefix, type ShellSegment } from './shell.ts'
 
@@ -134,6 +135,29 @@ export function isInside(root: string, target: string): boolean {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
+/**
+ * The real path of `target`. A file tool follows symlinks, so a lexical check
+ * is not enough: a symlink placed inside the worktree that points into the
+ * main checkout would otherwise pass. Missing tails are resolved against the
+ * nearest existing ancestor, so a not-yet-created file is still judged by the
+ * directory it would land in.
+ */
+export function realTarget(target: string): string {
+  let current = resolve(target)
+  const tail: string[] = []
+  for (let depth = 0; depth < 64; depth += 1) {
+    try {
+      return resolve(realpathSync.native(current), ...tail.slice().reverse())
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return resolve(target)
+      tail.push(basename(current))
+      current = parent
+    }
+  }
+  return resolve(target)
+}
+
 function normalized(path: string): string {
   return path.replaceAll('\\', '/')
 }
@@ -172,34 +196,35 @@ export function patchTargets(input: string): string[] {
   return targets
 }
 
-/** The worktree the confinement check uses: the brief's record, or the only configured one. */
-export function effectiveWorktree(call: GuardCall, policy: ResolvedPolicy): string | undefined {
-  if (call.worktree !== undefined) return resolve(call.worktree)
-  return policy.worktrees.length === 1 ? policy.worktrees[0] : undefined
+/**
+ * The worktree the confinement check uses. Only a recorded worktree counts:
+ * inferring one from configuration (or worse, from a branch name in the
+ * prompt) lets a reviewer write into the branch under review.
+ */
+export function effectiveWorktree(call: GuardCall, _policy: ResolvedPolicy): string | undefined {
+  return call.worktree === undefined ? undefined : resolve(call.worktree)
 }
 
 function confinement(target: string, worktree: string | undefined, policy: ResolvedPolicy): Verdict | undefined {
+  const real = realTarget(target)
   for (const root of policy.protectedRoots) {
-    if (isInside(root, target)) {
+    if (isInside(realTarget(root), real)) {
       return deny(
         'write-outside-worktree',
-        `refusing to write ${target}: it is inside the protected checkout ${root}; a worker writes only inside its own worktree`,
+        `refusing to write ${target}: it is (or resolves through a symlink) inside the protected checkout ${root}; a worker writes only inside its own worktree`,
       )
     }
   }
-  if (worktree !== undefined) {
-    if (!isInside(worktree, target)) {
-      return deny(
-        'write-outside-worktree',
-        `refusing to write ${target}: a worker writes only inside its worktree ${worktree}; pass an absolute path under it`,
-      )
-    }
-    return undefined
-  }
-  if (policy.worktrees.length > 0 && !policy.worktrees.some((root) => isInside(root, target))) {
+  if (worktree === undefined) {
     return deny(
       'write-outside-worktree',
-      `refusing to write ${target}: this agent has no recorded worktree and the path is not inside a configured worktree (${policy.worktrees.join(', ')})`,
+      `refusing to write ${target}: no worktree is recorded for this agent; use an explicit absolute path under your own worktree, and ask the master to include the path in the spawn prompt if it was omitted`,
+    )
+  }
+  if (!isInside(realTarget(worktree), real)) {
+    return deny(
+      'write-outside-worktree',
+      `refusing to write ${target}: a worker writes only inside its worktree ${worktree}; pass an absolute path under it`,
     )
   }
   return undefined
@@ -212,14 +237,19 @@ function judgeWrite(call: GuardCall, policy: ResolvedPolicy): Verdict {
   const targets = writeTargets(call.tool, call.args)
   for (const raw of targets) {
     const target = resolveTarget(raw, call.agent.cwd)
-    if (target !== undefined && isDecisionsTarget(target, policy)) {
+    if ((target !== undefined && isDecisionsTarget(target, policy)) || (target === undefined && isDecisionsTarget(raw, policy))) {
       return deny('decisions-append-only', DECISIONS_REASON)
     }
   }
   if (!call.agent.worker) return ALLOW
   for (const raw of targets) {
     const target = resolveTarget(raw, call.agent.cwd)
-    if (target === undefined) continue
+    if (target === undefined) {
+      return deny(
+        'write-outside-worktree',
+        `refusing to write ${raw}: the session has no cwd, so a relative path cannot be resolved; use an absolute path under your worktree`,
+      )
+    }
     const violation = confinement(target, effectiveWorktree(call, policy), policy)
     if (violation !== undefined) return violation
   }
@@ -316,19 +346,13 @@ function judgePush(push: GitPush, branch: string | undefined, raw: string): Verd
   }
   const refspecs = positionals.slice(1)
   if (refspecs.length === 0) {
-    if (branch === undefined) {
-      return deny(
-        'git-push-main',
-        `refusing "${excerpt(raw)}": the guard cannot tell which branch a bare push would write; name the destination (e.g. \`git push origin ticket/80\`)`,
-      )
-    }
-    if (isMainRef(branch)) {
-      return deny(
-        'git-push-main',
-        `refusing "${excerpt(raw)}": the checked-out branch is ${branch}; push the ticket branch and open a PR`,
-      )
-    }
-    return undefined
+    // A bare push does not mean "the current branch": `remote.<r>.push` and
+    // `push.default=upstream` can redirect it to main. The guard refuses the
+    // ambiguous form instead of guessing.
+    return deny(
+      'git-push-bare',
+      `refusing "${excerpt(raw)}": a bare git push can write main through remote.<name>.push or push.default; name the destination explicitly (e.g. \`git push origin HEAD:refs/heads/ticket/80\`)`,
+    )
   }
   for (const refspec of refspecs) {
     const destination = destinationRef(refspec, branch)
@@ -359,7 +383,69 @@ const DECISIONS_PATH = /docs\/DECISIONS\.md|decisions\.lock\.json/u
 const COPY_VERBS = new Set(['cp', 'mv', 'install', 'ln', 'rsync'])
 const ANY_ARG_WRITE_VERBS = new Set(['rm', 'tee', 'truncate', 'patch'])
 const INTERPRETERS = new Set(['node', 'python', 'python3', 'ruby', 'php'])
-const GIT_WRITE_SUBCOMMANDS = new Set(['checkout', 'restore', 'reset', 'apply', 'rm', 'mv', 'stash'])
+const GIT_WRITE_SUBCOMMANDS = new Set([
+  'checkout',
+  'restore',
+  'reset',
+  'apply',
+  'rm',
+  'mv',
+  'stash',
+  'pull',
+  'merge',
+  'rebase',
+  'cherry-pick',
+  'revert',
+  'clean',
+])
+
+const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select'])
+
+/**
+ * The git subcommand after its global options, for the write verbs a worker
+ * may not use: `git checkout -- <main>/x`, `git restore`, `git clean -fd`
+ * write files without a redirect the shell rules could see.
+ */
+export function gitWriteVerb(tokens: string[]): string | undefined {
+  const head = stripPrefix(tokens)
+  if (head.length === 0 || baseCommand(head[0]) !== 'git') return undefined
+  let index = 1
+  while (index < head.length) {
+    const token = head[index]
+    if (GIT_VALUE_FLAGS.has(token)) {
+      index += 2
+      continue
+    }
+    if (token.startsWith('-')) {
+      index += 1
+      continue
+    }
+    break
+  }
+  const subcommand = head[index]
+  return subcommand !== undefined && GIT_WRITE_SUBCOMMANDS.has(subcommand) ? subcommand : undefined
+}
+
+/** Constructs whose effects the segment parser cannot see. Refused, not guessed. */
+function shellHazard(command: string, segments: ShellSegment[]): Verdict | undefined {
+  if (/\$\(|`/u.test(command)) {
+    return deny(
+      'shell-unmodelled',
+      `refusing "${excerpt(command)}": command substitution hides what will run; write the command out literally`,
+    )
+  }
+  for (const segment of flatten(segments)) {
+    const head = stripPrefix(segment.tokens)
+    const name = baseCommand(head[0])
+    if (name === 'eval' || name === 'source') {
+      return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": ${name} executes text the guard cannot judge`)
+    }
+    if (SHELL_KEYWORDS.has(name)) {
+      return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": the shell keyword ${name} hides a command list; use a plain sequence`)
+    }
+  }
+  return undefined
+}
 
 function nonFlagArguments(tokens: string[]): string[] {
   return tokens.slice(1).filter((token) => !token.startsWith('-'))
@@ -382,7 +468,7 @@ export function isSanctionedUpdate(tokens: string[]): boolean {
 
 function redirectTargets(raw: string): string[] {
   const targets: string[] = []
-  for (const match of raw.matchAll(/(?:^|\s)(?:\d?>>?|&>)\s*("([^"]*)"|'([^']*)'|([^\s;|&]+))/gu)) {
+  for (const match of raw.matchAll(/(?:^|\s)(?:\d?>>?\|?|&>>?)\s*("([^"]*)"|'([^']*)'|([^\s;|&]+))/gu)) {
     const value = match[2] ?? match[3] ?? match[4] ?? ''
     if (value.length > 0 && value !== '/dev/null' && !value.startsWith('&')) targets.push(value)
   }
@@ -403,6 +489,26 @@ function segmentWriteTargets(segment: ShellSegment): string[] {
       const positional = args.filter((token) => !token.startsWith('-'))
       if (positional.length > 0) targets.push(positional[positional.length - 1])
     }
+    return targets
+  }
+  if (command === 'tee') {
+    // `tee out.md < /tmp/in` reads `/tmp/in`; only the operands are written.
+    const operands: string[] = []
+    for (let index = 1; index < head.length; index += 1) {
+      const token = head[index]
+      if (token === '<' || token === '<<' || token === '<<<') {
+        index += 1
+        continue
+      }
+      if (token.startsWith('<')) continue
+      if (token.startsWith('>') || token === '&>' || token === '&>>') {
+        index += 1
+        continue
+      }
+      if (token.startsWith('-')) continue
+      operands.push(token)
+    }
+    targets.push(...operands)
     return targets
   }
   if (ANY_ARG_WRITE_VERBS.has(command)) {
@@ -506,6 +612,9 @@ function judgeCommand(
   const flat = flatten(segments)
   if (flat.length === 1 && flat[0].children.length === 0 && isSanctionedUpdate(flat[0].tokens)) return ALLOW
 
+  const hazard = shellHazard(command, segments)
+  if (hazard !== undefined) return hazard
+
   for (const segment of flat) {
     const violation = decisionsViolation(segment)
     if (violation !== undefined) return violation
@@ -530,9 +639,24 @@ function judgeCommand(
     }
   }
 
+  for (const segment of flat) {
+    const verb = gitWriteVerb(segment.tokens)
+    if (verb !== undefined) {
+      return deny(
+        'git-write-verb',
+        `refusing "${excerpt(segment.raw)}": a worker does not rewrite the tree or history with git ${verb}; edit the file inside the worktree instead`,
+      )
+    }
+  }
+
   for (const write of collectShellWrites(segments, cwd)) {
     const target = resolveTarget(write.raw, write.cwd)
-    if (target === undefined) continue
+    if (target === undefined) {
+      return deny(
+        'write-outside-worktree',
+        `refusing to write ${write.raw}: the running directory is unknown, so the path cannot be confined; use an absolute path under your worktree`,
+      )
+    }
     const violation = confinement(target, worktree, policy)
     if (violation !== undefined) return violation
   }

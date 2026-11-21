@@ -1234,10 +1234,14 @@ run degraded *by design*.
 ### The repository guard: a consumer of the two seams
 
 The repository runs a first-party policy on itself (`packages/dsh-anyplugin-guard`,
-issue #80). It is a plugin like any other — one package, `inject: ['tools']`, a
-single root listener per seam — and it deliberately does **not** introduce a
-second event path (§3.6). It reads the same payloads the hook materializer
-reads and returns the host's own verdict shape.
+issue #80). It is a plugin like any other — one package, `inject: ['tools']`, one
+handler per seam, mounted at the app level and on each `agent.ctx` — and it
+deliberately does **not** introduce a second event path (§3.6). The second mount
+is required, not optional: the loops dispatch both seams through the agent's
+scope carrier (`dsh-agent/lib/index.js:358`, `dsh-agent-loop/lib/index.js:551`),
+so an app-level listener sees the root but never a child (`materialize-hook`
+seats its listeners the same way). It reads the same payloads the hook
+materializer reads and returns the host's own verdict shape.
 
 | seam | payload read at pin `0.2.2-rc.5` | what the guard does |
 | --- | --- | --- |
@@ -1245,32 +1249,48 @@ reads and returns the host's own verdict shape.
 | `agent/pre-step` (waterfall, S9) | `{messages, turn, step, agent}` | on a spawned worker's first step, appends one user message to the continuation the host returned |
 
 Four rules, each with a positive and a near-miss case in the dry-run table:
-`git push` to `main`/`master` (any role; bare pushes are judged by the
-worktree's `HEAD`, and an unknown branch is refused rather than guessed);
-`gh pr merge` from a worker only (the root may merge); writes outside the
-worker's recorded worktree, with the main checkout always protected; and
-`docs/DECISIONS.md` / `docs/decisions.lock.json` through anything but the
-sanctioned `node scripts/check-decisions.mjs --update`. The policy is a check,
-not a sandbox: `eval "$(…)"` can evade it, and the DSH file sandbox remains the
-boundary. It is written for the commands this repository's agents actually run,
-not as a general shell interpreter.
+`git push` with a destination of `main`/`master` (any role), and **every bare
+`git push`** (any role) — `remote.<name>.push` and `push.default` can retarget
+a bare push after it was read, so the ambiguous form is refused and an explicit
+refspec is demanded; `gh pr merge` from a worker only (the root may merge);
+writes outside the worker's recorded worktree, with the main checkout always
+protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
+anything but the sanctioned `node scripts/check-decisions.mjs --update`.
+"Recorded" is the operative word: the worktree comes from an explicit path in
+the spawn prompt or from a cwd that is itself a configured worktree. A branch
+name in the prompt (the review prompt names the branch under review) never
+implies a path; with no recorded worktree a worker's writes are refused rather
+than checked against every configured worktree. The policy is a check, not a
+sandbox: command substitution, backticks, `eval`/`source` and unmodelled shell
+keywords are refused as `shell-unmodelled` instead of guessed at, git write
+verbs are refused for workers, symlinks are resolved before confinement, and
+the DSH file sandbox remains the boundary. It is written for the commands this
+repository's agents actually run, not as a general shell interpreter.
 
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
 no value channel, and `SubagentStartRequest` has no instructions field at this
 pin (§10 S10). The only place text can reach the child before its first model
 step is the `agent/pre-step` continuation, so the brief is appended there,
-after `next()`, so the agent loop's own runtime-context section survives. It is
-context — the worktree path, the coverage ratchet totals and the open rows —
-not a file the worker is told to read.
+after `next()`, so the agent loop's own runtime-context section survives. The
+message is built like the host's `createUserMessage` — a UUID `id` and
+`source: {kind: 'user'}`. That shape is load-bearing: the loop reads
+`message.source.kind` on every appended message (`dsh-agent-loop/lib/index.js:873`),
+and `runtime-context` is the snapshot kind, not a prompt kind. It is context —
+the worktree path, the coverage ratchet totals and the open rows — not a file
+the worker is told to read.
 
 Installation is data: `npm run guard:install` appends one marked block to the
 profile's `cordis.patch.yml` containing a single `insert` entry whose `name`
 is the absolute source path (the profile loader anchors inserted names). A patch
 without `insert` only overrides an existing entry id, so the insert form is the
-one that can add the plugin. `--dry-run` composes the same block, prints it and
-runs the payload→verdict table through the same judge, writing nothing;
-`guard:status` re-composes and compares, so a stale block is visible without
-loading the profile.
+one that can add the plugin. The block records the file's pre-install state
+(absent, empty, `[]`, or content), so `--uninstall` restores absence as absence
+and emptiness as emptiness instead of leaving `[]` behind; a user row inside
+the marked block, a duplicate id in either YAML quote style, and an unbalanced
+marker are refused rather than silently rewritten. `--dry-run` composes the
+same block, prints it and runs the payload→verdict table through the same judge,
+writing nothing; `guard:status` re-composes and compares (ignoring the state
+line), so a stale block is visible without loading the profile.
 
 ### Why dynamic packages cannot be the reconcile substrate
 

@@ -14,6 +14,7 @@
  * enforces. The guard records the worktree path from the same text, so the
  * brief and the enforcement cannot disagree.
  */
+import { randomUUID } from 'node:crypto'
 import { isInside, type BriefConfig } from './policy.ts'
 
 export interface BriefInput {
@@ -48,9 +49,34 @@ export function renderBrief(input: BriefInput): string {
   return lines.join('\n')
 }
 
-/** The message shape `agent/pre-step` appends to its default continuation. */
-export function textMessage(text: string): { role: 'user'; content: Array<{ type: 'text'; text: string }> } {
-  return { role: 'user', content: [{ type: 'text', text }] }
+/**
+ * A user message the agent loop accepts.
+ *
+ * This reproduces `createUserMessage` from the pinned `dsh-llm` exactly —
+ * a branded UUID id, the text block, and `source.kind = 'user'` — because the
+ * plugin cannot import that constructor: it is loaded out of tree from this
+ * repository, whose hoisted `@deepseek-ai/dsh-llm` is the stale `latest`
+ * (0.0.1-rc.1, not the pin), and adding a second pinned host copy is outside
+ * this ticket (D8). The live test boots the real loop at the pin and shows the
+ * loop accepts this message: `dsh-agent-loop/lib/index.js:873` reads
+ * `message.source.kind` on every appended message, and a message without
+ * `source` throws before the first model call. `runtime-context` is the
+ * snapshot kind the loop consumes differently; a queued prompt is `user`.
+ */
+export interface GuardUserMessage {
+  id: string
+  role: 'user'
+  content: Array<{ type: 'text'; text: string }>
+  source: { kind: 'user' }
+}
+
+export function textMessage(text: string): GuardUserMessage {
+  return Object.freeze({
+    id: randomUUID(),
+    role: 'user',
+    content: Object.freeze([{ type: 'text', text }]) as Array<{ type: 'text'; text: string }>,
+    source: Object.freeze({ kind: 'user' }),
+  })
 }
 
 /** Text of every message a pre-step payload carries, for worktree discovery. */
@@ -78,30 +104,25 @@ export function messageText(messages: unknown): string {
  * Which worktree this worker owns, from the first step it takes.
  *
  * The spawn payload carries no worktree (S9: `{runId, provider,
- * parentSessionId, id, local}`), so the only reliable source is the prompt the
- * worker was spawned with. The order is deliberate: an explicit absolute path
- * wins, a `ticket/<n>` branch resolves against the installer's worktree names,
- * a session cwd that is already inside a worktree is accepted, and a single
- * configured worktree is the fallback. With none of those, nothing is
- * recorded and every write outside a configured worktree is denied — fail
- * closed, not open.
+ * parentSessionId, id, local}`). A worktree is accepted from exactly two
+ * places, never from a branch name: the prompt may name a configured worktree
+ * path literally (a master delegates with "worktree `/tmp/…`"), or the
+ * session cwd may already be a configured worktree root. A branch name is not
+ * a path — a reviewer's prompt names the branch under review, and inferring
+ * from it would hand the reviewer the author's worktree. With neither source,
+ * nothing is recorded and the confinement denies every write: fail closed.
  */
 export function chooseWorktree(input: { text: string; cwd?: string; worktrees: string[] }): string | undefined {
-  const worktrees = input.worktrees.map((path) => path.replace(/\/+$/u, ''))
+  const worktrees = input.worktrees.map((path) => path.replace(/\/+$/u, '')).filter((path) => path.length > 0)
   if (worktrees.length === 0) return undefined
   if (input.text.length > 0) {
-    const mentioned = worktrees.filter((path) => input.text.includes(path)).sort((a, b) => b.length - a.length)
-    if (mentioned.length > 0) return mentioned[0]
-    const tickets = new Set([...input.text.matchAll(/\bticket\/(\d+)\b/gu)].map((match) => match[1]))
-    if (tickets.size === 1) {
-      const [ticket] = tickets
-      const named = worktrees.filter((path) => path.split('/').some((part) => part === `ticket-${ticket}`))
-      if (named.length === 1) return named[0]
-    }
+    const mentioned = worktrees.filter((path) => input.text.includes(path))
+    if (mentioned.length === 1) return mentioned[0]
+    if (mentioned.length > 1) return undefined
   }
   if (input.cwd !== undefined) {
     const inside = worktrees.filter((path) => isInside(path, input.cwd as string))
     if (inside.length === 1) return inside[0]
   }
-  return worktrees.length === 1 ? worktrees[0] : undefined
+  return undefined
 }

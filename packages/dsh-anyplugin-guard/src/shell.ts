@@ -67,6 +67,11 @@ export function splitSegments(command: string): string[] {
       index += 1
       continue
     }
+    if (char === '|' && (command[index - 1] === '>' || command[index - 1] === '&' || command[index - 1] === '<')) {
+      // `>|` (clobber), `&>|` and `<|` are redirections, not pipelines.
+      current += char
+      continue
+    }
     if (char === ';' || char === '|' || char === '\n') {
       segments.push(current)
       current = ''
@@ -145,7 +150,63 @@ export function stripPrefix(tokens: string[]): string[] {
       }
       continue
     }
-    if (token === 'env' || token === 'command' || token === 'nohup' || token === 'time' || token === 'exec' || token === 'builtin') {
+    if (token === 'env') {
+      index += 1
+      // `env -i VAR=value cmd`, `env -u NAME cmd`: the command is still there.
+      while (index < result.length) {
+        const next = result[index]
+        if (next === '-u' || next === '--unset') {
+          index += 2
+          continue
+        }
+        if (next.startsWith('-')) {
+          index += 1
+          continue
+        }
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(next)) {
+          index += 1
+          continue
+        }
+        break
+      }
+      continue
+    }
+    if (token === 'timeout') {
+      index += 1
+      while (index < result.length && result[index].startsWith('-')) {
+        const flag = result[index]
+        index += 1
+        if (flag === '-s' || flag === '--signal' || flag === '-k' || flag === '--kill-after') index += 1
+      }
+      index += 1 // the duration
+      continue
+    }
+    if (token === 'nice') {
+      index += 1
+      while (index < result.length) {
+        const next = result[index]
+        if (next === '-n' || next === '--adjustment') {
+          index += 2
+          continue
+        }
+        if (next.startsWith('-')) {
+          index += 1
+          continue
+        }
+        break
+      }
+      continue
+    }
+    if (token === 'xargs') {
+      index += 1
+      while (index < result.length && result[index].startsWith('-')) {
+        const flag = result[index]
+        index += 1
+        if (['-I', '-n', '-P', '-s', '-L', '-d', '-E', '-a', '--arg-file', '--delimiter', '--max-args', '--max-procs', '--max-chars'].includes(flag)) index += 1
+      }
+      continue
+    }
+    if (token === 'command' || token === 'nohup' || token === 'time' || token === 'exec' || token === 'builtin' || token === 'stdbuf') {
       index += 1
       continue
     }
@@ -194,6 +255,12 @@ export function parseSegments(command: string, depth = 0): ShellSegment[] {
   for (const raw of splitSegments(stripHeredocs(command))) {
     const tokens = tokenize(raw)
     if (tokens.length === 0) continue
+    // A subshell is still a command list: `(cd repo && touch x)` arrives as
+    // `(cd repo` / `touch x)`, so the grouping parentheses are syntax, not
+    // words. Stripping them lets the same cd-tracking and write rules apply.
+    tokens[0] = tokens[0].replace(/^\(+/u, '')
+    tokens[tokens.length - 1] = tokens[tokens.length - 1].replace(/\)+$/u, '')
+    if (tokens.every((token) => token.length === 0)) continue
     const head = stripPrefix(tokens)
     const children: ShellSegment[] = []
     if (depth < 4 && head.length > 1 && SHELLS.has(baseCommand(head[0]))) {

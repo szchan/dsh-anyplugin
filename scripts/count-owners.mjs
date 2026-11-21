@@ -12,8 +12,8 @@
 // historical record, hashed by `check:decisions`, and its counts are what was
 // true when the entry was ratified — rewriting them would falsify the record.
 
-const CLAIM = /\b\d+\s+(?:declared|tests?|fixtures?)\b/giu
-const OWNER = /[\w./-]+\.test\.mjs\b/u
+const CLAIM = /\b\d+\s+(?:total\s+)?(?:declared|tests?|fixtures?)\b/giu
+const OWNER = /[\w./-]+\.test\.mjs\b/gu
 
 /** Split on blank lines, keeping the line each paragraph starts on. */
 function paragraphs(text) {
@@ -42,25 +42,37 @@ function paragraphs(text) {
  * `line` is 1-based and points at the paragraph, not the number, so the
  * caller can report a file location a human can open.
  */
-export function countOwnerViolations(text) {
+export function countOwnerViolations(text, { ownerExists = () => true } = {}) {
   const violations = []
   for (const paragraph of paragraphs(text)) {
-    if (/^\s*#/u.test(paragraph.text)) continue
     const claims = [...paragraph.text.matchAll(CLAIM)].map((match) => match[0].replace(/\s+/gu, ' '))
     if (claims.length === 0) continue
-    if (OWNER.test(paragraph.text)) continue
-    violations.push({
-      line: paragraph.line,
-      claim: claims[0],
-      message: `"${claims[0]}" states a count but the paragraph names no owning .test.mjs file; add the test path next to the number`,
-    })
+    const owners = [...paragraph.text.matchAll(OWNER)].map((match) => match[0])
+    if (owners.length === 0) {
+      violations.push({
+        line: paragraph.line,
+        claim: claims[0],
+        message: `"${claims[0]}" states a count but the paragraph names no owning .test.mjs file; add the test path next to the number`,
+      })
+      continue
+    }
+    const missing = owners.filter((owner) => !ownerExists(owner))
+    if (missing.length === owners.length) {
+      violations.push({
+        line: paragraph.line,
+        claim: claims[0],
+        message: `"${claims[0]}" names ${missing.join(', ')}, which does not exist; point at the test that owns the number`,
+      })
+    }
   }
   return violations
 }
 
 /** Claims the docs actually own, for the check's summary line. */
-export function ownedCounts(text) {
-  return paragraphs(text).filter(
-    (paragraph) => [...paragraph.text.matchAll(CLAIM)].length > 0 && OWNER.test(paragraph.text),
-  ).length
+export function ownedCounts(text, { ownerExists = () => true } = {}) {
+  return paragraphs(text).filter((paragraph) => {
+    if ([...paragraph.text.matchAll(CLAIM)].length === 0) return false
+    const owners = [...paragraph.text.matchAll(OWNER)].map((match) => match[0])
+    return owners.some((owner) => ownerExists(owner))
+  }).length
 }

@@ -265,11 +265,11 @@ if (!existsSync(coverageTest)) {
 } else {
   const fixtures = topLevelFixtures(fixturesDir(root))
   const rows = expectedRowFixtures(readFileSync(coverageTest, 'utf8'))
-  for (const violation of fixtureViolations({ fixtures, rows, exclusions: FIXTURE_EXCLUSIONS })) {
-    const stale = violation.message.includes('does not exist')
+  const ownerExists = (relativePath) => existsSync(join(root, relativePath))
+  for (const violation of fixtureViolations({ fixtures, rows, exclusions: FIXTURE_EXCLUSIONS, ownerExists })) {
     fail(
       'R14 fixture-ratchet',
-      stale ? join(root, EXCLUSIONS_FILE) : join(fixturesDir(root), violation.fixture),
+      join(root, violation.file ?? join('fixtures', violation.fixture)),
       violation.message,
     )
   }

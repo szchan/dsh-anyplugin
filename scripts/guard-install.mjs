@@ -16,7 +16,7 @@
 //
 // `--profile-dir` defaults to DSH_PROFILE_DIR, then $DSH_HOME/profiles/$DSH_PROFILE.
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -24,12 +24,17 @@ import {
   BLOCK_START,
   PATCH_FILE,
   applyBlock,
+  captureState,
   composeGuard,
   defaultProfileDir,
   formatTable,
   guardTable,
+  readBlock,
   readGitWorktrees,
+  readState,
+  renderBlock,
   runTable,
+  uninstallText,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -60,6 +65,11 @@ if (options.dryRun && options.uninstall) usage('--dry-run and --uninstall are di
 const profileDir = options.profileDir ?? resolve(defaultProfileDir())
 const patchFile = join(profileDir, PATCH_FILE)
 
+function printError(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(message.startsWith('guard:') ? message : `guard: ${message}`)
+}
+
 function writeAtomically(file, content) {
   const temporary = `${file}.guard.tmp`
   writeFileSync(temporary, content)
@@ -75,16 +85,23 @@ if (options.uninstall) {
     process.exit(0)
   }
   const existing = readFileSync(patchFile, 'utf8')
-  const next = applyBlock(existing, null)
-  if (next === existing) {
-    console.log(`guard: not installed (no ${BLOCK_START} block); nothing to remove`)
+  let outcome
+  try {
+    outcome = uninstallText(existing)
+  } catch (error) {
+    printError(error)
+    process.exit(1)
+  }
+  if (outcome.action === 'delete') {
+    unlinkSync(patchFile)
+    console.log('guard: removed the managed block and the patch file it created; the profile is as it was before install')
     process.exit(0)
   }
-  // An empty patch file is not a valid loader input; the marker for "no
-  // entries" is the empty array, which is also what a fresh profile holds.
-  const content = next.trim() === '' ? '[]\n' : next
-  writeAtomically(patchFile, content)
-  console.log(`guard: removed the managed block (${existing.length - content.length} bytes); the rest of the file is untouched`)
+  writeAtomically(patchFile, outcome.content)
+  console.log(
+    `guard: removed the managed block (${existing.length - outcome.content.length} bytes); ` +
+      'the rest of the file is byte-for-byte what the block found',
+  )
   process.exit(0)
 }
 
@@ -103,8 +120,19 @@ const protectedRoot = composition.config.protectedRoots?.[0] ?? root
 const tableWorktree = ticketWorktrees.includes(resolve(root)) ? resolve(root) : ticketWorktrees[0]
 
 console.log(`guard: worktrees ${ticketWorktrees.length} ticket worktree(s); protected root ${protectedRoot}`)
+const existing = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : undefined
+let installedState
+let compositionBlock
+try {
+  const current = existing === undefined ? { present: false, block: '' } : readBlock(existing)
+  installedState = current.present ? (readState(current.block) ?? captureState(existing)) : captureState(existing)
+  compositionBlock = renderBlock(composition.source, composition.config, installedState)
+} catch (error) {
+  printError(error)
+  process.exit(1)
+}
 console.log(`guard: composition (${composition.source})`)
-process.stdout.write(composition.block)
+process.stdout.write(compositionBlock)
 console.log('guard: end composition')
 
 const cases = guardTable({ worktree: tableWorktree, protectedRoot })
@@ -131,9 +159,15 @@ if (!existsSync(profileDir)) {
   console.error(`guard: profile directory ${profileDir} does not exist; pass --profile-dir`)
   process.exit(1)
 }
-const existing = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : ''
-const next = applyBlock(existing, composition.block)
-if (next === existing) {
+const before = existing ?? ''
+let next
+try {
+  next = applyBlock(before, compositionBlock)
+} catch (error) {
+  printError(error)
+  process.exit(1)
+}
+if (next === before && existing !== undefined) {
   console.log(`guard: already installed and current in ${patchFile}`)
   process.exit(0)
 }

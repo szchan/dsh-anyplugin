@@ -1,7 +1,7 @@
 /**
  * `anyplugin-guard` — the call-time policy this repository runs on itself.
  *
- * One plugin, one root listener per host seam, no dispatcher:
+ * One plugin, no dispatcher:
  *
  * - `tools/pre-execute` (waterfall, D19): judge the call and return
  *   `{kind: 'deny', reason}` when a rule fires. This is the seam the host
@@ -14,11 +14,18 @@
  *   in front of the worker at spawn time. The brief is context, not a file the
  *   worker is told to read.
  *
- * The guard is deliberately *not* a second hook kernel: it has no matcher
- * grammar, no hook registrations and no event translation. It is a
- * first-party policy that reads the same payload the kernel reads, so a
- * classical hook and this guard can deny the same call without either
- * learning about the other.
+ * Both seams are dispatched through the *agent's* scope carrier
+ * (`dsh-agent/lib/index.js:358`: `ctx.waterfall(carrier, …)`; the loop builds
+ * the carrier in `dsh-agent-loop/lib/index.js:551`), so an app-level listener
+ * never sees a child's step. The guard therefore mounts the same two handlers
+ * on each `agent.ctx`, the way the classic-hook materializer seats its
+ * listeners, and keeps the app-level pair as the root/fallback mount. That is
+ * still one policy and one event path — not a second kernel.
+ *
+ * The guard is deliberately *not* a hook kernel: it has no matcher grammar, no
+ * hook registrations and no event translation. It is a first-party policy that
+ * reads the same payload the kernel reads, so a classical hook and this guard
+ * can deny the same call without either learning about the other.
  */
 import { chooseWorktree, messageText, renderBrief, textMessage } from './brief.ts'
 import { currentBranch } from './git.ts'
@@ -46,9 +53,15 @@ function headerOf(agent: unknown): Record<string, unknown> | undefined {
   return header !== null && typeof header === 'object' ? (header as Record<string, unknown>) : undefined
 }
 
-/** `session.header.parentSession` is set exactly for a spawned agent (S9). */
+/**
+ * A spawned agent, by the pin's own classifier: the subagent runtime stamps
+ * `session.header.origin = 'subagent'` (dsh-subagent/lib/index.js:300, typed
+ * in dsh-session/lib/types/types.d.ts:86). `parentSession` is accepted too —
+ * the loop sets it for a fork — but presence alone is not the classifier.
+ */
 export function isWorker(agent: unknown): boolean {
-  return headerOf(agent)?.parentSession !== undefined
+  const header = headerOf(agent)
+  return header?.origin === 'subagent' || header?.parentSession !== undefined
 }
 
 export function agentCwd(agent: unknown): string | undefined {
@@ -81,52 +94,110 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
     return created
   }
 
-  // `tools/pre-execute` is the same waterfall the classic-hook materializer
-  // mounts; the guard adds one judgement and never rewrites the call.
-  ctx.effect(() =>
-    ctx.on('tools/pre-execute', async (exec: any, next: () => Promise<unknown>) => {
-      const agent = exec?.agent
-      const state = stateFor(agent)
-      const call: GuardCall = {
-        tool: typeof exec?.name === 'string' ? exec.name : '',
-        args: (exec?.arguments ?? {}) as Record<string, unknown>,
-        agent: viewOf(agent),
-        ...(state.worktree === undefined ? {} : { worktree: state.worktree }),
-      }
-      const verdict = judgeCall(call, policy, { branch: (cwd) => currentBranch(cwd ?? agentCwd(agent)) })
-      if (verdict.kind === 'deny') return { kind: 'deny', reason: verdict.reason }
-      return next()
-    }),
-  )
+  const decideTool = async (exec: any, next: () => Promise<unknown>): Promise<unknown> => {
+    const agent = exec?.agent
+    const state = stateFor(agent)
+    const call: GuardCall = {
+      tool: typeof exec?.name === 'string' ? exec.name : '',
+      args: (exec?.arguments ?? {}) as Record<string, unknown>,
+      agent: viewOf(agent),
+      ...(state.worktree === undefined ? {} : { worktree: state.worktree }),
+    }
+    const verdict = judgeCall(call, policy, { branch: (cwd) => currentBranch(cwd ?? agentCwd(agent)) })
+    if (verdict.kind === 'deny') return { kind: 'deny', reason: verdict.reason }
+    return next()
+  }
 
   // The brief is appended after the host's own continuation so the runtime
   // context the agent loop adds by default is kept (S9: the default
   // continuation is `{kind: 'enter', messages: [...claimed, context]}`).
+  const decideStep = async (payload: any, next: () => Promise<unknown>): Promise<unknown> => {
+    const agent = payload?.agent
+    const result = (await next()) as { kind?: unknown; messages?: unknown } | undefined
+    if (result?.kind !== 'enter' || !Array.isArray(result.messages)) return result
+    if (!isWorker(agent)) return result
+    const state = stateFor(agent)
+    if (state.resolved) return result
+    state.resolved = true
+    const worktree = chooseWorktree({
+      text: messageText(payload?.messages),
+      ...(agentCwd(agent) === undefined ? {} : { cwd: agentCwd(agent) as string }),
+      worktrees: policy.worktrees,
+    })
+    if (worktree !== undefined) state.worktree = worktree
+    if (policy.brief === false) return result
+    const cwd = agentCwd(agent)
+    const brief = textMessage(
+      renderBrief({
+        ...(worktree === undefined ? {} : { worktree }),
+        ...(cwd === undefined ? {} : { cwd }),
+        config: policy.brief,
+      }),
+    )
+    return { ...result, messages: [...result.messages, brief] }
+  }
+
+  // Agent-scoped seats. The seams are dispatched through the agent's carrier,
+  // so this is the mount that actually reaches a child's steps.
+  const seats = new Map<string, { agent: unknown; dispose: () => void }>()
+
+  // App-level mount: root calls when no agent seat exists, plus early calls
+  // that arrive before `agent/created`.
   ctx.effect(() =>
-    ctx.on('agent/pre-step', async (payload: any, next: () => Promise<unknown>) => {
-      const agent = payload?.agent
-      const result = (await next()) as { kind?: unknown; messages?: unknown } | undefined
-      if (result?.kind !== 'enter' || !Array.isArray(result.messages)) return result
-      if (!isWorker(agent)) return result
-      const state = stateFor(agent)
-      if (state.resolved) return result
-      state.resolved = true
-      const worktree = chooseWorktree({
-        text: messageText(payload?.messages),
-        ...(agentCwd(agent) === undefined ? {} : { cwd: agentCwd(agent) as string }),
-        worktrees: policy.worktrees,
-      })
-      if (worktree !== undefined) state.worktree = worktree
-      if (policy.brief === false) return result
-      const cwd = agentCwd(agent)
-      const brief = textMessage(
-        renderBrief({
-          ...(worktree === undefined ? {} : { worktree }),
-          ...(cwd === undefined ? {} : { cwd }),
-          config: policy.brief,
-        }),
-      )
-      return { ...result, messages: [...result.messages, brief] }
+    ctx.on('tools/pre-execute', async (exec: any, next: () => Promise<unknown>) =>
+      seats.has(agentId(exec?.agent) ?? '') ? next() : decideTool(exec, next),
+    ),
+  )
+  ctx.effect(() =>
+    ctx.on('agent/pre-step', async (payload: any, next: () => Promise<unknown>) =>
+      seats.has(agentId(payload?.agent) ?? '') ? next() : decideStep(payload, next),
+    ),
+  )
+
+  const mountAgent = (agent: any): void => {
+    const id = agentId(agent)
+    const agentCtx = agent?.ctx
+    if (id === undefined || agentCtx === undefined || agentCtx === null || typeof agentCtx.on !== 'function') return
+    if (seats.has(id)) return
+    const disposers: Array<() => void> = []
+    const mount = (listener: () => unknown): void => {
+      const dispose = ctx.effect(listener)
+      if (typeof dispose === 'function') disposers.push(dispose as () => void)
+    }
+    mount(() => agentCtx.on('tools/pre-execute', decideTool))
+    mount(() => agentCtx.on('agent/pre-step', decideStep))
+    seats.set(id, {
+      agent,
+      dispose: () => {
+        for (const dispose of disposers.splice(0).reverse()) {
+          try {
+            dispose()
+          } catch {
+            // The plugin effect may already have disposed this listener.
+          }
+        }
+      },
+    })
+  }
+
+  ctx.effect(() =>
+    ctx.on('agent/created', (value: any) => {
+      if (value?.agent !== undefined && value.agent !== null) mountAgent(value.agent)
     }),
   )
+  ctx.effect(() =>
+    ctx.on('agent/disposed', (value: any) => {
+      const id = agentId(value?.agent)
+      const seat = id === undefined ? undefined : seats.get(id)
+      if (seat === undefined) return
+      seats.delete(id as string)
+      seat.dispose()
+    }),
+  )
+
+  // A plugin can be loaded while agents are already live (the loader reload
+  // path): seat what the registry has instead of waiting for a new creation.
+  const registry = typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+  const live = typeof registry?.list === 'function' ? registry.list() : []
+  for (const agent of Array.isArray(live) ? live : []) mountAgent(agent)
 }
