@@ -10,6 +10,7 @@
 import type { DiffReport, DiffRow } from './inventory.ts'
 import { emitPlugin, type EmitOptions } from '../../dsh-anyplugin-emit/src/index.ts'
 import {
+  AGENT_FACE_KEYS,
   summarizeIr,
   validateIr,
   type ClaudePluginIr,
@@ -117,7 +118,9 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
       { face: 'catalog', class: agent.faces.catalog.fidelity, reason: agent.faces.catalog.reason },
       { face: 'invocation', class: agent.faces.invocation.fidelity, reason: agent.faces.invocation.reason },
     ]
-    for (const name of ['model', 'tools', 'limits'] as const) {
+    // One row per declared frontmatter key (S16); `limits` is the deprecated
+    // union field an older producer may still carry.
+    for (const name of AGENT_FACE_KEYS) {
       const face = agent.faces[name]
       if (face) present.push({ face: name, class: face.fidelity, reason: face.reason })
     }
