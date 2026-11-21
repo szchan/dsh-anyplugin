@@ -270,6 +270,28 @@ function lifecycleRefusal(error: unknown, json: boolean): number {
   return 1
 }
 
+/**
+ * Every lifecycle command has a closed option set. A typo such as `--dryrun`
+ * must not be ignored (that is how a "dry run" writes), and a `--flag=value`
+ * spelling is rejected rather than parsed as an unknown key with a value.
+ */
+const LIFECYCLE_OPTIONS: Record<string, readonly string[]> = {
+  install: ['json', 'config', 'project', 'scope', 'name', 'dialect', 'force', 'allow-empty', 'dry-run', 'help'],
+  list: ['json', 'config', 'project', 'help'],
+  enable: ['json', 'config', 'project', 'scope', 'dry-run', 'help'],
+  disable: ['json', 'config', 'project', 'scope', 'dry-run', 'help'],
+  uninstall: ['json', 'config', 'project', 'dry-run', 'help'],
+}
+
+function assertLifecycleOptions(command: string, args: Args): void {
+  const allowed = LIFECYCLE_OPTIONS[command] ?? []
+  for (const key of args.options.keys()) {
+    if (!allowed.includes(key)) {
+      throw new Error(`unknown option --${key} for ${command}\n  allowed: --${allowed.join(', --')}`)
+    }
+  }
+}
+
 function onePositional(args: Args, name: string): string {
   const [first, ...rest] = args.positionals
   if (first === undefined) throw new Error(`missing ${name}\n${USAGE}`)
@@ -409,6 +431,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (args.command === 'install') {
+    assertLifecycleOptions('install', args)
     if (args.options.get('help') === true) {
       console.log(USAGE)
       return 0
@@ -439,6 +462,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (args.command === 'list') {
+    assertLifecycleOptions('list', args)
     if (args.options.get('help') === true) {
       console.log(USAGE)
       return 0
@@ -455,6 +479,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (args.command === 'enable' || args.command === 'disable') {
+    assertLifecycleOptions(args.command, args)
     if (args.options.get('help') === true) {
       console.log(USAGE)
       return 0
@@ -478,6 +503,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (args.command === 'uninstall') {
+    assertLifecycleOptions('uninstall', args)
     if (args.options.get('help') === true) {
       console.log(USAGE)
       return 0

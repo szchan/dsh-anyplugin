@@ -68,6 +68,7 @@ export type InstallCliCode =
   | 'missing-version'
   | 'invalid-version'
   | 'name-mismatch'
+  | 'nothing-declared'
   | 'nothing-emitted'
   | 'invalid-plugin'
   | 'cross-root'
@@ -101,6 +102,12 @@ export interface InstallCliPaths {
   grants: string
   home: string
   projectDir: string
+  /**
+   * How `--config` was spelled. A relative path is only valid from the cwd
+   * that holds it; read-only commands refuse a missing relative target
+   * instead of reporting an empty lock from the wrong directory.
+   */
+  config?: { requested: string; relative: boolean }
 }
 
 export interface PathOptions {
@@ -117,6 +124,9 @@ export function installCliPaths(options: PathOptions = {}): InstallCliPaths {
     grants: grantsPath(installs),
     home,
     projectDir: resolve(options.projectDir ?? process.cwd()),
+    ...(options.config === undefined
+      ? {}
+      : { config: { requested: options.config, relative: !isAbsolute(options.config) } }),
   }
 }
 
@@ -142,7 +152,17 @@ function lift(
   return new InstallCliError(unreadable, `cannot read ${file}: ${detail}`)
 }
 
-function readLifecycle(paths: InstallCliPaths): LifecycleState {
+function readLifecycle(
+  paths: InstallCliPaths,
+  options: { allowMissingConfig?: boolean } = {},
+): LifecycleState {
+  if (paths.config?.relative === true && !existsSync(paths.installs) && options.allowMissingConfig !== true) {
+    throw new InstallCliError(
+      'unreadable-lock',
+      `${paths.installs}: --config "${paths.config.requested}" is relative and does not exist`,
+      'run from the directory that holds it, or pass an absolute --config path',
+    )
+  }
   let installs: Installs
   try {
     installs = readInstalls(paths.installs)
@@ -337,7 +357,9 @@ export function installPlugin(options: InstallOptions): InstallResult {
   if (!SCOPES.includes(scope)) {
     throw new InstallCliError('invalid-record', `--scope must be one of ${SCOPES.join(', ')}`)
   }
-  const state = readLifecycle(paths)
+  // `install` may create a relative `--config`; every other command treats a
+  // missing relative target as a wrong-directory error.
+  const state = readLifecycle(paths, { allowMissingConfig: true })
 
   const root = resolve(options.pluginDir)
   let stat
@@ -399,6 +421,13 @@ export function installPlugin(options: InstallOptions): InstallResult {
   if (report.problems.length > 0) {
     throw new InstallCliError('invalid-plugin', `${id}: ${report.problems.join('; ')}`)
   }
+  if (report.totals.declared === 0) {
+    throw new InstallCliError(
+      'nothing-declared',
+      `${id}: the plugin declares no components, so there is nothing to install`,
+      'add a skill, agent, hook, MCP server, command or output style to the plugin',
+    )
+  }
   if (report.totals.emitted === 0 && options.allowEmpty !== true) {
     const refused = report.components
       .filter((component) => component.refused !== undefined)
@@ -453,7 +482,14 @@ export function installPlugin(options: InstallOptions): InstallResult {
 
   const layerPaths = enablementPaths({ projectDir: paths.projectDir, home: paths.home })
   const enablementFile = layerPaths[scope]
-  const planned = nextLayer(state.layers, scope, id, true)
+  // A layer that already mentions the id owns the decision, including an
+  // explicit `enabled: false`. Reinstalling must not flip it back on and call
+  // that "nothing written"; only an absent mention is filled in.
+  const mentioned = state.layers[scope]?.plugins[id]
+  const planned =
+    mentioned === undefined
+      ? nextLayer(state.layers, scope, id, true)
+      : { layer: state.layers[scope] ?? { plugins: {} }, changed: false, previous: mentioned.enabled }
   const effectiveLayers: Enablements = { ...state.layers, [scope]: planned.layer }
   const effective = resolveEnablement(id, effectiveLayers)
   const enablementState = planned.changed ? (dryRun ? 'would-write' : 'written') : 'kept'
@@ -541,6 +577,8 @@ export interface ListedPlugin {
   source?: string
   /** Every layer that explicitly turns it on, narrowest first. */
   enabledScopes: Scope[]
+  /** Hash-pinned grants still stored for this identity (D25). */
+  grants: number
   effective: ResolvedEnablement
   report?: TransplantReport
   error?: { code: 'record-unusable'; reason: string }
@@ -573,6 +611,7 @@ export function listPlugins(options: ListOptions = {}): ListResult {
       pin: record.pin,
       ...(record.source === undefined ? {} : { source: record.source }),
       enabledScopes,
+      grants: state.grants.grants.filter((grant) => grant.plugin === id).length,
       effective: resolveEnablement(id, state.layers),
     }
     try {
@@ -606,9 +645,14 @@ export function formatList(result: ListResult): string {
         ? 'inert (no layer mentions it)'
         : `${plugin.effective.enabled ? 'enabled' : 'disabled'} at ${plugin.effective.scope}`
     lines.push(`  enabled scopes: ${scopes}; effective: ${effective}`)
+    lines.push(`  grants: ${plugin.grants} retained`)
     if (plugin.error !== undefined) lines.push(`  ERROR: ${plugin.error.reason}`)
     if (plugin.report !== undefined) {
       lines.push(`  report: ${totalsLine(plugin.report.totals)}${plugin.report.ok ? '' : ' — validation FAIL'}`)
+      const refused = plugin.report.components.filter((component) => component.refused !== undefined)
+      if (refused.length > 0) {
+        lines.push(`  refused: ${refused.map((component) => `${component.surface}/${component.name} (${component.refused})`).join(', ')}`)
+      }
       for (const problem of plugin.report.problems) lines.push(`    problem: ${problem}`)
     }
   }
@@ -747,6 +791,8 @@ export interface UninstallResult {
   lockFile: string
   lockAfter: number
   diff: string[]
+  /** Hash-pinned grants still stored for this identity (D25); uninstall keeps them. */
+  grantsRetained: number
   /** Scope layers that still mention the id; uninstall leaves them alone. */
   dangling: Scope[]
   entries: {
@@ -804,6 +850,7 @@ export function uninstallPlugin(options: UninstallOptions): UninstallResult {
   const problems = after.problems
 
   const dangling = SCOPES.filter((scope) => state.layers[scope]?.plugins[id] !== undefined)
+  const grantsRetained = state.grants.grants.filter((grant) => grant.plugin === id).length
 
   if (!dryRun) {
     try {
@@ -822,6 +869,7 @@ export function uninstallPlugin(options: UninstallOptions): UninstallResult {
     lockFile: paths.installs,
     lockAfter: nextInstalls.plugins.length,
     diff: recordLines(record).map((line) => `- ${line}`),
+    grantsRetained,
     dangling,
     entries: { removed, remaining: after.entries, problems },
   }
@@ -831,6 +879,7 @@ export function formatUninstall(result: UninstallResult): string {
   const lines = [`uninstall ${result.plugin}${result.dryRun ? ' (dry run — nothing written)' : ''}`]
   lines.push(`  record: ${result.dryRun ? 'would remove' : 'removed'}`)
   lines.push(`  lock: ${result.lockFile} (${result.lockAfter} plugin${result.lockAfter === 1 ? '' : 's'} left)`)
+  lines.push(`  grants: ${result.grantsRetained} retained`)
   for (const line of result.diff) lines.push(`  ${line}`)
   if (result.entries.removed.length === 0) {
     lines.push('  entry tree: no entry was contributed (disabled, or nothing emitted)')

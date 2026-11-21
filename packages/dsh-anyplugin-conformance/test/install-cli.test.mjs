@@ -25,6 +25,7 @@ import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { compileEntries, readEnablements, readInstalls, reconcile } from '../../dsh-anyplugin-install/src/index.ts'
+import { GRANTS_SCHEMA, grantsPath, writeGrants } from '../../dsh-anyplugin-trust/src/index.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -186,6 +187,121 @@ test('--config re-points the lock, and data dirs follow it', () => {
     const listed = JSON.parse(run(box, ['list', '--config', lock, '--json']).stdout)
     assert.equal(listed.file, lock)
     assert.equal(listed.plugins.length, 1)
+
+    // A relative --config is cwd-relative: reading it from a directory that
+    // does not hold it is a wrong-directory error, not an empty lock.
+    const missing = run(box, ['list', '--config', 'relative/missing.yml', '--json'], { cwd: box.dir })
+    assert.equal(missing.status, 1)
+    const payload = JSON.parse(missing.stdout)
+    assert.equal(payload.refusals[0].code, 'unreadable-lock')
+    assert.match(payload.refusals[0].reason, /is relative and does not exist/)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a reinstall at the same scope keeps an explicit disable', () => {
+  const box = sandbox()
+  try {
+    const claude = copyFixture(claudeFixture, box.dir, 'claude')
+    assert.equal(run(box, ['install', claude, '--scope', 'user']).status, 0)
+    const disabled = run(box, ['disable', id, '--scope', 'user'])
+    assert.equal(disabled.status, 0, disabled.stderr)
+    const layerBytes = readFileSync(box.userLayer, 'utf8')
+    const layerDigest = digest(box.userLayer)
+
+    const again = run(box, ['install', claude, '--scope', 'user'])
+    assert.equal(again.status, 0, again.stderr)
+    assert.match(again.stdout, /already installed/)
+    assert.match(again.stdout, /enablement: user already mentions it; left as is/)
+    assert.match(again.stdout, /WARNING: effective: disabled at user/)
+    assert.doesNotMatch(again.stdout, /written \(enabled: true\)/)
+    assert.equal(readFileSync(box.userLayer, 'utf8'), layerBytes)
+    assert.equal(digest(box.userLayer), layerDigest)
+    assert.match(readFileSync(box.userLayer, 'utf8'), /enabled: false/)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('unknown options are refused before any write', () => {
+  const claude = join(repoRoot, 'fixtures', 'claude-skills-only')
+  for (const flag of ['--dryrun', '--dry-run=false', '--bogus']) {
+    const box = sandbox()
+    try {
+      const result = run(box, ['install', claude, flag])
+      assert.equal(result.status, 2, `${flag} must not be accepted`)
+      assert.match(result.stderr, /unknown option --/)
+      assert.equal(existsSync(box.lock), false, `${flag} must not write the lock`)
+      assert.equal(existsSync(box.userLayer), false, `${flag} must not write a layer`)
+    } finally {
+      cleanup(box.dir)
+    }
+  }
+
+  const box = sandbox()
+  try {
+    const claude = copyFixture(claudeFixture, box.dir, 'claude')
+    assert.equal(run(box, ['install', claude]).status, 0)
+    const before = readFileSync(box.lock, 'utf8')
+    const result = run(box, ['uninstall', id, '--dryrun'])
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /unknown option --dryrun/)
+    assert.equal(readFileSync(box.lock, 'utf8'), before)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a plugin that declares nothing is refused as nothing-declared', () => {
+  const box = sandbox()
+  try {
+    const empty = join(box.dir, 'empty-plugin')
+    mkdirSync(join(empty, '.claude-plugin'), { recursive: true })
+    writeFileSync(
+      join(empty, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'empty-plugin', description: 'no components', version: '0.0.1' }),
+    )
+    const result = run(box, ['install', empty, '--json'])
+    assert.equal(result.status, 1)
+    const payload = JSON.parse(result.stdout)
+    assert.equal(payload.refusals[0].code, 'nothing-declared')
+    assert.match(payload.refusals[0].reason, /declares no components/)
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('list names refused components and both commands report retained grants', () => {
+  const box = sandbox()
+  try {
+    const lifecycle = copyFixture(refusedFixture, box.dir, 'hooks-lifecycle')
+    const granted = run(box, ['install', lifecycle, '--allow-empty'])
+    assert.equal(granted.status, 0, granted.stderr)
+    writeGrants(grantsPath(box.lock), {
+      schema: GRANTS_SCHEMA,
+      grants: [
+        {
+          plugin: 'claude-code:hooks-lifecycle',
+          capability: 'exec',
+          target: 'hook:SessionStart#0',
+          artifactHash: `sha256:${'a'.repeat(64)}`,
+          grantedAt: '2026-11-21T00:00:00.000Z',
+          scope: 'user',
+        },
+      ],
+      revokes: [],
+    })
+    const listed = run(box, ['list'])
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.match(listed.stdout, /refused: hooks\/SessionStart#0 \(exec\)/)
+    assert.match(listed.stdout, /grants: 1 retained/)
+
+    const removed = run(box, ['uninstall', 'claude-code:hooks-lifecycle'])
+    assert.equal(removed.status, 0, removed.stderr)
+    assert.match(removed.stdout, /grants: 1 retained/)
+    assert.equal(existsSync(grantsPath(box.lock)), true)
   } finally {
     cleanup(box.dir)
   }

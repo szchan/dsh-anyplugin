@@ -108,6 +108,11 @@ The command is idempotent: installing the same directory twice exits 0 and
 rewrites nothing. `--force` is the explicit override when the record's root or
 version changed. `--config <file>` re-points the lock (grants and data follow
 it), and `--project <dir>` selects the workspace whose scope layers are read.
+Paths resolve against the current directory: `<plugin-dir>` and a relative
+`--config` are cwd-relative, while the record stores `root` and `dataDir`
+absolutely. A command that needs an existing lock, given a relative
+`--config` that does not exist, refuses with `unreadable-lock` instead of
+reporting an empty lock from the wrong directory.
 Every mutating command accepts `--dry-run`, which prints the exact `-`/`+`
 lines and writes no byte. `--json` prints typed refusals as
 `{ok:false, refusals:[{code, reason, hint?}]}` and exits 1; the reason is the
@@ -129,7 +134,8 @@ What `install` does **not** do:
   installs an inert-but-listed plugin and names the refusals in `list`.
 - `uninstall` removes the record and leaves the enablement layer and grants in
   place, so a workspace's policy survives a reinstall; it prints which scopes
-  still mention the plugin.
+  still mention the plugin and how many hash-pinned grants remain
+  (`grants: N retained`, also printed by `list`).
 
 A missing lock means "no installs"; a malformed one fails every lifecycle
 command with the parser's line number — it never silently uninstalls anything.
