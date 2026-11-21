@@ -90,9 +90,16 @@ const difference = installed.present ? firstDifference(comparable(installed.bloc
 // A duplicate `- id:` outside the block is a second entry, not a stale one.
 const outside = installed.present ? text.replace(installed.block, '') : text
 const duplicate = duplicateGuardId(outside)
-const hooks = hookTargets(composition.config.worktrees ?? [])
+// The hook lives in the repository hooks directory, shared by every worktree;
+// check it even when no ticket worktree was composed, so an empty list cannot
+// pass vacuously.
+const hooks = hookTargets(gitWorktrees.map((worktree) => worktree.path))
 const hookStates = hooks.map((entry) => ({ file: entry.file, status: prePushStatus(entry.file) }))
-const hooksCurrent = hookStates.every((entry) => entry.status === 'current')
+const hooksCurrent = hookStates.length > 0 && hookStates.every((entry) => entry.status === 'current')
+const hookNote =
+  (composition.config.worktrees ?? []).length === 0
+    ? `no ticket worktrees configured; hook installed at ${hookStates[0]?.file ?? 'no repository'}`
+    : undefined
 const current = installed.present && difference === undefined && !duplicate
 const status = !installed.present ? 'not-installed' : current && hooksCurrent ? 'current' : 'stale'
 
@@ -106,6 +113,7 @@ const report = {
   protectedRoots: composition.config.protectedRoots ?? [],
   duplicateId: duplicate,
   hooks: hookStates,
+  ...(hookNote === undefined ? {} : { hookNote }),
   ...(difference === undefined ? {} : { difference }),
 }
 
@@ -119,6 +127,7 @@ if (json) {
   console.log(`guard: worktrees ${report.worktrees.length === 0 ? 'none' : report.worktrees.join(', ')}`)
   console.log(`guard: protected ${report.protectedRoots.length === 0 ? 'none' : report.protectedRoots.join(', ')}`)
   for (const hook of hookStates) console.log(`guard: hook ${hook.file} ${hook.status}`)
+  if (hookNote !== undefined) console.log(`guard: ${hookNote}`)
   if (duplicate) console.log('guard: duplicate - id: "anyplugin-guard" outside the managed block; remove it first')
   if (difference !== undefined) {
     console.log(`guard: first difference at line ${difference.line}`)

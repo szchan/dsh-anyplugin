@@ -30,20 +30,23 @@
  * boundary: the real boundary is branch protection, DSH's own sandbox and CI.
  * A command can hide its intent from any reader, so this reader refuses
  * constructs it does not model (`shell-unmodelled`) instead of judging a
- * partial parse. The `pre-push` hook installed with the composition is the
- * authoritative push check, because git resolves the refspec itself.
+ * partial parse. The tool layer is authoritative: it sees aliases (`git -c
+ * alias.p=… p`), `git config` writes and `send-pack`. The managed `pre-push`
+ * hook is defence in depth for a child process that never passed through
+ * `tools/pre-execute`; git runs it after refs are discovered and before
+ * objects are sent, so it refuses a main update before the network write.
  */
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isMainRef } from './git.ts'
-import { baseCommand, parseSegments, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
+import { baseCommand, expansionHazard, parseSegments, stripPrefix, unquotedText, type ShellSegment } from './shell.ts'
 
 /** The brief the guard injects into a spawned worker (see `brief.ts`). */
 export interface BriefConfig {
   /** Ratchet totals, verbatim, e.g. `25 declared / 24 matched / 0 missing / 1 refused`. */
   ratchet: string[]
-  /** Fixture count sentence, e.g. `14 fixtures`. */
+  /** Fixture count sentence, e.g. `11 fixtures`: the directories the ratchet owns. */
   fixtures?: string
   /** Rows the ratchet is still red on, e.g. `mcpServers:…:refused`. */
   open: string[]
@@ -264,7 +267,7 @@ interface GitPush {
   args: string[]
 }
 
-const GIT_VALUE_FLAGS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '-c', '--exec-path'])
+const GIT_VALUE_FLAGS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '-c', '--config-env', '--exec-path'])
 
 /** `git [options] push <args>` → the push arguments, or undefined. */
 export function parseGitPush(tokens: string[]): GitPush | undefined {
@@ -404,6 +407,10 @@ const GIT_WRITE_SUBCOMMANDS = new Set([
   'cherry-pick',
   'revert',
   'clean',
+  // Plumbing that writes the remote without running `pre-push`, or moves a
+  // local ref without a worktree write. A worker never needs either.
+  'send-pack',
+  'update-ref',
 ])
 
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select'])
@@ -433,6 +440,221 @@ export function gitWriteVerb(tokens: string[]): string | undefined {
   return subcommand !== undefined && GIT_WRITE_SUBCOMMANDS.has(subcommand) ? subcommand : undefined
 }
 
+interface GitInvocation {
+  dir?: string
+  configs: string[]
+  name?: string
+  args: string[]
+}
+
+/** `git [options] <subcommand> …`, with the `-c` values kept for the alias check. */
+export function gitInvocation(tokens: string[]): GitInvocation | undefined {
+  const head = stripPrefix(tokens)
+  if (head.length === 0 || baseCommand(head[0]) !== 'git') return undefined
+  let index = 1
+  let dir: string | undefined
+  const configs: string[] = []
+  while (index < head.length) {
+    const token = head[index]
+    if (token === '-C') {
+      dir = head[index + 1]
+      index += 2
+      continue
+    }
+    if (token === '-c' || token === '--config-env') {
+      if (head[index + 1] !== undefined) configs.push(head[index + 1])
+      index += 2
+      continue
+    }
+    if (GIT_VALUE_FLAGS.has(token)) {
+      index += 2
+      continue
+    }
+    if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=') || token.startsWith('--namespace=')) {
+      index += 1
+      continue
+    }
+    if (token.startsWith('-')) {
+      index += 1
+      continue
+    }
+    break
+  }
+  return { dir, configs, name: head[index], args: head.slice(index + 1) }
+}
+
+const CONFIG_WRITE_FLAGS = new Set([
+  '--add',
+  '--replace-all',
+  '--unset',
+  '--unset-all',
+  '--rename-section',
+  '--remove-section',
+  '--edit',
+  '-e',
+])
+const CONFIG_READ_FLAGS = new Set([
+  '--get',
+  '--get-all',
+  '--get-regexp',
+  '--list',
+  '-l',
+  '--show-origin',
+  '--show-scope',
+  '--name-only',
+])
+
+/**
+ * An alias (`git -c alias.p='push --no-verify origin main' p`) or a changed
+ * `core.hooksPath` hides the push from both the reader and the hook. Refused
+ * for every agent, because there is no legitimate use inside a ticket.
+ */
+export function gitConfigViolation(tokens: string[]): Verdict | undefined {
+  const invocation = gitInvocation(tokens)
+  if (invocation === undefined) return undefined
+  for (const config of invocation.configs) {
+    const key = config.slice(0, config.indexOf('=') >= 0 ? config.indexOf('=') : undefined)
+    if (/^alias\./u.test(key)) {
+      return deny(
+        'git-config-write',
+        `refusing "${excerpt(tokens.join(' '))}": a git alias hid a push behind another name; run the git command it expands to`,
+      )
+    }
+    if (key === 'core.hooksPath') {
+      return deny(
+        'git-config-write',
+        `refusing "${excerpt(tokens.join(' '))}": core.hooksPath redirects the pre-push hook; keep the repository hook path`,
+      )
+    }
+  }
+  if (invocation.name !== 'config') return undefined
+  const args = invocation.args
+  const writes = args.some((token) => CONFIG_WRITE_FLAGS.has(token))
+  const reads = args.some((token) => CONFIG_READ_FLAGS.has(token))
+  const positional = args.filter((token) => !token.startsWith('-'))
+  const key = positional[0]
+  if (writes || (!reads && positional.length >= 2)) {
+    const target = key === undefined ? '' : ` ${key}`
+    return deny(
+      'git-config-write',
+      `refusing "${excerpt(tokens.join(' '))}": writing git config${target} can define an alias or move core.hooksPath; edit the file you meant to edit instead`,
+    )
+  }
+  return undefined
+}
+
+const SEND_PACK_VALUE_FLAGS = new Set(['--receive-pack', '--exec', '--push-option'])
+
+/** `git send-pack [options] <repository> [<ref>…]`: plumbing that skips pre-push. */
+export function parseSendPack(tokens: string[]): { dir?: string; args: string[] } | undefined {
+  const invocation = gitInvocation(tokens)
+  if (invocation === undefined || invocation.name !== 'send-pack') return undefined
+  return { dir: invocation.dir, args: invocation.args }
+}
+
+function sendPackPositionals(args: string[]): string[] {
+  const positionals: string[] = []
+  let index = 0
+  while (index < args.length) {
+    const token = args[index]
+    if (SEND_PACK_VALUE_FLAGS.has(token)) {
+      index += 2
+      continue
+    }
+    if (token.startsWith('-')) {
+      index += 1
+      continue
+    }
+    positionals.push(token)
+    index += 1
+  }
+  return positionals
+}
+
+function judgeSendPack(push: { dir?: string; args: string[] }, branch: string | undefined, raw: string): Verdict | undefined {
+  const positionals = sendPackPositionals(push.args)
+  const refspecs = positionals.slice(1)
+  if (refspecs.length === 0) {
+    return deny(
+      'git-push-bare',
+      `refusing "${excerpt(raw)}": git send-pack addresses the remote directly and skips pre-push; name the ticket refspec, or use git push`,
+    )
+  }
+  for (const refspec of refspecs) {
+    const destination = destinationRef(refspec, branch)
+    if (destination !== undefined && isMainRef(destination)) {
+      return deny(
+        'git-push-main',
+        `refusing "${excerpt(raw)}": git send-pack writes ${destination} and never runs pre-push; agents never push to main, they open a PR`,
+      )
+    }
+  }
+  return undefined
+}
+
+const GIT_KNOWN_SUBCOMMANDS = new Set([
+  'add',
+  'am',
+  'apply',
+  'archive',
+  'bisect',
+  'blame',
+  'branch',
+  'cat-file',
+  'check-ignore',
+  'checkout',
+  'cherry-pick',
+  'clean',
+  'clone',
+  'commit',
+  'config',
+  'describe',
+  'diff',
+  'fetch',
+  'for-each-ref',
+  'grep',
+  'init',
+  'log',
+  'ls-files',
+  'ls-tree',
+  'merge',
+  'merge-base',
+  'mv',
+  'name-rev',
+  'pull',
+  'push',
+  'rebase',
+  'reflog',
+  'remote',
+  'reset',
+  'restore',
+  'revert',
+  'rev-parse',
+  'rm',
+  'send-pack',
+  'shortlog',
+  'show',
+  'show-ref',
+  'stash',
+  'status',
+  'switch',
+  'tag',
+  'update-ref',
+  'worktree',
+])
+
+/**
+ * A worker's git command must be one the reader knows: an alias such as
+ * `git p` is a push the reader never saw. `git config` is handled first, so a
+ * read (`git config --get`) is still allowed.
+ */
+export function unknownGitSubcommand(tokens: string[]): string | undefined {
+  const invocation = gitInvocation(tokens)
+  if (invocation === undefined) return undefined
+  if (invocation.name === undefined) return ''
+  return GIT_KNOWN_SUBCOMMANDS.has(invocation.name) ? undefined : invocation.name
+}
+
 /**
  * Commands the parser models well enough to judge. An unknown command is
  * refused: a default-allow reader is exactly how `stdbuf -o0 git push …` or
@@ -456,12 +678,31 @@ const ALLOWED_COMMANDS = new Set([
 const SHELL_BASES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell'])
 const FIND_EXEC_FLAGS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 const WRITE_PAYLOAD =
-  /writeFileSync|appendFileSync|createWriteStream|writeFile\s*\(|fs\.write|open\s*\([^)]*['"][wa]|shutil\.|os\.(?:remove|rename|unlink|mkdir)|write_text\s*\(/u
+  /writeFileSync|appendFileSync|createWriteStream|writeFile\s*\(|fs\.write|open\s*\([^)]*['"][wa]|shutil\.|os\.(?:remove|rename|unlink|mkdir)|write_text\s*\(|File\.(?:write|open|delete|rename|unlink)|IO\.write|FileUtils\.|file_put_contents|fopen\s*\(|fwrite\s*\(|unlink\s*\(|rename\s*\(/u
 
-/** A single unquoted `&` backgrounds a command; the guard models only `&&`. */
+/**
+ * A single unquoted `&` backgrounds a command; the guard models only `&&`.
+ * `&>file`, `2>&1`, `1>&2` and `>&-` are redirections (a following `>` or a
+ * preceding `>`), not backgrounds, and are common enough that denying them
+ * would make the guard unusable.
+ */
 function hasSingleAmpersand(command: string): boolean {
-  const text = unquotedText(command).replace(/&&/gu, ' ').replace(/&>>?/gu, ' ')
-  return text.includes('&')
+  const text = unquotedText(command)
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== '&') continue
+    if (text[index + 1] === '&') {
+      index += 1
+      continue
+    }
+    if (text[index + 1] === '>') {
+      index += 1
+      if (text[index + 1] === '>') index += 1
+      continue
+    }
+    if (text[index - 1] === '>') continue
+    return true
+  }
+  return false
 }
 
 /**
@@ -479,17 +720,9 @@ function interpreterWrite(tokens: string[]): boolean {
 
 /** Constructs whose effects the segment parser cannot see. Refused, not guessed. */
 function shellHazard(command: string, segments: ShellSegment[]): Verdict | undefined {
-  if (/\$\(|`/u.test(command)) {
-    return deny(
-      'shell-unmodelled',
-      `refusing "${excerpt(command)}": command substitution hides what will run; write the command out literally`,
-    )
-  }
-  if (/\$'/u.test(command)) {
-    return deny(
-      'shell-unmodelled',
-      `refusing "${excerpt(command)}": ANSI-C quoting ($'…') can change the words the shell sees; quote the value plainly`,
-    )
+  const expansion = expansionHazard(command)
+  if (expansion !== undefined) {
+    return deny('shell-unmodelled', `refusing "${excerpt(command)}": ${expansion}; write the value literally or quote it with single quotes`)
   }
   if (hasSingleAmpersand(command)) {
     return deny(
@@ -521,18 +754,23 @@ function shellHazard(command: string, segments: ShellSegment[]): Verdict | undef
     }
     if (SHELL_BASES.has(name)) {
       const flag = head.findIndex((token, index) => index > 0 && (token === '-c' || /^-[A-Za-z]*c$/u.test(token)))
-      if (flag < 0 || head[flag + 1] === undefined) {
-        return deny(
-          'shell-unmodelled',
-          `refusing "${excerpt(segment.raw)}": a shell reading stdin/heredoc is not modelled; pass the command with sh -c '<command>'`,
-        )
+      if (flag > 0 && head[flag + 1] !== undefined) {
+        // `bash -c '<command>'`: the body is parsed as child segments.
+      } else {
+        // `bash script.sh` runs a file the guard does not read; that is an
+        // ordinary repository command, not a hidden command list. A bare
+        // shell, `sh -s` and `sh -` read stdin, which is a hidden list.
+        const file = head.slice(1).find((token) => !token.startsWith('-') && !token.startsWith('<') && !token.startsWith('>'))
+        if (file === undefined || file === '-') {
+          return deny(
+            'shell-unmodelled',
+            `refusing "${excerpt(segment.raw)}": a shell reading stdin/heredoc is not modelled; run a script file or pass the command with sh -c '<command>'`,
+          )
+        }
       }
     }
     if (name === 'find' && head.some((token) => FIND_EXEC_FLAGS.has(token))) {
       return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": find -exec runs an unmodelled command`)
-    }
-    if (head.some((token) => token.includes('$'))) {
-      return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": shell expansion is not modelled; write the literal value`)
     }
   }
   return undefined
@@ -606,7 +844,7 @@ function redirectTargets(raw: string): string[] {
         cursor += 1
       }
     }
-    if (value.length > 0 && value !== '/dev/null' && !value.startsWith('&')) targets.push(value)
+    if (value.length > 0 && value !== '/dev/null' && value !== '-' && !value.startsWith('&')) targets.push(value)
     index = cursor - 1
   }
   return targets
@@ -702,7 +940,10 @@ function decisionsViolation(segment: ShellSegment): Verdict | undefined {
     if (args.some((token) => /^-[A-Za-z]*i/u.test(token) || token === '--in-place')) {
       written.push(...args.filter((token) => !token.startsWith('-')))
     }
-  } else if (INTERPRETERS.has(command) && args.some((token) => token === '-e' || token === '-c' || token.startsWith('--eval'))) {
+  } else if (
+    INTERPRETERS.has(command) &&
+    args.some((token) => token === '-e' || token === '-c' || token === '-r' || token.startsWith('--eval'))
+  ) {
     written.push(...args)
   }
   if (written.some((value) => DECISIONS_PATH.test(value))) {
@@ -758,6 +999,19 @@ function judgeCommand(
   }
 
   for (const segment of flat) {
+    const violation = gitConfigViolation(segment.tokens)
+    if (violation !== undefined) return violation
+  }
+
+  for (const segment of flat) {
+    const sendPack = parseSendPack(segment.tokens)
+    if (sendPack === undefined) continue
+    const sendCwd = sendPack.dir === undefined ? cwd : (resolveTarget(sendPack.dir, cwd) ?? cwd)
+    const violation = judgeSendPack(sendPack, context.branch(sendCwd), segment.raw)
+    if (violation !== undefined) return violation
+  }
+
+  for (const segment of flat) {
     const push = parseGitPush(segment.tokens)
     if (push === undefined) continue
     const pushCwd = push.dir === undefined ? cwd : (resolveTarget(push.dir, cwd) ?? cwd)
@@ -766,6 +1020,16 @@ function judgeCommand(
   }
 
   if (!agent.worker) return ALLOW
+
+  for (const segment of flat) {
+    const unknown = unknownGitSubcommand(segment.tokens)
+    if (unknown !== undefined) {
+      return deny(
+        'git-unknown-subcommand',
+        `refusing "${excerpt(segment.raw)}": git ${unknown === '' ? '(no subcommand)' : unknown} is not a subcommand the guard models; an alias can hide a push behind a short name, so run the underlying command`,
+      )
+    }
+  }
 
   for (const segment of flat) {
     if (interpreterWrite(segment.tokens)) {

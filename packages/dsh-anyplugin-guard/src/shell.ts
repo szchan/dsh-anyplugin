@@ -118,6 +118,69 @@ export function unquotedText(segment: string): string {
   return result
 }
 
+/**
+ * The quoting rule for `$`: inside single quotes every character is literal;
+ * elsewhere a `$` starts an expansion when the next character can begin one
+ * (`(`, `{`, `'`, a name start, a digit, or one of the special parameters
+ * `? * @ # ! $ -`). A `$` at the end, or before `/`, a space or punctuation
+ * that cannot start an expansion, is literal. `awk '{print $1}'`,
+ * `sed 's/x$//'` and `echo '$HOME'` are therefore allowed; `"$HOME"`,
+ * `$(…)`, `${…}` and backticks are refused. The rule is pinned in
+ * `docs/ARCHITECTURE.md` so it does not drift from this scanner.
+ */
+export function expansionHazard(command: string): string | undefined {
+  let quote: '"' | "'" | null = null
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]
+    if (quote === "'") {
+      if (char === "'") quote = null
+      continue
+    }
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null
+        continue
+      }
+      if (char === '\\') {
+        index += 1
+        continue
+      }
+      if (char === '`') return 'a backtick runs a command the guard cannot read'
+      if (char === '$' && startsExpansion(command, index + 1)) return 'a double-quoted expansion hides the value'
+      continue
+    }
+    if (char === "'") {
+      quote = "'"
+      continue
+    }
+    if (char === '"') {
+      quote = '"'
+      continue
+    }
+    if (char === '\\') {
+      index += 1
+      continue
+    }
+    if (char === '`') return 'a backtick runs a command the guard cannot read'
+    if (char !== '$') continue
+    const next = command[index + 1]
+    if (next === "'") return "ANSI-C quoting ($'…') changes the words the shell sees"
+    if (next === '(') return 'command substitution hides what will run'
+    if (next === '{') return 'parameter expansion hides the value'
+    if (startsExpansion(command, index + 1)) return 'shell expansion hides the value'
+  }
+  return undefined
+}
+
+function startsExpansion(command: string, index: number): boolean {
+  const next = command[index]
+  if (next === undefined) return false
+  if (next === '(' || next === '{') return true
+  if (/[A-Za-z_]/u.test(next)) return true
+  if (/[0-9]/u.test(next)) return true
+  return '?*@#!$-'.includes(next)
+}
+
 /** Shell-word split of one segment. Quotes group, they do not survive. */
 export function tokenize(segment: string): string[] {
   const tokens: string[] = []

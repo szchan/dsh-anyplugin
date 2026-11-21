@@ -5,7 +5,7 @@
 // block). They are deliberately adversarial: every deny case has an allow case
 // one flag away, so a rule that fires on the wrong thing fails here.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,6 +34,7 @@ import {
   hooksDirectory,
   installPrePushHook,
   prePushStatus,
+  readPrePushHook,
   removePrePushHook,
   renderPrePushHook,
 } from '../../../scripts/guard-hooks.mjs'
@@ -143,6 +144,76 @@ test('a root agent is not confined, but is still bound by the push and decisions
 test('read-only and build commands stay allowed', () => {
   for (const command of ['npm run verify', 'git status --short', 'git log --oneline -5', 'rg "foo" packages', 'cat README.md']) {
     assert.equal(shell(command).kind, 'allow', command)
+  }
+})
+
+test('an alias, a git config write and an unknown subcommand cannot hide a push', () => {
+  for (const command of [
+    "git -c alias.p='push --no-verify origin main' p",
+    "git config alias.p 'push --no-verify origin main'",
+    'git config --global alias.p "push origin main"',
+    'git config core.hooksPath /tmp/hooks',
+    'git -c core.hooksPath=/tmp/hooks status',
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'git-config-write', command)
+  }
+  assert.equal(shell('git config --get alias.p').kind, 'allow')
+  const unknown = shell('git p')
+  assert.equal(unknown.kind, 'deny')
+  assert.equal(unknown.rule, 'git-unknown-subcommand')
+  assert.match(unknown.reason, /alias/u)
+})
+
+test('send-pack, update-ref and --no-verify do not get a second route to main', () => {
+  assert.equal(shell('git push --no-verify origin main').kind, 'deny')
+  const send = shell('git send-pack ../remote.git HEAD:refs/heads/main')
+  assert.equal(send.kind, 'deny')
+  assert.equal(send.rule, 'git-push-main')
+  assert.match(send.reason, /pre-push/u)
+  assert.equal(shell('git update-ref refs/heads/main HEAD').kind, 'deny')
+})
+
+test('redirections that capture output are not background jobs', () => {
+  for (const command of ['npm test 2>&1', 'npm run verify 2>&1 | tail -20', 'npm test 1>&2', `npm test > ${worktree}/out 2>&1`]) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+  assert.equal(shell('npm test &').kind, 'deny', 'a real background job is still refused')
+})
+
+test('$ is literal in single quotes and at a boundary that cannot start an expansion', () => {
+  for (const command of [
+    "awk '{print $1}' README.md",
+    "echo '$HOME'",
+    "sed 's/x$//' notes.md",
+    'echo cost$',
+    'echo $/path',
+  ]) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+  for (const command of ['echo "$HOME"', 'echo $1', 'echo ${HOME}', 'echo $((1+2))']) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'shell-unmodelled', command)
+  }
+})
+
+test('a script file is an ordinary shell command; stdin is still refused', () => {
+  assert.equal(shell('bash scripts/test.sh').kind, 'allow')
+  assert.equal(shell('sh -e scripts/test.sh').kind, 'allow')
+  assert.equal(shell("bash -s <<'EOF'\nrm -rf x\nEOF").kind, 'deny')
+  assert.equal(shell("bash <<'EOF'\nrm -rf x\nEOF").kind, 'deny')
+})
+
+test('ruby and php write payloads are refused like node and python', () => {
+  for (const command of [
+    `ruby -e 'File.write("/tmp/rx","a")'`,
+    `ruby -e 'IO.write("/tmp/rx","a")'`,
+    `php -r 'file_put_contents("/tmp/rx","a")'`,
+    `php -r 'fopen("/tmp/rx","w")'`,
+  ]) {
+    assert.equal(shell(command).kind, 'deny', command)
   }
 })
 
@@ -410,6 +481,73 @@ test('the installed pre-push hook refuses every spelling git resolves to main', 
     assert.equal(prePushStatus(target), 'missing')
   } finally {
     rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('the tool layer refuses hook bypasses before a remote can move', () => {
+  const data = mkdtempSync(join(tmpdir(), 'guard-bypass-'))
+  const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  try {
+    const remote = join(data, 'remote.git')
+    const plumbing = join(data, 'plumbing.git')
+    const local = join(data, 'repo')
+    git(['init', '--bare', remote], data)
+    git(['init', '--bare', plumbing], data)
+    git(['init', '-b', 'main', local], data)
+    git(['config', 'user.email', 'guard@example.invalid'], local)
+    git(['config', 'user.name', 'guard test'], local)
+    writeFileSync(join(local, 'README.md'), 'seed\n')
+    git(['add', 'README.md'], local)
+    git(['commit', '-m', 'seed'], local)
+    git(['remote', 'add', 'origin', remote], local)
+    git(['push', 'origin', 'main'], local)
+    const seeded = git(['ls-remote', remote, 'refs/heads/main'], local).trim()
+    assert.notEqual(seeded, '')
+
+    git(['checkout', '-b', 'ticket/80'], local)
+    writeFileSync(join(local, 'TICKET.md'), 'ticket\n')
+    git(['add', 'TICKET.md'], local)
+    git(['commit', '-m', 'ticket'], local)
+
+    const guarded = (args) => {
+      const outcome = shell(['git', ...args].join(' '))
+      assert.equal(outcome.kind, 'deny', args.join(' '))
+      return outcome
+    }
+    for (const args of [
+      ['-c', 'alias.p=push --no-verify origin main', 'p'],
+      ['config', 'alias.p', 'push --no-verify origin main'],
+      ['-c', 'core.hooksPath=/tmp/hooks', 'push', 'origin', 'main'],
+      ['push', '--no-verify', 'origin', 'main'],
+      ['send-pack', plumbing, 'HEAD:refs/heads/main'],
+    ]) {
+      guarded(args)
+    }
+    assert.equal(git(['ls-remote', remote, 'refs/heads/main'], local).trim(), seeded, 'remote main did not move')
+    assert.equal(git(['ls-remote', plumbing, 'refs/heads/main'], local).trim(), '', 'send-pack did not write')
+  } finally {
+    rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('a failed profile write rolls the pre-push hook back', () => {
+  const profile = mkdtempSync(join(tmpdir(), 'guard-rollback-'))
+  const hooks = hooksDirectory(checkout)
+  const target = join(hooks, 'pre-push')
+  const before = readPrePushHook(target)
+  chmodSync(profile, 0o500)
+  try {
+    const result = spawnSync(process.execPath, ['scripts/guard-install.mjs', '--profile-dir', profile], {
+      cwd: checkout,
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 1, result.stdout + result.stderr)
+    assert.equal(readPrePushHook(target), before, 'the hook was restored when the patch could not be written')
+  } finally {
+    chmodSync(profile, 0o700)
+    rmSync(profile, { recursive: true, force: true })
+    if (before !== undefined) installPrePushHook(target, before)
+    else removePrePushHook(target)
   }
 })
 

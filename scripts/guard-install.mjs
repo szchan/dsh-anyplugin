@@ -36,7 +36,7 @@ import {
   runTable,
   uninstallText,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
-import { hookTargets, installPrePushHook, prePushStatus, removePrePushHook } from './guard-hooks.mjs'
+import { hookTargets, installPrePushHook, prePushStatus, readPrePushHook, removePrePushHook, writePrePushHook } from './guard-hooks.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const argv = process.argv.slice(2)
@@ -89,10 +89,27 @@ const synthetic = options.worktrees.filter((entry) => !known.has(resolve(entry.p
 const worktrees = [...gitWorktrees, ...synthetic]
 const composition = composeGuard({ repoRoot: root, worktrees, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
 const ticketWorktrees = composition.config.worktrees ?? []
-const hooks = hookTargets(ticketWorktrees)
+// Every checkout shares the repository hooks directory; install it for the
+// main checkout too, so a push from there is refused as well.
+const hooks = hookTargets(gitWorktrees.map((worktree) => worktree.path))
+
+function snapshotHooks(entries) {
+  return entries.map((entry) => ({ file: entry.file, content: readPrePushHook(entry.file) }))
+}
+
+function restoreHooks(snapshot) {
+  for (const entry of snapshot) {
+    if (entry.content === undefined) {
+      if (prePushStatus(entry.file) !== 'foreign') removePrePushHook(entry.file)
+    } else {
+      writePrePushHook(entry.file, entry.content)
+    }
+  }
+}
 
 if (options.uninstall) {
-  for (const entry of hookTargets(gitWorktrees.map((worktree) => worktree.path))) {
+  const hookSnapshot = snapshotHooks(hooks)
+  for (const entry of hooks) {
     const outcome = removePrePushHook(entry.file)
     console.log(`guard: hook ${entry.file} ${outcome}`)
   }
@@ -105,15 +122,28 @@ if (options.uninstall) {
   try {
     outcome = uninstallText(existing)
   } catch (error) {
+    restoreHooks(hookSnapshot)
     printError(error)
     process.exit(1)
   }
   if (outcome.action === 'delete') {
-    unlinkSync(patchFile)
+    try {
+      unlinkSync(patchFile)
+    } catch (error) {
+      restoreHooks(hookSnapshot)
+      printError(error)
+      process.exit(1)
+    }
     console.log('guard: removed the managed block and the patch file it created; the profile is as it was before install')
     process.exit(0)
   }
-  writeAtomically(patchFile, outcome.content)
+  try {
+    writeAtomically(patchFile, outcome.content)
+  } catch (error) {
+    restoreHooks(hookSnapshot)
+    printError(error)
+    process.exit(1)
+  }
   console.log(
     `guard: removed the managed block (${existing.length - outcome.content.length} bytes); ` +
       'the rest of the file is byte-for-byte what the block found',
@@ -176,10 +206,12 @@ if (!existsSync(profileDir)) {
   console.error(`guard: profile directory ${profileDir} does not exist; pass --profile-dir`)
   process.exit(1)
 }
+const hookSnapshot = snapshotHooks(hooks)
 for (const entry of hooks) {
   try {
     console.log(`guard: hook ${entry.file} ${installPrePushHook(entry.file)}`)
   } catch (error) {
+    restoreHooks(hookSnapshot)
     printError(error)
     process.exit(1)
   }
@@ -189,6 +221,7 @@ let next
 try {
   next = applyBlock(before, compositionBlock)
 } catch (error) {
+  restoreHooks(hookSnapshot)
   printError(error)
   process.exit(1)
 }
@@ -196,6 +229,12 @@ if (next === before && existing !== undefined) {
   console.log(`guard: already installed and current in ${patchFile}`)
   process.exit(0)
 }
-writeAtomically(patchFile, next)
+try {
+  writeAtomically(patchFile, next)
+} catch (error) {
+  restoreHooks(hookSnapshot)
+  printError(error)
+  process.exit(1)
+}
 console.log(`guard: wrote ${patchFile} (${next.length} bytes, one ${BLOCK_START} … ${BLOCK_END} block)`)
 console.log('guard: the profile applies the block when it next recomposes; `npm run guard:status` compares it with the tree')

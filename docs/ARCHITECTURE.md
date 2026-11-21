@@ -1266,20 +1266,44 @@ name in the prompt (the review prompt names the branch under review) never
 implies a path; with no recorded worktree a worker's writes are refused rather
 than checked against every configured worktree. The policy is a
 **convention checker for honest mistakes, not a containment boundary**: the
-real boundary is branch protection, the DSH file sandbox and CI. The tool call
-layer defaults to deny on syntax it cannot model — command substitution,
-backticks, single `&`, grouping, `!`, `$'` quoting, `eval`/`source`/dot,
-`find -exec`, a shell reading stdin, and any command outside its allowlist —
-instead of guessing, and interpreter `-c`/`-e` payloads that look like
-writes are refused. Git write verbs are refused for workers and symlinks are
-resolved before confinement. Because a shell layer can always be spelled
-around, `guard:install` also writes a real git `pre-push` hook into the
-worktrees' hooks directory: git itself resolves the refspec, so every
-spelling (bare, `--all`, `--mirror`, `remote.<name>.push`,
-`push.default=upstream`, a delete) is refused before the network when the
-destination is `main`/`master`. `guard:status` checks the hook and
-`--uninstall` removes it. The layer is written for the commands this
-repository's agents actually run, not as a general shell interpreter.
+real boundary is branch protection, the DSH file sandbox and CI.
+
+The **tool layer is authoritative**. It refuses git configurations that would
+hide a push — `git config`/`git -c` writes to `alias.*`, and `core.hooksPath`
+in any spelling — for every role, so `git -c alias.p='push --no-verify origin
+main' p` and `git config alias.p …; git p` cannot become a second route. For a
+worker it also refuses git subcommands it does not know (`git p`), with a
+reason that names the alias hazard, and the network-writing plumbing git
+accepts directly: `send-pack` and `update-ref`, alongside the other write
+verbs (`GIT_WRITE_SUBCOMMANDS`). It defaults to deny on syntax it cannot
+model — command substitution, backticks, a background `&`, grouping, `!`,
+`$'` quoting, `eval`/`source`/dot, `find -exec`, a shell reading stdin — and
+refuses interpreter `-c`/`-e` payloads that look like writes. Symlinks are
+resolved before confinement. The shell subset is deliberately narrow and is
+stated in the brief: one command list per call; `&&`, `||`, `|` and
+redirections (including `2>&1`) are modelled, everything else is refused.
+
+The `$` rule is per quoting context, because the tokenizer alone loses it:
+
+| form | example | verdict |
+| --- | --- | --- |
+| inside single quotes | `awk '{print $1}'`, `echo '$HOME'` | literal, allowed |
+| `$` that cannot start an expansion | `cost$`, `$` before `/` or punctuation | literal, allowed |
+| inside double quotes | `echo "$HOME"` | expansion, refused |
+| `$` + name/digit/special | `$1`, `${HOME}`, `$?` | expansion, refused |
+| `$(` / `$'` / backtick | `echo $(date)` | refused (`shell-unmodelled`) |
+
+Because a shell layer can always be spelled around, `guard:install` also writes
+a real git `pre-push` hook into the checkout's hooks directory, **as defence in
+depth, not as the authority**: git resolves the refspec itself, but the hook
+runs after refs are discovered and before objects are sent, and `--no-verify`
+or a direct `send-pack` skips it. The hook is what stops a child process that
+never went through `tools/pre-execute`; the tool layer is what stops an alias
+or a plumbing command. `guard:status` checks the hook (including the
+no-worktree case, which reports the hook path instead of claiming a vacuous
+`current`) and `--uninstall` removes it. Installation is transactional across
+the two writes: the hook is installed only after the block composes, and a
+failed profile write restores the hook to its prior bytes.
 
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
 no value channel, and `SubagentStartRequest` has no instructions field at this
@@ -1290,8 +1314,8 @@ message is built like the host's `createUserMessage` — a UUID `id` and
 `source: {kind: 'user'}`. That shape is load-bearing: the loop reads
 `message.source.kind` on every appended message (`dsh-agent-loop/lib/index.js:873`),
 and `runtime-context` is the snapshot kind, not a prompt kind. It is context —
-the worktree path, the coverage ratchet totals and the open rows — not a file
-the worker is told to read.
+the worktree path, the coverage ratchet totals, the open rows and the shell
+subset the policy accepts — not a file the worker is told to read.
 
 Installation is data: `npm run guard:install` appends one marked block to the
 profile's `cordis.patch.yml` containing a single `insert` entry whose `name`

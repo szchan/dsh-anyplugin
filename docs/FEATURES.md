@@ -68,8 +68,8 @@ it.
 
 | surface | what it does today | class | artifact |
 | --- | --- | --- | --- |
-| PreToolUse guard | denies a push to main/master and every bare `git push`, worker `gh pr merge`, writes outside the recorded worktree (no fail-open when none is recorded) and `docs/DECISIONS.md` edits; one `cordis.patch.yml` insert whose uninstall restores the file's prior state | `derived` | `packages/dsh-anyplugin-guard/src/index.ts`, `scripts/guard-install.mjs`, `scripts/guard-status.mjs` |
-| SubagentStart brief | appends the worktree path, ratchet totals and open rows once, as a host-shaped user message (`id` + `source.kind: 'user'`), to a worker's first `agent/pre-step` continuation | `derived` | `packages/dsh-anyplugin-guard/src/brief.ts` |
+| PreToolUse guard | tool layer is authoritative: denies a push to main/master and every bare `git push`, worker `gh pr merge`, `git config`/`git -c` alias and `core.hooksPath` writes (any role), unknown git subcommands and `send-pack`/`update-ref` for workers, writes outside the recorded worktree (no fail-open when none is recorded) and `docs/DECISIONS.md` edits; one `cordis.patch.yml` insert whose uninstall restores the file's prior state, plus a `pre-push` hook as defence in depth | `derived` | `packages/dsh-anyplugin-guard/src/index.ts`, `scripts/guard-install.mjs`, `scripts/guard-status.mjs` |
+| SubagentStart brief | appends the worktree path, ratchet totals, open rows and the shell subset once, as a host-shaped user message (`id` + `source.kind: 'user'`), to a worker's first `agent/pre-step` continuation | `derived` | `packages/dsh-anyplugin-guard/src/brief.ts` |
 
 ## 6. Verification
 

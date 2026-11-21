@@ -69,17 +69,22 @@ export function prePushStatus(file) {
   return content === renderPrePushHook() ? 'current' : 'stale'
 }
 
+/** Write a managed hook body atomically (used by install and by its rollback). */
+export function writePrePushHook(file, content) {
+  mkdirSync(dirname(file), { recursive: true })
+  const temporary = `${file}.guard.tmp`
+  writeFileSync(temporary, content, { mode: 0o755 })
+  chmodSync(temporary, 0o755)
+  renameSync(temporary, file)
+}
+
 export function installPrePushHook(file, expected = renderPrePushHook()) {
   const existing = readPrePushHook(file)
   if (existing !== undefined && !existing.includes(PRE_PUSH_MARKER)) {
     throw new Error(`guard: refusing to overwrite ${file}: it is a pre-push hook this tool did not write`)
   }
   if (existing === expected) return 'current'
-  mkdirSync(dirname(file), { recursive: true })
-  const temporary = `${file}.guard.tmp`
-  writeFileSync(temporary, expected, { mode: 0o755 })
-  chmodSync(temporary, 0o755)
-  renameSync(temporary, file)
+  writePrePushHook(file, expected)
   return 'installed'
 }
 
