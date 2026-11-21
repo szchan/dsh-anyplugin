@@ -19,7 +19,8 @@
 // never assigns one.
 
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -844,42 +845,108 @@ function extractDeclared() {
 
 // ---- the served surface, from the runtime ---------------------------------
 
-function extractServed() {
-  const bridge = createModBridge({ plugin: 'mod-coverage', dataDir: '', warn: () => {} })
-  const methods = []
-  const properties = []
-  const namespaces = new Set()
+// The codes the bridge uses for a member it deliberately does not serve. A
+// refusal is not "absent": the member exists and is callable, but under this
+// configuration it always throws one of these typed errors. `served` means
+// callable here and not a refusal; the two sets are disjoint.
+const REFUSAL_CODES = new Set([
+  'ERR_MOD_HOST_EXEC_UNSUPPORTED',
+  'ERR_MOD_HOST_SETTINGS_UNAVAILABLE',
+  'ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ERR_MOD_HOST_VCS_UNSUPPORTED',
+])
+const PROBE_TIMEOUT_MS = 1000
+const PROBE_TIMED_OUT = Symbol('mod-coverage probe timed out')
+
+const isThenable = (value) =>
+  value !== null && (typeof value === 'object' || typeof value === 'function') && typeof value.then === 'function'
+
+const refusalCodeOf = (error) => {
+  if (error === null || typeof error !== 'object') return undefined
+  const code = error.code
+  return typeof code === 'string' && REFUSAL_CODES.has(code) ? code : undefined
+}
+
+/** Await a probe result only long enough to see a typed refusal, never to hang. */
+const settleProbe = async (value) => {
+  if (!isThenable(value)) return { kind: 'value' }
+  let timer
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(PROBE_TIMED_OUT), PROBE_TIMEOUT_MS)
+    timer.unref?.()
+  })
+  const settled = Promise.resolve(value).then(
+    () => ({ kind: 'value' }),
+    (error) => ({ kind: 'error', error }),
+  )
+  try {
+    const outcome = await Promise.race([settled, timeout])
+    return outcome === PROBE_TIMED_OUT ? { kind: 'timeout' } : outcome
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+const probeRefusal = async (fn) => {
+  let value
+  try {
+    value = fn()
+  } catch (error) {
+    return refusalCodeOf(error)
+  }
+  const outcome = await settleProbe(value)
+  return outcome.kind === 'error' ? refusalCodeOf(outcome.error) : undefined
+}
+
+/**
+ * Call the runtime `$` factory and classify every member it returns. Each
+ * function is called once with no arguments: a typed refusal is observable
+ * without a valid call, and a member whose probe rejects for any other reason
+ * is still callable (the probe is a classification aid, not a conformance
+ * test). The scratch directory and the attached session model the host at
+ * handler time; `settings` is deliberately absent because the materializer
+ * passes no settings source (packages/dsh-anyplugin-materialize-hook/src/index.ts:1536).
+ */
+export async function inspectRuntime() {
+  const scratch = mkdtempSync(join(tmpdir(), 'mod-coverage-'))
+  const bridge = createModBridge({
+    plugin: 'mod-coverage',
+    dataDir: scratch,
+    cwd: scratch,
+    session: () => ({ id: 'mod-coverage', cwd: scratch, messages: [], usage: {} }),
+    commands: { register: () => () => {} },
+    env: {},
+    warn: () => {},
+  })
   try {
     const table = bridge.dollar()
-    for (const namespace of Object.keys(table)) {
-      const value = table[namespace]
-      if (value === null || typeof value !== 'object') continue
-      namespaces.add(namespace)
-      for (const [name, method] of Object.entries(value)) {
-        if (typeof method === 'function') methods.push(`${namespace}.${name}`)
-        else properties.push(`${namespace}.${name}`)
+    const namespaces = []
+    const entries = []
+    for (const [namespace, members] of Object.entries(table)) {
+      if (members === null || typeof members !== 'object') continue
+      namespaces.push(namespace)
+      for (const [name, value] of Object.entries(members)) {
+        if (typeof value === 'function') {
+          entries.push({
+            namespace,
+            name,
+            kind: 'method',
+            valueType: 'function',
+            code: await probeRefusal(value),
+          })
+        } else {
+          entries.push({ namespace, name, kind: 'property', valueType: typeof value })
+        }
       }
     }
+    const elements = {}
+    for (const surface of UI_SURFACES) {
+      elements[surface] = sorted(Object.keys(elementsForSurface(surface, 'mod-coverage')))
+    }
+    return { namespaces: sorted(namespaces), entries, elements }
   } finally {
     bridge.dispose()
-  }
-
-  const elements = {}
-  for (const surface of UI_SURFACES) {
-    elements[surface] = sorted(Object.keys(elementsForSurface(surface, 'mod-coverage')))
-  }
-
-  const events = MOD_EVENT_ROUTES.filter((route) => route.status === 'live')
-    .map((route) => route.modEvent)
-    .filter(Boolean)
-
-  return {
-    namespaces: sorted(namespaces),
-    methods: sorted([...new Set(methods)]),
-    properties: sorted([...new Set(properties)]),
-    events: sorted([...new Set(events)]),
-    elements,
-    renderSites: sorted(UI_COMPONENTS),
+    rmSync(scratch, { recursive: true, force: true })
   }
 }
 
@@ -890,29 +957,170 @@ const setDifference = (left, right) => {
   return left.filter((value) => !rightSet.has(value))
 }
 
-function buildLedger(declaration) {
+function partitionElements(declaredSurfaces, servedSurfaces) {
+  const served = []
+  const absent = []
+  const perSurface = {}
+  for (const [surface, declaredNames] of Object.entries(declaredSurfaces)) {
+    const runtimeNames = servedSurfaces[surface]
+    if (runtimeNames === undefined) throw new Error(`mod-coverage: no runtime element table for surface ${surface}`)
+    const declaredSet = new Set(declaredNames)
+    const extras = runtimeNames.filter((name) => !declaredSet.has(name))
+    if (extras.length > 0) {
+      throw new Error(`mod-coverage: ${surface} serves elements the pin does not declare: ${extras.join(', ')}`)
+    }
+    const runtimeSet = new Set(runtimeNames)
+    const missing = declaredNames.filter((name) => !runtimeSet.has(name))
+    perSurface[surface] = { declared: declaredNames.length, served: runtimeNames.length, absent: missing.length }
+    for (const name of runtimeNames) served.push(`${surface}:${name}`)
+    for (const name of missing) absent.push(`${surface}:${name}`)
+  }
+  for (const surface of Object.keys(servedSurfaces)) {
+    if (!(surface in declaredSurfaces)) throw new Error(`mod-coverage: runtime serves unknown surface ${surface}`)
+  }
+  return { served: sorted(served), absent: sorted(absent), perSurface }
+}
+
+function assertPartition(label, declaredCount, parts) {
+  const total = parts.reduce((sum, part) => sum + part.count, 0)
+  if (total !== declaredCount) {
+    throw new Error(
+      `mod-coverage: ${label} partition is not exhaustive: ${parts.map((part) => `${part.label} ${part.count}`).join(' + ')} = ${total}, declared ${declaredCount}`,
+    )
+  }
+}
+
+export function buildLedger(declaration, runtime) {
   const declared = extractDeclared()
-  const served = extractServed()
-
+  const declaredMethods = new Set(declared.methods)
+  const declaredProperties = new Set(declared.properties)
   const declaredEvents = [...declared.events.engine, ...declared.events.op, ...declared.events.classicSpellings]
-  const servedElementNames = Object.values(served.elements).flat()
-  const declaredElementNames = Object.values(declared.elements.surfaces).flat()
+  const declaredEventSet = new Set(declaredEvents)
 
+  const servedMethods = []
+  const servedProperties = []
+  const refused = []
+  const wrongShape = []
+  const extras = []
+  const present = new Set()
+  const seen = new Set()
+
+  for (const entry of runtime.entries) {
+    const qualified = `${entry.namespace}.${entry.name}`
+    if (seen.has(qualified)) throw new Error(`mod-coverage: duplicate runtime member ${qualified}`)
+    seen.add(qualified)
+    present.add(qualified)
+    if (declaredMethods.has(qualified)) {
+      if (entry.kind === 'method' && entry.code === undefined) servedMethods.push(qualified)
+      else if (entry.kind === 'method') refused.push({ name: qualified, code: entry.code })
+      else {
+        wrongShape.push({
+          name: qualified,
+          declared: 'method',
+          runtime: entry.kind,
+          valueType: entry.valueType,
+        })
+      }
+    } else if (declaredProperties.has(qualified)) {
+      if (entry.kind === 'property') servedProperties.push(qualified)
+      else {
+        wrongShape.push({
+          name: qualified,
+          declared: 'property',
+          runtime: entry.kind,
+          valueType: entry.valueType,
+        })
+      }
+    } else {
+      extras.push(qualified)
+    }
+  }
+
+  if (extras.length > 0) {
+    throw new Error(
+      `mod-coverage: the runtime $ table serves members the pinned declaration does not declare: ${sorted(extras).join(', ')}`,
+    )
+  }
+
+  const servedEvents = sorted(
+    MOD_EVENT_ROUTES.filter((route) => route.status === 'live')
+      .map((route) => route.modEvent)
+      .filter(Boolean),
+  )
+  const extraEvents = servedEvents.filter((name) => !declaredEventSet.has(name))
+  if (extraEvents.length > 0) {
+    throw new Error(`mod-coverage: the host routes events the pin does not declare: ${extraEvents.join(', ')}`)
+  }
+
+  const elementPartition = partitionElements(declared.elements.surfaces, runtime.elements)
+  for (const [surface, counts] of Object.entries(elementPartition.perSurface)) {
+    assertPartition(`elements ${surface}`, counts.declared, [
+      { label: 'served', count: counts.served },
+      { label: 'absent', count: counts.absent },
+    ])
+  }
+  assertPartition('elements', declared.elements.surfaceQualified, [
+    { label: 'served', count: elementPartition.served.length },
+    { label: 'absent', count: elementPartition.absent.length },
+  ])
+
+  // The host owns one render site: it synthesizes `ui.render` for
+  // `component: 'Pane'` on `surface: 'terminal'` only (ui.ts:26-29,
+  // :1093-1097). The other components are declared and planned, not served.
+  const runtimeComponents = sorted(UI_COMPONENTS)
+  if (JSON.stringify(runtimeComponents) !== JSON.stringify(declared.renderSites)) {
+    throw new Error('mod-coverage: UI_COMPONENTS and the pin RenderComponent disagree')
+  }
+  const servedRenderSites = ['Pane']
+  const absentRenderSites = declared.renderSites.filter((name) => !servedRenderSites.includes(name))
+  assertPartition('render sites', declared.renderSites.length, [
+    { label: 'served', count: servedRenderSites.length },
+    { label: 'absent', count: absentRenderSites.length },
+  ])
+
+  const wrongMethodNames = new Set(wrongShape.filter((entry) => entry.declared === 'method').map((entry) => entry.name))
+  const wrongPropertyNames = new Set(
+    wrongShape.filter((entry) => entry.declared === 'property').map((entry) => entry.name),
+  )
+  const absentNamespaces = declared.namespaces.filter((name) => !runtime.namespaces.includes(name))
   const absent = {
-    methods: setDifference(declared.methods, served.methods),
-    properties: setDifference(declared.properties, served.properties),
-    events: sorted(setDifference(declaredEvents, served.events)),
-    elements: sorted(setDifference(declaredElementNames, servedElementNames)),
-    renderSites: setDifference(declared.renderSites, served.renderSites),
+    namespaces: absentNamespaces,
+    methods: declared.methods.filter((name) => !present.has(name)),
+    properties: declared.properties.filter((name) => !present.has(name)),
+    events: sorted(setDifference(declaredEvents, servedEvents)),
+    elements: elementPartition.absent,
+    renderSites: absentRenderSites,
   }
 
-  const shapeMismatches = []
-  for (const name of declared.methods) {
-    if (served.properties.includes(name)) shapeMismatches.push({ name, declared: 'method', served: 'property' })
+  const served = {
+    namespaces: runtime.namespaces,
+    methods: sorted(servedMethods),
+    properties: sorted(servedProperties),
+    events: servedEvents,
+    elements: elementPartition.served,
+    renderSites: servedRenderSites,
   }
-  for (const name of declared.properties) {
-    if (served.methods.includes(name)) shapeMismatches.push({ name, declared: 'property', served: 'method' })
-  }
+
+  assertPartition('methods', declared.methods.length, [
+    { label: 'served', count: served.methods.length },
+    { label: 'refused', count: refused.length },
+    { label: 'absent', count: absent.methods.length },
+    { label: 'wrong shape', count: wrongMethodNames.size },
+  ])
+  assertPartition('properties', declared.properties.length, [
+    { label: 'served', count: served.properties.length },
+    { label: 'refused', count: 0 },
+    { label: 'absent', count: absent.properties.length },
+    { label: 'wrong shape', count: wrongPropertyNames.size },
+  ])
+  assertPartition('events', declared.events.declaredTotal, [
+    { label: 'served', count: served.events.length },
+    { label: 'absent', count: absent.events.length },
+  ])
+  assertPartition('namespaces', declared.namespaces.length, [
+    { label: 'served', count: served.namespaces.length },
+    { label: 'absent', count: setDifference(declared.namespaces, served.namespaces).length },
+  ])
 
   return {
     pin: {
@@ -922,10 +1130,31 @@ function buildLedger(declaration) {
       bytes: declaration.bytes,
       sha256: declaration.sha256,
     },
+    configuration: {
+      bridge: 'createModBridge (the runtime $ factory)',
+      options: {
+        plugin: 'mod-coverage',
+        dataDir: 'a fresh temporary directory',
+        cwd: 'the same temporary directory',
+        session: 'an attached view: id "mod-coverage", that cwd, messages [], usage {}',
+        commands: 'a stub registry whose register returns a no-op disposer',
+        env: {},
+        warn: 'a no-op',
+        settings: 'absent (undefined): the materializer passes no settings source, so $.settings.read refuses',
+      },
+      refusalProbe:
+        'each function key is called with no arguments; a returned promise is awaited; a typed ERR_MOD_HOST_* unsupported/unavailable code marks the member refused',
+      renderSites:
+        'served: the host synthesizes ui.render for component "Pane" on surface "terminal" only (ui.ts:1093-1097; D44); the other 19 declared components are planned, not drawn by the host',
+      shapeCheck:
+        'classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour',
+      note: 'The refused set is configuration-dependent. served means callable under this configuration and not a typed refusal.',
+    },
     declared,
     served,
+    refused: { methods: sortedByName(refused), properties: [] },
+    wrongShape: sortedByName(wrongShape),
     absent,
-    shapeMismatches: shapeMismatches.sort((a, b) => compareStrings(a.name, b.name)),
     totals: {
       namespaces: {
         declared: declared.namespaces.length,
@@ -935,12 +1164,16 @@ function buildLedger(declaration) {
       methods: {
         declared: declared.methods.length,
         served: served.methods.length,
+        refused: refused.length,
         absent: absent.methods.length,
+        wrongShape: wrongMethodNames.size,
       },
       properties: {
         declared: declared.properties.length,
         served: served.properties.length,
+        refused: 0,
         absent: absent.properties.length,
+        wrongShape: wrongPropertyNames.size,
       },
       events: {
         declared: declared.events.declaredTotal,
@@ -949,7 +1182,7 @@ function buildLedger(declaration) {
       },
       elements: {
         declared: declared.elements.surfaceQualified,
-        served: servedElementNames.length,
+        served: served.elements.length,
         absent: absent.elements.length,
         unique: declared.elements.unique.length,
       },
@@ -962,11 +1195,15 @@ function buildLedger(declaration) {
         declared: declared.matchers.length,
         served: null,
         absent: null,
-        note: 'No named runtime matcher-type surface: matching is behavioural (value grammar + event patterns), so this category has no served/absent set.',
+        note: 'Counts the type aliases named Matcher* / OpenMatcher in the declaration (internal helper shapes), not user-facing matcher forms; there is no runtime type surface to compare.',
       },
+      partition:
+        'methods and properties: served + refused + absent + wrongShape = declared; events, elements and render sites: served + absent = declared.',
     },
   }
 }
+
+const sortedByName = (values) => [...values].sort((a, b) => compareStrings(a.name, b.name))
 
 /** Return human-readable drift entries between a committed ledger and a live one. */
 export function diffLedger(committed, live) {
@@ -985,10 +1222,12 @@ export function diffLedger(committed, live) {
   }
   compareList('declared.namespaces', committed.declared?.namespaces ?? [], live.declared.namespaces)
   compareList('served.namespaces', committed.served?.namespaces ?? [], live.served.namespaces)
+  compareList('absent.namespaces', committed.absent?.namespaces ?? [], live.absent.namespaces)
   compareList('declared.methods', committed.declared?.methods ?? [], live.declared.methods)
   compareList('declared.properties', committed.declared?.properties ?? [], live.declared.properties)
   compareList('served.methods', committed.served?.methods ?? [], live.served.methods)
   compareList('served.properties', committed.served?.properties ?? [], live.served.properties)
+  compareList('refused.methods', (committed.refused?.methods ?? []).map((entry) => entry.name), live.refused.methods.map((entry) => entry.name))
   compareList('absent.methods', committed.absent?.methods ?? [], live.absent.methods)
   compareList('absent.properties', committed.absent?.properties ?? [], live.absent.properties)
   compareList('served.events', committed.served?.events ?? [], live.served.events)
@@ -1005,18 +1244,20 @@ export function diffLedger(committed, live) {
       live.declared.elements.surfaces[surface],
     )
   }
-  for (const surface of Object.keys(live.served.elements)) {
-    compareList(
-      `served.elements.${surface}`,
-      committed.served?.elements?.[surface] ?? [],
-      live.served.elements[surface],
-    )
-  }
+  compareList('served.elements', committed.served?.elements ?? [], live.served.elements)
+  compareList('absent.elements', committed.absent?.elements ?? [], live.absent.elements)
   compareList('renderSites', committed.declared?.renderSites ?? [], live.declared.renderSites)
   compareList('served.renderSites', committed.served?.renderSites ?? [], live.served.renderSites)
+  compareList('absent.renderSites', committed.absent?.renderSites ?? [], live.absent.renderSites)
   compareList('matchers', committed.declared?.matchers ?? [], live.declared.matchers)
-  if (JSON.stringify(committed.shapeMismatches ?? []) !== JSON.stringify(live.shapeMismatches)) {
-    changes.push(`shapeMismatches: ${JSON.stringify(committed.shapeMismatches ?? [])} -> ${JSON.stringify(live.shapeMismatches)}`)
+  if (JSON.stringify(committed.refused ?? null) !== JSON.stringify(live.refused)) {
+    changes.push(`refused.methods status: ${JSON.stringify(committed.refused ?? null)} -> ${JSON.stringify(live.refused)}`)
+  }
+  if (JSON.stringify(committed.wrongShape ?? []) !== JSON.stringify(live.wrongShape)) {
+    changes.push(`wrongShape: ${JSON.stringify(committed.wrongShape ?? [])} -> ${JSON.stringify(live.wrongShape)}`)
+  }
+  if (JSON.stringify(committed.configuration ?? null) !== JSON.stringify(live.configuration)) {
+    changes.push('configuration changed')
   }
   const committedTotals = committed.totals
   for (const category of Object.keys(live.totals)) {
@@ -1050,11 +1291,11 @@ export function readDeclaration() {
 }
 
 /** Compute the live ledger without reading or writing the committed one. */
-export function computeCoverage() {
+export async function computeCoverage() {
   const declaration = readDeclaration()
   declarationText = declaration.text
   declarations = indexDeclarations(declaration.text)
-  return buildLedger(declaration)
+  return buildLedger(declaration, await inspectRuntime())
 }
 
 export const ledgerText = (ledger) => `${JSON.stringify(ledger, null, 2)}\n`
@@ -1070,25 +1311,55 @@ function groupAbsent(methods) {
   return [...groups.entries()].sort(([a], [b]) => compareStrings(a, b))
 }
 
+function groupByPrefix(values, separator) {
+  const groups = new Map()
+  for (const value of values) {
+    const cut = value.indexOf(separator)
+    const prefix = cut === -1 ? '(root)' : value.slice(0, cut)
+    if (!groups.has(prefix)) groups.set(prefix, [])
+    groups.get(prefix).push(value)
+  }
+  return [...groups.entries()].sort(([a], [b]) => compareStrings(a, b))
+}
+
 export function report(ledger) {
-  const { totals, absent } = ledger
+  const { totals, absent, refused, wrongShape } = ledger
   const lines = [
     `mod-coverage: claude-code ${ledger.pin.version} (${ledger.pin.commit.slice(0, 10)})`,
     `declaration: ${ledger.pin.file} (${ledger.pin.bytes} bytes, sha256 ${ledger.pin.sha256})`,
     '',
-    `declared: ${totals.namespaces.declared} namespaces, ${totals.methods.declared} methods, ${totals.properties.declared} ${totals.properties.declared === 1 ? 'property' : 'properties'}, ${totals.events.declared} events, ${totals.elements.declared} surface elements (${totals.elements.unique} unique), ${totals.renderSites.declared} render sites, ${totals.matchers.declared} matcher types`,
-    `served:   ${totals.namespaces.served} namespaces, ${totals.methods.served} methods, ${totals.properties.served} ${totals.properties.served === 1 ? 'property' : 'properties'}, ${totals.events.served} events, ${totals.elements.served} surface elements, ${totals.renderSites.served} render sites`,
+    `declared: ${totals.namespaces.declared} namespaces, ${totals.methods.declared} methods, ${totals.properties.declared} ${totals.properties.declared === 1 ? 'property' : 'properties'}, ${totals.events.declared} events, ${totals.elements.declared} surface elements (${totals.elements.unique} unique), ${totals.renderSites.declared} render sites, ${totals.matchers.declared} matcher type aliases`,
+    `served:   ${totals.namespaces.served} namespaces, ${totals.methods.served} methods, ${totals.properties.served} ${totals.properties.served === 1 ? 'property' : 'properties'}, ${totals.events.served} events, ${totals.elements.served} surface elements, ${totals.renderSites.served} render site${totals.renderSites.served === 1 ? '' : 's'}`,
+    `refused:  ${totals.methods.refused} methods, callable but a typed refusal under the recorded configuration`,
     `absent:   ${totals.namespaces.absent} namespaces, ${totals.methods.absent} methods, ${totals.properties.absent} ${totals.properties.absent === 1 ? 'property' : 'properties'}, ${totals.events.absent} events, ${totals.elements.absent} surface elements, ${totals.renderSites.absent} render sites`,
+    `wrong shape: ${totals.methods.wrongShape} method${totals.methods.wrongShape === 1 ? '' : 's'} present but excluded from served and absent`,
     '',
-    'not served, by namespace (methods; properties counted separately):',
+    `configuration: ${ledger.configuration.bridge}; ${ledger.configuration.options.session}; ${ledger.configuration.options.settings}`,
+    `render sites: ${ledger.configuration.renderSites}`,
+    `shape check: ${ledger.configuration.shapeCheck}`,
+    '',
+    'not served methods, by namespace:',
   ]
   for (const [namespace, names] of groupAbsent(absent.methods)) {
     lines.push(`  ${namespace}: ${names.length}`)
     for (const name of names) lines.push(`    ${name}`)
   }
+  if (refused.methods.length > 0) {
+    lines.push('', 'refused methods, by namespace (callable; typed refusal under this configuration):')
+    for (const [namespace, entries] of groupByPrefix(refused.methods.map((entry) => `${entry.name}=${entry.code}`), '.')) {
+      lines.push(`  ${namespace}: ${entries.length}`)
+      for (const entry of entries) lines.push(`    ${entry}`)
+    }
+  }
   if (absent.properties.length > 0) {
     lines.push('', 'not served properties:')
     for (const name of absent.properties) lines.push(`  ${name}`)
+  }
+  if (wrongShape.length > 0) {
+    lines.push('', 'wrong shape (present, but neither served nor absent):')
+    for (const entry of wrongShape) {
+      lines.push(`  ${entry.name}: declared ${entry.declared}, runtime ${entry.runtime} (${entry.valueType})`)
+    }
   }
   if (absent.events.length > 0) {
     lines.push('', 'not served events, by namespace:')
@@ -1097,26 +1368,39 @@ export function report(ledger) {
       for (const name of names) lines.push(`    ${name}`)
     }
   }
-  if (ledger.shapeMismatches.length > 0) {
-    lines.push('', 'shape mismatches (present, but not in the declared shape):')
-    for (const entry of ledger.shapeMismatches) {
-      lines.push(`  ${entry.name}: declared ${entry.declared}, served ${entry.served}`)
+  if (absent.elements.length > 0) {
+    lines.push('', 'not served surface elements:')
+    for (const [surface, names] of groupByPrefix(absent.elements, ':')) {
+      lines.push(`  ${surface}: ${names.length}`)
+      for (const name of names) lines.push(`    ${name}`)
     }
   }
+  if (absent.renderSites.length > 0) {
+    lines.push('', 'not served render sites:')
+    for (const name of absent.renderSites) lines.push(`  ${name}`)
+  }
+  lines.push('', `matcher type aliases: ${totals.matchers.declared} counted by name only; ${totals.matchers.note}`)
+  lines.push(`partition: ${totals.partition}`)
   return `${lines.join('\n')}\n`
 }
 
-function main(argv) {
+async function main(argv) {
   const update = argv.includes('--update')
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(
       'usage: node scripts/mod-coverage.mjs [--update]\n\n' +
         'Reads the pinned claude-code.d.ts and the runtime $ table, prints the\n' +
-        'declared/served/absent totals, and fails on drift unless --update is given.\n',
+        'declared/served/refused/absent totals, and fails on drift unless --update is given.\n',
     )
     return 0
   }
-  const live = computeCoverage()
+  let live
+  try {
+    live = await computeCoverage()
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    return 1
+  }
   if (update) {
     writeFileSync(ledgerPath, ledgerText(live))
     process.stdout.write(report(live))
@@ -1145,5 +1429,5 @@ function main(argv) {
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  process.exitCode = main(process.argv.slice(2))
+  process.exitCode = await main(process.argv.slice(2))
 }

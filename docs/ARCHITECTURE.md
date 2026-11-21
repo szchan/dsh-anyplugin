@@ -992,17 +992,39 @@ commitment survivable.
 The measurement is `scripts/mod-coverage.mjs` plus the committed
 `fixtures/mods/coverage.json` (#130). The script scans the pinned
 `mods/types/claude-code.d.ts` with a declaration scanner (it does not import
-the declaration), calls the host's `$` factory to enumerate the methods the
-runtime actually serves, and records `declared`, `served` and `absent` for
-namespaces, methods, properties, events, elements, render sites and matcher
-types. Event keys are counted in their `classic.<Event>` spelling — the bare
-`ClassicHookEvent` union is the input to those spellings and is not counted a
-second time. Served events are the live host routes; `ui.render` and
-`ui.resolve` are sink-owned synthetic dispatches, not host routes, and are not
-counted as served here. `node scripts/mod-coverage.mjs` prints the totals and the absent
-names grouped by namespace; `--update` rewrites the ledger, and the conformance
-test fails when the ledger drifts. This is a denominator, not a fidelity claim:
-a served name says the method is reachable, never that it behaves like the pin.
+the declaration) and calls the host's `$` factory to enumerate what the runtime
+actually exposes. Every declared member is classified **served** (callable under
+the recorded bridge configuration), **refused** (callable, but always throws a
+typed `ERR_MOD_HOST_*` refusal such as `process.run` or `vcs.status`),
+**absent** (no runtime member), or **wrong shape** (present with the wrong
+callable/property kind; `session.cwd` is the current instance and is a separate
+ticket). The refused set depends on configuration, so the ledger records the
+bridge options — an attached session, a stub command registry, and no settings
+source, which is why `$.settings.read` refuses — and `--update` rejects a
+runtime member the pin does not declare instead of blessing it.
+
+The ledger covers namespaces, methods, properties, events, elements, render
+sites and matcher type aliases, and asserts a partition in every category:
+`served + refused + absent + wrongShape = declared` for methods and properties,
+`served + absent = declared` for the rest. Event keys are counted in their
+`classic.<Event>` spelling — the bare `ClassicHookEvent` union is the input to
+those spellings and is not counted a second time. Served events are the live
+host routes; `ui.render` and `ui.resolve` are sink-owned synthetic dispatches,
+not host routes, and are not counted as served here. Elements are
+surface-qualified (`vscode:Svg`), so dropping one surface's entry shows up as an
+absent element rather than hiding in a flattened count. The host draws only one
+render site — it synthesizes `ui.render` for `component: 'Pane'` on terminal —
+so render sites are **1 served / 19 planned**, not 20 served. Matchers are
+counted as the declaration's internal `Matcher*`/`OpenMatcher` helper aliases;
+there is no runtime type surface to compare.
+
+`node scripts/mod-coverage.mjs` prints the totals, the absent and refused names
+grouped by namespace, the configuration, and the partition; `--update` rewrites
+the ledger, and the conformance test fails when the ledger drifts. The
+`wrongShape` check compares callable versus property only: arguments, return
+types, sync versus `Promise`, and behaviour are not compared. This is a
+denominator, not a fidelity claim: a served name says the member is reachable,
+never that it behaves like the pin.
 
 ### 7.5 Security inverts, and the static scan is the gift
 

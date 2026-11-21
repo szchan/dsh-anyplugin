@@ -6,6 +6,23 @@
     "bytes": 895875,
     "sha256": "c5b4d944cb250e52b583b98dd498383cb5e00d9b04053711ffcfe333e90418cf"
   },
+  "configuration": {
+    "bridge": "createModBridge (the runtime $ factory)",
+    "options": {
+      "plugin": "mod-coverage",
+      "dataDir": "a fresh temporary directory",
+      "cwd": "the same temporary directory",
+      "session": "an attached view: id \"mod-coverage\", that cwd, messages [], usage {}",
+      "commands": "a stub registry whose register returns a no-op disposer",
+      "env": {},
+      "warn": "a no-op",
+      "settings": "absent (undefined): the materializer passes no settings source, so $.settings.read refuses"
+    },
+    "refusalProbe": "each function key is called with no arguments; a returned promise is awaited; a typed ERR_MOD_HOST_* unsupported/unavailable code marks the member refused",
+    "renderSites": "served: the host synthesizes ui.render for component \"Pane\" on surface \"terminal\" only (ui.ts:1093-1097; D44); the other 19 declared components are planned, not drawn by the host",
+    "shapeCheck": "classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour",
+    "note": "The refused set is configuration-dependent. served means callable under this configuration and not a typed refusal."
+  },
   "declared": {
     "namespaces": [
       "agent",
@@ -483,18 +500,15 @@
       "fs.list",
       "fs.read",
       "fs.stat",
-      "process.run",
       "session.id",
       "session.messages",
       "session.usage",
-      "settings.read",
       "store.delete",
       "store.get",
       "store.keys",
       "store.set",
       "telemetry.log",
       "telemetry.mark",
-      "ui.ask",
       "ui.close",
       "ui.invalidate",
       "ui.log",
@@ -502,15 +516,9 @@
       "ui.resolve",
       "ui.status",
       "vcs.detect",
-      "vcs.diff",
-      "vcs.isolate",
-      "vcs.list",
-      "vcs.release",
-      "vcs.status"
+      "vcs.diff"
     ],
-    "properties": [
-      "session.cwd"
-    ],
+    "properties": [],
     "events": [
       "classic.ConfigChange",
       "classic.CwdChanged",
@@ -532,85 +540,114 @@
       "session.start",
       "tool.call"
     ],
-    "elements": {
-      "terminal": [
-        "Box",
-        "Button",
-        "Client",
-        "Code",
-        "Image",
-        "Input",
-        "Link",
-        "Markdown",
-        "Progress",
-        "Raster",
-        "Select",
-        "Text"
-      ],
-      "desktop": [
-        "Box",
-        "Button",
-        "Client",
-        "Code",
-        "Input",
-        "Link",
-        "Markdown",
-        "Progress",
-        "Select",
-        "Shader",
-        "Svg",
-        "Text"
-      ],
-      "mobile": [
-        "Box",
-        "Button",
-        "Code",
-        "Input",
-        "Link",
-        "Markdown",
-        "Progress",
-        "Select",
-        "Shader",
-        "Svg",
-        "Text"
-      ],
-      "vscode": [
-        "Box",
-        "Button",
-        "Code",
-        "Input",
-        "Link",
-        "Markdown",
-        "Progress",
-        "Select",
-        "Svg",
-        "Text"
-      ]
-    },
+    "elements": [
+      "desktop:Box",
+      "desktop:Button",
+      "desktop:Client",
+      "desktop:Code",
+      "desktop:Input",
+      "desktop:Link",
+      "desktop:Markdown",
+      "desktop:Progress",
+      "desktop:Select",
+      "desktop:Shader",
+      "desktop:Svg",
+      "desktop:Text",
+      "mobile:Box",
+      "mobile:Button",
+      "mobile:Code",
+      "mobile:Input",
+      "mobile:Link",
+      "mobile:Markdown",
+      "mobile:Progress",
+      "mobile:Select",
+      "mobile:Shader",
+      "mobile:Svg",
+      "mobile:Text",
+      "terminal:Box",
+      "terminal:Button",
+      "terminal:Client",
+      "terminal:Code",
+      "terminal:Image",
+      "terminal:Input",
+      "terminal:Link",
+      "terminal:Markdown",
+      "terminal:Progress",
+      "terminal:Raster",
+      "terminal:Select",
+      "terminal:Text",
+      "vscode:Box",
+      "vscode:Button",
+      "vscode:Code",
+      "vscode:Input",
+      "vscode:Link",
+      "vscode:Markdown",
+      "vscode:Progress",
+      "vscode:Select",
+      "vscode:Svg",
+      "vscode:Text"
+    ],
     "renderSites": [
-      "AbovePrompt",
-      "AbovePromptList",
-      "AgentRow",
-      "AskUserQuestion",
-      "AssistantMessage",
-      "Backdrop",
-      "CommandOutput",
-      "ContextMenu",
-      "InfoNotice",
-      "Pane",
-      "Placed",
-      "PromptHint",
-      "SessionMode",
-      "Spinner",
-      "ToolGroup",
-      "ToolProgress",
-      "ToolResult",
-      "ToolUse",
-      "TurnDuration",
-      "UserMessage"
+      "Pane"
     ]
   },
+  "refused": {
+    "methods": [
+      {
+        "name": "process.run",
+        "code": "ERR_MOD_HOST_EXEC_UNSUPPORTED"
+      },
+      {
+        "name": "settings.read",
+        "code": "ERR_MOD_HOST_SETTINGS_UNAVAILABLE"
+      },
+      {
+        "name": "ui.ask",
+        "code": "ERR_MOD_HOST_UI_UNSUPPORTED"
+      },
+      {
+        "name": "vcs.isolate",
+        "code": "ERR_MOD_HOST_VCS_UNSUPPORTED"
+      },
+      {
+        "name": "vcs.list",
+        "code": "ERR_MOD_HOST_VCS_UNSUPPORTED"
+      },
+      {
+        "name": "vcs.release",
+        "code": "ERR_MOD_HOST_VCS_UNSUPPORTED"
+      },
+      {
+        "name": "vcs.status",
+        "code": "ERR_MOD_HOST_VCS_UNSUPPORTED"
+      }
+    ],
+    "properties": []
+  },
+  "wrongShape": [
+    {
+      "name": "session.cwd",
+      "declared": "method",
+      "runtime": "property",
+      "valueType": "string"
+    }
+  ],
   "absent": {
+    "namespaces": [
+      "agent",
+      "audio",
+      "config",
+      "http",
+      "mcp",
+      "model",
+      "plugin",
+      "prompt",
+      "state",
+      "theme",
+      "tool",
+      "turn",
+      "wasm"
+    ],
     "methods": [
       "agent.call",
       "agent.limits",
@@ -646,7 +683,6 @@
       "session.append",
       "session.authorize",
       "session.compact",
-      "session.cwd",
       "session.identity",
       "session.info",
       "session.machine",
@@ -836,15 +872,28 @@
       "wasm.compile"
     ],
     "elements": [],
-    "renderSites": []
+    "renderSites": [
+      "AbovePrompt",
+      "AbovePromptList",
+      "AgentRow",
+      "AskUserQuestion",
+      "AssistantMessage",
+      "Backdrop",
+      "CommandOutput",
+      "ContextMenu",
+      "InfoNotice",
+      "Placed",
+      "PromptHint",
+      "SessionMode",
+      "Spinner",
+      "ToolGroup",
+      "ToolProgress",
+      "ToolResult",
+      "ToolUse",
+      "TurnDuration",
+      "UserMessage"
+    ]
   },
-  "shapeMismatches": [
-    {
-      "name": "session.cwd",
-      "declared": "method",
-      "served": "property"
-    }
-  ],
   "totals": {
     "namespaces": {
       "declared": 24,
@@ -853,13 +902,17 @@
     },
     "methods": {
       "declared": 100,
-      "served": 32,
-      "absent": 68
+      "served": 25,
+      "refused": 7,
+      "absent": 67,
+      "wrongShape": 1
     },
     "properties": {
       "declared": 2,
-      "served": 1,
-      "absent": 2
+      "served": 0,
+      "refused": 0,
+      "absent": 2,
+      "wrongShape": 0
     },
     "events": {
       "declared": 167,
@@ -874,14 +927,15 @@
     },
     "renderSites": {
       "declared": 20,
-      "served": 20,
-      "absent": 0
+      "served": 1,
+      "absent": 19
     },
     "matchers": {
       "declared": 10,
       "served": null,
       "absent": null,
-      "note": "No named runtime matcher-type surface: matching is behavioural (value grammar + event patterns), so this category has no served/absent set."
-    }
+      "note": "Counts the type aliases named Matcher* / OpenMatcher in the declaration (internal helper shapes), not user-facing matcher forms; there is no runtime type surface to compare."
+    },
+    "partition": "methods and properties: served + refused + absent + wrongShape = declared; events, elements and render sites: served + absent = declared."
   }
 }

@@ -85,7 +85,10 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
    machine run Node 24; the profile-mount test needs `module.registerHooks`
    (Node >= 22.15) and skips with a reason naming that version on older Node.
    The package's published engine floor stays 22.14 — the floor describes the
-   package, not the suite.
+   package, not the suite. The mod-coverage test also reads the fetched mod
+   tree: run `node scripts/fetch-mod.mjs` once, or set `ANYPLUGIN_MODS_TREE` to
+   an already-fetched tree. Without it `computeCoverage` throws with the fetch
+   instruction; it does not skip.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
 
