@@ -123,6 +123,15 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
     }
     faces.set(identityKey('agents', agent.name), present)
   }
+  for (const style of ir.outputStyles ?? []) {
+    if (!style.faces) continue
+    // The spoken half and the named half are reported separately: activation
+    // can be `equivalent` while `/<plugin>:<name>` is still `planned` (D10).
+    faces.set(identityKey('outputStyles', style.name), [
+      { face: 'activation', class: style.faces.activation.fidelity, reason: style.faces.activation.reason },
+      { face: 'command', class: style.faces.command.fidelity, reason: style.faces.command.reason },
+    ])
+  }
   return faces
 }
 

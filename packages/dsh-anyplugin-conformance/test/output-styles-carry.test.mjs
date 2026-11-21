@@ -46,7 +46,7 @@ function runRig(args) {
 }
 
 function assertNamesEveryGap(reason) {
-  assert.match(reason, /invocation\.agent\.ctx/, 'the reachable seam is named')
+  assert.match(reason, /payload\.agent\.ctx\.systemPrompt\.section/, 'the reachable seam is named')
   assert.match(reason, /complete: true/, 'the seam form that replaces the prompt is named')
   assert.match(reason, /S11/, 'the proof for the seam is named')
   assert.match(reason, /agent\/created/, 'the at-start provenance gap is named')
@@ -79,6 +79,10 @@ test('the fixture carries both identities as planned output-style rows', () => {
     assert.equal(style.annotation.fidelity, 'planned')
     assert.equal(isCarried(style.annotation), false, 'carried bytes are not an emitted prompt')
     assertNamesEveryGap(style.annotation.reason)
+    assert.equal(style.faces?.activation.fidelity, 'equivalent', `${style.name}: the spoken half is reachable`)
+    assert.equal(style.faces?.command.fidelity, 'planned', `${style.name}: the named half still needs D10`)
+    assert.match(style.faces.activation.reason, /payload\.agent\.ctx\.systemPrompt\.section/)
+    assert.match(style.faces.command.reason, /D10/)
   }
 
   assert.equal(
@@ -129,6 +133,16 @@ test('rig report shows the rows, and --json carries the planned annotation', () 
     assert.equal(component.class, 'planned')
     assert.equal(component.carried, false)
     assertNamesEveryGap(component.reason)
+    assert.equal(
+      component.faces.find((face) => face.face === 'activation').class,
+      'equivalent',
+      `${component.name}: the report exposes the reachable activation face`,
+    )
+    assert.equal(
+      component.faces.find((face) => face.face === 'command').class,
+      'planned',
+      `${component.name}: the report keeps the human face planned`,
+    )
   }
 })
 

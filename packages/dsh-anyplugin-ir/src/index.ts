@@ -177,17 +177,45 @@ export interface IrUnmaterialized {
 }
 
 /**
+ * The two faces of an output style.
+ *
+ * They are split because they fail independently: the spoken half (apply the
+ * body at agent start) is reachable through the agent-scoped prompt seam
+ * (S11), while the named half (`/<plugin>:<name>`) still needs the additive
+ * command-alias seam (D10). The overall row is the weakest face, so a carried
+ * body never reads as a whole success.
+ */
+export interface IrOutputStyleFaces {
+  /** Applying the body when an agent starts; `equivalent`, never `exact` (see reason). */
+  activation: Annotation
+  /** The human `/<plugin>:<name>` command; `planned` until the alias seam lands (D10). */
+  command: Annotation
+}
+
+/**
  * A Claude output style: prompt text the host applies at agent start (F1).
  *
- * The body is carried byte for byte even though activation is `planned`. That
- * is the point of the row: a later materializer must not have to re-read and
- * re-serialize prompt text, and a test can hash the exact bytes the dialect
- * read (`output-styles-carry.test.mjs`). The row keeps the
+ * The body is carried byte for byte. A later materializer must not have to
+ * re-read and re-serialize prompt text, and a test can hash the exact bytes
+ * the dialect read (`output-styles-carry.test.mjs`). The row keeps the
  * `IrUnmaterialized` shape so the report names it like every other surface.
+ *
+ * `faces` is optional: an IR produced before activation existed is still
+ * readable, and its row stays `planned`, unchanged.
  */
 export interface IrOutputStyle extends IrUnmaterialized {
   /** `description` from the frontmatter, when present. */
   description?: string
+  /**
+   * The `keep-coding-instructions` frontmatter key. `undefined` when absent:
+   * absence is a distinct state (Claude defaults it to false, but the dialect
+   * does not synthesize a value the author did not write).
+   */
+  keepCodingInstructions?: boolean
+  /** The `force-for-plugin` frontmatter key; `undefined` when absent. */
+  forceForPlugin?: boolean
+  /** The spoken and named faces; the overall annotation is the weakest. */
+  faces?: IrOutputStyleFaces
   /** The body exactly as authored, with the frontmatter removed. Never trimmed. */
   body: string
 }
@@ -344,7 +372,25 @@ export function validateIr(ir: ClaudePluginIr): string[] {
     // A planned row still promises exact bytes; the annotation says nothing is
     // applied, not that the carried body may drift.
     if (typeof style.body !== 'string') problems.push(`${where}: body must be a string`)
-    if (style.annotation?.fidelity !== 'planned') problems.push(`${where}: must be planned`)
+    if (style.keepCodingInstructions !== undefined && typeof style.keepCodingInstructions !== 'boolean') {
+      problems.push(`${where}: keepCodingInstructions must be a boolean when present`)
+    }
+    if (style.forceForPlugin !== undefined && typeof style.forceForPlugin !== 'boolean') {
+      problems.push(`${where}: forceForPlugin must be a boolean when present`)
+    }
+    if (style.faces) {
+      // Activation and the human command are separate claims; the row overall
+      // may never be stronger than the weakest of them (T1).
+      problems.push(...annotationProblems(`${where} activation face`, style.faces.activation))
+      problems.push(...annotationProblems(`${where} command face`, style.faces.command))
+      const weakest = Math.max(RANK[style.faces.activation.fidelity], RANK[style.faces.command.fidelity])
+      if (style.annotation && RANK[style.annotation.fidelity] < weakest) {
+        problems.push(`${where}: overall ${style.annotation.fidelity} claims more than its weakest face`)
+      }
+    } else if (style.annotation?.fidelity !== 'planned') {
+      // An IR written before the face split carried activation as `planned`.
+      problems.push(`${where}: must be planned`)
+    }
     problems.push(...annotationProblems(where, style.annotation))
   }
   for (const item of ir.pending ?? []) {

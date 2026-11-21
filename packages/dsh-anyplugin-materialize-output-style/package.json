@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-materialize-output-style",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin that applies a selected Claude output-style body at agent start through the agent-scoped system-prompt seam.",
+  "exports": { ".": "./src/index.ts" }
+}
