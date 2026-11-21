@@ -57,6 +57,17 @@ decides "who spoke last" by login first.
 the only sanctioned way to decide what to do next, because it is the only view
 that knows who spoke last.
 
+**An issue does not wake an agent.** There is no webhook into a running session;
+the loop is pull-based. Two things drive it: the master runs `npm run triage` at
+the start of each round, and a scheduled task (`Poll the issue queue and dispatch
+work`, every 20 minutes, delivered to the master session) runs the same command
+and dispatches what it finds. That is the whole intake mechanism — a GitHub
+notification is a convenience for the human, not a trigger.
+
+Consequence, stated so nobody is surprised: a new issue waits for the next pull —
+up to one scheduling interval — before it is labelled. It is never lost, and it
+never interrupts a worker mid-branch.
+
 The queue has four sections:
 
 1. **Maintainer asks** — `from-maintainer` threads whose last human message is
