@@ -1,14 +1,15 @@
 # Installing `dsh-anyplugin`
 
-`dsh-anyplugin@0.1.0` is the first published release. It is **one bundle** whose
+`dsh-anyplugin@0.2.0` is this release. It is
+**one bundle** whose
 patch inserts **one row** — the controller. Everything else (skills, including
 commands on their model face, MCP servers, hooks, agents, an activated output
 style) is created at runtime by reconciling the lock file
 `installs.yml`; the package writes no profile config and generates no code.
 
-What 0.1.0 ships:
+What 0.2.0 ships:
 
-| surface | state in 0.1.0 |
+| surface | state in 0.2.0 |
 | --- | --- |
 | Skills | loaded into the harness skill registry |
 | Slash commands | land as **skills** on their model face (`equivalent`); the human `/…` face is still `planned` (D10) |
@@ -16,12 +17,20 @@ What 0.1.0 ships:
 | Hooks | the events the host actually fires; `exec`-class hooks need a grant |
 | Agents | one scoped tool per `agents/*.md` |
 | Output styles | activated from `$DSH_HOME/anyplugin/output-styles.yml` (one style, `agent/created`); the `/<plugin>:<name>` command face stays `planned` (D42) |
-| `mods` | **not shipped** in 0.1.0 (the mods kernel is v0.2) |
-| Codex plugins | **not shipped** in 0.1.0 (v0.3) |
+| `mods` | **kernel shipped** in `lib/materialize/hook.js` (D30/D31/D34), but **not lock-reachable**: a hand-written hook row may carry `mods: [{ entry }]`, while `installs.yml` has no `mods` field, so `dsh plugin add` does not install mods |
+| Codex plugins | **not shipped** in 0.2.0 (v0.3) |
 
 ## Requirements and the version claim
 
 - **Node.js ≥ 22.14** (`engines.node`).
+- **Mods need `--experimental-vm-modules`.** D30 loads each mod in a `node:vm`
+  realm, and Node exposes `SourceTextModule` only behind that flag. CLI:
+  `node --experimental-vm-modules …`. Desktop: export
+  `NODE_OPTIONS=--experimental-vm-modules` before launching `dsh` — a shell
+  export is enough, the environment is inherited by the bundled Node. Without
+  it each mod is refused with `ERR_MOD_HOST_LINK` ("node:vm SourceTextModule
+  is unavailable; run Node with --experimental-vm-modules (D30)"), classic
+  hooks still run, and the kernel logs the flag once rather than once per mod.
 - **DSH `0.2.2-rc.2 || 0.2.2-rc.5`** (`engines.dsh`): exactly the two pins the
   suite boots. Any other runtime — including `0.2.2-rc.3`, `0.2.2-rc.4`,
   `0.2.2-rc.6` and `0.2.2` — is refused until it is tested. The harness's
@@ -34,7 +43,7 @@ What 0.1.0 ships:
   record in `installs.yml` must carry `pin: "claude-code@2.1.329"`; a record
   naming a different pin is rejected rather than silently re-interpreted.
 - A Claude Code plugin directory (one with `.claude-plugin/plugin.json`) on
-  disk. 0.1.0 compiles from a local directory; it does not fetch plugins.
+  disk. 0.2.0 compiles from a local directory; it does not fetch plugins.
 
 ## 1. Install the bundle into a profile
 
@@ -70,11 +79,11 @@ That row is the whole bundle. It needs the profile's package scope to resolve
 
 Commands are not a sixth subpath: a slash command lands as a **skill** on its
 model face (`equivalent`). The human `/…` face is still `planned` and needs
-the host command-name seam (D10); wiring it is not part of 0.1.0.
+the host command-name seam (D10); wiring it is not part of 0.2.0.
 
 ## 2. Tell the controller which plugins to run
 
-The controller reads `$DSH_HOME/anyplugin/installs.yml` at boot. In 0.1.0 the
+The controller reads `$DSH_HOME/anyplugin/installs.yml` at boot. In 0.2.0 the
 installer that usually writes this file ships as a library, not a CLI, so write
 the canonical form by hand. A missing file means "no installs"; a malformed one
 fails the boot with a line number — it never silently uninstalls anything.
@@ -99,10 +108,11 @@ not an error. `name` and `version` are the identity in the lock; the
 model-facing ids are namespaced under `anyplugin.` and cannot collide with the
 profile's own rows.
 
-The lock schema is strict. It has no `mods` field in 0.1.0: a record carrying
+The lock schema is strict. It has no `mods` field in 0.2.0: a record carrying
 `mods` (or any unknown field) fails with `unknown field "mods"` and a line
-number. That is a hard schema error, not the warning the mods kernel will
-record in v0.2 — do not expect a plugin to load with mods silently skipped.
+number. The kernel is shipped, but it is reachable **only** from a hand-written
+hook row (`mods: [{ entry }]`) until the lock gains that field; this is not an
+install path, and a lock record never loads mods silently.
 
 To point the controller at a different lock (a project-local file, CI, a test
 fixture), override the row in your profile's own `cordis.patch.yml`:
@@ -152,7 +162,7 @@ editing the hook invalidates the grant and asks again.
 
 Grants live in `$DSH_HOME/anyplugin/grants.yml` (canonical form, keyed by
 `plugin`, `capability`, `target`, `artifactHash`, `grantedAt`, `scope`). Grant
-issuance is the installer's job; in 0.1.0 write the grant by hand only when you
+issuance is the installer's job; in 0.2.0 write the grant by hand only when you
 have read the command line in the refusal log and accept it. A grant for a
 different byte sequence does nothing.
 
@@ -188,7 +198,19 @@ packed tarball into a scratch profile, composes the published
 through the real loader, reconciles a fixture lock, and asserts the fixture's
 skill is listed by the harness skill registry. The smoke fails if `lib/` is
 missing or a published subpath does not resolve, so a package that would not
-install cannot be published. Publishing itself is gated the same way: the
+install cannot be published.
+
+The same smoke then loads real mods through the **packaged** hook entry, so the
+kernel is proven from the tarball and not only from `lib/`: it needs
+`ANYPLUGIN_MODS_TREE` (fetch it with `node scripts/fetch-mod.mjs`; the smoke
+never reaches the network) and the Node flag above. It runs one real turn per
+proof — the pinned upstream `sec-default` (45 registrations) beside a classic
+hook, a `$` round-trip through the headless bridge (including a classic-pragma
+`.tsx` module), and a mod deny at `tools/pre-execute`. A real `npm install` of
+the tarball also pulls the kernel's two declared Babel packages (60 packages,
+~35 MB); the smoke links the checkout's copies so its proof stays offline, and
+its dependency claim is narrow — the packaged hook entry imports the declared
+packages at the declared versions. Publishing itself is gated the same way: the
 release workflow accepts only a `v*` tag whose commit is an ancestor of
 `origin/main`, runs `npm run verify` against both DSH pins, and only then
 calls `npm publish`. A tag on a branch commit cannot publish.
