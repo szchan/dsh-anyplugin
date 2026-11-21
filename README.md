@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo-lockup.svg" width="640" alt="dsh-anyplugin — foreign plugins, native behaviour">
+</p>
+
 # dsh-anyplugin
 
 English | [中文](README_cn.md)

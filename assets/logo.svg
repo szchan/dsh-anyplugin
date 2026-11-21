@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="t">
+  <title id="t">dsh-anyplugin — fidelity seal</title>
+  <rect width="512" height="512" rx="112" fill="#0B0E14"/>
+  <path d="M256 72 L416 164 L416 348 L256 440 L96 348 L96 164 Z" fill="#121722" stroke="#E6ECF7" stroke-width="26" stroke-linejoin="round"/>
+  <g fill="none" stroke="#E6ECF7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="252" cy="256" r="66" stroke-width="32"/>
+    <path d="M318 190 V 322" stroke-width="32"/>
+  </g>
+  <circle cx="252" cy="256" r="22" fill="#4D6BFE"/>
+</svg>

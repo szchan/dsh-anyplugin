@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo-lockup.svg" width="640" alt="dsh-anyplugin —— 外部插件，原生行为">
+</p>
+
 # dsh-anyplugin
 
 [English](README.md) | 中文
