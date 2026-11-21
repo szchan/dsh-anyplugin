@@ -46,7 +46,19 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. All nine
       listener seams and the five notification-only records are wired; what
       remains is host support for the sixteen events above.
-- [ ] `dsh-shell-env` — `PATH` contribution for plugin `bin/`.
+- [ ] `dsh-shell-env` — an ordered external-PATH contribution for plugin
+      `bin/`. Anchor (S19, pinned 0.2.2-rc.5): `register()` throws
+      `bash env contributor "X" declared invalid key "PATH"` at
+      `dsh-shell-env/src/index.ts:133-135`; the key type is `` `DSH_${string}` ``
+      (`dsh-subprocess/src/types.ts:16`); the model-facing shell request has no
+      `env` field (`dsh-tool-bash/src/index.ts:515-521`,
+      `dsh-tool-pwsh/src/index.ts:542`); the child PATH is the inherited process
+      PATH (`dsh-bash-local/src/index.ts:172`,
+      `dsh-subprocess-local/src/spawn.ts:45-46`). Proposal: an append-only
+      `extraPath` (or equivalent) on `ShellExecRequest`/`ShellEnvRegistry`,
+      applied *after* the inherited PATH so the user's own entries still win
+      (Claude's order), owned by plugin scope, and gated by the `bin/` files'
+      exec grant (D25). Until it exists, `bin/` is `unsupported` (S19).
 - [ ] Monitor notifications: a background process's stdout reaching the model.
 - [ ] Terminal ANSI palette (F2).
 

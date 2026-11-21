@@ -1245,11 +1245,29 @@ function readMcp(root: string, plugin: string): {
       },
     })
   }
+  return { servers, pending, unsupported }
+}
+
+/**
+ * Surfaces that exist only as a fixed file or a directory and have no
+ * materializer at the pin. This is read next to the other surface readers, not
+ * inside `readMcp()`: when it lived there, a plugin with `themes/` (or, now,
+ * `bin/`) but no `.mcp.json` returned early and reported nothing at all.
+ *
+ * `bin/` is `unsupported` rather than `planned`: S19 measured at 0.2.2-rc.5 that
+ * the shell tools take their managed env from `dsh-shell-env`, which accepts
+ * declared `DSH_*` keys only, and the tool request has no caller `env` field to
+ * smuggle a PATH through. Exec classification (D25) already pins the files;
+ * what is missing is a host seam that would put them on PATH, tracked in
+ * docs/TODO.md.
+ */
+function readOptionalSurfaces(root: string): { pending: IrUnmaterialized[]; unsupported: IrUnmaterialized[] } {
+  const pending: IrUnmaterialized[] = []
+  const unsupported: IrUnmaterialized[] = []
   for (const [surface, dir, reason] of [
     ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
     ['themes', 'themes', 'Terminal colour palettes have no DSH palette seam yet (F2); planned for v0.4.'],
     ['workflows', 'workflows', 'Workflow scripts are close to dsh-tool-workflow but the agent()/pipeline() contract differs; planned for v0.4.'],
-    ['bin', 'bin', 'bin/ must join the model shell PATH; dsh-shell-env only manages DSH_* keys (ARCHITECTURE §9). Planned for v0.3.'],
     ['monitors', 'monitors', 'Monitors need a channel from a background process stdout into the model context; planned for v0.4.'],
   ] as const) {
     const abs = join(root, dir)
@@ -1261,7 +1279,18 @@ function readMcp(root: string, plugin: string): {
       annotation: { fidelity: 'planned', reason },
     })
   }
-  return { servers, pending, unsupported }
+  if (existsSync(join(root, 'bin'))) {
+    unsupported.push({
+      surface: 'bin',
+      name: 'bin',
+      sourcePath: 'bin',
+      annotation: {
+        fidelity: 'unsupported',
+        reason: 'bin/ must join the model shell PATH, and the pinned host has no seam for it: dsh-shell-env accepts DSH_* keys only (register() throws `declared invalid key "PATH"`) and the model-facing bash/pwsh tools expose no env parameter. S19 proved a bin/ command never resolves (exit 127). Needs the upstream PATH-contribution seam tracked in docs/TODO.md.',
+      },
+    })
+  }
+  return { pending, unsupported }
 }
 
 /**
@@ -1378,9 +1407,10 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { mods, pending: modPending } = readMods(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
+  const { pending: surfacePending, unsupported: surfaceUnsupported } = readOptionalSurfaces(root)
 
-  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...stylePending]
-  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...stylePending, ...surfacePending]
+  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported, ...surfaceUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
     if (key in manifest) {

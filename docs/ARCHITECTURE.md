@@ -1370,7 +1370,7 @@ run degraded *by design*.
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
-| shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
+| shell env PATH | `dsh-shell-env` `register()` accepts a `PATH` key (S19: it does not; see §10) | `bin` unsupported, with the registration refusal as the reason |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
 | dynamic package runner | present | `planned`/`mod` unavailable as well |
@@ -2223,6 +2223,69 @@ lifecycle CLI's contract, ratified as #116; D50 does not change it. D50 must
 not be read as proving install closure: the scope link stands in for the
 launcher's `PluginPackages` interception, so the installation-closure
 containment is the part that remains smoke-tested, not asserted.
+
+
+### S19 — a plugin `bin/` directory does not reach the model shell PATH
+
+**Question.** Claude Code appends `<plugin>/bin` to the PATH of the shell its
+model calls, after the user's own entries. Does a plugin `bin/` reach DSH's
+model shell PATH without a core change — and if not, where exactly is the
+refusal?
+
+**Method.** `spikes/s19-path/run.mjs`, 18 checks. Nine read the installed source
+at the pin (the registry API and its validation, both model-facing shell tools,
+the local executor's env merge, the scrub). Nine boot the primitives the oracle's
+tool probes boot — `SessionStore`, `SessionProjections`, `SystemPrompt`,
+`ToolsService`, `dsh-tool-executor-native`, `dsh-fs-local`, `WorkingDirectory`,
+`ShellEnv`, `dsh-subprocess-local`, `dsh-bash-local`, `dsh-tool-bash` — and call
+`bash` the way the model does: a `tool-call` batch through
+`ctx.tools.execute`, never `process.env` directly. A probe contributor is the
+positive control (a registered `DSH_*` value must be visible in the child);
+then `PATH` is declared, then smuggled from `resolve()`; then a probe `bin/` with
+`probecmd` and `ls` is exercised by bare name. The spike never mutates
+`process.env.PATH` — the gate in issue #131. Run at both pins:
+
+```
+DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+  node spikes/s19-path/run.mjs
+```
+
+**Answer (pinned `0.2.2-rc.5` and `0.2.2-rc.2`, 18/18 checks each).** No. The
+only registration API is `ctx.shellEnv.register(contributor)`
+(`dsh-shell-env/src/index.ts:122`), and its key grammar is `DSH_` plus
+`/^[A-Z][A-Z0-9_]*$/` (`:91`), checked at registration (`:133-135`); the key type
+is a compile-time template, ``DshEnvironmentKey = `DSH_${string}` ``
+(`dsh-subprocess/src/types.ts:16`). Declaring `PATH` throws, verbatim,
+`bash env contributor "s19-path" declared invalid key "PATH"`. A resolver that
+declares `DSH_S19_SMUGGLE` but returns `PATH` is refused inside the model call
+with `bash env contributor "s19-smuggle" returned undeclared key "PATH"`,
+`ShellEnvError` code `SHELL_ENV_CONTRIBUTION_INVALID` (`:188`). The model-facing
+tools send only the collected overlay (`dsh-tool-bash/src/index.ts:514-519`,
+`dsh-tool-pwsh/src/index.ts:542`) and expose no `env` parameter — the bash
+schema offers `description`, `command`, `timeoutMs`, `workdir`, and an `env`
+member added to the arguments is ignored. The child environment is
+`{ ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv }`
+(`dsh-bash-local/src/index.ts:172`) over `scrubbedParentEnv()`
+(`dsh-subprocess-local/src/spawn.ts:45-46`), which keeps `PATH` from the harness
+process (`dsh-subprocess/src/index.ts:76`). Measured on the model side: `$PATH`
+is byte-equal to `process.env.PATH`; `DSH_S19_PROBE=hello-s19` from a registered
+contributor **is** visible (so the registry is applied to real calls); the probe
+bin is absent from every PATH entry, `probecmd` exits 127 "not found", and a
+probe file named `ls` does not shadow `/nix/store/…-coreutils-9.12/bin/ls`.
+Therefore `bin/` is `unsupported` at the dialect (reason in
+`packages/dsh-anyplugin-dialect-claude-code/src/index.ts`,
+`readOptionalSurfaces`), not `planned`: there is no seam to wait for a
+materializer to use, and a fixture would only assert the 127. Exec
+classification already pins `bin` files (D25); the missing piece is the host
+seam, tracked in `docs/TODO.md` with these anchors.
+
+**What this does not prove.** It does not prove DSH can never grow the seam, nor
+that the proposal in `docs/TODO.md` is the right shape — only that at the two
+pins no plugin-reachable path to `PATH` exists. A future seam must preserve
+Claude's order (plugin bins after the user's entries, so the system command
+wins), be append-only rather than a reordering of the inherited PATH, and carry
+the same exec grant as the files (D25); otherwise the row moves to `equivalent`
+only with a probe of that order.
 
 
 ## 11. Non-goals

@@ -97,6 +97,16 @@ export const HARNESS_PACKAGES = {
   'dsh-persona': 'S11: persona section',
   'dsh-agent-preset-registry': 'S11: agent-preset registry',
   'dsh-agent-preset': 'S11: the old install block carried it; the spike registers its preset in memory, so no literal importer yet',
+
+  // The S19 PATH probe: the managed-env registry, the bash tool that consumes
+  // it, and the local executor/subprocess stack that builds the child env.
+  'dsh-shell-env': 'S19: ShellEnvRegistry.register/collect — the managed shell environment (issue #131)',
+  'dsh-shell': 'S19: ShellExecRequest.env/dshEnv and the DSH_ prefix constants the registry validates',
+  'dsh-tool-bash': 'S19: the model-facing bash tool that calls shellEnv.collect per call',
+  'dsh-tool-pwsh': 'S19: source check of the second shell tool; not booted on Linux',
+  'dsh-bash-local': 'S19: local shell executor — the child env assembly point',
+  'dsh-subprocess': 'S19: scrubbedParentEnv — the base the child env starts from; PATH survives it',
+  'dsh-subprocess-local': 'S19: subprocess runtime; its spawn spec carries the env into the child',
 }
 
 /** Versions that are not the harness under test. Pinned, never `latest`. */
