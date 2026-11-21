@@ -84,3 +84,15 @@ of bug recur and are worth hunting first:
   "zero-write", "never falls through" are the phrases that turn out untrue.
 
 Verdict as MUST FIX / SHOULD FIX / CHECKED, and state which mutations you ran.
+
+## 6. Escalating
+
+The master runs autonomously. An escalation is an issue with `[HUMAN] ` at the
+front of the title, the `maintainer-question` label, and `<!-- needs-human -->`
+as the first line of the body — so it is findable from mail, the issue list, or
+`?q=is%3Aissue+is%3Aopen+label%3Amaintainer-question`.
+
+Only four things belong there: credentials, billing, rights, and irreversibility.
+Everything else is research plus a declared default, recorded in the issue — never
+a silent block. Body = decision (one sentence, as a choice), options with costs,
+the default you will take, and the check you already ran that a human cannot run.
