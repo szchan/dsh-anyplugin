@@ -108,7 +108,12 @@ npm run check:arch                # structural rules R1–R13
 npm run check:features            # the capability map still points at real files
 npm run check:decisions           # D1–D41 append-only (--update accepts new entries only)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
+npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```
+
+An agent never posts as `szchan`. Comments, reviews, labels and PRs go through
+`npm run gh-bot -- <gh args…>`, because the login is what stays readable after the
+fact; the `<!-- dsh-anyplugin-agent -->` marker is only a fallback (docs/TRIAGE.md §1).
 
 `verify` is the gate. It must report **0 skipped**: a skip means an environment
 variable is missing, and on CI a skip is a failure by design (D22/D24).

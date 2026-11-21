@@ -10,6 +10,7 @@
 import { execFileSync } from 'node:child_process'
 
 const AGENT_MARK = '<!-- dsh-anyplugin-agent -->'
+const BOT_LOGIN = process.env.DSH_ANYPLUGIN_BOT_LOGIN ?? 'szchan-bot'
 const json = process.argv.includes('--json')
 
 const gh = (args) => {
@@ -48,7 +49,13 @@ const comments = (number) =>
   ghJson(['issue', 'view', String(number), '--json', 'comments'])[0]?.comments ??
   ghJson(['api', `repos/{owner}/{repo}/issues/${number}/comments`, '--jq', 'map({author: {login: .user.login}, body, createdAt})'])
 
-const lastAgent = (list) => [...list].reverse().find((c) => (c.body ?? '').includes(AGENT_MARK))
+// Identity first: the bot login is what makes an agent's comment machine-made
+// after the fact. The marker stays as a fallback for threads written before the
+// bot account existed (docs/TRIAGE.md §1).
+const isAgentComment = (comment) =>
+  comment.author?.login === BOT_LOGIN || (comment.body ?? '').includes(AGENT_MARK)
+
+const lastAgent = (list) => [...list].reverse().find(isAgentComment)
 const lastMaintainer = (list) => [...list].reverse().find((c) => isMaintainer(c.author?.login))
 
 const sections = {
