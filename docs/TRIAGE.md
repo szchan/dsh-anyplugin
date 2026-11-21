@@ -80,6 +80,24 @@ The queue has four sections:
 4. **PRs** — every open PR, with its `verify` status and whether an agent has
    reviewed at the current head.
 
+A new issue or PR is labelled `needs-triage` by `.github/workflows/intake.yml`
+the moment it opens, so nothing sits unlabelled waiting for the poll. The label
+is the only thing that workflow does; it never checks out the contribution.
+
+### A pull request, in three shapes
+
+| author | what happens |
+| --- | --- |
+| `szchan-bot` (an agent) | the ticket's review: one reviewer, adversarial, verdict on the head, then the master merges if `verify` is green |
+| `szchan` (the human) | the same review. A human PR is still a proposal: if it moves a contract it needs a decision entry first; if it only fixes something, it merges on green |
+| anyone else | read the diff **before** running it (see below), then one of three outcomes — adopt (review, request changes if needed, merge), ask for evidence, or close with the reason |
+
+The security rule is not optional: **a fork PR is untrusted code.** Reading the
+diff is free; `npm install`, `npm test` and any `scripts/` entry point execute it.
+Review first, run second, and never run a contributed script with a token in the
+environment. CI is safe by construction — `verify` runs with `contents: read` and
+no secrets — so the green check is evidence, not a substitute for reading.
+
 ## 3. What counts as evidence
 
 A report (or a PR) is actionable only when it carries:
