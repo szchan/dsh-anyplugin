@@ -53,6 +53,9 @@ const CACHE_DIR = join(REPO_ROOT, '.npm-cache')
 export const HARNESS_PACKAGES = {
   // The oracle boot: every DSH probe imports these (oracles/dsh.ts boot()).
   'dsh-skill': 'oracle: skill registry, and the version the tree claims (harness.ts)',
+  // The host profile loader: profile-mount.test.mjs boots a scratch profile
+  // through `loadProfile`/`readProfilePatches`/`boot` (ticket #112).
+  'dsh-app-boot': 'profile mount: the host profile loader and boot (S17)',
   'dsh-system-prompt': 'oracle: system-prompt service for the tool probes and the real turn',
   'dsh-tools': 'oracle: tool registry',
   'dsh-tool-executor-native': 'oracle: tool dispatch, so hook probes observe a real call (S8 seam)',

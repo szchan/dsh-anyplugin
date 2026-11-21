@@ -2021,6 +2021,111 @@ The spike must be re-run when the pin moves; the table, the annotations and
 `agent-faces.test.mjs` carry the pin's name.
 
 
+### S17 — the shipped bundle mounts from a profile, not from a test boot
+
+**Question.** `check:pack` and the install smoke boot the packed tarball, but
+they compose the published patch row themselves (`composeEntries`, then
+`loader.create`). Does the bundle mount when the **host** reads a profile — its
+`package.json` `dsh.profile.bundles`, the bundle's `cordis.patch.yml`, the
+profile root's `cordis.yml` — and does the controller that comes up resolve out
+of the profile's `node_modules`, not out of this checkout? A test that
+hand-feeds the row cannot answer that; the row is the input under test.
+
+**Method.** `packages/dsh-anyplugin-conformance/test/profile-mount.test.mjs`
+packs the tarball the way `check:pack` does (`node scripts/build.mjs` then
+`npm pack --ignore-scripts`), creates a scratch home and profile with the
+host's own `initProfile`, and installs the tarball into the profile by
+extraction plus the two runtime scopes from this checkout (offline). The spike
+that preceded the test measured the real-installer path with pnpm 10.28.1
+(`pnpm add <tarball>` into the same `initProfile` layout: 57 packages, hoisted,
+the bundle a real directory, its declared scopes present, the `~4.1.0` cordis
+peer left out because `autoInstallPeers` is false — the case the launcher's
+runtime interception exists for). Corepack's pnpm 12.21.0 cannot open a store
+lock in this sandbox, which is why the test does not shell out to pnpm.
+
+The test then boots through the same host primitives, in the order
+`@deepseek-ai/dsh`'s `runProfile` performs them:
+`loadProfile('dsh', 'profile-mount', installAnchor, home)` (manifest bundles →
+`resolveBundleDir` → patch paths), write `<profile>/cordis.yml` as an empty
+root, `readProfilePatches`, `createRuntimeResolution`, then
+`boot('dsh', rootConfig, patches, prepare)` with `prepare` providing
+`profileContext`, an exporter and the `SkillRegistry` — the profile lists only
+`dsh-anyplugin`, so these are the test's host services, as the launcher's
+`prepare` provides its own. It does not supply the launcher's application
+object (`app.current`), its launch environment or command line, the stock base
+bundle, or the real `PluginPackages` (the host limitation below).
+`module.registerHooks({resolve})` records the URL each `dsh-anyplugin`
+resolution returns. There are five top-level tests — the valid lock, the three
+failure modes, and a boundary control that re-runs the valid profile with its
+package replaced by a link to this checkout. They are top-level rather than
+one parent with subtests so a Node without `registerHooks` reports five skips
+instead of a link-time failure.
+
+**Answer (pinned `0.2.2-rc.5`, `claude-code@2.1.329`, Node 24.22.2; one
+positive test carrying five positives, three negative tests and one boundary
+control — all green; on Node older than 22.15 the five skip with a reason
+naming the version, and the package's published engine floor stays 22.14).** The harness boots; the controller entry
+`dsh-anyplugin` is active; the controller creates exactly one root group entry
+`anyplugin.claude-code…skills-only` with one active
+`dsh-anyplugin/materialize/skill` child; `ctx.skills.list()` contains the
+fixture's `hello` and `greet`; `renderSkillContent(await ctx.skills.get('hello'))`
+contains the fixture body; and every observed module URL is
+`file://<profile>/node_modules/dsh-anyplugin/lib/index.js` — inside the
+scratch profile, never `file:///…/dsh-anyplugin/lib/index.js` in the checkout.
+Negatives: no lock → boot succeeds, controller active, zero groups, debug log
+`no lock at <home>/anyplugin/installs.yml`; corrupt lock → boot succeeds, the
+**controller entry** is the failed entry (state 3), zero groups, and the typed
+`InstallsFileError` names the file and line (`installs.yml:2: expected
+plugins:`); `enabled: false` → controller active, zero groups.
+
+Three mutations were run and reverted, and the two boundary ones are stated
+with their outcomes because a future pin bump must know which assertion carries
+the claim: M1 `patches.length = 0` (skip the profile's bundle patch) → all five
+tests fail, the positive one on "the profile patch must insert the controller
+entry"; M2 replace the profile's `node_modules/dsh-anyplugin` with a link to
+the checkout → only the positive fails, on the module-URL assertion, reporting
+`file:///tmp/anyplugin-wt/ticket-112/lib/index.js` (the boundary control passes
+by design — that is what makes the URL assertion non-vacuous); M3 point the
+row's `config.installs` at another file → the positive and the boundary control
+mount zero groups, the missing-lock scenario loses its `no lock at
+<installs.yml>` log, and the corrupt scenario stays active instead of failing.
+
+**Host limitation (measured, not assumed).** `PluginPackages` — the launcher's
+runtime interception, which resolves the bundle's `@deepseek-ai/*` imports from
+the installation — cannot initialize under this test: its constructor fails in
+`installRuntimeInterception` with
+`node-addon-require-builtin unsupported: Unsupported/no-getter (x64 sysv getter
+is not a recognized this->field accessor …)`, target
+`internal/modules/esm/loader`, on both Node builds measured (24.12.0 and
+24.22.2). `boot` turns that into `dsh: host preparation failed: …`. The test
+catches exactly that error, links the harness `@deepseek-ai` scope into the
+profile as the install smoke does, and reports
+`host path: scope-link (PluginPackages unsupported)` as a diagnostic. The
+controller itself imports only Node builtins (its cordis dependency is
+type-only), which is why the rest of the path does not need the interception.
+The controller can also log `failed 1` while the group it created settles
+active in the same boot, because the include's load pass runs after
+`loader.await()` collected its tasks; the test asserts the settled tree, not
+that count.
+
+**What this does not prove.** The installation-closure containment that
+`PluginPackages` would provide: with the scope link, an `@deepseek-ai/*` import
+succeeds because the scope is present, not because the installation resolved
+it. It is not a template profile — the stock base application bundle is not in
+the fetched harness union, so the controller is the profile's only bundle and a
+base bundle's rows mounting before/after it are not exercised. The pnpm install
+path is the spike's measured comparison, not the test's install step. What is
+proven is the profile row's contract: profile manifest → bundle patch → root
+include → boot → controller resolved from the profile → one active group → its
+skill child serving the fixture's skills, with the three failure modes the docs
+declare. The decision this earns — the profile path, not a hand-composed row,
+is the claim for the profile row — is proposed as **D50**. D49 is the
+lifecycle CLI's contract, ratified as #116; D50 does not change it. D50 must
+not be read as proving install closure: the scope link stands in for the
+launcher's `PluginPackages` interception, so the installation-closure
+containment is the part that remains smoke-tested, not asserted.
+
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the

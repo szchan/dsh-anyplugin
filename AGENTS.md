@@ -27,7 +27,7 @@ loader. Two subsystems share one spine:
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
 | `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
-| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S16) and what a spike must prove. |
+| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S17) and what a spike must prove. |
 | `docs/ARCHITECTURE.md` §13 | Open questions. If your work answers one, move it to a decision. |
 
 ## 3. Non-negotiables
@@ -87,7 +87,7 @@ docs/                  design and decisions (all prose docs live here)
 .dsh/skills/dsh-anyplugin/SKILL.md   the project skill agents load first
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
   dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
-spikes/                throwaway experiments; each answers one question (S1–S16)
+spikes/                throwaway experiments; each answers one question (S1–S17)
 fixtures/              foreign-plugin fixtures used by the conformance rig
 scripts/               repo tooling that is not a package
 ```

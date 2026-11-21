@@ -1,0 +1,446 @@
+// Ticket #112 — the packed bundle mounts from a real profile through the
+// host's own profile loader, not through the repository's test boot.
+//
+// `scripts/smoke-install.mjs` (ticket #79) extracts the tarball into a scratch
+// tree and then composes the bundle patch itself: it reads the packed
+// manifest, calls `composeEntries` and `ctx.loader.create(row)`. That proves
+// the package's data, but it bypasses everything a profile contributes — the
+// manifest's `dsh.profile.bundles`, `initProfile`'s package scope,
+// `loadProfile`/`loadProfileDirectory`, `readProfilePatches` and `boot`'s root
+// `cordis:include`. This test uses those host functions and asserts the tree
+// the host builds.
+//
+// That the profile copy is what runs is asserted, not assumed: a
+// `module.registerHooks` recorder captures the resolution of the bare entry
+// name, and the captured URL must be the extracted tarball under the scratch
+// profile, never this checkout. The last test below is the control for that
+// assertion: it boots the same profile with `node_modules/dsh-anyplugin`
+// symlinked to the checkout and requires the recorder to see the checkout URL,
+// so a vacuous "every URL is somewhere" check cannot pass.
+//
+// Two host seams are named here rather than assumed:
+//
+//   * `PluginPackages` is the host's installation-path interception. It throws
+//     `node-addon-require-builtin unsupported: Unsupported/no-getter` on the
+//     pinned Node builds (24.12.0 and 24.22.2, napi-v9), so the profile borrows
+//     the installation's `@deepseek-ai` scope with a link — the same fallback
+//     `scripts/smoke-install.mjs` uses. The controller itself imports only
+//     node builtins; the link is for the `cordis-plugin-group` entry the
+//     loader mounts. `hostPath` in the boot below records which path was taken.
+//   * The profile template bundle (the stock base application bundle) is not
+//     in the fetched harness union, so the profile lists only `dsh-anyplugin`
+//     and the services the assertions need (`skillRegistry`, `profileContext`)
+//     are provided by this test's prepare, as the launcher does for its own.
+//
+// Install: pnpm 10.28.1 with the host's `pnpm-workspace.yaml` (hoisted linker,
+// `autoInstallPeers: false`) was measured in the spike: `pnpm add <tarball>`
+// records `file:...` and leaves the `~4.1.0` peer out. The suite is offline,
+// so this test produces the same layout by extracting the tarball into the
+// profile's `node_modules` and linking the three declared runtime dependencies
+// from the checkout, exactly as `scripts/smoke-install.mjs` does.
+//
+// Node floor: `module.registerHooks` landed in 22.15. The published engine
+// floor stays 22.14 (it describes the package, not this test); here the API is
+// imported dynamically and the five tests below skip with a reason naming the
+// version when it is absent, so an older Node reports skips instead of a
+// link-time failure.
+
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import test, { after } from 'node:test'
+
+import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
+
+const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
+const FIXTURE = join(repoRoot, 'fixtures', 'claude-skills-only')
+// Not one of `PROFILE_TEMPLATES` (acp/web/headless/sdk-minimal): those would
+// be rewritten by `normalizeShippedProfile`, and this test wants the manifest
+// it writes to be the manifest the host reads back.
+const PROFILE_NAME = 'profile-mount'
+const PIN = 'claude-code@2.1.329'
+const SCHEMA = 'dsh-anyplugin/installs@1'
+
+// Dynamic: a static named import of `registerHooks` fails to link on 22.14,
+// before a skip can be reported.
+const moduleApi = await import('node:module').catch(() => ({}))
+const registerHooks = moduleApi.registerHooks
+
+const harness = resolveHarness()
+const nodeFloorSkip =
+  typeof registerHooks === 'function'
+    ? false
+    : `the profile mount needs module.registerHooks (Node >= 22.15); this is ${process.version}`
+const skip = harness ? nodeFloorSkip : harnessSkipReason()
+const options = { skip, timeout: 240_000 }
+
+const loadFromHarness = (harnessDir, specifier) =>
+  import(pathToFileURL(join(harnessDir, specifier)).href)
+
+let packDir
+let tarball
+let host
+
+/** The host modules and the fixture body the assertions below are based on. */
+async function hostPrimitives() {
+  if (host === undefined) {
+    const appBoot = await loadFromHarness(harness.harnessDir, 'dsh-app-boot/lib/index.js')
+    const { default: SkillRegistry, renderSkillContent } = await loadFromHarness(
+      harness.harnessDir,
+      'dsh-skill/lib/index.js',
+    )
+    const helloPath = join(FIXTURE, 'skills', 'hello', 'SKILL.md')
+    const helloBody = readFileSync(helloPath, 'utf8').split('---').at(-1).trim()
+    assert.equal(helloBody, 'Say hello to the user.')
+    host = { appBoot, SkillRegistry, renderSkillContent, helloBody }
+  }
+  return host
+}
+
+/** Build and pack exactly the way `npm run check:pack` does. */
+function packedTarball() {
+  if (tarball !== undefined) return tarball
+  packDir = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-pack-'))
+  execFileSync(process.execPath, [join(repoRoot, 'scripts', 'build.mjs')], {
+    cwd: repoRoot,
+    stdio: 'pipe',
+  })
+  const [entry] = JSON.parse(
+    execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', packDir], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }),
+  )
+  tarball = join(packDir, entry.filename)
+  return tarball
+}
+
+function extractPackage(profileDir, tarballPath) {
+  const packageDir = join(profileDir, 'node_modules', 'dsh-anyplugin')
+  mkdirSync(packageDir, { recursive: true })
+  execFileSync('tar', ['-xzf', tarballPath, '-C', packageDir, '--strip-components=1'])
+  // The tarball's declared runtime dependencies: `@babel/core` and
+  // `@babel/plugin-transform-react-jsx` for the `.tsx` path,
+  // `@modelcontextprotocol/client` for the MCP materializer. A hoisted
+  // `pnpm add` puts them beside the bundle; the offline test links the
+  // checkout's copies instead.
+  for (const scope of ['@babel', '@modelcontextprotocol']) {
+    symlinkSync(join(repoRoot, 'node_modules', scope), join(profileDir, 'node_modules', scope), 'dir')
+  }
+  return packageDir
+}
+
+function writeLock(home, mode) {
+  const anypluginDir = join(home, 'anyplugin')
+  mkdirSync(anypluginDir, { recursive: true })
+  if (mode === 'missing') {
+    // No lock at all: the controller must stay active and mount nothing.
+    writeFileSync(join(anypluginDir, 'enabled.yml'), 'plugins: {}\n')
+    return join(anypluginDir, 'installs.yml')
+  }
+  if (mode === 'corrupt') {
+    // YAML the schema reader must reject with a line: the harness still boots,
+    // the controller reports a typed `InstallsFileError` and stays inactive.
+    writeFileSync(join(anypluginDir, 'installs.yml'), `schema: "${SCHEMA}"\nplugins: [this is not a mapping\n`)
+  } else {
+    writeFileSync(
+      join(anypluginDir, 'installs.yml'),
+      [
+        `schema: "${SCHEMA}"`,
+        'plugins:',
+        '  - dialect: "claude-code"',
+        '    name: "skills-only"',
+        '    version: "0.0.1"',
+        `    root: ${JSON.stringify(FIXTURE)}`,
+        `    dataDir: ${JSON.stringify(join(home, 'data', 'skills-only'))}`,
+        `    pin: ${JSON.stringify(PIN)}`,
+        '',
+      ].join('\n'),
+    )
+  }
+  writeFileSync(
+    join(anypluginDir, 'enabled.yml'),
+    ['plugins:', `  claude-code:skills-only: { enabled: ${mode !== 'disabled'} }`, ''].join('\n'),
+  )
+  return join(anypluginDir, 'installs.yml')
+}
+
+/**
+ * Compose one scratch profile and boot it with the host's own functions.
+ *
+ * The caller owns the scratch tree and must dispose the returned context; the
+ * returned `moduleUrls` are every resolution of the bare bundle name.
+ * `symlinkToRepo` is the control for the URL assertion: it replaces the
+ * extracted profile copy with the checkout, so a correct recorder must report
+ * the checkout instead.
+ */
+async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false } = {}) {
+  const scratch = mkdtempSync(join(tmpdir(), `dsh-anyplugin-profile-${mode}-`))
+  const home = join(scratch, 'home')
+  const profileDir = join(home, 'profiles', PROFILE_NAME)
+  mkdirSync(profileDir, { recursive: true })
+
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const logs = []
+  const moduleUrls = []
+  let ctx
+  let hook
+  let hostPath = 'Unsupported'
+
+  try {
+    const packageDir = join(profileDir, 'node_modules', 'dsh-anyplugin')
+    // The profile is composed the way the launcher composes it: the host's own
+    // `initProfile` writes the manifest, `pnpm-workspace.yaml` and the empty
+    // `cordis.patch.yml`; the package lands in the profile's node_modules.
+    appBoot.initProfile(profileDir, ['dsh-anyplugin'])
+    extractPackage(profileDir, packedTarball())
+    if (symlinkToRepo) {
+      rmSync(packageDir, { recursive: true, force: true })
+      symlinkSync(repoRoot, packageDir, 'dir')
+    }
+    const installsPath = writeLock(home, mode)
+
+    const installAnchor = join(harness.installRoot, 'package.json')
+    const profile = appBoot.loadProfile('dsh', PROFILE_NAME, installAnchor, home)
+    // The launcher writes the profile root config before boot: the include
+    // reads this file, and the bundle rows reach it through `patches`.
+    const rootConfig = join(profile.dir, 'cordis.yml')
+    writeFileSync(rootConfig, '# dsh profile root — an empty entry list.\n[]\n')
+
+    const resolution = await appBoot.createRuntimeResolution({ installAnchor, profile, home })
+    const profileContext = {
+      name: PROFILE_NAME,
+      dir: profile.dir,
+      patchPath: join(profile.dir, 'cordis.patch.yml'),
+      installAnchor,
+      startedBundles: profile.layers.map((layer) => layer.packageName),
+      cwd: repoRoot,
+      home,
+      overlays: [],
+      telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED ?? '',
+    }
+    const patches = appBoot.readProfilePatches('dsh', profileContext, profile)
+
+    hook = registerHooks({
+      resolve(specifier, context, nextResolve) {
+        const result = nextResolve(specifier, context)
+        if (specifier === 'dsh-anyplugin') moduleUrls.push(result.url)
+        return result
+      },
+    })
+
+    ctx = await appBoot.boot('dsh', rootConfig, patches, async (hostCtx) => {
+      hostCtx.provide('profileContext', profileContext)
+      hostCtx.logger.exporter({
+        levels: { default: 4 },
+        export: ({ type, name, args }) => logs.push({ type, name, args: args.map(String) }),
+      })
+      try {
+        // The host's installation-path interception: resolves the bundle's
+        // `@deepseek-ai/*` imports from the installation instead of the profile.
+        await hostCtx.plugin(appBoot.PluginPackages, { resolution })
+        hostPath = 'PluginPackages'
+      } catch (error) {
+        assert.match(
+          String(error?.message ?? error),
+          /node-addon-require-builtin unsupported/,
+          `PluginPackages failed for a reason other than the known Node loader surface: ${error}`,
+        )
+        hostPath = 'scope-link (PluginPackages unsupported)'
+        const link = join(profileDir, 'node_modules', '@deepseek-ai')
+        try {
+          symlinkSync(join(harness.harnessDir), link, 'dir')
+        } catch (linkError) {
+          if (linkError?.code !== 'EEXIST') throw linkError
+        }
+      }
+      await hostCtx.plugin(SkillRegistry, {})
+    })
+    hook.deregister()
+    hook = undefined
+    return { ctx, logs, moduleUrls, profileDir, packageDir, installsPath, home, scratch, hostPath }
+  } catch (error) {
+    if (hook !== undefined) hook.deregister()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    if (ctx !== undefined) {
+      try {
+        await ctx.fiber.dispose()
+      } catch {
+        // best-effort cleanup of the failed scenario
+      }
+    }
+    rmSync(scratch, { recursive: true, force: true })
+    throw error
+  }
+}
+
+async function withProfile(appBoot, SkillRegistry, mode, body, options) {
+  const previousHome = process.env.DSH_HOME
+  const mounted = await bootProfile(appBoot, SkillRegistry, mode, options)
+  try {
+    await body(mounted)
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    try {
+      await mounted.ctx.fiber.dispose()
+    } catch {
+      // Disposal is best-effort cleanup; the assertions already ran.
+    }
+    rmSync(mounted.scratch, { recursive: true, force: true })
+  }
+}
+
+test('positive: installs.yml mounts one active group and its skill child', options, async (t) => {
+  const { appBoot, SkillRegistry, renderSkillContent, helloBody } = await hostPrimitives()
+  await withProfile(appBoot, SkillRegistry, 'positive', async ({ ctx, logs, moduleUrls, packageDir, installsPath, home, hostPath }) => {
+    assert.ok(home.startsWith(tmpdir()), 'the scratch home must stay under the temp dir')
+    assert.equal(ctx.fiber.state, 2, 'the harness itself must boot')
+    t.diagnostic(`host path: ${hostPath}`)
+
+    const entries = [...ctx.loader.entries()]
+    const controller = entries.find((entry) => entry.options?.id === 'dsh-anyplugin')
+    assert.ok(controller, 'the profile patch must insert the controller entry')
+    assert.equal(controller.fiber?.state, 2, 'the controller must be active')
+
+    const groups = entries.filter(
+      (entry) =>
+        entry.parent === ctx.loader.root &&
+        typeof entry.options?.id === 'string' &&
+        entry.options.id.startsWith('anyplugin.'),
+    )
+    assert.equal(groups.length, 1, 'exactly one plugin group')
+    const [group] = groups
+    assert.match(group.options.id, /^anyplugin\.claude-code/)
+    assert.match(group.options.id, /skills-only/)
+    assert.equal(group.options.group, true, 'the row must be a loader group')
+    assert.equal(group.fiber?.state, 2, 'the group must settle active')
+
+    const children = group.options.config ?? []
+    const skillChild = children.find((child) => child.name === 'dsh-anyplugin/materialize/skill')
+    assert.ok(skillChild, 'the group must carry a skill child row')
+    assert.equal(ctx.loader.resolve(skillChild.id)?.fiber?.state, 2, 'the skill child must be active')
+
+    const skills = await ctx.skills.list()
+    assert.deepEqual(skills.map((skill) => skill.name).sort(), ['greet', 'hello'])
+    const rendered = renderSkillContent(await ctx.skills.get('hello'))
+    assert.ok(rendered.includes(helloBody), `rendered skill content must carry the fixture body:\n${rendered}`)
+
+    // The module URL is the claim: a mount of the checkout's `lib/index.js`
+    // would leave every other assertion above unchanged.
+    assert.ok(moduleUrls.length > 0, 'the bundle name must have been resolved')
+    const packageUrl = pathToFileURL(packageDir).href
+    for (const url of moduleUrls) {
+      assert.match(url, /\/dsh-anyplugin\/lib\/index\.js$/)
+      assert.ok(url.startsWith(`${packageUrl}/`), `the controller must load from the profile, got ${url}`)
+      assert.ok(!url.startsWith(pathToFileURL(repoRoot).href), `the controller must not load from the checkout, got ${url}`)
+    }
+
+    // Reading the scratch lock is visible in the reconcile line; the count it
+    // reports is deliberately not asserted (see the header: the include's
+    // load pass settles the group after the loader's await returns).
+    assert.ok(
+      logs.some(
+        (record) =>
+          record.name === 'dsh-anyplugin' &&
+          record.args.join(' ').includes(`from ${installsPath}`),
+      ),
+      'the controller must report reconciling the scratch installs.yml',
+    )
+  })
+})
+
+test('negative: no installs.yml boots the harness with zero plugins', options, async () => {
+  const { appBoot, SkillRegistry } = await hostPrimitives()
+  await withProfile(appBoot, SkillRegistry, 'missing', async ({ ctx, logs, moduleUrls, installsPath }) => {
+    assert.equal(ctx.fiber.state, 2)
+    const controller = [...ctx.loader.entries()].find((entry) => entry.options?.id === 'dsh-anyplugin')
+    assert.equal(controller?.fiber?.state, 2, 'a missing lock is not an error')
+    assert.equal(groupsOf(ctx).length, 0)
+    assert.equal((await ctx.skills.list()).length, 0)
+    assert.ok(
+      logs.some(
+        (record) =>
+          record.name === 'dsh-anyplugin' &&
+          record.args.join(' ').includes(`no lock at ${installsPath}`),
+      ),
+      'the controller must say it found no lock at the scratch home',
+    )
+    assert.ok(moduleUrls.length > 0, 'the bundle still mounts when there is nothing to reconcile')
+  })
+})
+
+test('negative: a corrupt installs.yml is a typed controller error and the harness still boots', options, async () => {
+  const { appBoot, SkillRegistry } = await hostPrimitives()
+  await withProfile(appBoot, SkillRegistry, 'corrupt', async ({ ctx, logs, installsPath }) => {
+    assert.equal(ctx.fiber.state, 2, 'a bad lock must not take the host down')
+    const controller = [...ctx.loader.entries()].find((entry) => entry.options?.id === 'dsh-anyplugin')
+    assert.equal(controller?.fiber?.state, 3, 'the controller must be the failed entry')
+    assert.equal(groupsOf(ctx).length, 0)
+    const record = logs.find(
+      (entry) =>
+        entry.name === 'dsh-anyplugin' &&
+        entry.type === 'error' &&
+        entry.args.join(' ').includes('InstallsFileError'),
+    )
+    assert.ok(record, 'the failure must name the typed error')
+    assert.ok(record.args.join(' ').includes(installsPath), 'the typed error must name the file')
+  })
+})
+
+test('negative: a disabled plugin mounts no group', options, async () => {
+  const { appBoot, SkillRegistry } = await hostPrimitives()
+  await withProfile(appBoot, SkillRegistry, 'disabled', async ({ ctx }) => {
+    const controller = [...ctx.loader.entries()].find((entry) => entry.options?.id === 'dsh-anyplugin')
+    assert.equal(controller?.fiber?.state, 2)
+    assert.equal(groupsOf(ctx).length, 0, 'an enabled: false plugin must not be mounted')
+    assert.equal((await ctx.skills.list()).length, 0)
+  })
+})
+
+// M2 of the three mutations the ticket asked for, kept as a permanent control:
+// the same working profile, with the extracted package replaced by a link to
+// this checkout. Everything about the tree is still correct; only the module
+// URL changes. If this control passed the positive URL assertion, that
+// assertion would be vacuous.
+test('boundary: the URL assertion separates the profile copy from the checkout', options, async (t) => {
+  const { appBoot, SkillRegistry } = await hostPrimitives()
+  await withProfile(
+    appBoot,
+    SkillRegistry,
+    'positive',
+    async ({ ctx, moduleUrls, packageDir }) => {
+      assert.equal(ctx.fiber.state, 2)
+      assert.equal(groupsOf(ctx).length, 1, 'the control profile must mount the same tree')
+      t.diagnostic('the extracted package was replaced by a link to this checkout')
+
+      const checkoutUrl = pathToFileURL(join(repoRoot, 'lib', 'index.js')).href
+      const packageUrl = pathToFileURL(packageDir).href
+      assert.ok(moduleUrls.length > 0, 'the bundle name must have been resolved')
+      for (const url of moduleUrls) {
+        assert.equal(url, checkoutUrl, `the recorder must see the checkout copy, got ${url}`)
+        assert.ok(!url.startsWith(`${packageUrl}/`), 'the checkout URL must not look like the profile copy')
+      }
+    },
+    { symlinkToRepo: true },
+  )
+})
+
+after(() => {
+  if (packDir !== undefined) rmSync(packDir, { recursive: true, force: true })
+})
+
+/** Root-level `anyplugin.*` group entries: the controller's only public output. */
+function groupsOf(ctx) {
+  return [...ctx.loader.entries()].filter(
+    (entry) =>
+      entry.parent === ctx.loader.root &&
+      typeof entry.options?.id === 'string' &&
+      entry.options.id.startsWith('anyplugin.'),
+  )
+}
