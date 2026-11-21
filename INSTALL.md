@@ -22,11 +22,14 @@ What 0.1.0 ships:
 ## Requirements and the version claim
 
 - **Node.js ≥ 22.14** (`engines.node`).
-- **DSH `^0.2.2-rc.2`** (`engines.dsh`). The bundle is tested against
-  `0.2.2-rc.2` and `0.2.2-rc.5`; `engines.dsh` is what the harness's
-  compatibility check enforces, so an incompatible runtime refuses the plugin
-  instead of half-loading it. `@deepseek-ai/cordis` is a peer at `~4.1.0`, the
-  version both pins ship.
+- **DSH `>=0.2.2-rc.2 <0.2.2`** (`engines.dsh`). The suite boots exactly
+  `0.2.2-rc.2` and `0.2.2-rc.5`; the range is a compatibility floor, not a
+  claim about every version inside it (`0.2.2-rc.6` is inside it and is not
+  booted). `engines.dsh` is what the harness's compatibility check enforces,
+  so a runtime outside the range refuses the plugin instead of half-loading
+  it. To try an untested exact version, read the warning and grant the
+  exact-version exemption (`dsh plugin allow-version`); nothing else changes.
+  `@deepseek-ai/cordis` is a peer at `~4.1.0`, the version both pins ship.
 - **Claude Code `2.1.329`** for the plugin format the compiler reads. Every
   record in `installs.yml` must carry `pin: "claude-code@2.1.329"`; a record
   naming a different pin is rejected rather than silently re-interpreted.
@@ -61,8 +64,13 @@ The order matters: later bundles patch over earlier ones. The next boot reads
 ```
 
 That row is the whole bundle. It needs the profile's package scope to resolve
-`dsh-anyplugin` and its five `dsh-anyplugin/materialize/*` subpaths, which is
-exactly what `dsh plugin add` (pnpm in the profile) provides.
+`dsh-anyplugin` and its five `dsh-anyplugin/materialize/*` subpaths — `skill`,
+`mcp`, `hook`, `agents`, `output-style` — which is exactly what
+`dsh plugin add` (pnpm in the profile) provides.
+
+Commands are not a sixth subpath: a slash command lands as a **skill** on its
+model face (`equivalent`). The human `/…` face is still `planned` and needs
+the host command-name seam (D10); wiring it is not part of 0.1.0.
 
 ## 2. Tell the controller which plugins to run
 
@@ -84,10 +92,17 @@ plugins:
 ```
 
 `root` must be absolute and point at the plugin directory; `dataDir` is the
-plugin's private data directory (created by you; the controller does not create
-it in this release). `name` and `version` are the identity in the lock; the
+plugin's private data directory. It is created by the hook materializer when
+at least one hook is emitted (a hook needs a grant first); the controller only
+reads the record, so a plugin with no emitted hooks and a missing directory is
+not an error. `name` and `version` are the identity in the lock; the
 model-facing ids are namespaced under `anyplugin.` and cannot collide with the
 profile's own rows.
+
+The lock schema is strict. It has no `mods` field in 0.1.0: a record carrying
+`mods` (or any unknown field) fails with `unknown field "mods"` and a line
+number. That is a hard schema error, not the warning the mods kernel will
+record in v0.2 — do not expect a plugin to load with mods silently skipped.
 
 To point the controller at a different lock (a project-local file, CI, a test
 fixture), override the row in your profile's own `cordis.patch.yml`:
@@ -162,11 +177,21 @@ next boot the reconciler removes that plugin's group and all of its children.
 
 ## 6. What is verified, not just claimed
 
-`npm run verify` builds the tarball and runs an install smoke: it extracts the
+`npm run verify` needs a harness tree, like the rest of the suite: fetch one
+with `node scripts/fetch-harness.mjs 0.2.2-rc.5` and point `DSH_HARNESS_DIR`
+at it (or use `DSH_INSTALL_DIR`). Without one the smoke fails instead of
+skipping, which is the same rule the rest of `verify` follows.
+
+It builds the tarball and runs an install smoke: it extracts the
 packed tarball into a scratch profile, composes the published
 `cordis.patch.yml` with the harness's own `composeEntries`, creates the row
 through the real loader, reconciles a fixture lock, and asserts the fixture's
 skill is listed by the harness skill registry. The smoke fails if `lib/` is
 missing or a published subpath does not resolve, so a package that would not
-install cannot be published. See [`README.md`](README.md) for the fidelity
+install cannot be published. Publishing itself is gated the same way: the
+release workflow accepts only a `v*` tag whose commit is an ancestor of
+`origin/main`, runs `npm run verify` against both DSH pins, and only then
+calls `npm publish`. A tag on a branch commit cannot publish.
+
+See [`README.md`](README.md) for the fidelity
 contract and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
