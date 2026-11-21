@@ -222,3 +222,18 @@ test('a structured source is validated like every other field', () => {
   refuse('   ', /"source" must be a non-empty string/)
   refuse('{not json', /"source" opens with "\{" but is not a JSON object/)
 })
+
+test('a bad mod field reports the mod block line, not the record line', () => {
+  const text = serializeInstalls(lock(sample({ mods: [mod()] }))).replace('sha256:', 'sha256:zz')
+  const expected = text.split('\n').findIndex((line) => line.includes('artifactHash') && line.includes('zz')) + 1
+  assert.ok(expected > 0)
+  assert.throws(
+    () => parseInstalls(text, 'installs.yml'),
+    (error) => {
+      assert.ok(error instanceof InstallsFileError)
+      assert.match(error.reason, /artifactHash" must match/)
+      assert.equal(error.line, expected)
+      return true
+    },
+  )
+})

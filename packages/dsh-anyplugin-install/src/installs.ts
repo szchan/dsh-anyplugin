@@ -255,9 +255,20 @@ function byteCount(file: string, line: number, value: string | undefined): numbe
   return Number(value)
 }
 
+/** Where each mod field/file field was written; validation errors use it. */
+interface ModLines {
+  field: Record<string, number>
+  files: Record<string, number>[]
+}
+
 /** Validate the manifest of one mod against the record it belongs to. */
-function validateInstalledMod(mod: InstalledMod, file: string, line: number): void {
+function validateInstalledMod(mod: InstalledMod, file: string, line: number, lines?: ModLines): void {
   const where = { file, line }
+  const at = (field: string) => ({ file, line: lines?.field[field] ?? line })
+  const atFile = (index: number, field: string) => ({
+    file,
+    line: lines?.files[index]?.[field] ?? lines?.files[index]?.path ?? line,
+  })
   if (mod === null || typeof mod !== 'object' || Array.isArray(mod)) {
     throw new InstallsFileError('each mod must be an object', where)
   }
@@ -269,7 +280,7 @@ function validateInstalledMod(mod: InstalledMod, file: string, line: number): vo
   }
   for (const field of MOD_FIELDS) {
     if (!(field in raw)) throw new InstallsFileError(`missing mod field "${field}"`, where)
-    if (typeof raw[field] !== 'string') throw new InstallsFileError(`"${field}" must be a string`, where)
+    if (typeof raw[field] !== 'string') throw new InstallsFileError(`"${field}" must be a string`, at(field))
   }
   const { entry, rootRelative, mode, artifactHash } = raw as {
     entry: string
@@ -277,59 +288,59 @@ function validateInstalledMod(mod: InstalledMod, file: string, line: number): vo
     mode: string
     artifactHash: string
   }
-  if (entry.length === 0) throw new InstallsFileError('"entry" must not be empty', where)
-  if (rootRelative.length === 0) throw new InstallsFileError('"rootRelative" must not be empty', where)
+  if (entry.length === 0) throw new InstallsFileError('"entry" must not be empty', at('entry'))
+  if (rootRelative.length === 0) throw new InstallsFileError('"rootRelative" must not be empty', at('rootRelative'))
   if (isAbsolute(entry) || isAbsolute(rootRelative)) {
-    throw new InstallsFileError('"entry" and "rootRelative" must be plugin-relative', where)
+    throw new InstallsFileError('"entry" and "rootRelative" must be plugin-relative', at('entry'))
   }
   if (!entry.startsWith(`${rootRelative.replace(/\/+$/, '')}/`)) {
-    throw new InstallsFileError(`"entry" must be inside "rootRelative" (expected a "${rootRelative}/" prefix)`, where)
+    throw new InstallsFileError(`"entry" must be inside "rootRelative" (expected a "${rootRelative}/" prefix)`, at('entry'))
   }
   if (mode !== 'file' && mode !== 'composite') {
-    throw new InstallsFileError('"mode" must be "file" or "composite"', where)
+    throw new InstallsFileError('"mode" must be "file" or "composite"', at('mode'))
   }
-  if (!HASH.test(artifactHash)) throw new InstallsFileError(`"artifactHash" must match ${HASH}`, where)
+  if (!HASH.test(artifactHash)) throw new InstallsFileError(`"artifactHash" must match ${HASH}`, at('artifactHash'))
   if (!Array.isArray(mod.files) || mod.files.length === 0) {
-    throw new InstallsFileError('"files" must list at least the entry file', where)
+    throw new InstallsFileError('"files" must list at least the entry file', at('files'))
   }
   if ((mode === 'file') !== (mod.files.length === 1)) {
-    throw new InstallsFileError(`"mode" is "${mode}" but the manifest lists ${mod.files.length} file(s)`, where)
+    throw new InstallsFileError(`"mode" is "${mode}" but the manifest lists ${mod.files.length} file(s)`, at('mode'))
   }
   const seen = new Set<string>()
-  for (const item of mod.files) {
+  for (const [index, item] of mod.files.entries()) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-      throw new InstallsFileError('each mod file must be an object', where)
+      throw new InstallsFileError('each mod file must be an object', atFile(index, 'path'))
     }
     const fileRaw = item as unknown as Record<string, unknown>
     for (const key of Object.keys(fileRaw)) {
       if (!(MOD_FILE_FIELDS as readonly string[]).includes(key)) {
-        throw new InstallsFileError(`unknown mod file field "${key}"`, where)
+        throw new InstallsFileError(`unknown mod file field "${key}"`, atFile(index, 'path'))
       }
     }
     for (const field of MOD_FILE_FIELDS) {
-      if (!(field in fileRaw)) throw new InstallsFileError(`missing mod file field "${field}"`, where)
+      if (!(field in fileRaw)) throw new InstallsFileError(`missing mod file field "${field}"`, atFile(index, 'path'))
     }
     const { path, sha256, bytes } = item as InstalledModFile
     // D51: tree paths are plugin-relative. The digest is over those paths, so
     // an absolute path would make the same bytes hash differently at two
     // checkouts and would tie the lock to one machine.
     if (typeof path !== 'string' || path.length === 0 || isAbsolute(path)) {
-      throw new InstallsFileError('"path" must be plugin-relative, not absolute', where)
+      throw new InstallsFileError('"path" must be plugin-relative, not absolute', atFile(index, 'path'))
     }
     if (path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
-      throw new InstallsFileError(`"path" ${path} must be a normalized plugin-relative path`, where)
+      throw new InstallsFileError(`"path" ${path} must be a normalized plugin-relative path`, atFile(index, 'path'))
     }
-    if (seen.has(path)) throw new InstallsFileError(`duplicate mod file "${path}"`, where)
+    if (seen.has(path)) throw new InstallsFileError(`duplicate mod file "${path}"`, atFile(index, 'path'))
     seen.add(path)
     if (typeof sha256 !== 'string' || !HASH.test(sha256)) {
-      throw new InstallsFileError(`"sha256" must match ${HASH}`, where)
+      throw new InstallsFileError(`"sha256" must match ${HASH}`, atFile(index, 'sha256'))
     }
     if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes < 0 || !BYTES.test(String(bytes))) {
-      throw new InstallsFileError('"bytes" must be a non-negative integer', where)
+      throw new InstallsFileError('"bytes" must be a non-negative integer', atFile(index, 'bytes'))
     }
   }
   if (!seen.has(entry)) {
-    throw new InstallsFileError(`"entry" ${entry} must be one of the recorded tree's files`, where)
+    throw new InstallsFileError(`"entry" ${entry} must be one of the recorded tree's files`, at('entry'))
   }
 }
 
@@ -422,11 +433,14 @@ export function readInstalls(file: string): Installs {
 
 interface RawFile {
   values: Record<string, string>
+  /** Line of each field, so a bad value names its own line. */
+  fieldLines: Record<string, number>
   line: number
 }
 
 interface RawMod {
   values: Record<string, string>
+  fieldLines: Record<string, number>
   files: RawFile[]
   filesSeen: boolean
   line: number
@@ -516,7 +530,10 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
         }
         if (entries.has(mod.entry)) throw new InstallsFileError(`duplicate mod "${mod.entry}"`, { file, line: raw.line })
         entries.add(mod.entry)
-        validateInstalledMod(mod, checked.root, file, raw.line)
+        validateInstalledMod(mod, file, raw.line, {
+          field: raw.fieldLines,
+          files: raw.files.map((entry) => entry.fieldLines),
+        })
         return mod
       })
       checked.mods = mods
@@ -563,7 +580,7 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
     if (indent === 6 && body.startsWith('- ')) {
       if (!current || !current.modsSeen) throw new InstallsFileError('mod outside a `mods` block', { file, line })
       if (currentFile !== undefined || currentMod !== undefined) finishMod()
-      currentMod = { values: {}, files: [], filesSeen: false, line }
+      currentMod = { values: {}, fieldLines: {}, files: [], filesSeen: false, line }
       const field = FIELD.exec(body.slice(2))
       if (!field) throw new InstallsFileError('expected `key: "<value>"` with a double-quoted string', { file, line })
       storeModField(field, line)
@@ -587,7 +604,7 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
     if (indent === 10 && body.startsWith('- ')) {
       if (!currentMod || !currentMod.filesSeen) throw new InstallsFileError('mod file outside a `files` block', { file, line })
       if (currentFile !== undefined) finishFile()
-      currentFile = { values: {}, line }
+      currentFile = { values: {}, fieldLines: {}, line }
       const field = FIELD.exec(body.slice(2))
       if (!field) throw new InstallsFileError('expected `key: "<value>"` with a double-quoted string', { file, line })
       storeModFileField(field, line)
@@ -627,6 +644,7 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
     if (!currentMod) throw new InstallsFileError('mod field outside a mod block', { file, line })
     if (key in currentMod.values) throw new InstallsFileError(`duplicate mod field "${key}"`, { file, line })
     currentMod.values[key] = unquote(file, line, token)
+    currentMod.fieldLines[key] = line
   }
 
   function storeModFileField(field: RegExpExecArray, line: number): void {
@@ -637,6 +655,7 @@ export function parseInstalls(text: string, file = '<installs>'): Installs {
     if (!currentFile) throw new InstallsFileError('mod file field outside a file entry', { file, line })
     if (key in currentFile.values) throw new InstallsFileError(`duplicate mod file field "${key}"`, { file, line })
     currentFile.values[key] = unquote(file, line, token)
+    currentFile.fieldLines[key] = line
   }
 }
 

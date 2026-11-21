@@ -467,7 +467,14 @@ export function installPlugin(options: InstallOptions): InstallResult {
   }
   const id = identity(record)
 
-  const report = buildTransplantReport(ir, { materializers, grants: state.grants })
+  // The install path is the one caller that may report without a recorded
+  // tree: it is about to write that record. Every other reader passes
+  // `recorded` (the default in compileReport is to require it, M2).
+  const report = buildTransplantReport(ir, {
+    materializers,
+    grants: state.grants,
+    exclude: [record.dataDir],
+  })
   if (report.problems.length > 0) {
     throw new InstallCliError('invalid-plugin', `${id}: ${report.problems.join('; ')}`)
   }
@@ -705,6 +712,7 @@ export function listPlugins(options: ListOptions = {}): ListResult {
         // The lock is the install decision (M1): a 0.1-style record that
         // grants a tree still boots nothing until the tree is in the record.
         recorded: record.mods ?? [],
+        exclude: [record.dataDir],
       })
       return { ...base, report }
     } catch (error) {
@@ -742,11 +750,11 @@ export function formatList(result: ListResult): string {
       )
       const drift =
         component === undefined
-          ? ''
-          : component.grantedHash !== undefined && component.grantedHash !== mod.artifactHash
-            ? `  ← recorded pin is stale; the granted tree is now ${component.grantedHash}`
-            : component.grantedHash === undefined
-              ? `  ← no grant now, so the lock will not carry it`
+          ? '  ← not emitted now; the plugin tree no longer declares this entry'
+          : component.refused !== undefined
+            ? `  ← the recorded pin is not granted now: ${component.reason}`
+            : component.grantedHash !== undefined && component.grantedHash !== mod.artifactHash
+              ? `  ← recorded pin is stale; the granted tree is now ${component.grantedHash}`
               : ''
       lines.push(`  mod: ${mod.entry} (${mod.mode}, ${mod.files.length} file${mod.files.length === 1 ? '' : 's'}) ${mod.artifactHash}${drift}`)
     }
@@ -928,6 +936,7 @@ function desiredEntries(
     enablements: layers,
     grants,
     activation: { file: '<uninstall>' },
+    requireRecordedMods: true,
   })
   return {
     entries: report.entries.map((entry) => ({

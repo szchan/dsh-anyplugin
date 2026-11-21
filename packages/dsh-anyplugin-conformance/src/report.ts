@@ -166,15 +166,16 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
  */
 export function buildTransplantReport(
   ir: ClaudePluginIr,
-  options: EmitOptions & { grants?: Grants; recorded?: readonly InstalledMod[] },
+  options: EmitOptions & { grants?: Grants; recorded?: readonly InstalledMod[]; exclude?: readonly string[] },
 ): TransplantReport {
   // Trust runs before emission: refused hooks become `planned` pending nodes,
   // so the emitter cannot place them and the report can name the reason. An
   // absent store means no grants, which is the default-off state (D25).
-  const gated = gate(ir, options.grants ?? emptyGrants())
+  const gated = gate(ir, options.grants ?? emptyGrants(), { exclude: options.exclude ?? [] })
   // The lock is the install decision (M1): a caller that holds the record
   // requires every carried tree to be in it. A grant alone is authorization,
-  // not installation.
+  // not installation. Only the install path omits `recorded`, because it is
+  // creating the record; every boot and list passes it.
   const recording =
     options.recorded === undefined ? { ir: gated.ir, refused: [] } : requireRecordedMods(gated.ir, options.recorded)
   const installed = recording.ir

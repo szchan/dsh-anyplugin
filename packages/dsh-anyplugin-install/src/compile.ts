@@ -77,9 +77,10 @@ export interface CompileOptions {
    *
    * The lock is the install decision. A mod the dialect can read but the lock
    * does not record must not boot: otherwise a 0.1.0/empty-known `@1` lock plus
-   * a `mod:` grant runs a tree the install never recorded. `list`, the
-   * controller and uninstall pass `true`; the install path passes `false`
-   * because it is creating the record.
+   * a `mod:` grant runs a tree the install never recorded. **True is the
+   * default**: `list`, the controller and uninstall all enforce it without
+   * saying so. Only the install path (`buildTransplantReport`, which is
+   * creating the record) passes `false`.
    */
   requireRecordedMods?: boolean
 }
@@ -130,7 +131,12 @@ export function requireRecordedMods(
       mods.push(mod)
       continue
     }
-    const reason = `not-recorded: the lock does not record this module tree (entry: ${mod.entry}, tree: ${mod.artifactHash}); a grant alone does not install it — reinstall so \`installs.yml\` carries the pinned tree (D51)`
+    const recordedHash = record === undefined ? undefined : record.artifactHash
+    const where =
+      recordedHash === undefined
+        ? `no mod for this entry`
+        : `the recorded tree is ${recordedHash}`
+    const reason = `not-recorded: the lock does not record this module tree (entry: ${mod.entry}, granted tree: ${mod.artifactHash}; ${where}); a grant alone does not install it — reinstall so \`installs.yml\` carries the pinned tree (D51)`
     refused.push({ name: mod.entry, reason })
     pending.push({
       surface: 'mods',
@@ -270,8 +276,13 @@ export function prepareInstalledRecord(
 
   // Gate before emit: refused exec artifacts become `planned` pending nodes and
   // the emitter is given only the targets whose current hash is granted.
-  const gated = gate(ir, options.grants ?? emptyGrants())
-  if ((options as CompileOptions).requireRecordedMods !== true) {
+  // The data directory is written by the host after the plugin starts, so it
+  // is not part of the artifact (D51); the loader's scan makes the same
+  // exclusion, or the digest would move the first time a mod writes data.
+  const gated = gate(ir, options.grants ?? emptyGrants(), { exclude: [record.dataDir] })
+  // Safe by default (M2): an omitted flag still enforces the record. The one
+  // caller that may skip it is the install path, which is writing that record.
+  if (options.requireRecordedMods === false) {
     return { record, decision: gated.decision, ir: gated.ir, ungated: ir, refusals: [] }
   }
   const recorded = requireRecordedMods(gated.ir, record.mods ?? [])

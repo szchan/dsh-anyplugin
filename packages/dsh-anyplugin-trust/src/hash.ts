@@ -224,8 +224,21 @@ function within(base: string, path: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
+/** The most a mod tree may occupy; the snapshot is held in memory once. */
+export const MAX_TREE_BYTES = 64 * 1024 * 1024
+
 export type TreeScan =
-  | { ok: true; files: ArtifactFile[] }
+  | {
+      ok: true
+      files: ArtifactFile[]
+      /**
+       * The exact bytes every file had when it was hashed, keyed by
+       * plugin-relative path. `loadMod` compiles from this map, so the digest
+       * and the code that runs are one snapshot: nothing re-opens a path after
+       * the scan (D51, M1).
+       */
+      contents: ReadonlyMap<string, Uint8Array>
+    }
   | { ok: false; refusal: TreeRefusal }
 
 /**
@@ -242,6 +255,8 @@ export function scanTree(root: string, options: TreeOptions = {}): TreeScan {
   const base = resolve(root)
   const excluded = (options.exclude ?? []).map((path) => resolve(path))
   const files: ArtifactFile[] = []
+  const contents = new Map<string, Uint8Array>()
+  let total = 0
 
   const walk = (dir: string): TreeRefusal | undefined => {
     let entries
@@ -281,6 +296,11 @@ export function scanTree(root: string, options: TreeOptions = {}): TreeScan {
         }
         if (!target.isFile()) continue
         const bytes = readFileSync(absolute)
+        total += bytes.byteLength
+        if (total > MAX_TREE_BYTES) {
+          return { path, reason: 'the tree is larger than the 64 MiB snapshot cap; the host will not hold a bigger map in memory' }
+        }
+        contents.set(path, bytes)
         files.push({ path, sha256: hashBytes(bytes), bytes: bytes.byteLength })
         continue
       }
@@ -291,6 +311,11 @@ export function scanTree(root: string, options: TreeOptions = {}): TreeScan {
       }
       if (!entry.isFile()) continue
       const bytes = readFileSync(absolute)
+      total += bytes.byteLength
+      if (total > MAX_TREE_BYTES) {
+        return { path, reason: 'the tree is larger than the 64 MiB snapshot cap; the host will not hold a bigger map in memory' }
+      }
+      contents.set(path, bytes)
       files.push({ path, sha256: hashBytes(bytes), bytes: bytes.byteLength })
     }
     return undefined
@@ -299,7 +324,7 @@ export function scanTree(root: string, options: TreeOptions = {}): TreeScan {
   const refusal = walk(base)
   if (refusal !== undefined) return { ok: false, refusal }
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
-  return { ok: true, files }
+  return { ok: true, files, contents }
 }
 
 export type TreeResult = { ok: true; artifact: TreeArtifact } | { ok: false; refusal: TreeRefusal }

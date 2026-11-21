@@ -60,3 +60,21 @@ test('the ARCHITECTURE §5 and D23 examples parse with the shipped reader', () =
     [['claude-code', 'skills-only', 'claude-code@2.1.322']],
   )
 })
+
+test('the INSTALL.md lock example parses with the shipped reader', () => {
+  const install = readFileSync(join(repoRoot, 'INSTALL.md'), 'utf8')
+  const snippets = [...install.matchAll(/```yaml\n([\s\S]*?)```/g)]
+    .map((match) => match[1])
+    .filter((block) => block.includes('"dsh-anyplugin/installs@'))
+  assert.equal(snippets.length, 1, 'INSTALL documents exactly one lock example')
+  const lock = parseInstalls(snippets[0], 'INSTALL.md')
+  assert.equal(lock.schema, INSTALLS_SCHEMA)
+  assert.equal(lock.plugins.length, 1)
+  const mods = lock.plugins[0].mods ?? []
+  assert.equal(mods.length, 1)
+  assert.equal(mods[0].entry, 'hooks/register.ts')
+  assert.equal(mods[0].files[0].path, 'hooks/register.ts')
+  for (const file of mods[0].files) {
+    assert.doesNotMatch(file.path, /^\//, 'tree paths are plugin-relative')
+  }
+})

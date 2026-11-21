@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
@@ -434,4 +435,45 @@ test('without --experimental-vm-modules the host refuses before touching the mod
   })
   assert.equal(child.status, 0, child.stderr)
   assert.equal(child.stdout.trim(), 'ERR_MOD_HOST_LINK')
+})
+
+// ---------------------------------------------------------------------------
+// D51 (M4): the linker is bounded by the granted set, and the snapshot bytes —
+// not whatever is on disk — are what evaluates.
+// ---------------------------------------------------------------------------
+
+test('an import outside the granted file set is refused before it is created', async () => {
+  await rejectsWith(
+    loadMod({ root: ROOT, entry: 'register.ts', host: recorder().host, files: ['register.ts'] }),
+    'ERR_MOD_HOST_UNGRANTED',
+    'which the grant does not pin',
+  )
+})
+
+test('loadMod evaluates the snapshot bytes, never re-opening the path', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-snapshot-'))
+  try {
+    writeFileSync(
+      join(dir, 'register.ts'),
+      "export function register(on) { on('turn.complete', async () => {}) }\n",
+    )
+    // The map says session.start; the file on disk says turn.complete. A loader
+    // that re-read the path would seat turn.complete.
+    const sources = new Map([
+      ['register.ts', "export function register(on) { on('session.start', async () => {}) }\n"],
+    ])
+    const loaded = await loadMod({
+      root: dir,
+      entry: 'register.ts',
+      host: recorder().host,
+      files: ['register.ts'],
+      sources,
+    })
+    assert.deepEqual(
+      loaded.registrations.map((registration) => registration.event),
+      ['session.start'],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

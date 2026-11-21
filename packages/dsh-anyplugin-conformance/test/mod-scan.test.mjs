@@ -1,41 +1,32 @@
 // The scanner against the real mod that ships with the pinned Claude Code.
 //
-// The source is fetched at test time from the pinned commit and is never copied
-// into this repository: upstream is all rights reserved (fixtures/mods/
-// PROVENANCE.md). Offline runs skip with the URL in the reason; a skip is not a
-// pass.
+// The source comes from the fetched pin (`ANYPLUGIN_MODS_TREE`, filled by
+// `scripts/fetch-mod.mjs`); it is never copied into this repository — upstream
+// is all rights reserved (fixtures/mods/PROVENANCE.md). The pin has to be
+// present: a missing tree fails like a missing harness, it does not skip.
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
 
 import { capabilityList, scanModSource } from '../../dsh-anyplugin-mod-scan/src/index.ts'
 
-// Pin: claude-code 2.1.329, tag v2.1.329. The mod's register file is under
+// Pin: claude-code 2.1.329, commit f9e4d1e5…. The mod's register file is under
 // hooks/, not at mods/diff/register.ts.
 const PIN = 'f9e4d1e5753ccffcffdd832f047d72be000396a6'
-const URL = `https://raw.githubusercontent.com/anthropics/claude-code/${PIN}/mods/diff/hooks/register.ts`
+const TREE = process.env.ANYPLUGIN_MODS_TREE
+const ENTRY = TREE === undefined ? undefined : join(TREE, 'mods', 'diff', 'hooks', 'register.ts')
+const FIXTURE = JSON.parse(
+  readFileSync(new URL('../../../fixtures/mods/diff/fixture.json', import.meta.url), 'utf8'),
+)
 
-test('the pinned upstream diff mod scans deterministically and every line exists', async (t) => {
-  let response
-  try {
-    response = await fetch(URL, { signal: AbortSignal.timeout(20_000) })
-  } catch (error) {
-    t.skip(`offline: ${error.message}; expected ${URL}`)
-    return
-  }
-  if (response.status === 404) {
-    assert.fail(`the pinned upstream file is missing (HTTP 404): ${URL}`)
-  }
-  if (!response.ok) {
-    t.skip(`upstream fetch returned HTTP ${response.status}: ${URL}`)
-    return
-  }
-  let source
-  try {
-    source = await response.text()
-  } catch (error) {
-    t.skip(`offline while reading the body: ${error.message}; expected ${URL}`)
-    return
-  }
+test('the pinned upstream diff mod scans deterministically and every line exists', () => {
+  assert.ok(TREE !== undefined && TREE.trim() !== '', 'ANYPLUGIN_MODS_TREE is not set; run node scripts/fetch-mod.mjs')
+  assert.ok(
+    existsSync(ENTRY),
+    `the pinned diff entry is missing at ${ENTRY}; run node scripts/fetch-mod.mjs (pin ${PIN})`,
+  )
+  const source = readFileSync(ENTRY, 'utf8')
 
   const first = scanModSource(source, { file: 'mods/diff/hooks/register.ts' })
   const second = scanModSource(source, { file: 'mods/diff/hooks/register.ts' })
@@ -45,10 +36,11 @@ test('the pinned upstream diff mod scans deterministically and every line exists
   assert.deepEqual(second, first, 'the same source must produce the same scan')
   assert.deepEqual(capabilityList(second), capabilityList(first), 'the capability list must be byte-identical across runs')
 
-  // Pinned facts. A drift here is a real change in the mod, not test noise.
-  assert.equal(first.events.length, 11)
-  assert.equal(new Set(first.events.map((event) => event.name)).size, 9)
-  assert.equal(first.calls.length, 25)
+  // Pinned facts, read from the same fixture the conformance suite asserts.
+  // A drift here is a real change in the mod, not test noise.
+  assert.equal(first.events.length, FIXTURE.registrations.length)
+  assert.equal(new Set(first.events.map((event) => event.name)).size, FIXTURE.scan.uniqueEvents)
+  assert.equal(first.calls.length, FIXTURE.scan.calls)
   assert.deepEqual(first.dynamic, [], 'this file has no capability the scanner cannot prove')
   assert.deepEqual(capabilityList(first), [
     'hooks: command.run, prompt.submit, session.start, tool.call, turn.complete, ui.close, ui.focus, ui.render, ui.scroll',

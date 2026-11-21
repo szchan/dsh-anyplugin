@@ -4,13 +4,13 @@
 // refused with the reason; a row with no root cannot be re-read at all. Every
 // refusal is an exec-class refusal: a warning and a trace, never an evaluation.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { treeArtifact } from '../../dsh-anyplugin-trust/src/index.ts'
-import { apply } from '../src/index.ts'
+import { scanTree, treeArtifact } from '../../dsh-anyplugin-trust/src/index.ts'
+import { apply, pinnedLoadOptions } from '../src/index.ts'
 import { pinnedMod } from './pinned.mjs'
 
 const entry = (file) => [
@@ -145,6 +145,58 @@ test('a directory symlink that leaves the plugin root cannot be pinned', () => {
     assert.match(tree.refusal.reason, /symlink .*(outside the plugin root|directory symlink)/)
   } finally {
     rmSync(outside, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a relative pluginRoot is refused before the scan', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-pinned-'))
+  try {
+    writeFileSync(join(dir, 'register.ts'), entry('relative'))
+    const pinned = pinnedMod(dir, 'register.ts')
+    const { ctx, warnings, events } = harness()
+    await apply(ctx, { hooks: [], mods: [pinned], plugin: 'probe', pluginRoot: 'relative/dir' })
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /pluginRoot must be an absolute path/)
+    assert.match(warnings[0], /code: plugin-root/)
+    assert.ok(!events.includes('session.start'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a symlinked pluginRoot is refused: the grant names the real directory', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-pinned-'))
+  const link = mkdtempSync(join(tmpdir(), 'anyplugin-pinned-link-'))
+  try {
+    writeFileSync(join(dir, 'register.ts'), entry('symlink'))
+    const pinned = pinnedMod(dir, 'register.ts')
+    symlinkSync(dir, join(link, 'root'), 'dir')
+    const { ctx, warnings, events } = harness()
+    await apply(ctx, { hooks: [], mods: [pinned], plugin: 'probe', pluginRoot: join(link, 'root') })
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /pluginRoot is not the real path/)
+    assert.match(warnings[0], /code: plugin-root/)
+    assert.ok(!events.includes('session.start'), 'a symlinked root must not load')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(link, { recursive: true, force: true })
+  }
+})
+
+test('the materializer hands the loader the scanned bytes, not a path to re-open', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-pinned-'))
+  try {
+    writeFileSync(join(dir, 'register.ts'), entry('snapshot'))
+    const pinned = pinnedMod(dir, 'register.ts')
+    const scan = scanTree(dir)
+    assert.equal(scan.ok, true)
+    if (!scan.ok) return
+    const options = pinnedLoadOptions(pinned, dir, {}, { sources: scan.contents })
+    assert.equal(options.sources, scan.contents, 'the same map, not a copy read later')
+    assert.deepEqual(options.files, ['register.ts'])
+    assert.equal(options.root, dir)
+  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })

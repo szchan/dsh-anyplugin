@@ -52,9 +52,9 @@
  * and the dialect's annotation names the gap (see `LIFECYCLE_HOOKS`).
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync, realpathSync } from 'node:fs'
 import * as vm from 'node:vm'
-import { resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import {
   CONTINUE,
   MOD_SPEC_LABEL,
@@ -436,6 +436,29 @@ const decisionTexts = (decision: Decision): string[] => {
  */
 let experimentalVmModulesWarned = false
 
+/**
+ * The options `loadMod` gets from a successful pin check.
+ *
+ * The snapshot map is the point (M1): the loader must compile the bytes that
+ * were hashed, so a file rewritten between the scan and the evaluation is not
+ * what runs. Exported so the wiring — not only the loader contract — has a
+ * test: dropping `sources` here would silently re-open every path.
+ */
+export function pinnedLoadOptions(
+  mod: MaterialMod,
+  root: string,
+  host: Parameters<typeof loadMod>[0]['host'],
+  check: { sources: ReadonlyMap<string, Uint8Array> },
+): Parameters<typeof loadMod>[0] {
+  return {
+    root,
+    entry: mod.entry,
+    host,
+    files: mod.artifact?.files.map((file) => file.path),
+    sources: check.sources,
+  }
+}
+
 export async function apply(ctx: any, config: Config = {}): Promise<void> {
   const hooks = config.hooks ?? []
   const mods = config.mods ?? []
@@ -521,37 +544,53 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
    * is the whole authored module tree. Checked once, before `loadMod` — a mod
    * that changed since the grant must not evaluate a single module (D25/D30).
    */
-  const modArtifactChange = (mod: MaterialMod): string | undefined => {
+  type ModCheck = { refusal: string } | { sources: ReadonlyMap<string, Uint8Array> }
+
+  const modArtifactChange = (mod: MaterialMod): ModCheck => {
+    const refuse = (reason: string): ModCheck => ({ refusal: reason })
     const label = `mod ${mod.entry}`
     if (mod.artifactHash === undefined) {
-      return `refused ${label}: no hash-pinned grant was carried; entry: ${mod.entry}`
+      return refuse(`refused ${label}: no hash-pinned grant was carried; entry: ${mod.entry}`)
     }
     const manifest = mod.artifact
     if (manifest === undefined) {
-      return `refused ${label}: no artifact manifest was carried with the grant; pinned ${mod.artifactHash}; entry: ${mod.entry}`
+      return refuse(`refused ${label}: no artifact manifest was carried with the grant; pinned ${mod.artifactHash}; entry: ${mod.entry}`)
     }
     const pinnedManifest = hashManifest(manifest)
     if (pinnedManifest !== mod.artifactHash) {
-      return `refused ${label}: the carried manifest does not match the grant (granted ${mod.artifactHash}, manifest ${pinnedManifest}); entry: ${mod.entry}`
+      return refuse(`refused ${label}: the carried manifest does not match the grant (granted ${mod.artifactHash}, manifest ${pinnedManifest}); entry: ${mod.entry}`)
     }
     if (mod.artifactMode !== undefined && manifest.mode !== mod.artifactMode) {
-      return `refused ${label}: artifact mode changed since the grant (pinned ${mod.artifactMode}, now ${manifest.mode}); entry: ${mod.entry}`
+      return refuse(`refused ${label}: artifact mode changed since the grant (pinned ${mod.artifactMode}, now ${manifest.mode}); entry: ${mod.entry}`)
     }
     if (manifest.invocation !== mod.entry) {
-      return `refused ${label}: the config no longer names the pinned entry (pinned ${String(manifest.invocation)}, config ${mod.entry})`
+      return refuse(`refused ${label}: the config no longer names the pinned entry (pinned ${String(manifest.invocation)}, config ${mod.entry})`)
     }
     // The pin is checked against the same root the loader will use. A mod has
     // exactly one root; there is no second `artifactRoot` that could hash one
-    // tree and load another (M2).
+    // tree and load another (M2). A relative or symlinked root would let the
+    // loader read a different directory from the one the grant named (M3).
     const root = config.pluginRoot
     if (root === undefined) {
-      return `refused ${label}: no pluginRoot was carried, so the pinned tree has no root to re-read; entry: ${mod.entry}`
+      return refuse(`refused ${label}: no pluginRoot was carried, so the pinned tree has no root to re-read; entry: ${mod.entry}`)
+    }
+    if (!isAbsolute(root)) {
+      return refuse(`refused ${label}: pluginRoot must be an absolute path, not "${root}"; the grant names one directory; code: plugin-root`)
+    }
+    let real: string
+    try {
+      real = realpathSync(root)
+    } catch (error) {
+      return refuse(`refused ${label}: pluginRoot cannot be resolved (${(error as Error).message}); code: plugin-root`)
+    }
+    if (real !== root) {
+      return refuse(`refused ${label}: pluginRoot is not the real path (root: ${root}; real: ${real}); the granted tree would be read through a link; code: plugin-root`)
     }
     // Re-list, not only re-hash (M3): a file added after the grant is invisible
     // to a manifest re-read, and a directory symlink can add a whole subtree.
     const scan = scanTree(root, { exclude: config.pluginData === undefined ? [] : [config.pluginData] })
     if (!scan.ok) {
-      return `refused ${label}: the tree cannot be pinned now (${scan.refusal.path}: ${scan.refusal.reason})`
+      return refuse(`refused ${label}: the tree cannot be pinned now (${scan.refusal.path}: ${scan.refusal.reason})`)
     }
     const pinned = manifest.files
     const now = scan.files
@@ -561,16 +600,18 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     const removed = pinned.filter((file) => !nowPaths.has(file.path)).map((file) => file.path)
     if (added.length > 0 || removed.length > 0 || pinned.length !== now.length) {
       const detail = `${added.length === 0 ? '' : `added: ${added.slice(0, 3).join(', ')}`}${added.length === 0 || removed.length === 0 ? '' : '; '}${removed.length === 0 ? '' : `removed: ${removed.slice(0, 3).join(', ')}`}`
-      return `refused ${label}: the file set changed since the grant (pinned ${pinned.length} file(s), now ${now.length}; ${detail}); pinned ${mod.artifactHash}`
+      return refuse(`refused ${label}: the file set changed since the grant (pinned ${pinned.length} file(s), now ${now.length}; ${detail}); pinned ${mod.artifactHash}`)
     }
     const current = hashManifest({ ...manifest, files: now as readonly ArtifactFile[] })
     if (current !== mod.artifactHash) {
       // Same paths, different bytes: name the first file that moved and both
       // tree digests, so the refusal says what to re-review.
       const changed = now.find((file, index) => file.sha256 !== pinned[index]?.sha256)?.path
-      return `refused ${label}: artifact changed since the grant (pinned ${mod.artifactHash}, now ${current}; first difference: ${changed ?? mod.entry}); entry: ${mod.entry}`
+      return refuse(`refused ${label}: artifact changed since the grant (pinned ${mod.artifactHash}, now ${current}; first difference: ${changed ?? mod.entry}); entry: ${mod.entry}`)
     }
-    return undefined
+    // The bytes just hashed are the bytes that evaluate: hand the snapshot to
+    // the loader and never re-open a path (M1).
+    return { sources: scan.contents }
   }
 
   /**
@@ -1475,10 +1516,10 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       const surfaceLabel = `${pluginName}/${mod.entry}`
       // Trust before allocation: a mod whose bytes moved since the grant is
       // refused before a single module is evaluated (D25/D30, fail closed).
-      const changed = modArtifactChange(mod)
-      if (changed !== undefined) {
-        trace(`anyplugin mod ${surfaceLabel}: load refused (${changed})`)
-        warn(`anyplugin mod ${surfaceLabel}: load refused (${changed})`)
+      const check = modArtifactChange(mod)
+      if ('refusal' in check) {
+        trace(`anyplugin mod ${surfaceLabel}: load refused (${check.refusal})`)
+        warn(`anyplugin mod ${surfaceLabel}: load refused (${check.refusal})`)
         continue
       }
       // The pin's `ui.resolve` is a load-time read (d.ts:2809-2821, :5041-5047
@@ -1538,12 +1579,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
           pauseDollar(bridge.dollar(invocation.getStore()?.agent)) as Record<string, unknown>,
       }
       try {
-        handle = await loadMod({
-          root: modRoot,
-          entry: mod.entry,
-          host: modHost,
-          files: mod.artifact === undefined ? undefined : mod.artifact.files.map((file) => file.path),
-        })
+        handle = await loadMod(pinnedLoadOptions(mod, modRoot, modHost, check))
       } catch (error) {
         bridge.dispose()
         const message = (error as Error).message

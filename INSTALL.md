@@ -176,11 +176,14 @@ plugins:
       - entry: "hooks/register.ts"
         rootRelative: "hooks"
         mode: "composite"
-        artifactHash: "sha256:…"
+        artifactHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         files:
-          - path: "/absolute/path/to/my-plugin/hooks/register.ts"
-            sha256: "sha256:…"
-            bytes: "35661"
+          - path: "hooks/register.ts"
+            sha256: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            bytes: "33891"
+          - path: "hooks/views/pane.ts"
+            sha256: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            bytes: "1024"
 ```
 
 `root` must be absolute and point at the plugin directory; `dataDir` is the
@@ -329,11 +332,12 @@ artifact out and records a refusal with the exact command line (for a mod: the
 resolved entry, the file count and the tree digest); the rest of the plugin
 still loads. Grants are pinned to the artifact's SHA-256, so editing the hook —
 or any file under a granted module tree — invalidates the grant and asks again.
-The materializer re-lists the plugin tree and re-reads the pinned files
-immediately before `loadMod`, so a change between the gate and the load is
-refused too, and the granted file set bounds the linker: a module that imports
-a file outside the manifest is refused (`ERR_MOD_HOST_UNGRANTED`) rather than
-evaluated.
+The materializer re-lists the plugin tree and reads the pinned files once,
+then hands those bytes to the loader as a snapshot; the loader and linker
+compile the snapshot, never the path, so a change between the gate and the load
+cannot run (a tree over 64 MiB is refused). The same snapshot bounds the
+linker: a module that imports a file outside the manifest is refused
+(`ERR_MOD_HOST_UNGRANTED`) rather than evaluated.
 
 Grants live in `$DSH_HOME/anyplugin/grants.yml` (canonical form, keyed by
 `plugin`, `capability`, `target`, `artifactHash`, `grantedAt`, `scope`). Grant
