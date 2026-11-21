@@ -233,7 +233,10 @@ own work while `next`/`$` still pause.
 - Install + reconcile (D23): `installs.yml` is the lock, three scope layers
   decide enablement (narrower wins), and `reconcile` converges loader entries
   by stable id — created, updated, removed, kept, failed — without writing
-  profile config.
+  profile config. The lifecycle CLI (`rig install|list|enable|disable|uninstall`)
+  writes that lock through the one canonical writer, enables without inventing
+  a scope, and reports the same carry rows as `rig report`; every mutating
+  command has a byte-checksummed `--dry-run`.
 - The upstream oracle runs in CI (D24): `@anthropic-ai/claude-code@2.1.329` is
   fetched, resolved through `CLAUDE_BIN`/PATH, version-guarded; a decoy in the
   fixtures test proves the probe uses the binary it was handed.

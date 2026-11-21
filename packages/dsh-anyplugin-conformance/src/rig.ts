@@ -32,6 +32,17 @@ import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { diffInventories, normalizeInventory, type Inventory } from './inventory.ts'
 import { probeWithClaude, resolvePluginName } from './oracles/claude.ts'
 import { readInventoryFile } from './oracles/file.ts'
+import {
+  InstallCliError,
+  formatInstall,
+  formatList,
+  formatSetEnabled,
+  formatUninstall,
+  installPlugin,
+  listPlugins,
+  setPluginEnabled,
+  uninstallPlugin,
+} from './install-cli.ts'
 import { buildTransplantReport, formatDiff, formatTransplantReport } from './report.ts'
 import { SCOPES, readGrants, type Scope } from '../../dsh-anyplugin-trust/src/index.ts'
 import {
@@ -64,6 +75,9 @@ const BOOLEAN_OPTIONS = new Set([
   'yes',
   'replace-revoke',
   'partial',
+  'dry-run',
+  'force',
+  'allow-empty',
 ])
 
 function parseArgs(argv: string[]): Args {
@@ -109,6 +123,11 @@ const USAGE = `usage:
   rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
+  rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--dry-run] [--json]
+  rig list    [--json]
+  rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
+  rig disable <plugin> [--scope <s>] [--dry-run] [--json]
+  rig uninstall <plugin> [--dry-run] [--json]
 
   --grants reads the hash-pinned exec grant store; without it the store is
   empty, so exec artifacts report refused:exec and are not emitted (D25).
@@ -116,7 +135,16 @@ const USAGE = `usage:
   ungranted exec artifact and the exact command line, and writes only with
   --yes. It writes nothing if any artifact is unpinnable unless --partial is
   given, and it never erases a same-scope revoke unless --replace-revoke is
-  given. \`revoke\` writes at one scope and then names the record that decides.`
+  given. \`revoke\` writes at one scope and then names the record that decides.
+
+  install appends one record to $DSH_HOME/anyplugin/installs.yml (or --config
+  <file>) through the canonical writer and enables it at --scope. It is
+  idempotent; --force is the explicit override for a record whose root or
+  version changed. \`list\` prints the lock with the same carry counts \`report\`
+  prints. \`enable\`/\`disable\` edit one scope layer (D2) and never delete the
+  record; <plugin> is <dialect>:<name> or a bare name unique in the lock.
+  \`uninstall\` removes the record and leaves enablement and grants in place.
+  --dry-run prints the exact change and writes nothing.`
 
 /** Scope is a record field (D25); the CLI authors one scope at a time. */
 function parseScope(value: string | boolean | undefined): Scope {
@@ -189,11 +217,72 @@ function readPlugin(pluginDir: string): ClaudePluginIr {
   return readClaudePlugin(pluginDir)
 }
 
+/**
+ * `--config` re-points the lock (grants and data follow it); `--project`
+ * chooses the workspace whose scope layers are read and written. Both are
+ * explicit — the lifecycle commands never infer a project from a plugin path.
+ */
+function lifecyclePaths(args: Args): { config?: string; projectDir?: string } {
+  const config = args.options.get('config')
+  const project = args.options.get('project')
+  if (config !== undefined && typeof config !== 'string') throw new Error(`missing value for --config\n${USAGE}`)
+  if (project !== undefined && typeof project !== 'string') throw new Error(`missing value for --project\n${USAGE}`)
+  return {
+    ...(typeof config === 'string' ? { config } : {}),
+    ...(typeof project === 'string' ? { projectDir: project } : {}),
+  }
+}
+
+/** Absent means the command resolves the layer itself (narrowest mention). */
+function optionalScope(args: Args): Scope | undefined {
+  if (!args.options.has('scope')) return undefined
+  return parseScope(args.options.get('scope'))
+}
+
+/**
+ * A lifecycle refusal exits 1 with its type visible: machines read
+ * `{ok:false, refusals:[…]}`, humans read the parser's message verbatim.
+ * Anything that is not an `InstallCliError` is a bug and keeps exiting 2.
+ */
+function lifecycleRefusal(error: unknown, json: boolean): number {
+  if (!(error instanceof InstallCliError)) throw error
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          refusals: [
+            {
+              code: error.code,
+              reason: error.message,
+              ...(error.hint === undefined ? {} : { hint: error.hint }),
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+  } else {
+    const hint = error.hint === undefined ? '' : `\n  hint: ${error.hint}`
+    console.error(`refused (${error.code}): ${error.message}${hint}`)
+  }
+  return 1
+}
+
+function onePositional(args: Args, name: string): string {
+  const [first, ...rest] = args.positionals
+  if (first === undefined) throw new Error(`missing ${name}\n${USAGE}`)
+  if (rest.length > 0) throw new Error(`unexpected argument: ${rest[0]}\n${USAGE}`)
+  return first
+}
+
 async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
   const allowPinMismatch = args.options.get('allow-pin-mismatch') === true
-  if (args.command !== 'report' && args.positionals.length > 0) {
+  const positionalCommands = new Set(['report', 'install', 'enable', 'disable', 'uninstall'])
+  if (!positionalCommands.has(args.command) && args.positionals.length > 0) {
     throw new Error(`unexpected argument: ${args.positionals[0]}\n${USAGE}`)
   }
 
@@ -317,6 +406,95 @@ async function main(argv: string[]): Promise<number> {
     const diff = diffTraces(left, right)
     console.log(formatTraceDiff(diff, { verbose }))
     return diff.summary.differing === 0 && diff.summary.onlyLeft === 0 && diff.summary.onlyRight === 0 ? 0 : 1
+  }
+
+  if (args.command === 'install') {
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    const pluginDir = onePositional(args, '<plugin-dir>')
+    const json = args.options.get('json') === true
+    const scope = optionalScope(args)
+    const dialect = args.options.get('dialect')
+    const name = args.options.get('name')
+    if (dialect !== undefined && typeof dialect !== 'string') throw new Error(`missing value for --dialect\n${USAGE}`)
+    if (name !== undefined && typeof name !== 'string') throw new Error(`missing value for --name\n${USAGE}`)
+    try {
+      const result = installPlugin({
+        pluginDir,
+        ...lifecyclePaths(args),
+        ...(scope === undefined ? {} : { scope }),
+        ...(typeof dialect === 'string' ? { dialect } : {}),
+        ...(typeof name === 'string' ? { name } : {}),
+        ...(args.options.get('force') === true ? { force: true } : {}),
+        ...(args.options.get('allow-empty') === true ? { allowEmpty: true } : {}),
+        ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
+      })
+      console.log(json ? JSON.stringify(result, null, 2) : formatInstall(result))
+      return 0
+    } catch (error) {
+      return lifecycleRefusal(error, json)
+    }
+  }
+
+  if (args.command === 'list') {
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    if (args.positionals.length > 0) throw new Error(`unexpected argument: ${args.positionals[0]}\n${USAGE}`)
+    const json = args.options.get('json') === true
+    try {
+      const result = listPlugins(lifecyclePaths(args))
+      console.log(json ? JSON.stringify(result, null, 2) : formatList(result))
+      return result.ok ? 0 : 1
+    } catch (error) {
+      return lifecycleRefusal(error, json)
+    }
+  }
+
+  if (args.command === 'enable' || args.command === 'disable') {
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    const plugin = onePositional(args, '<plugin>')
+    const json = args.options.get('json') === true
+    const scope = optionalScope(args)
+    try {
+      const result = setPluginEnabled({
+        plugin,
+        enabled: args.command === 'enable',
+        ...lifecyclePaths(args),
+        ...(scope === undefined ? {} : { scope }),
+        ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
+      })
+      console.log(json ? JSON.stringify(result, null, 2) : formatSetEnabled(result))
+      return 0
+    } catch (error) {
+      return lifecycleRefusal(error, json)
+    }
+  }
+
+  if (args.command === 'uninstall') {
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    const plugin = onePositional(args, '<plugin>')
+    const json = args.options.get('json') === true
+    try {
+      const result = uninstallPlugin({
+        plugin,
+        ...lifecyclePaths(args),
+        ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
+      })
+      console.log(json ? JSON.stringify(result, null, 2) : formatUninstall(result))
+      return 0
+    } catch (error) {
+      return lifecycleRefusal(error, json)
+    }
   }
 
   throw new Error(`unknown command "${args.command}"\n${USAGE}`)
