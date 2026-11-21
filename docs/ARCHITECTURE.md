@@ -16,7 +16,7 @@
 | **C** Effects | tool-call arguments, file writes, spawned processes, exit codes, stdio protocol traffic | byte-identical |
 | **D** Control flow | allow / deny / block decisions (`exit 2`, `decision:"block"`, `continue:false`, permission results) | equivalent |
 | **E** Trust | approval prompts, grant records, scope of effect | equivalent |
-| **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `equivalent` through the agent-scoped prompt seam (S11), selected by the profile activation record or `force-for-plugin`; the human `/<plugin>:<name>` half stays `planned` — D10's alias, and no `plugin details` inventory at 2.1.322 |
+| **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `equivalent` through the agent-scoped prompt seam (S11) on top-level agents and forks, selected by the profile activation record or `force-for-plugin`; the human `/<plugin>:<name>` half stays `planned` — D10's alias, and no `plugin details` inventory at 2.1.322 |
 | **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | every declared color |
 | **F3** GUI chrome | cards, overlays, charts, shadows | **derived** — not in the denominator; Claude has no such artifact to translate |
 | **F4** Assets | icons / complete SVGs | byte-identical |
@@ -314,27 +314,37 @@ outputStyles:
 ```
 
 `active` is `<plugin>:<style>`, where the style name is the one Claude
-registers (frontmatter `name`, else the file stem). A missing file, or an
-`outputStyles: {}` block, is "no explicit activation". The syntax is the
-canonical subset D23 uses; anything else is a load error with a line number —
-"cannot parse" never becomes "no style", and an empty body is a typed
-`empty-style` refusal rather than a silent no-op. Resolution is typed too:
-`unknown-plugin`, `plugin-disabled`, `plugin-unreadable`, `unknown-style`,
-`empty-style`. A refusal is reported on `compileReport.activation` and is not a
-`problem`, so the rest of the lock still compiles and a caller can show the
-reason. An explicit record always wins, including when it refuses;
-`force-for-plugin: true` applies only when its plugin is enabled and no
-explicit record names a style, and the trace names which rule won. That
-precedence is deliberate: upstream documents `force-for-plugin` as overriding
-the user's selection, but this layer has no host `outputStyle` setting, so the
-profile record is the operator's explicit statement and overriding it would
-invert the only control the operator has. The selection is emitted as one
-`outputStyle` child on the owning plugin; `dsh-anyplugin-materialize-output-style`
-registers an `agent/created` listener and applies the body through
-`payload.agent.ctx.systemPrompt.section(...)` with `interpolate: false`, and
-`complete: true` only when the frontmatter says `keep-coding-instructions:
-false` (anything else appends a section and keeps the host's coding
-instructions). The body is applied as authored. The activation face is
+registers (frontmatter `name`, else the file stem). A missing file is "no
+explicit activation". The syntax is the canonical subset D23 uses; anything
+else is a load error with a line number — "cannot parse" never becomes "no
+style". A record that exists but cannot be read (`EACCES`, `EISDIR`, …) is a
+load error naming the code, never a silent fallback to force-for-plugin, and
+`outputStyles: {}` followed by an `active` row is a contradictory record.
+An empty or whitespace-only body is a typed `empty-style` refusal rather than
+a silent no-op; the parser preserves bytes, only application is refused.
+Resolution is typed too: `unknown-plugin`, `plugin-disabled`,
+`plugin-unreadable`, `unknown-style`, `empty-style`. A refusal is reported on
+`compileReport.activation` and is not a `problem`, so the rest of the lock
+still compiles and a caller can show the reason; the install convenience path
+(`compileEntries`) turns it into `OutputStyleActivationError` instead, so a
+refused selection never compiles silently. An explicit record always wins,
+including when it refuses; `force-for-plugin: true` applies only when its
+plugin is enabled and no explicit record names a style, and the trace names
+which rule won. A whitespace-only forced style is skipped in favour of a later
+valid one and refused with the same `empty-style` code when it is the only
+candidate. That precedence is deliberate: upstream documents
+`force-for-plugin` as overriding the user's selection, but this layer has no
+host `outputStyle` setting, so the profile record is the operator's explicit
+statement and overriding it would invert the only control the operator has.
+The selection is emitted as one `outputStyle` child on the owning plugin;
+`dsh-anyplugin-materialize-output-style` registers an `agent/created` listener
+and applies the body through `payload.agent.ctx.systemPrompt.section(...)` with
+`interpolate: false`, and `complete: true` only when the frontmatter says
+`keep-coding-instructions: false`. Anything else — including an absent key —
+appends a section and keeps the host's coding instructions. The listener skips
+agents whose origin is `subagent`: upstream applies styles to the main
+conversation and forks, and a `complete` section on a child would replace its
+whole prompt. The body is applied as authored. The activation face is
 `equivalent`; the row's overall class stays `planned` because the human
 `/<plugin>:<name>` command half is not reachable (D10).
 
@@ -2121,18 +2131,27 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   **5. Activated (ticket #77).** The gap list above is the state at the S11
   answer; activation has since closed (i), (iii) and (iv) without changing the
   row's class. Provenance is the profile activation record's plugin name (the
-  record is read at load, so an unreadable plugin is a typed refusal rather
-  than a guess); the oracle is a composed-prompt probe that boots the pinned
-  harness, loads the entry, runs one turn on a stub adapter and returns the
-  system prompt the model received; composition is the split the ticket
-  specified — `keep-coding-instructions: false` maps to `complete: true`, any
-  other value (including absent) appends a section, and the activation face's
-  reason names that divergence from Claude's documented default explicitly.
-  (ii) remains, so the command face stays `planned`.
+  record is read at load, so an unreadable record or plugin is a typed load
+  error/refusal rather than a guess); the oracle is a composed-prompt probe
+  that boots the pinned harness, loads the entry, runs one turn on a stub
+  adapter and returns the system prompt the model received; composition is the
+  split the ticket specified — `keep-coding-instructions: false` maps to
+  `complete: true`, any other value (including absent) appends a section, and
+  the activation face's reason names that divergence from Claude's documented
+  default explicitly. The materializer skips agents whose origin is
+  `subagent`; upstream applies a style to the main conversation and a fork,
+  and a complete section on a child would replace its whole prompt. An empty
+  or whitespace-only body is refused as `empty-style` (a whitespace-only
+  forced style is skipped in favour of a later valid one, and refused when it
+  is the only candidate), and a refused selection makes `compileEntries`
+  throw `OutputStyleActivationError` instead of compiling silently. (ii)
+  remains, so the command face stays `planned`.
   `output-styles-activation.test.mjs` asserts the appended bytes
   (`baseline + "\n\n" + body`), the replaced bytes (`prompt === body`), the
-  forced selection, an inactive style's absence, and an unknown-style refusal
-  that leaves the prompt byte-identical to the baseline.
+  forced selection, an absent keep-coding key appending, an inactive style's
+  absence, an unknown-style refusal that leaves the prompt byte-identical to
+  the baseline, and one test per role — main, sibling and fork receive the
+  style, a subagent does not.
 
   **What this buys, and what it does not.** Each flat `output-styles/*.md` is
   an `IrOutputStyle` row in `ir.outputStyles`, carrying its body byte for

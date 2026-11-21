@@ -9,7 +9,7 @@ boots the pinned harness, loads the emitted entry, runs a real turn on a stub
 adapter, and compares the prompt bytes the model received.
 
 The fixture is a real plugin with a small skill so the group entry always has a
-child and the negative controls boot the same path as the positive ones. Four
+child and the negative controls boot the same path as the positive ones. Six
 styles cover the activation matrix:
 
 - `output-styles/append.md` — `keep-coding-instructions: true`; the body is
@@ -18,8 +18,13 @@ styles cover the activation matrix:
   replaces the whole prompt (`complete: true`).
 - `output-styles/forced.md` — `force-for-plugin: true` and
   `keep-coding-instructions: false`; applies when no explicit record exists.
+- `output-styles/default.md` — no composition keys; the body is appended (the
+  ticket's absent-key rule) and the host prompt stays.
 - `output-styles/inactive.md` — no composition keys and never activated; the
   negative control for "a style that is not selected leaves no bytes".
+- `output-styles/empty-forced.md` — `force-for-plugin: true` with a
+  whitespace-only body; it must be refused (`empty-style`), never applied as a
+  no-op, and the next forced style (`forced.md`) is chosen instead.
 
 The bodies are deliberately boring prompt text with leading and trailing
 blank lines; they prove the bytes survive and that a body is not trimmed by the

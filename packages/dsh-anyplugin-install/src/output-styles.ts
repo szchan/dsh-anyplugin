@@ -101,7 +101,17 @@ export function outputStylesPath(home?: string): string {
 export function readActivation(options: { home?: string } = {}): OutputStylesFile {
   const file = outputStylesPath(options.home)
   if (!existsSync(file)) return { file }
-  return parseOutputStyles(readFileSync(file, 'utf8'), file)
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    // A record that exists but cannot be read is a load error, not "no style":
+    // EACCES/EISDIR/... must never become a silent fallback to force-for-plugin.
+    const code = (error as NodeJS.ErrnoException).code ?? 'unknown'
+    const reason = (error as Error).message
+    throw new InstallsFileError(`cannot read the activation record (${code}): ${reason}`, { file, line: 1 })
+  }
+  return parseOutputStyles(text, file)
 }
 
 function unquote(raw: string): string {
@@ -112,6 +122,7 @@ function unquote(raw: string): string {
 export function parseOutputStyles(text: string, file = '<output-styles>'): OutputStylesFile {
   const lines = text.replace(/^\uFEFF/, '').split('\n')
   let stage: 'schema' | 'block' | 'body' = 'schema'
+  let emptyBlock = false
   let active: ActivationTarget | undefined
   const significant = (line: string) => !/^\s*(?:#.*)?$/.test(line)
   for (let index = 0; index < lines.length; index++) {
@@ -133,10 +144,15 @@ export function parseOutputStyles(text: string, file = '<output-styles>'): Outpu
       if (!BLOCK_LINE.test(line)) {
         throw new InstallsFileError('expected `outputStyles:` after the schema line', { file, line: number })
       }
-      // `outputStyles: {}` is an explicit empty record; `outputStyles:` can
-      // still be followed by one `active` row.
+      // `outputStyles:` may be followed by one `active` row. The empty-object
+      // spelling is itself a statement that no style is selected, so a row
+      // after it is contradictory rather than an override.
+      emptyBlock = line.includes('{}')
       stage = 'body'
       continue
+    }
+    if (emptyBlock) {
+      throw new InstallsFileError('contradictory record: `outputStyles: {}` says no style is active, but an `active` row follows', { file, line: number })
     }
     const match = ACTIVE_LINE.exec(line)
     if (!match) {
@@ -204,7 +220,7 @@ export function resolveActivation(
       return refuse(
         'plugin-unreadable',
         requested,
-        `plugin ${JSON.stringify(explicit.plugin)} could not be prepared: ${record.problem ?? 'unknown reason'}`,
+        `plugin ${JSON.stringify(explicit.plugin)} could not be read: ${record.problem ?? 'unknown reason'}`,
         file,
       )
     }
@@ -214,13 +230,15 @@ export function resolveActivation(
       const names = available.length === 0 ? 'it declares no output styles' : `it declares ${available.map((name) => JSON.stringify(name)).join(', ')}`
       return refuse('unknown-style', requested, `plugin ${JSON.stringify(explicit.plugin)} has no output style ${JSON.stringify(explicit.style)}; ${names}`, file)
     }
-    if (style.body.length === 0) {
-      return refuse('empty-style', requested, `output style ${JSON.stringify(requested)} has an empty body; applying it would be a silent no-op`, file)
+    if (style.body.trim().length === 0) {
+      return refuse('empty-style', requested, `output style ${JSON.stringify(requested)} has an empty or whitespace-only body; applying it would be a silent no-op`, file)
     }
     // Name the force style that lost, when there is one, so the trace explains
     // why a plugin that asks to be forced is not active.
     const forced = firstForced(ordered)
-    const note = forced === undefined ? '' : `; force-for-plugin ${JSON.stringify(label({ plugin: forced.plugin, style: forced.style.name }))} was not applied because the explicit record wins`
+    const note = forced === undefined || 'empty' in forced
+      ? ''
+      : `; force-for-plugin ${JSON.stringify(label({ plugin: forced.plugin, style: forced.style.name }))} was not applied because the explicit record wins`
     return {
       kind: 'active',
       source: 'explicit',
@@ -230,6 +248,17 @@ export function resolveActivation(
     }
   }
   const forced = firstForced(ordered)
+  if (forced !== undefined && 'empty' in forced) {
+    const requested = label({ plugin: forced.empty.plugin, style: forced.empty.style.name })
+    const reason = `force-for-plugin style ${JSON.stringify(requested)} has an empty or whitespace-only body; applying it would be a silent no-op`
+    return {
+      kind: 'refused',
+      code: 'empty-style',
+      requested,
+      reason,
+      trace: `no explicit activation in ${file.file}; force-for-plugin ${JSON.stringify(requested)} was refused (empty-style): ${reason}`,
+    }
+  }
   if (forced !== undefined) {
     return {
       kind: 'active',
@@ -260,11 +289,23 @@ function refuse(
   }
 }
 
-function firstForced(plugins: readonly ActivationPlugin[]): { plugin: string; style: ActivationStyle } | undefined {
+function firstForced(
+  plugins: readonly ActivationPlugin[],
+): { plugin: string; style: ActivationStyle } | { empty: { plugin: string; style: ActivationStyle } } | undefined {
+  let firstEmpty: { plugin: string; style: ActivationStyle } | undefined
   for (const plugin of plugins) {
     if (!plugin.enabled || plugin.styles === undefined) continue
-    const style = plugin.styles.find((candidate) => candidate.forceForPlugin === true)
-    if (style !== undefined) return { plugin: plugin.name, style }
+    for (const style of plugin.styles) {
+      if (style.forceForPlugin !== true) continue
+      // An empty forced body is not "the style with nothing in it": it is a
+      // broken declaration. Prefer a later non-empty forced style; if there is
+      // none, refuse instead of applying a no-op.
+      if (style.body.trim().length === 0) {
+        firstEmpty ??= { plugin: plugin.name, style }
+        continue
+      }
+      return { plugin: plugin.name, style }
+    }
   }
-  return undefined
+  return firstEmpty === undefined ? undefined : { empty: firstEmpty }
 }

@@ -19,6 +19,7 @@
  * every record is prepared, so a refusal can be typed against the actual IR
  * rather than guessed from the lock.
  */
+import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
@@ -33,6 +34,7 @@ import {
   readActivation,
   resolveActivation,
   type ActivationPlugin,
+  type ActivationRefusalCode,
   type ActivationResolution,
   type ActivationStyle,
   type OutputStylesFile,
@@ -131,6 +133,15 @@ function prepareRecord(record: InstallRecord, options: CompileOptions): Prepared
     fail(`plugin "${id}" was installed against pin "${record.pin}", this build reads "${EXPECTED_PIN}"`)
   }
   if (!isAbsolute(record.root)) fail(`plugin "${id}" has a non-absolute root "${record.root}"`)
+  try {
+    if (!statSync(record.root).isDirectory()) {
+      fail(`plugin "${id}" root ${JSON.stringify(record.root)} is not a directory`)
+    }
+  } catch (error) {
+    if ((error as Error).message.startsWith('compileEntries:')) throw error
+    const code = (error as NodeJS.ErrnoException).code ?? 'unknown'
+    fail(`plugin "${id}" root ${JSON.stringify(record.root)} could not be read (${code}): ${(error as Error).message}`)
+  }
 
   const ir = readClaudePlugin(record.root, record.source === undefined ? {} : { source: record.source })
   if (ir.plugin.name !== record.name) {
@@ -272,10 +283,31 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
  * `compileReport().activation` — so this function's behaviour for a bad
  * activation record is unchanged: no style child, no throw.
  */
+export class OutputStyleActivationError extends Error {
+  readonly code: ActivationRefusalCode
+  readonly requested: string
+  readonly trace: string
+
+  constructor(activation: Extract<ActivationResolution, { kind: 'refused' }>) {
+    super(
+      `compileEntries: output style activation ${JSON.stringify(activation.requested)} was refused (${activation.code}): ${activation.reason}`,
+    )
+    this.name = 'OutputStyleActivationError'
+    this.code = activation.code
+    this.requested = activation.requested
+    this.trace = activation.trace
+  }
+}
+
 export function compileEntries(installs: Installs, options: CompileOptions): EntryOptions[] {
   const report = compileReport(installs, options)
   if (report.problems.length > 0) {
     throw new Error(`compileEntries: ${report.problems.map((problem) => problem.reason).join('; ')}`)
   }
+  // A refused activation is a configuration error, not "nothing to do": the
+  // convenience path fails closed so a bad record cannot silently compile the
+  // lock without the style the operator asked for. Callers that must keep
+  // compiling use `compileReport` and read `activation` themselves.
+  if (report.activation.kind === 'refused') throw new OutputStyleActivationError(report.activation)
   return report.entries
 }

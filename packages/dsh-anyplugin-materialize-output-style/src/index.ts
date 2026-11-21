@@ -9,11 +9,15 @@
  *
  * The seam is agent-scoped (S11): `agent/created` is `@mode serial`, so this
  * listener runs before the agent's creation resolves, and the handler
- * registers on `payload.agent.ctx`. That context belongs to one agent:
- * a sibling agent is unaffected, and the section unwinds when the agent is
- * disposed. `complete: true` replaces the whole prompt; `interpolate: false`
- * keeps the body byte-for-byte, because a style body is prompt text, not a
- * template.
+ * registers on `payload.agent.ctx`. Registering there never mutates another
+ * agent's prompt, and the section unwinds when that agent is disposed. Every
+ * top-level agent created after load gets the style — including a fork, which
+ * is the main conversation's continuation — but a `subagent` child does not:
+ * the pinned docs say other subagents run their own system prompt, so styles
+ * do not change how they respond (output-styles, 2.1.329). A `complete: true`
+ * style on a subagent would otherwise replace its entire prompt.
+ * `complete: true` replaces a top-level prompt; `interpolate: false` keeps the
+ * body byte-for-byte, because a style body is prompt text, not a template.
  */
 export const name = 'anyplugin-materialize-output-style'
 /** No required service: the listener checks the agent's seam and degrades. */
@@ -45,8 +49,9 @@ export interface Config {
 
 export function apply(ctx: any, config: Config = {}): void {
   const body = config.body
-  if (typeof body !== 'string' || body.length === 0) {
-    // A carried body is the payload; an empty one would silently be no style.
+  if (typeof body !== 'string' || body.trim().length === 0) {
+    // A carried body is the payload; an empty or whitespace-only one would
+    // silently be no style (and, with `complete`, would blank the prompt).
     ctx.logger?.warn?.('[anyplugin] output style is missing its body; no prompt section was registered')
     return
   }
@@ -57,7 +62,13 @@ export function apply(ctx: any, config: Config = {}): void {
   const complete = config.complete === true
 
   ctx.on('agent/created', (payload: any) => {
-    const prompt = payload?.agent?.ctx?.systemPrompt
+    // A subagent session runs its own system prompt upstream; skip it before
+    // touching the seam. `origin` is durable session-header metadata, not a
+    // runtime guess (dsh-session SessionHeader.origin @ 0.2.2-rc.5).
+    const agent = payload?.agent
+    const origin = agent?.session?.header?.origin ?? agent?.session?.meta?.origin
+    if (origin === 'subagent') return
+    const prompt = agent?.ctx?.systemPrompt
     if (!prompt || typeof prompt.section !== 'function') {
       // Detect the seam, never assume it (AGENTS §6): the host stays usable
       // when the service is absent, and the reason is recorded in the log.

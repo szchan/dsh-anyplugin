@@ -18,6 +18,8 @@ import type { EntryOptions } from '../../dsh-anyplugin-emit/src/index.ts'
 import { readHarnessVersion } from '../harness.ts'
 import { loadFromHarness, loaderBaseUrl, until } from './dsh.ts'
 
+export type PromptAgentRole = 'main' | 'sibling' | 'subagent' | 'fork'
+
 export interface PromptProbeOptions {
   /** Directory holding the harness's `@deepseek-ai/*` packages. */
   harnessDir: string
@@ -29,6 +31,12 @@ export interface PromptProbeOptions {
   text?: string
   /** How long to wait for boot and each turn, in milliseconds. */
   timeoutMs?: number
+  /**
+   * Extra agents to create and run after the entry loads. `main` is always
+   * created; `sibling` is another top-level agent, `subagent` a session with
+   * `origin: 'subagent'`, and `fork` a seeded continuation of `main`.
+   */
+  roles?: readonly PromptAgentRole[]
 }
 
 export interface PromptProbeResult {
@@ -39,6 +47,8 @@ export interface PromptProbeResult {
   /** Every system prompt captured, in model-call order (diagnostics). */
   prompts: string[]
   dshVersion: string
+  /** The prompt each requested non-main role received, keyed by role. */
+  rolePrompts?: Partial<Record<PromptAgentRole, string>>
 }
 
 const textChunks = (text: string): unknown[] => [
@@ -152,11 +162,64 @@ export async function probePromptWithDsh(options: PromptProbeOptions): Promise<P
     await runTurn(agent, text)
     const prompt = promptFor(text)
     if (prompt === undefined) throw new Error('dsh prompt probe: the probe turn produced no system prompt')
+
+    const roles = new Set(options.roles ?? [])
+    const rolePrompts: Partial<Record<PromptAgentRole, string>> = {}
+    const handles: Array<{ dispose(): Promise<void> | void }> = []
+    const runRole = async (role: PromptAgentRole, target: any): Promise<void> => {
+      if (!roles.has(role)) return
+      const roleText = `${text} as ${role}`
+      await runTurn(target, roleText)
+      const rolePrompt = promptFor(roleText)
+      if (rolePrompt === undefined) throw new Error(`dsh prompt probe: the ${role} turn produced no system prompt`)
+      rolePrompts[role] = rolePrompt
+    }
+
+    if (roles.has('sibling')) {
+      await runRole('sibling', await makeAgent('anyplugin-prompt-sibling'))
+    }
+    if (roles.has('subagent') || roles.has('fork')) {
+      const factory = (ctx as any).agents
+      if (!factory || typeof factory.create !== 'function') {
+        throw new Error('dsh prompt probe: the agents registry has no create() for role agents')
+      }
+      const agentOptions = { provider: 'fake', model: 'fake-1' }
+      if (roles.has('subagent')) {
+        const handle = await factory.create({
+          sessionId: 'anyplugin-prompt-subagent',
+          meta: { origin: 'subagent', parentSession: agent.id },
+          agentOptions,
+        })
+        handles.push(handle)
+        await runRole('subagent', handle.agent)
+      }
+      if (roles.has('fork')) {
+        const handle = await factory.create({
+          sessionId: 'anyplugin-prompt-fork',
+          meta: { parentSession: agent.id, isSeeded: true },
+          inheritedEventCount: 0,
+          seed: [],
+          agentOptions,
+        })
+        handles.push(handle)
+        await runRole('fork', handle.agent)
+      }
+    }
+
+    for (const handle of handles) {
+      try {
+        await handle.dispose()
+      } catch {
+        // The prompt was already captured; teardown failures are not the probe.
+      }
+    }
+
     return {
       ...(baseline === undefined ? {} : { baseline }),
       prompt,
       prompts: captured.map((call) => call.system).filter((value): value is string => value !== undefined),
       dshVersion: readHarnessVersion(options.harnessDir),
+      ...(Object.keys(rolePrompts).length === 0 ? {} : { rolePrompts }),
     }
   } finally {
     loaderFiber.dispose?.()
