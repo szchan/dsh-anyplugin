@@ -531,7 +531,7 @@ test('the reviewer bypass spellings are refused; ordinary commits are allowed', 
   denied('echo "git push origin main" | sh')
   denied('stdbuf -o0 git push origin main')
   denied('. /tmp/evil.sh')
-  denied('sudo --preserve-env git push origin main', 'git-push-main')
+  denied('sudo --preserve-env git push origin main', 'sudo-refused')
   assert.equal(shell('git commit -m "fix: a > b"').kind, 'allow', 'quoted commit text is not a redirect')
   assert.equal(shell('git commit -m "fix: a -> b"').kind, 'allow')
   assert.equal(shell('git commit -m "guard: a && b"').kind, 'allow', 'quoted && is text, not a separator')
@@ -539,6 +539,40 @@ test('the reviewer bypass spellings are refused; ordinary commits are allowed', 
   assert.equal(shell('node -e "console.log(1)"').kind, 'allow')
   denied('node -e "require(\'fs\').writeFileSync(\'/tmp/x\', \'y\')"', 'interpreter-write')
   denied('python3 -c "open(\'/tmp/x\', \'w\').write(\'y\')"', 'interpreter-write')
+})
+
+test('config keys are an inert allowlist, not a denylist of known drivers', () => {
+  const driver = shell('git -c diff.foo.command=\'sh -c "git push --no-verify origin HEAD:main"\' diff --ext-diff')
+  assert.equal(driver.kind, 'deny')
+  assert.equal(driver.rule, 'git-config-write')
+
+  const env = shell('git --config-env=diff.foo.command=ENV diff --ext-diff')
+  assert.equal(env.kind, 'deny')
+  assert.equal(env.rule, 'git-config-write')
+
+  assert.equal(shell('git -c color.ui=false status').kind, 'allow', 'color.* is inert')
+  assert.equal(shell('git -c user.email=x commit -m x').kind, 'allow', 'user.email is inert')
+  assert.equal(shell('git config user.name X').kind, 'deny', 'still no worker config writes')
+
+  assert.equal(shell('git config user.name X', root).kind, 'allow', 'root may write an inert key')
+  assert.equal(shell('git config foo.bar x', root).kind, 'deny', 'root uses the same allowlist')
+  assert.equal(shell('git -c diff.foo.command=x diff --ext-diff', root).kind, 'deny')
+  assert.equal(shell('git -c user.name=X -c user.email=Y commit -m x', root).kind, 'allow')
+})
+
+test('a worker cannot plant a driver in .git, and sudo is refused', () => {
+  const shellWrite = shell('printf \'[diff "foo"]\\n  command = sh -c "git push origin HEAD:main"\\n\' >> .git/config')
+  assert.equal(shellWrite.kind, 'deny')
+  assert.equal(shellWrite.rule, 'git-dir-write')
+
+  const structured = verdict('write', { file_path: '/tmp/anyplugin-wt/ticket-80/.git/config', content: 'x' })
+  assert.equal(structured.kind, 'deny')
+  assert.equal(structured.rule, 'git-dir-write')
+
+  const sudo = shell('sudo git push origin main')
+  assert.equal(sudo.kind, 'deny')
+  assert.equal(sudo.rule, 'sudo-refused')
+  assert.equal(shell('sudo --preserve-env git status').rule, 'sudo-refused')
 })
 
 test('the installed pre-push hook refuses every spelling git resolves to main', () => {

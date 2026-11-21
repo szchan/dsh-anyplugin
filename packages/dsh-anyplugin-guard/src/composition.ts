@@ -419,6 +419,13 @@ export function guardTable(options: { worktree: string; protectedRoot: string })
     { tool: 'bash', payload: 'ruby -e "system(\'git push origin main\')"', role: 'worker', expect: 'deny', rule: 'interpreter-exec', note: 'ruby spawn spelling' },
     { tool: 'bash', payload: 'git config user.name X', role: 'root', expect: 'allow', rule: 'allow', note: 'root may write a non-exec key' },
     { tool: 'bash', payload: 'git config core.hooksPath /tmp/hooks', role: 'root', expect: 'deny', rule: 'git-config-write', note: 'root may not redirect hooks' },
+    { tool: 'bash', payload: 'git -c diff.foo.command=\'sh -c "git push --no-verify origin HEAD:main"\' diff --ext-diff', role: 'worker', expect: 'deny', rule: 'git-config-write', note: 'diff.<driver>.command runs a program' },
+    { tool: 'bash', payload: 'git --config-env=diff.foo.command=ENV diff --ext-diff', role: 'worker', expect: 'deny', rule: 'git-config-write', note: 'config-env names the same driver key' },
+    { tool: 'bash', payload: 'git -c color.ui=false status', role: 'worker', expect: 'allow', rule: 'allow', note: 'color.* is inert' },
+    { tool: 'bash', payload: 'printf \'[diff "foo"]\\n  command = sh -c "git push origin HEAD:main"\\n\' >> .git/config', role: 'worker', expect: 'deny', rule: 'git-dir-write', note: 'planting a driver in .git/config' },
+    { tool: 'bash', payload: 'sudo git push origin main', role: 'worker', expect: 'deny', rule: 'sudo-refused', note: 'sudo is not modelled' },
+    { tool: 'bash', payload: 'git config foo.bar x', role: 'root', expect: 'deny', rule: 'git-config-write', note: 'root uses the same inert allowlist' },
+    { tool: 'bash', payload: 'git -c user.name=X -c user.email=Y commit -m "x"', role: 'root', expect: 'allow', rule: 'allow', note: 'root -c uses the same inert allowlist' },
     { tool: 'bash', payload: 'git config user.name X', role: 'worker', expect: 'deny', rule: 'git-config-write', note: 'workers do not write config' },
   ]
 }

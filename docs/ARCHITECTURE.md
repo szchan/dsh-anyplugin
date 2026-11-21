@@ -1277,13 +1277,21 @@ of main is not. A bare push, a second refspec, a wildcard or range refspec,
 another remote, `--receive-pack`/`--exec`, `send-pack`, `update-ref` and any
 config that can rewrite the shape are refused with their own rule
 (`git-push-shape`, `git-push-bare`, `git-push-exec`, `git-push-plumbing`,
-`git-config-write`). A worker may pass `-c` for keys that cannot execute a
-program (`user.*`, `color.*`, `core.quotepath`, non-external `diff.*`) and may
-read config (`--get`, `--get-all`, `--get-regexp`, `--list`); it may not write
-config or set an exec key. The root may write config, but never a key that
-executes a program: `alias.*`, `filter.*`, `core.pager`, `core.fsmonitor`,
-`core.hooksPath`, `core.sshCommand` and the rest of `GIT_EXEC_KEYS` are
-refused, lowercased before comparison so `Alias.p` is the same key. For a
+`git-config-write`). Config keys are an **inert allowlist, not a
+denylist of names we happen to know**: workers may pass `-c`/`--config-env`
+only for `user.name`, `user.email`, `user.signingkey`, `color.*`,
+`core.quotepath`, `core.autocrlf`, `core.filemode`, `core.symlinks`,
+`core.ignorecase`, `diff.noprefix`, `diff.mnemonicPrefix`, `diff.renames`,
+`diff.context`, `diff.algorithm`, `diff.wsErrorHighlight` and
+`i18n.commitEncoding`, and may read config (`--get`, `--get-all`,
+`--get-regexp`, `--list`); they may not write config. The root uses the same
+allowlist for `-c` and `git config` writes. Everything else is
+`git-config-write`, lowercased before comparison so `Alias.p` is the same
+key. The reason is that "does this key run a program" is not decidable by
+name: `diff.<driver>.command`, `diff.<driver>.textconv`,
+`merge.<driver>.driver`, `credential.<url>.helper` and
+`remote.<name>.uploadpack` all execute something, and git keeps adding
+drivers; an open "non-exec" set would be a promise we cannot keep. For a
 worker, any leading `VAR=value` on a git segment is refused
 (`git-env-prefix`), and unknown git subcommands are refused too (`git p`),
 with a reason that names the alias hazard. The shell reader defaults to deny on syntax it cannot
@@ -1295,7 +1303,11 @@ literal process-spawn token (`interpreter-exec`). A worker may not run a **shell
 script file either (`shell-script-unverified`): the bytes are
 writable and the reader does not read them, so the script could be rewritten
 to push main between the check and the run. Symlinks are resolved before
-confinement. The shell subset is deliberately narrow and is stated in the
+confinement. A worker also cannot write inside `.git` (`git-dir-write`):
+appending a diff driver, a filter or a hook to `.git/config` would run on the
+next git command, which no command-line key check can see. `sudo` is refused
+for workers outright: it is not parsed, and on a host with passwordless sudo it
+would be root. The shell subset is deliberately narrow and is stated in the
 brief: one command list per call; `&&`, `||`, `|` and redirections
 (including `2>&1`) are modelled, everything else is refused.
 
@@ -1339,8 +1351,12 @@ payloads (only literal spawn spellings are denied, so `String.fromCharCode`,
 `node scripts/*.mjs` and `npm run *` (both editable, so unverified), a
 `--no-verify` inside a command the reader did not model, non-git file writes
 from allowed tools, a root-run shell script, a root-written exec key that a host
-later runs, and any git feature outside the modelled subcommands. Branch
-protection, the DSH file sandbox and CI are the boundary.
+later runs, config already present in the repository or written by a process
+outside the guard (the guard models the tool call, not the filesystem),
+`sudo` on a host where it succeeds without a password, and any git feature
+outside the modelled subcommands. The guard decision is recorded on merge; this
+paragraph is its framing, not a second decision. Branch protection, the DSH
+file sandbox and CI are the boundary.
 
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
 no value channel, and `SubagentStartRequest` has no instructions field at this

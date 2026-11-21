@@ -148,6 +148,16 @@ export function isInside(root: string, target: string): boolean {
 }
 
 /**
+ * A path inside a git directory. A worker that appends a diff driver, a
+ * filter, a hook or an ssh command to `.git/config` plants a program the key
+ * allowlist on the command line cannot see; the guard refuses the write
+ * instead of trying to read what the file will mean later.
+ */
+export function insideGitDirectory(target: string): boolean {
+  return normalized(realTarget(target)).split('/').includes('.git')
+}
+
+/**
  * The real path of `target`. A file tool follows symlinks, so a lexical check
  * is not enough: a symlink placed inside the worktree that points into the
  * main checkout would otherwise pass. Missing tails are resolved against the
@@ -260,6 +270,12 @@ function judgeWrite(call: GuardCall, policy: ResolvedPolicy): Verdict {
       return deny(
         'write-outside-worktree',
         `refusing to write ${raw}: the session has no cwd, so a relative path cannot be resolved; use an absolute path under your worktree`,
+      )
+    }
+    if (insideGitDirectory(target)) {
+      return deny(
+        'git-dir-write',
+        `refusing to write ${target}: a worker does not write inside .git; a config or hook planted there runs as the next git command`,
       )
     }
     const violation = confinement(target, effectiveWorktree(call, policy), policy)
@@ -572,21 +588,30 @@ const CONFIG_READ_FLAGS = new Set([
 ])
 
 /**
- * Keys that make git run a program (or a hook) the guard cannot see. They are
- * refused for the root too; a worker may not set any config at all.
+ * The closed set of git config keys a worker (or the root) may pass with
+ * `-c`/`--config-env`, and the root may write with `git config`. It is an
+ * allowlist because "does this key run a program" is not decidable by name:
+ * `diff.<driver>.command`, `diff.<driver>.textconv`, `merge.<driver>.driver`,
+ * `credential.<url>.helper` and `remote.<name>.uploadpack` all run a
+ * program, and git keeps adding drivers. Anything outside this set is
+ * refused for both roles.
  */
-const GIT_EXEC_KEYS = new Set([
-  'core.hookspath',
-  'core.sshcommand',
-  'core.pager',
-  'core.editor',
-  'core.gitproxy',
-  'core.askpass',
-  'core.fsmonitor',
-  'diff.external',
-  'sequence.editor',
-  'gpg.program',
-  'credential.helper',
+const INERT_CONFIG_KEYS = new Set([
+  'user.name',
+  'user.email',
+  'user.signingkey',
+  'core.quotepath',
+  'core.autocrlf',
+  'core.filemode',
+  'core.symlinks',
+  'core.ignorecase',
+  'diff.noprefix',
+  'diff.mnemonicprefix',
+  'diff.renames',
+  'diff.context',
+  'diff.algorithm',
+  'diff.wserrorhighlight',
+  'i18n.commitencoding',
 ])
 
 function configKey(config: string): string {
@@ -594,17 +619,17 @@ function configKey(config: string): string {
   return (equals >= 0 ? config.slice(0, equals) : config).toLowerCase()
 }
 
-function executesProgram(key: string): boolean {
-  return key.startsWith('alias.') || key.startsWith('filter.') || GIT_EXEC_KEYS.has(key)
+function inertConfigKey(key: string): boolean {
+  return key.startsWith('color.') || INERT_CONFIG_KEYS.has(key)
 }
 
 /**
  * `git -c`/`--config-env` and `git config` can define an alias, move
  * `core.hooksPath`, or name a program in a key such as `core.fsmonitor` — all
- * of which hide a push from the reader. A worker may pass `-c` for keys that
- * cannot execute a program and may read config; it may not write it. The root
- * may write non-exec keys (the promise in ARCHITECTURE §8) but never an
- * exec-capable one.
+ * of which hide a push from the reader. The set that cannot execute a program
+ * is not knowable by name, so both roles use the same closed allowlist: a
+ * worker may pass `-c` for inert keys and may read config but never write it;
+ * the root may also write inert keys. Everything else is a refusal.
  */
 export function gitConfigViolation(tokens: string[], worker: boolean): Verdict | undefined {
   const invocation = gitInvocation(tokens)
@@ -612,10 +637,10 @@ export function gitConfigViolation(tokens: string[], worker: boolean): Verdict |
   const raw = tokens.join(' ')
   for (const config of invocation.configs) {
     const key = configKey(config)
-    if (executesProgram(key)) {
+    if (!inertConfigKey(key)) {
       return deny(
         'git-config-write',
-        `refusing "${excerpt(raw)}": ${key} names a program or alias git will execute; set it in the repository config if it is really needed`,
+        `refusing "${excerpt(raw)}": ${key} is outside the inert allowlist; a config key we do not know can name a program git will execute (a diff driver, a helper, a remote command)`,
       )
     }
   }
@@ -627,16 +652,16 @@ export function gitConfigViolation(tokens: string[], worker: boolean): Verdict |
   const key = positional[0]?.toLowerCase()
   const write = writes || (!reads && positional.length >= 2)
   if (!write) return undefined
-  if (key !== undefined && executesProgram(key)) {
-    return deny(
-      'git-config-write',
-      `refusing "${excerpt(raw)}": ${key} names a program git will execute; edit the file you meant to edit instead`,
-    )
-  }
   if (worker) {
     return deny(
       'git-config-write',
-      `refusing "${excerpt(raw)}": workers read git config but do not write it; pass -c for one command if a value is really needed`,
+      `refusing "${excerpt(raw)}": workers read git config but do not write it; pass -c for one command with an inert key if a value is really needed`,
+    )
+  }
+  if (key !== undefined && !inertConfigKey(key)) {
+    return deny(
+      'git-config-write',
+      `refusing "${excerpt(raw)}": ${key} is outside the inert allowlist; the root may only set keys that cannot run a program, and that is only knowable as a closed list`,
     )
   }
   return undefined
@@ -1090,6 +1115,17 @@ function judgeCommand(
   const hazard = shellHazard(command, segments)
   if (hazard !== undefined) return hazard
 
+  if (agent.worker) {
+    for (const segment of flat) {
+      if (segment.tokens[0] === 'sudo' || segment.tokens.slice(0, 4).includes('sudo')) {
+        return deny(
+          'sudo-refused',
+          `refusing "${excerpt(segment.raw)}": a worker has no use for sudo; run the command with the directory permissions you were given`,
+        )
+      }
+    }
+  }
+
   for (const segment of flat) {
     const violation = decisionsViolation(segment)
     if (violation !== undefined) return violation
@@ -1185,6 +1221,12 @@ function judgeCommand(
       return deny(
         'write-outside-worktree',
         `refusing to write ${write.raw}: the running directory is unknown, so the path cannot be confined; use an absolute path under your worktree`,
+      )
+    }
+    if (insideGitDirectory(target)) {
+      return deny(
+        'git-dir-write',
+        `refusing to write ${target}: a worker does not write inside .git; a config or hook planted there runs as the next git command`,
       )
     }
     const violation = confinement(target, worktree, policy)
