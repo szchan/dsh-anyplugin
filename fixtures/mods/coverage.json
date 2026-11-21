@@ -624,6 +624,13 @@
     ],
     "properties": []
   },
+  "shapeMismatches": [
+    {
+      "name": "session.cwd",
+      "declared": "method",
+      "served": "property"
+    }
+  ],
   "wrongShape": [
     {
       "name": "session.cwd",

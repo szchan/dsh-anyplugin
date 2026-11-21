@@ -97,6 +97,7 @@ test('session.cwd is a wrong-shape extra, never served and never absent', async 
   assert.deepEqual(live.wrongShape, [
     { name: 'session.cwd', declared: 'method', runtime: 'property', valueType: 'string' },
   ])
+  assert.deepEqual(live.shapeMismatches, [{ name: 'session.cwd', declared: 'method', served: 'property' }])
   assert.equal(live.served.properties.includes('session.cwd'), false)
   assert.equal(live.absent.methods.includes('session.cwd'), false)
   assert.equal(live.served.methods.includes('session.cwd'), false)

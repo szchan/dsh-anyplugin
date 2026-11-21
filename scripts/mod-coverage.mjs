@@ -1153,6 +1153,9 @@ export function buildLedger(declaration, runtime) {
     declared,
     served,
     refused: { methods: sortedByName(refused), properties: [] },
+    shapeMismatches: sortedByName(
+      wrongShape.map((entry) => ({ name: entry.name, declared: entry.declared, served: entry.runtime })),
+    ),
     wrongShape: sortedByName(wrongShape),
     absent,
     totals: {
@@ -1255,6 +1258,11 @@ export function diffLedger(committed, live) {
   }
   if (JSON.stringify(committed.wrongShape ?? []) !== JSON.stringify(live.wrongShape)) {
     changes.push(`wrongShape: ${JSON.stringify(committed.wrongShape ?? [])} -> ${JSON.stringify(live.wrongShape)}`)
+  }
+  if (JSON.stringify(committed.shapeMismatches ?? []) !== JSON.stringify(live.shapeMismatches)) {
+    changes.push(
+      `shapeMismatches: ${JSON.stringify(committed.shapeMismatches ?? [])} -> ${JSON.stringify(live.shapeMismatches)}`,
+    )
   }
   if (JSON.stringify(committed.configuration ?? null) !== JSON.stringify(live.configuration)) {
     changes.push('configuration changed')

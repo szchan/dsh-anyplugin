@@ -997,8 +997,8 @@ actually exposes. Every declared member is classified **served** (callable under
 the recorded bridge configuration), **refused** (callable, but always throws a
 typed `ERR_MOD_HOST_*` refusal such as `process.run` or `vcs.status`),
 **absent** (no runtime member), or **wrong shape** (present with the wrong
-callable/property kind; `session.cwd` is the current instance and is a separate
-ticket). The refused set depends on configuration, so the ledger records the
+callable/property kind, recorded as `shapeMismatches` and the detailed
+`wrongShape`; `session.cwd` is the current instance and is a separate ticket). The refused set depends on configuration, so the ledger records the
 bridge options — an attached session, a stub command registry, and no settings
 source, which is why `$.settings.read` refuses — and `--update` rejects a
 runtime member the pin does not declare instead of blessing it.
