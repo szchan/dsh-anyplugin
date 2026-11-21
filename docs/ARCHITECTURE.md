@@ -1279,6 +1279,176 @@ run degraded *by design*.
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
 | dynamic package runner | present | `planned`/`mod` unavailable as well |
 
+### The repository guard: a consumer of the two seams
+
+The repository runs a first-party policy on itself (`packages/dsh-anyplugin-guard`,
+issue #80). It is a plugin like any other — one package, `inject: ['tools']`, one
+handler per seam, mounted at the app level and on each `agent.ctx` — and it
+deliberately does **not** introduce a second event path (§3.6). The app-level
+listener is the authoritative one: the loops dispatch both seams through the
+agent's scope carrier (`dsh-agent/lib/index.js:385-386`,
+`dsh-agent-loop/lib/index.js:551`), and the harness delivers those dispatches
+to an app-level listener as well as to the agent's own scope. The per-agent
+seat is therefore additive, never a replacement: it mounts only
+`agent/pre-step`, so a child still receives the brief even if one delivery
+path changes; a missing seat cannot make the `tools/pre-execute` judgment
+silently disappear. It reads the same payloads the hook materializer reads and
+returns the host's own verdict shape.
+
+| seam | payload read at pin `0.2.2-rc.5` | what the guard does |
+| --- | --- | --- |
+| `tools/pre-execute` (waterfall, S8) | `{name, arguments, callId, agent, …}` | judges the call; `{kind: 'deny', reason}` ends the waterfall, otherwise `next()` |
+| `agent/pre-step` (waterfall, S9) | `{messages, turn, step, agent}` | on a spawned worker's first step, appends one user message to the continuation the host returned |
+
+The core rules, each with a positive and a near-miss case in the dry-run table:
+a push is accepted only as `git push [-u|--force-with-lease] origin <one
+refspec that is not main>`, so a destination of `main`/`master`, **every bare
+`git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
+refused (`remote.<name>.push` and `push.default` can retarget a bare push after
+it was read); `gh pr merge` from a worker only (the root may merge); writes
+outside the worker's recorded worktree, with the main checkout always
+protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
+anything but the sanctioned `node scripts/check-decisions.mjs --update`.
+"Recorded" is the operative word: the worktree comes from an explicit path in
+the spawn prompt or from a cwd that is itself a configured worktree. A branch
+name in the prompt (the review prompt names the branch under review) never
+implies a path; with no recorded worktree a worker's writes are refused rather
+than checked against every configured worktree. The policy is a
+**convention checker for honest mistakes, not a containment boundary**: the
+real boundary is branch protection, the DSH file sandbox and CI.
+
+The **tool layer is what sees a tool call**. A push is judged by shape,
+not by a list of forbidden spellings: the only accepted form is
+`git push [-u|--force-with-lease] origin <one refspec that is not main>`; a
+force update of a ticket branch is ordinary work after a rebase, a force update
+of main is not. A bare push, a second refspec, a wildcard or range refspec,
+another remote, `--receive-pack`/`--exec`, `send-pack`, `update-ref` and any
+config that can rewrite the shape are refused with their own rule
+(`git-push-shape`, `git-push-bare`, `git-push-exec`, `git-push-plumbing`,
+`git-config-write`). Config keys are an **inert allowlist, not a
+denylist of names we happen to know**: workers may pass `-c`/`--config-env`
+only for `user.name`, `user.email`, `user.signingkey`, `color.*`,
+`core.quotepath`, `core.autocrlf`, `core.filemode`, `core.symlinks`,
+`core.ignorecase`, `diff.noprefix`, `diff.mnemonicPrefix`, `diff.renames`,
+`diff.context`, `diff.algorithm`, `diff.wsErrorHighlight` and
+`i18n.commitEncoding`, and may read config (`--get`, `--get-all`,
+`--get-regexp`, `--list`); they may not write config. The root uses the same
+allowlist for `-c` and `git config` writes. Everything else is
+`git-config-write`, lowercased before comparison so `Alias.p` is the same
+key. The reason is that "does this key run a program" is not decidable by
+name: `diff.<driver>.command`, `diff.<driver>.textconv`,
+`merge.<driver>.driver`, `credential.<url>.helper` and
+`remote.<name>.uploadpack` all execute something, and git keeps adding
+drivers; an open "non-exec" set would be a promise we cannot keep. For a
+worker, any leading `VAR=value` on a git segment is refused
+(`git-env-prefix`), and unknown git subcommands are refused too (`git p`),
+with a reason that names the alias hazard. The shell reader defaults to deny on syntax it cannot
+model — grouping, a background `&`, command substitution, backticks,
+here-strings, process substitution, `eval`/`source`/dot, `find -exec`, a shell
+reading stdin, unknown commands, unquoted `$` expansion — and refuses a
+worker's interpreter `-c`/`-e` payload that looks like a write
+(`writeFileSync`, `renameSync`, `copyFileSync`, `cpSync`, `linkSync`, `symlinkSync`,
+`truncateSync`, Python/Ruby/PHP equivalents) or contains a literal process-spawn
+token (`exec`, `popen`, `spawn`, `system`, `subprocess`; `interpreter-exec`).
+String literals are masked before the match, so `node -e 'console.log("exec(")'`
+is ordinary code, not a spawn; a call written outside the quotes is still denied.
+A worker may not run a **shell** script file either (`shell-script-unverified`):
+the bytes are writable and the reader does not read them, so the script could be
+rewritten to push main between the check and the run. Symlinks are resolved
+before confinement. A worker cannot write inside `.git` through a modelled
+write — shell redirects and write verbs, structured `write`/`edit`/`apply_patch`,
+interpreter mutation literals (`interpreter-write`) and `tar -C <dir>` or GNU's
+attached `tar -C<dir>` extraction (`git-dir-write`): appending a diff driver, a
+filter or a hook to `.git/config` would run on the next git command, which no
+command-line key check can see. `sudo` is refused for workers when it is the
+command that runs, after the launchers we model (`env`, `command`, `exec`,
+`nice`, `timeout`, `xargs`) and leading assignments: it is not parsed, and on a
+host with passwordless sudo it would be root. The shell subset is deliberately narrow and is stated in the
+brief: one command list per call; `&&`, `||`, `|` and redirections
+(including `2>&1`) are modelled, everything else is refused.
+
+The `$` rule is per quoting context, because the tokenizer alone loses it:
+
+| form | example | verdict |
+| --- | --- | --- |
+| inside single quotes | `awk '{print $1}'`, `echo '$HOME'` | literal, allowed |
+| `$` that cannot start an expansion | `cost$`, `$` before `/` or punctuation | literal, allowed |
+| inside double quotes | `echo "$HOME"` | expansion, refused |
+| `$` + name/digit/special | `$1`, `${HOME}`, `$?` | expansion, refused |
+| `$(` / `$'` / backtick | `echo $(date)` | refused (`shell-unmodelled`) |
+
+Because a shell layer can always be spelled around, `guard:install` also writes
+a real git `pre-push` hook into the checkout's hooks directory, **as defence in
+depth, not as the authority**: git resolves the refspec itself, the hook runs
+after refs are discovered and before objects are sent, and a caller who passes
+`--no-verify` skips it by design. The hook is what stops a push that reaches
+git without passing through `tools/pre-execute`; the tool layer is what sees a
+tool call. `guard:status` checks the hook (including the no-worktree case,
+which reports the hook path instead of claiming a vacuous `current`) and
+`--uninstall` removes it. Installation is transactional across the two writes:
+a failed profile write restores the hook to its prior bytes, and a read-only
+profile leaves both the hook and the block untouched. `core.hooksPath` is
+followed by git, not overridden: install names the shadow path and `guard:status`
+reports it, and the docs say that deleting that config orphans the installed
+hook.
+
+The guard is a **conventional-deterrent at the tool layer plus a pre-push hook
+as defence in depth**. It is not containment. The authority over `main` is the
+server: branch protection with `enforce_admins: true`, required `verify`, linear
+history, no force-push and no deletion. A worker that evades the guard still
+cannot push `main` to this repository; it can only fabricate a local branch and
+open a PR, which is the workflow we want anyway. What the guard buys is that the
+*accident* — the mistyped refspec, the copy-pasted force push, the rushed
+`git config` — is caught at the call, before the network.
+
+The residual holes are named rather than papered over: worker interpreter
+payloads (only literal spawn spellings — including `exec` and `popen` — are
+denied, and quoted spans are masked rather than analysed, so a spelling built at
+runtime, or hidden behind `eval` of a string, remains possible),
+`node scripts/*.mjs` and `npm run *` (both editable, so unverified), a
+`--no-verify` inside a command the reader did not model, non-git file writes
+from allowed tools, a root-run shell script, a root-written exec key that a host
+later runs, config already present in the repository or written by a process
+outside the guard (the guard models the tool call, not the filesystem),
+`sudo` on a host where it succeeds without a password, a launcher spelling the
+command-position skipper does not model, and any git feature outside the
+modelled subcommands. The guard decision is recorded on merge; this
+paragraph is its framing, not a second decision. Branch protection, the DSH
+file sandbox and CI are the boundary.
+
+The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
+no value channel, and `SubagentStartRequest` has no instructions field at this
+pin (§10 S10). The only place text can reach the child before its first model
+step is the `agent/pre-step` continuation, so the brief is appended there,
+after `next()`, so the agent loop's own runtime-context section survives. The
+message is built like the host's `createUserMessage` — a UUID `id` and
+`source: {kind: 'user'}`. That shape is load-bearing: the loop reads
+`message.source.kind` on every appended message (`dsh-agent-loop/lib/index.js:873`),
+and `runtime-context` is the snapshot kind, not a prompt kind. It is context —
+the worktree path, the coverage ratchet totals, the open rows and the shell
+subset the policy accepts — not a file the worker is told to read.
+
+Installation is data: `npm run guard:install` appends one marked block to the
+profile's `cordis.patch.yml` containing a single `insert` entry whose `name`
+is the absolute source path (the profile loader anchors inserted names). A patch
+without `insert` only overrides an existing entry id, so the insert form is the
+one that can add the plugin. The block records the file's pre-install state
+(absent, empty, `[]`, or content), so `--uninstall` restores absence as absence
+and emptiness as emptiness instead of leaving `[]` behind; a user row inside
+the marked block, a duplicate id in either YAML quote style, and an unbalanced
+marker are refused rather than silently rewritten. `--dry-run` composes the
+same block, prints it and runs the payload→verdict table through the same judge,
+writing nothing; `guard:status` re-composes and compares (ignoring the state
+line), so a stale block is visible without loading the profile.
+
+The installer's target checkout is the caller's, not the script's: `--worktree`
+if given, else the git top level of the cwd, else the checkout the script lives
+in. A linked worktree shares its hooks directory with the main checkout, so a
+real install from one is refused before anything is written (the message names
+the checkout); `--dry-run` still works because it writes nothing. This is what
+keeps a review worktree from installing a hook into the checkout it is
+reviewing.
+
 ### Why dynamic packages cannot be the reconcile substrate
 
 Measured, not assumed:

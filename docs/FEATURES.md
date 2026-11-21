@@ -24,7 +24,7 @@ codex plugin spec `1.0.0`.
 
 The one number the project reports: **25 declared / 24 matched / 0 missing /
 1 refused** rows in the coverage ratchet
-(`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`), across 14
+(`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`), across 11
 fixtures. It only moves when a row moves; see `docs/TODO.md` for the queue behind
 it.
 
@@ -64,7 +64,14 @@ it.
 | Install records + three scopes + idempotent reconcile | `derived` | `packages/dsh-anyplugin-install/src/index.ts`, D23 |
 | Enable/disable per project, narrowest scope wins | `derived` | `packages/dsh-anyplugin-install/src/enablements.ts` |
 
-## 5. Verification
+## 5. Repository guard (call-time policy, not a seam)
+
+| surface | what it does today | class | artifact |
+| --- | --- | --- | --- |
+| PreToolUse guard | tool layer sees a tool call: judges a push by shape (`git push [-u or --force-with-lease] origin <one non-main refspec>`; bare, extra/wildcard/range refspecs, other remotes, `--receive-pack`/`--exec`, `send-pack` and `update-ref` refused), worker `gh pr merge`, a closed inert config allowlist for both roles (workers read config, the root writes only inert keys), `.git` writes refused through shell, structured and interpreter mutation verbs and `tar -C`/`-Cdir`, `sudo` refused for workers at command position after the modelled launchers, literal interpreter spawn tokens (`exec`, `popen`, `spawn`) refused with quoted literals masked, `git-env-prefix` for any leading assignment on a worker git segment, unknown git subcommands for workers, writes outside the recorded worktree (no fail-open), unverified **shell** script files and `docs/DECISIONS.md` edits; one `cordis.patch.yml` insert whose uninstall restores prior bytes, a linked-worktree install refused before the shared hooks are touched, plus a `pre-push` hook as defence in depth (skipped by `--no-verify`) | `derived` | `packages/dsh-anyplugin-guard/src/index.ts`, `scripts/guard-install.mjs`, `scripts/guard-status.mjs` |
+| SubagentStart brief | appends the worktree path, ratchet totals, open rows and the shell subset once, as a host-shaped user message (`id` + `source.kind: 'user'`), to a worker's first `agent/pre-step` continuation | `derived` | `packages/dsh-anyplugin-guard/src/brief.ts` |
+
+## 6. Verification
 
 | tool | artifact |
 | --- | --- |
@@ -73,8 +80,10 @@ it.
 | Trace reader/differ (behaviour, positionally aligned) | `packages/dsh-anyplugin-conformance/src/trace.ts`, D18 |
 | Fidelity report (`rig report`) | `packages/dsh-anyplugin-conformance/src/report.ts` |
 | Pinned CI (two DSH pins, fetched harness + CLI + mods) | `.github/workflows/verify.yml`, D22/D24 |
+| Fixture ratchet (R14): every `fixtures/` directory is a ratchet row or a named exclusion | `scripts/fixture-ratchet.mjs`, `scripts/check-architecture.mjs` |
+| Count owners (R15): a doc count names the `.test.mjs` that asserts it | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
 
-## 6. What is deliberately not a feature
+## 7. What is deliberately not a feature
 
 - **Terminal themes (F2).** No host surface; `planned` until a palette seam
   exists (upstream proposal in `docs/TODO.md`).
