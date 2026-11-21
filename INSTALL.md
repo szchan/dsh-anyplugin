@@ -2,7 +2,8 @@
 
 `dsh-anyplugin@0.1.0` is the first published release. It is **one bundle** whose
 patch inserts **one row** — the controller. Everything else (skills, commands,
-MCP servers, hooks, agents) is created at runtime by reconciling the lock file
+MCP servers, hooks, agents, an activated output style) is created at runtime by
+reconciling the lock file
 `installs.yml`; the package writes no profile config and generates no code.
 
 What 0.1.0 ships:
@@ -14,7 +15,7 @@ What 0.1.0 ships:
 | MCP servers | stdio and Streamable HTTP, Claude's tool names kept verbatim |
 | Hooks | the events the host actually fires; `exec`-class hooks need a grant |
 | Agents | one scoped tool per `agents/*.md` |
-| Output styles | **not emitted yet** — carried in the IR as `planned` |
+| Output styles | activated from `$DSH_HOME/anyplugin/output-styles.yml` (one style, `agent/created`); the `/<plugin>:<name>` command face stays `planned` (D42) |
 | `mods` | **not shipped** in 0.1.0 (the mods kernel is v0.2) |
 | Codex plugins | **not shipped** in 0.1.0 (v0.3) |
 

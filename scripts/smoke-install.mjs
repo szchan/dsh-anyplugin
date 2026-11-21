@@ -42,6 +42,7 @@ const PUBLISHED_SUBPATHS = [
   'materialize/mcp',
   'materialize/hook',
   'materialize/agents',
+  'materialize/output-style',
 ]
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 const fail = (message) => {
@@ -146,6 +147,14 @@ async function main() {
       '---\nname: hello\ndescription: Says hello from the installed tarball.\n---\n\nSay hello.\n',
     )
 
+    // One carried output style, so the smoke proves the selection reaches a
+    // published materializer child — not merely that the subpath imports.
+    mkdirSync(join(fixture, 'output-styles'), { recursive: true })
+    writeFileSync(
+      join(fixture, 'output-styles', 'concise.md'),
+      '---\nname: concise\ndescription: Answer in as few words as possible.\n---\n\nBe terse.\n',
+    )
+
     // The lock and the enabled layer, in the canonical forms the installer writes.
     const anypluginDir = join(process.env.DSH_HOME, 'anyplugin')
     mkdirSync(anypluginDir, { recursive: true })
@@ -167,6 +176,17 @@ async function main() {
     writeFileSync(
       join(anypluginDir, 'enabled.yml'),
       ['plugins:', '  claude-code:skill-smoke: { enabled: true }', ''].join('\n'),
+    )
+
+    // D42: the activation record is the profile's explicit choice of one style.
+    writeFileSync(
+      join(anypluginDir, 'output-styles.yml'),
+      [
+        'schema: "dsh-anyplugin/output-styles@1"',
+        'outputStyles:',
+        '  active: "skill-smoke:concise"',
+        '',
+      ].join('\n'),
     )
 
     step('booting the real loader and the skill registry')
@@ -227,6 +247,14 @@ async function main() {
         }
         if (ctx.loader.resolve(child.id).fiber?.state !== 2) fail(`child ${child.id} is not active`)
       }
+      const styleChild = children.find((child) => child.name === 'dsh-anyplugin/materialize/output-style')
+      if (styleChild === undefined) {
+        fail(
+          'the activated output style did not become a published materializer child: ' +
+            JSON.stringify(children.map((child) => child.name)),
+        )
+      }
+      if (ctx.loader.resolve(styleChild.id).fiber?.state !== 2) fail(`output-style child ${styleChild.id} is not active`)
 
       step('importing every published subpath through the loader resolver')
       // The loader writes `.cordis/resolve.mjs` in the profile scope; using it
@@ -240,8 +268,8 @@ async function main() {
       }
 
       process.stdout.write(
-        `install smoke: ok — ${manifest.name}@${manifest.version}, skill "hello" via ` +
-          `${group.options.id}, ${PUBLISHED_SUBPATHS.length} subpaths resolved from ${harness}\n`,
+        `install smoke: ok — ${manifest.name}@${manifest.version}, skill "hello" and output style ` +
+          `"concise" via ${group.options.id}, ${PUBLISHED_SUBPATHS.length} subpaths resolved from ${harness}\n`,
       )
       ok = true
     } finally {

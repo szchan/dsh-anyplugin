@@ -21,7 +21,8 @@
     "./materialize/mcp": "./lib/materialize/mcp.js",
     "./materialize/skill": "./lib/materialize/skill.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./materialize/output-style": "./lib/materialize/output-style.js"
   },
   "files": [
     "lib",

@@ -1,7 +1,7 @@
 /**
  * `dsh-anyplugin` — the one loader row the bundle patch inserts.
  *
- * The published package is a bundle (D42): its `cordis.patch.yml` adds this
+ * The published package is a bundle: its `cordis.patch.yml` adds this
  * controller to the profile, and the controller is what turns `installs.yml`
  * plus the enabled layers into loader entries. Everything below this row is
  * created at runtime by `reconcile`, from data. The package contains no
@@ -9,7 +9,8 @@
  * the grants file are read, the loader is reconciled, and nothing is persisted.
  *
  * What is shipped in 0.1.0 is the *compile path*: skills, commands, MCP
- * servers, hooks whose host events exist, and agents. The mods kernel is a
+ * servers, hooks whose host events exist, agents, and one activated output style.
+ * The mods kernel is a
  * separate release; the emitted configs for 0.1 never carry mods, and a
  * hand-written `mods` list is refused by the packaged hook materializer with a
  * reason instead of loading JavaScript the package cannot describe.
@@ -58,6 +59,7 @@ export const MATERIALIZERS: Materializers = {
   mcp: 'dsh-anyplugin/materialize/mcp',
   hooks: 'dsh-anyplugin/materialize/hook',
   command: 'dsh-anyplugin/materialize/command',
+  outputStyle: 'dsh-anyplugin/materialize/output-style',
 }
 
 interface Logger {
@@ -129,6 +131,19 @@ export async function apply(ctx: { loader: LoaderLike; get?: (name: string) => u
 
   for (const problem of report.problems) {
     log?.error?.(`${problem.plugin}: ${problem.reason}`)
+  }
+
+  // A style is a profile selection (D42): say which one won, and why a record
+  // did not apply. A refusal is not a compile problem — the lock still compiles
+  // without the style — so it is surfaced here and never silently dropped.
+  if (report.activation.kind === 'active') {
+    log?.info?.(
+      `output style ${report.activation.plugin}:${report.activation.style.name} (${report.activation.source})`,
+    )
+  } else if (report.activation.kind === 'refused') {
+    log?.warn?.(
+      `output style ${JSON.stringify(report.activation.requested)} not applied (${report.activation.code}): ${report.activation.reason}`,
+    )
   }
 
   const result = await reconcile(ctx.loader, report.entries, {

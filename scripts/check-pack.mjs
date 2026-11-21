@@ -75,7 +75,11 @@ try {
       check(!path.startsWith('src/'), `exports[${JSON.stringify(key)}] points into src/ — source is the dev entry, not the shipped one`)
     }
     const materialize = Object.keys(manifest.exports ?? {}).filter((key) => key.startsWith('./materialize/'))
-    check(materialize.length >= 5, `expected at least the 5 materializer subpaths, found ${materialize.length}`)
+    // These are exactly the entries the reconciler can name (MATERIALIZERS in
+    // controller.ts); a missing one is a child the loader could never import.
+    for (const name of ['skill', 'command', 'mcp', 'hook', 'agents', 'output-style']) {
+      check(materialize.includes(`./materialize/${name}`), `exports is missing ./materialize/${name}`)
+    }
     notes.push(`${Object.keys(manifest.exports ?? {}).length} exports, ${materialize.length} materializer subpaths`)
 
     // 2. No TypeScript in lib, and no source tree in the tarball at all.

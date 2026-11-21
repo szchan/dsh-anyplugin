@@ -90,8 +90,8 @@ dsh plugin --profile <profile> add dsh-anyplugin
 profile 配置，也不生成代码。
 
 0.1.0 只包含**编译路径**：skills、commands（模型面）、MCP、hooks、agents、
-安装/协调与信任门。output styles 仍是 `planned`；mods 内核与 Codex 方言
-**不在**本版本内。版本声明为 DSH `^0.2.2-rc.2`（`engines.dsh`，在
+由 profile 记录激活的 output style（D42）、安装/协调与信任门。mods 内核与
+Codex 方言**不在**本版本内。版本声明为 DSH `^0.2.2-rc.2`（`engines.dsh`，在
 `0.2.2-rc.2` 与 `0.2.2-rc.5` 上验证）与 Claude Code `2.1.329`。
 
 lock、启用层、行配置覆盖、`exec` 授权文件，以及如何移除 bundle 或单个插件，
@@ -124,7 +124,7 @@ ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
 npm run verify
 ```
 
-`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 464 个测试。它必须报告
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 482 个测试。它必须报告
 **0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
 
 ## 📚 接下来读什么

@@ -95,9 +95,9 @@ into the loader. Nothing is written to your profile config, and no code is
 generated.
 
 0.1.0 ships the **compile path**: skills, commands (model face), MCP servers,
-hooks, agents, install/reconcile, and the trust gate. Output styles are carried
-as `planned`, and the mods kernel and Codex dialect are **not** part of this
-release. The version claim is DSH `^0.2.2-rc.2` (`engines.dsh`, tested against
+hooks, agents, an output style activated from the profile record (D42),
+install/reconcile, and the trust gate. The mods kernel and Codex dialect are
+**not** part of this release. The version claim is DSH `^0.2.2-rc.2` (`engines.dsh`, tested against
 `0.2.2-rc.2` and `0.2.2-rc.5`) and Claude Code `2.1.329`.
 
 [**INSTALL.md**](INSTALL.md) has the lock and enablement formats, how to
@@ -134,7 +134,7 @@ npm run verify
 ```
 
 `verify` runs the structural rules, the capability map check, the append-only
-decision check, and 464 tests. It must report **0 skipped**: a skip means an
+decision check, and 482 tests. It must report **0 skipped**: a skip means an
 environment variable is missing, and on CI a skip is a failure by design.
 
 ## 📚 Read next

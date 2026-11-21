@@ -38,6 +38,7 @@ const ENTRIES = {
   'materialize/command': 'packages/dsh-anyplugin-materialize-command/src/index.ts',
   'materialize/hook': 'packages/dsh-anyplugin-materialize-hook/src/index.ts',
   'materialize/mcp': 'packages/dsh-anyplugin-materialize-mcp/src/index.ts',
+  'materialize/output-style': 'packages/dsh-anyplugin-materialize-output-style/src/index.ts',
   'materialize/skill': 'packages/dsh-anyplugin-materialize-skill/src/index.ts',
 }
 
