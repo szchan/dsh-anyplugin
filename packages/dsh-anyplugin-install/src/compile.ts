@@ -28,7 +28,7 @@ import { emitPlugin, type EntryOptions, type Materializers } from '../../dsh-any
 import { emptyGrants, gate, type Grants, type TrustDecision } from '../../dsh-anyplugin-trust/src/index.ts'
 
 import type { InstallRecord, Installs } from './installs.ts'
-import { validateInstalls } from './installs.ts'
+import { sourceText, validateInstalls } from './installs.ts'
 import { readEnablements, resolveEnablement, type Enablements } from './enablements.ts'
 import { childEntryId, pluginEntryId, pluginScope } from './identity.ts'
 import {
@@ -187,7 +187,7 @@ export function prepareInstalledRecord(
     fail(`plugin "${id}" root ${JSON.stringify(record.root)} could not be read (${code}): ${(error as Error).message}`)
   }
 
-  const ir = dialect.read(record.root, record.source === undefined ? {} : { source: record.source })
+  const ir = dialect.read(record.root, record.source === undefined ? {} : { source: sourceText(record.source) })
   if (ir.plugin.name !== record.name) {
     fail(`plugin "${id}" claims name "${record.name}" but ${record.root} declares "${ir.plugin.name}"`)
   }

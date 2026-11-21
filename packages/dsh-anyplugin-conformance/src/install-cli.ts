@@ -48,12 +48,14 @@ import {
   resolveEnablement,
   serializeEnablements,
   serializeInstalls,
+  sourceText,
   validateInstalls,
   writeEnablements,
   writeInstalls,
   type EnablementLayer,
   type Enablements,
   type InstallRecord,
+  type InstallSource,
   type Installs,
   type ResolvedEnablement,
   type Scope,
@@ -82,6 +84,14 @@ export type InstallCliCode =
   | 'unknown-plugin'
   | 'ambiguous-plugin'
   | 'invalid-record'
+  | 'unreadable-marketplace'
+  | 'malformed-marketplace'
+  | 'malformed-marketplace-entry'
+  | 'unknown-marketplace-entry'
+  | 'ambiguous-marketplace-entry'
+  | 'unsupported-marketplace-source'
+  | 'marketplace-entry-not-available'
+  | 'marketplace-path-escape'
   | 'write-failed'
 
 export class InstallCliError extends Error {
@@ -324,6 +334,12 @@ export interface InstallOptions extends PathOptions {
   /** Record a plugin whose compile emits nothing (all components refused). */
   allowEmpty?: boolean
   dryRun?: boolean
+  /**
+   * Provenance override. A marketplace install passes the catalog identity so
+   * the lock can say where the record came from; a plain directory install
+   * leaves it undefined and gets `plugin-dir:<path>`.
+   */
+  source?: InstallSource
   materializers?: Materializers
 }
 
@@ -377,10 +393,10 @@ export function installPlugin(options: InstallOptions): InstallResult {
   }
 
   const dialect = selectDialect(options.dialect, root)
-  const source = sourceLabel(root)
+  const source = options.source ?? sourceLabel(root)
   let ir: ClaudePluginIr
   try {
-    ir = READERS[dialect](root, { source })
+    ir = READERS[dialect](root, { source: sourceText(source) })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new InstallCliError('unreadable-plugin', `${root}: ${detail}`)
@@ -574,7 +590,7 @@ export interface ListedPlugin {
   root: string
   dataDir: string
   pin: string
-  source?: string
+  source?: InstallSource
   /** Every layer that explicitly turns it on, narrowest first. */
   enabledScopes: Scope[]
   /** Hash-pinned grants still stored for this identity (D25). */

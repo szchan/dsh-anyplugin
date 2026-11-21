@@ -128,3 +128,36 @@ test('a hand-built record must be all strings and known fields', () => {
   )
   assert.throws(() => validateInstalls(lock({ ...sample(), license: 'MIT' })), /unknown field "license"/)
 })
+
+test('a marketplace source is a JSON object inside the canonical quoted string', () => {
+  const source = { marketplace: 'local-marketplace', entry: 'local-hello', version: '0.1.0' }
+  const text = serializeInstalls(lock(sample({ source })))
+  assert.match(
+    text,
+    /    source: "\{\\"marketplace\\":\\"local-marketplace\\",\\"entry\\":\\"local-hello\\",\\"version\\":\\"0\.1\.0\\"\}"\n/u,
+  )
+  // The grammar did not move: one double-quoted JSON value per field (D23),
+  // and the @1 tag stays, because a @1 reader already accepted this value
+  // (any non-empty string) and a @2 writer would have to reject every lock
+  // this version writes. Additive at the parse level, not the schema level.
+  assert.match(text, /schema: "dsh-anyplugin\/installs@1"/u)
+  assert.deepEqual(parseInstalls(text, 'installs.yml'), lock(sample({ source })))
+})
+
+test('a legacy string source still round-trips unchanged', () => {
+  const parsed = parseInstalls(serializeInstalls(lock(sample({ source: 'plugin-dir:plugins/x' }))), 'installs.yml')
+  assert.equal(parsed.plugins[0].source, 'plugin-dir:plugins/x')
+})
+
+test('a structured source is validated like every other field', () => {
+  const refuse = (source, pattern) =>
+    assert.throws(() => validateInstalls(lock(sample({ source }))), pattern)
+  refuse({ marketplace: 'm', entry: 'e', extra: 'x' }, /unknown field "source\.extra"/)
+  refuse({ marketplace: 'm' }, /"source\.entry" must be a non-empty string/)
+  refuse({ entry: 'e' }, /"source\.marketplace" must be a non-empty string/)
+  refuse({ marketplace: 'has space', entry: 'e' }, /"source\.marketplace" must be the marketplace name/)
+  refuse({ marketplace: 'm', entry: 'has:colon' }, /"source\.entry" must be a bare plugin name/)
+  refuse({ marketplace: 'm', entry: 'e', version: '1 2' }, /"source\.version" must be non-empty and contain no whitespace/)
+  refuse('   ', /"source" must be a non-empty string/)
+  refuse('{not json', /"source" opens with "\{" but is not a JSON object/)
+})

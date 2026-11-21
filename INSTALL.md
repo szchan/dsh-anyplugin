@@ -172,8 +172,60 @@ number. The kernel is shipped, but it is reachable **only** from a hand-written
 hook row (`mods: [{ entry }]`) until the lock gains that field; this is not an
 install path, and a lock record never loads mods silently.
 
-To point the controller at a different lock (a project-local file, CI, a test
-fixture), override the row in your profile's own `cordis.patch.yml`:
+### Installing by name from a marketplace
+
+Both ecosystems describe a catalog of plugins; slice 1 reads the catalog and
+installs only the entries whose source is a directory inside it:
+
+```bash
+npm run rig -- marketplace list --from <file> [--json]
+npm run rig -- marketplace install <entry> --from <file> [--scope user|project|local] [--dry-run] [--json]
+```
+
+`--from` accepts Claude's `<root>/.claude-plugin/marketplace.json`, Codex's
+`<root>/.agents/plugins/marketplace.json` (and the Claude file as Codex's
+legacy-compatible fallback), or any file that holds the same document: one
+normalizer reads both, so a catalog does not declare which ecosystem wrote it.
+`list` prints name, description, source kind, target and policy per entry, and
+names every malformed entry by index, name and line — one bad entry does not
+take the catalog down. Unknown fields are reported as notes, not dropped
+silently and not fatal. A malformed entry makes `list` exit 1 after printing
+the readable entries; a remote entry is a valid row, not a malformed one.
+
+`install` resolves a `local` source (`"./"`-relative, or `"."` for the catalog
+root; `.agents/plugins/` catalog paths resolve from the marketplace root, not
+from the catalog's own directory), refuses any target that resolves outside
+that root — including through a symlink — and then calls the same
+`installPlugin` path as `rig install <dir>`. The lock record, the enablement
+decision, the refusals and `--dry-run` are therefore byte-for-byte the ones a
+directory install produces, except for the record's `source`:
+
+```yaml
+    source: "{\"marketplace\":\"my-marketplace\",\"entry\":\"my-plugin\",\"version\":\"1.2.3\"}"
+```
+
+A structured provenance lives inside the canonical double-quoted JSON string,
+because D23 already defines every value that way: the grammar does not move and
+the schema stays `dsh-anyplugin/installs@1`, so a reader that only requires
+`source` to be a non-empty string still reads the file. `url`, `github`,
+`git-subdir`, `npm`, `archive` and `command` entries are valid catalog rows but
+are refused as `unsupported-marketplace-source`: installing one needs a fetch,
+a content hash pin and consent (D27), which is slice 2. There is no network
+call on either command.
+
+`policy.installation` is enforced, not just printed: an entry declaring
+`"NOT_AVAILABLE"` is refused by `install` with a typed
+`marketplace-entry-not-available` naming the file, the entry and the policy,
+even when its source is local. The other Codex values (`AVAILABLE`,
+`INSTALLED_BY_DEFAULT`) install by name. An entry name the catalog declares
+twice is refused rather than resolved to the first match: `list` reports the
+duplicate and exits 1, and `install` refuses with
+`ambiguous-marketplace-entry`.
+
+The catalog's `version` is provenance, not the record's version: when the entry
+and the artifact's `plugin.json` disagree, the record keeps the artifact's
+`version`, `source.version` keeps the catalog's, and `install` prints a note
+naming both.
 
 ```yaml
 - id: dsh-anyplugin

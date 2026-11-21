@@ -43,6 +43,7 @@ export const FIXTURE_EXCLUSIONS = {
   'claude-output-styles-activation': 'output-style activation at agent start: packages/dsh-anyplugin-conformance/test/output-styles-activation.test.mjs',
   'codex-portable': 'the codex dialect fixture: packages/dsh-anyplugin-conformance/test/codex.test.mjs',
   hooks: 'raw hook payload fixtures: packages/dsh-anyplugin-conformance/test/hooks.test.mjs and inventory.test.mjs',
+  'marketplace-local': 'the hand-authored catalog and its local plugin: packages/dsh-anyplugin-conformance/test/marketplace.test.mjs',
   mods: 'the mod ABI fixtures: packages/dsh-anyplugin-conformance/test/mods.test.mjs, mod-scan.test.mjs, trust.test.mjs and upstream-mods.test.mjs',
   traces: 'reader fixtures for captured traces: packages/dsh-anyplugin-conformance/test/trace.test.mjs',
 }
