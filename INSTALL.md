@@ -219,12 +219,14 @@ dropping the module.
 
 ### Installing by name from a marketplace
 
-Both ecosystems describe a catalog of plugins; slice 1 reads the catalog and
-installs only the entries whose source is a directory inside it:
+Both ecosystems describe a catalog of plugins; one normalizer reads both. A
+`local` source installs from the catalog tree; `url`, `git-subdir` and `npm`
+sources are fetched into a content-addressed cache under a per-fetch `network`
+grant:
 
 ```bash
 npm run rig -- marketplace list --from <file> [--json]
-npm run rig -- marketplace install <entry> --from <file> [--scope user|project|local] [--dry-run] [--json]
+npm run rig -- marketplace install <entry> --from <file> [--scope user|project|local] [--yes] [--dry-run] [--json]
 ```
 
 `--from` accepts Claude's `<root>/.claude-plugin/marketplace.json`, Codex's
@@ -252,11 +254,24 @@ directory install produces, except for the record's `source`:
 A structured provenance lives inside the canonical double-quoted JSON string,
 because D23 already defines every value that way: the grammar does not move and
 the schema stays `dsh-anyplugin/installs@1`, so a reader that only requires
-`source` to be a non-empty string still reads the file. `url`, `github`,
-`git-subdir`, `npm`, `archive` and `command` entries are valid catalog rows but
-are refused as `unsupported-marketplace-source`: installing one needs a fetch,
-a content hash pin and consent (D27), which is slice 2. There is no network
-call on either command.
+`source` to be a non-empty string still reads the file. A fetched entry also
+records what it resolved to, so a later install can tell the pin moved:
+
+```yaml
+    source: "{\"marketplace\":\"my-marketplace\",\"entry\":\"git-plugin\",\"version\":\"1.2.3\",\"integrity\":\"git:<40-hex commit>\",\"resolvedAt\":\"2026-11-21T12:00:00.000Z\"}"
+```
+
+`integrity` is `git:<commit>`, `npm:<sha512 of the packed tarball>` or
+`sha256:<sha256 of the downloaded bytes>`; `resolvedAt` records when the bytes
+were first fetched. Two installs of the same resolved commit or tarball produce
+the same `integrity`, and re-installing the same bytes keeps the lock
+byte-identical. The pair must appear together, and the schema still stays
+`dsh-anyplugin/installs@1` — the object lives inside the existing canonical
+string.
+
+`github`, `archive` and `command` entries are valid catalog rows but are
+refused as `unsupported-marketplace-source`: each names the missing piece and
+points at the follow-up slice.
 
 `policy.installation` is enforced, not just printed: an entry declaring
 `"NOT_AVAILABLE"` is refused by `install` with a typed
@@ -271,6 +286,60 @@ The catalog's `version` is provenance, not the record's version: when the entry
 and the artifact's `plugin.json` disagree, the record keeps the artifact's
 `version`, `source.version` keeps the catalog's, and `install` prints a note
 naming both.
+
+### Remote entries: fetch, integrity, consent
+
+`url`, `git-subdir` and `npm` sources are fetched, never read from the catalog
+tree. Fetching is `network`-class (D27): the exact command is printed and the
+install refuses with `network-consent-required` unless passed `--yes`:
+
+```
+refused (network-consent-required): entry "my-marketplace:git-plugin" is
+fetched, not read: git fetch --depth=1 https://example.invalid/plugin.git main
+  hint: re-run with --yes to fetch it and record a network grant pinned to the
+  resolved bytes; this grant never authorizes exec/mod
+```
+
+`--yes` records a `network` grant in `grants.yml` whose target is the exact
+source spec and whose `artifactHash` is the resolved integrity. A later run
+without `--yes` uses that grant. When a floating `ref` (for example `main`)
+resolves to a new commit, or a tarball's bytes change, the install refuses with
+`network-pin-moved` naming both the recorded and the resolved identity before
+anything new is installed, and exits 1; passing `--yes` accepts the new pin,
+updates the grant and reinstalls. A revoke at the install's scope is final:
+`--yes` does not override `network-consent-revoked`. A `network` grant is
+capability-scoped — it never authorizes `exec`, `hook`, `monitor`, `bin` or
+`mod`, which still go through the ordinary trust gate.
+
+`--dry-run` fetches nothing: it prints the exact command, the consent state and
+the target, writes no lock, layer, grant or cache entry, and exits 0. The tests
+assert the cache directory does not exist afterwards.
+
+Fetch rules:
+
+- `https://` and `file://` only; `http://` is a typed
+  `insecure-marketplace-source` refusal before any request is made. A URL that
+  carries credentials is refused, and every printed URL drops userinfo and
+  query strings.
+- `git-subdir` runs a shallow `git fetch` with a fixed argv (no submodules, no
+  terminal prompts), checks out the resolved commit or the requested `sha`, and
+  refuses a `path` that escapes the repository or is absent.
+- `npm` packs with `--ignore-scripts`, so a `prepare` or `postinstall` in the
+  package never runs; a registry spec must pin an exact `version` (no
+  `latest`, no ranges), and a package with no plugin manifest after extraction
+  is refused.
+- `url` must return a gzipped tarball; the download is capped at 20 MiB and
+  five redirects, hashed before extraction, and extracted with the same
+  traversal checks as the other kinds.
+- A fetched artifact is cached under
+  `<lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/` with the
+  metadata `kind`, `integrity`, `resolved`, `resolvedAt` and `version`. The
+  cache directory is written only after the bytes were verified; a pinned sha
+  or exact npm version can be reinstalled from it without touching the network.
+
+The fetched directory then goes through the same `installPlugin` path as a
+local one — the same dialect detection, report, refusals, enablement decision
+and `--dry-run` — so there is still one install writer.
 
 ```yaml
 - id: dsh-anyplugin

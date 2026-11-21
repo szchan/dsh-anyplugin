@@ -93,6 +93,13 @@ export type InstallCliCode =
   | 'unsupported-marketplace-source'
   | 'marketplace-entry-not-available'
   | 'marketplace-path-escape'
+  | 'insecure-marketplace-source'
+  | 'marketplace-fetch-refused'
+  | 'marketplace-fetch-failed'
+  | 'marketplace-artifact-invalid'
+  | 'network-consent-required'
+  | 'network-consent-revoked'
+  | 'network-pin-moved'
   | 'write-failed'
 
 export class InstallCliError extends Error {

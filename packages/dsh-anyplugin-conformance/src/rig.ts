@@ -136,20 +136,23 @@ const USAGE = `usage:
   rig disable <plugin> [--scope <s>] [--dry-run] [--json]
   rig uninstall <plugin> [--dry-run] [--json]
   rig marketplace list --from <file> [--json]
-  rig marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--dry-run] [--json]
+  rig marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--yes] [--dry-run] [--json]
 
   marketplace reads a Claude (.claude-plugin/marketplace.json) or Codex
-  (.agents/plugins/marketplace.json) catalog without touching the network.
-  \`list\` prints each entry's name, description, source kind and policy, and
-  names every malformed entry instead of failing the file. \`install\` resolves
-  a "./" local source inside the catalog's root and then runs the same install
-  as \`rig install <dir>\`: one lock record, one enablement decision, the same
-  refusals and the same --dry-run. \`url\`, \`github\`, \`git-subdir\`, \`npm\`,
-  \`archive\` and \`command\` entries are listed but refused as unsupported —
-  installing one needs a fetch, a content hash pin and consent (D27), which is
-  slice 2 of #117. The record's source names the catalog and entry it came
-  from.
-
+  (.agents/plugins/marketplace.json) catalog without touching the network for
+  \`list\`. \`list\` prints each entry's name, description, source kind and
+  policy, and names every malformed entry instead of failing the file.
+  \`install\` resolves a "./" local source inside the catalog's root and then
+  runs the same install as \`rig install <dir>\`: one lock record, one
+  enablement decision, the same refusals and the same --dry-run. A \`url\`,
+  \`git-subdir\` or \`npm\` entry is fetched into
+  <lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/ only with
+  --yes, and the grant records the resolved commit/tarball hash; a moved pin
+  refuses until --yes accepts it. \`--dry-run\` prints the exact fetch command
+  and creates neither the cache nor a grant. \`github\`, \`archive\` and
+  \`command\` entries are listed but refused as unsupported. The record's
+  source names the catalog, entry, and (for a fetch) its integrity and
+  resolvedAt.
   --grants reads the hash-pinned exec grant store; without it the store is
   empty, so exec artifacts report refused:exec and are not emitted (D25).
   --scope is local, project, or user (default: user). \`grant\` prints every
@@ -315,7 +318,7 @@ function assertLifecycleOptions(command: string, args: Args): void {
  */
 const MARKETPLACE_OPTIONS: Record<string, readonly string[]> = {
   list: ['from', 'json', 'help'],
-  install: ['from', 'json', 'config', 'project', 'scope', 'dialect', 'force', 'allow-empty', 'dry-run', 'help'],
+  install: ['from', 'json', 'config', 'project', 'scope', 'dialect', 'force', 'allow-empty', 'yes', 'dry-run', 'help'],
 }
 
 function assertOptions(scope: string, args: Args, allowed: readonly string[]): void {
@@ -599,7 +602,7 @@ async function main(argv: string[]): Promise<number> {
     const dialect = args.options.get('dialect')
     if (dialect !== undefined && typeof dialect !== 'string') throw new Error(`missing value for --dialect\n${USAGE}`)
     try {
-      const result = installFromMarketplace({
+      const result = await installFromMarketplace({
         from,
         entry,
         ...lifecyclePaths(args),
@@ -607,6 +610,7 @@ async function main(argv: string[]): Promise<number> {
         ...(typeof dialect === 'string' ? { dialect } : {}),
         ...(args.options.get('force') === true ? { force: true } : {}),
         ...(args.options.get('allow-empty') === true ? { allowEmpty: true } : {}),
+        ...(args.options.get('yes') === true ? { yes: true } : {}),
         ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
       })
       console.log(json ? JSON.stringify(result, null, 2) : formatMarketplaceInstall(result))
