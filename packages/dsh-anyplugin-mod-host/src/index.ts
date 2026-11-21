@@ -195,7 +195,7 @@ export interface LoadModOptions {
    */
   readonly pluginOptions?: Readonly<Record<string, unknown>>
   /**
-   * Every plugin-relative path the grant pinned (D51). When present, the entry
+   * Every plugin-relative path the grant pinned (D52). When present, the entry
    * and every module the linker resolves must be in the set; anything else
    * refuses with `ERR_MOD_HOST_UNGRANTED` before it is created. A mod may
    * import any file under its root, so the set — not the import graph — is the
@@ -204,7 +204,7 @@ export interface LoadModOptions {
    */
   readonly files?: readonly string[]
   /**
-   * The pinned bytes themselves, keyed by plugin-relative path (D51, M1).
+   * The pinned bytes themselves, keyed by plugin-relative path (D52, M1).
    * When present, `loadMod` compiles from this map and never opens a path
    * under `root`: the digest the grant pinned and the code that evaluates are
    * one snapshot, so rewriting a file between the scan and the link cannot
@@ -213,7 +213,7 @@ export interface LoadModOptions {
   readonly sources?: ReadonlyMap<string, Uint8Array | string>
 }
 
-/** Plugin-relative POSIX path, the form a tree manifest stores (D51). */
+/** Plugin-relative POSIX path, the form a tree manifest stores (D52). */
 function relativePath(root: string, file: string): string {
   return relative(root, file).split(sep).join('/')
 }
@@ -382,7 +382,7 @@ export async function loadMod(options: LoadModOptions): Promise<LoadedMod> {
     }
   }
 
-  // Manifest paths are already plugin-relative (D51); an absolute path is
+  // Manifest paths are already plugin-relative (D52); an absolute path is
   // accepted for a caller holding one and normalized against the same root.
   const granted =
     sources !== undefined

@@ -365,7 +365,15 @@ async function main(argv: string[]): Promise<number> {
       materializers: MATERIALIZERS,
       ...(grants === undefined ? {} : { grants }),
     })
-    console.log(args.options.get('json') === true ? JSON.stringify(report, null, 2) : formatTransplantReport(report))
+    // Pass-through by design: `report` reads a plugin directory, not the lock.
+    // Say so, so a preview cannot be read as the controller's install decision.
+    const preview =
+      'preview only: rig report does not read installs.yml, so "not recorded" is not enforced here (the controller decides at boot)'
+    console.log(
+      args.options.get('json') === true
+        ? JSON.stringify({ preview, ...report }, null, 2)
+        : `${preview}\n${formatTransplantReport(report)}`,
+    )
     return report.ok ? 0 : 1
   }
 

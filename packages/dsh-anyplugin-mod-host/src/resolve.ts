@@ -123,7 +123,7 @@ export function resolveModSpecifier(options: ResolveModSpecifierOptions): Resolv
 
 /**
  * The same rules against a **snapshot** of pinned, plugin-relative paths
- * (D51, M1). No file is stat'ed: the answer comes from the granted map, so a
+ * (D52, M1). No file is stat'ed: the answer comes from the granted map, so a
  * path rewritten between the scan and the link cannot change what loads.
  *
  * Every miss is a typed error, never a skip. A plausible candidate the map

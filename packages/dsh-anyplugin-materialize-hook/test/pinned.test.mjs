@@ -1,5 +1,5 @@
 // A mod row that reaches the materializer must carry the emitter's tree pin
-// over the *whole plugin tree* (D51). A hand-written row is refused before
+// over the *whole plugin tree* (D52). A hand-written row is refused before
 // `loadMod`; a tree that gained, lost or changed a file since the grant is
 // refused with the reason; a row with no root cannot be re-read at all. Every
 // refusal is an exec-class refusal: a warning and a trace, never an evaluation.

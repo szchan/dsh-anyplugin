@@ -15,8 +15,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -25,7 +27,9 @@ import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { compileEntries, readEnablements, readInstalls, reconcile } from '../../dsh-anyplugin-install/src/index.ts'
-import { GRANTS_SCHEMA, grantsPath, writeGrants } from '../../dsh-anyplugin-trust/src/index.ts'
+import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
+import { apply as applyHook } from '../../dsh-anyplugin-materialize-hook/src/index.ts'
+import { GRANTS_SCHEMA, grantsPath, readGrants, writeGrants } from '../../dsh-anyplugin-trust/src/index.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -723,6 +727,53 @@ test('list refuses a mod the lock does not record, even with a matching grant', 
     const json = JSON.parse(run(box, ['list', '--json']).stdout)
     assert.deepEqual(json.plugins[0].mods, [])
     assert.equal(json.plugins[0].report.notRecorded[0].name, 'hooks/register.ts')
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('install through a symlink records the real root, and the materializer opens it', async () => {
+  const box = sandbox()
+  try {
+    const real = copyFixture(modsFixture, box.dir, 'real-mods')
+    const link = join(box.dir, 'link-mods')
+    symlinkSync(real, link, 'dir')
+    const grants = join(box.home, 'anyplugin', 'grants.yml')
+    const granted = run(box, ['grant', '--plugin', link, '--grants', grants, '--yes'])
+    assert.equal(granted.status, 0, granted.stdout + granted.stderr)
+
+    const installed = run(box, ['install', link])
+    assert.equal(installed.status, 0, installed.stdout + installed.stderr)
+
+    // The lock records the directory the loader will open. A mutation back to
+    // `resolve(pluginDir)` stores the link; the apply below then reddens with
+    // "pluginRoot is not the real path (code: plugin-root)".
+    const lock = readInstalls(box.lock)
+    assert.equal(lock.plugins[0].root, realpathSync(real))
+    assert.notEqual(lock.plugins[0].root, link)
+
+    const compiled = compileEntries(lock, {
+      materializers: defaultMaterializers(),
+      home: box.home,
+      projectDir: box.project,
+      grants: readGrants(grants),
+    })
+    const hook = compiled[0].config.find((child) => child.id.endsWith('#hook'))
+    assert.equal(hook.config.pluginRoot, realpathSync(real))
+
+    const warnings = []
+    const ctx = {
+      on: () => () => {},
+      effect: (register) => register(),
+      logger: { warn: (message) => warnings.push(String(message)) },
+    }
+    await applyHook(ctx, { ...hook.config, plugin: 'mods' })
+    const log = warnings.join('\n')
+    assert.doesNotMatch(log, /plugin-root|real path|refused mod/)
+    // Reaching an unbridged surface proves `loadMod` evaluated the pinned
+    // snapshot; a link-root mutation refuses before evaluation instead.
+    assert.match(log, /session\.start surface and isInteractive are host facts/)
+    assert.equal(warnings.length, 1)
   } finally {
     cleanup(box.dir)
   }

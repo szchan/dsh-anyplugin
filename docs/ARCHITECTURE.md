@@ -1319,7 +1319,13 @@ the bytes it hashed, and the loader and linker compile *that map*, never the
 path, so the window between the gate and the load is closed rather than
 narrowed (a tree over 64 MiB is refused with the same typed reason). The same
 map bounds the linker, so a module that imports a file outside the manifest is
-refused with `ERR_MOD_HOST_UNGRANTED` instead of evaluated. A
+refused with `ERR_MOD_HOST_UNGRANTED` instead of evaluated. The grant bounds
+**what the loader may evaluate**, not what a running mod may read: `$.fs.read`
+still serves any path the process can read, including absolute paths, `../`
+escapes and symlinks outside the plugin tree (`bridge.test.mjs` pins the
+bridge's pass-through behaviour), so a granted mod can read outside its tree.
+Read confinement is a separate capability: a named future decision (proposed
+here as D53, `$.fs` read confinement) must define it; D52 does not claim it. A
 hand-written `mods` entry without a pin is refused, never loaded (`D25`, fail
 closed). A `mods` entry the lock does not record is refused the same way
 (`not-recorded`): a grant alone does not boot a tree, and a `@1` lock boots
@@ -1894,7 +1900,9 @@ component its surface, name, class and reason, its `model` / `human` faces where
 the IR models more than one, and whether emit carried or skipped it. The trailing
 totals aggregate those rows — `declared` from the IR's entry list, `emitted` /
 `skipped` from each component's carry decision — so they cannot disagree with the
-components above them. The report is a reader, not a second fidelity claim: the
+components above them. It does not consult `installs.yml` (the controller does,
+at boot), so its output is labelled `preview only` and `not-recorded` is not
+enforced there. The report is a reader, not a second fidelity claim: the
 classes and reasons come from the IR annotations and `carried` is emit's
 `considered` set minus its `skipped` set, which is why it runs in CI without the
 installed harness. `validateIr` problems make it exit non-zero and are labelled

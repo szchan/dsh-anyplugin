@@ -26,7 +26,7 @@
  * another. A relative/outside-root *data* operand is allowed; the hook's own
  * cwd decides what it means. A hook manifest keeps discovery order and
  * duplicate words; a mod's *tree* manifest is the one sorted artifact — see
- * `treeArtifact` for that derived rule (D51).
+ * `treeArtifact` for that derived rule (D52).
  */
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
@@ -127,7 +127,7 @@ function fileEntry(file: string): ArtifactFile {
  * Re-read exactly the manifest's paths and return the current hash. This never
  * re-parses the command. Throws if a pinned file is gone or unreadable.
  *
- * A tree manifest stores **plugin-relative** paths (D51), so the caller hands
+ * A tree manifest stores **plugin-relative** paths (D52), so the caller hands
  * the root the manifest was made against. Hook manifests stored absolute
  * paths, which still work: an absolute path ignores `root`.
  */
@@ -235,14 +235,14 @@ export type TreeScan =
        * The exact bytes every file had when it was hashed, keyed by
        * plugin-relative path. `loadMod` compiles from this map, so the digest
        * and the code that runs are one snapshot: nothing re-opens a path after
-       * the scan (D51, M1).
+       * the scan (D52, M1).
        */
       contents: ReadonlyMap<string, Uint8Array>
     }
   | { ok: false; refusal: TreeRefusal }
 
 /**
- * Walk the **whole plugin tree** (D51) and hash every authored file, in
+ * Walk the **whole plugin tree** (D52) and hash every authored file, in
  * ascending plugin-relative path order.
  *
  * Pinning only the entry's directory pins the wrong thing: a mod may import any
@@ -330,7 +330,7 @@ export function scanTree(root: string, options: TreeOptions = {}): TreeScan {
 export type TreeResult = { ok: true; artifact: TreeArtifact } | { ok: false; refusal: TreeRefusal }
 
 /**
- * Resolve a mod's artifact: **the plugin tree** (D51).
+ * Resolve a mod's artifact: **the plugin tree** (D52).
  *
  * `entry` is the plugin-relative loader entry (`hooks/register.ts`); it must be
  * one of the tree's files. `invocation` is that entry text, `command` is empty —

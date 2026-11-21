@@ -19,7 +19,7 @@ export type ModHostErrorCode =
   /** A file or specifier extension that D30 does not load. */
   | 'ERR_MOD_HOST_UNSUPPORTED_EXT'
   /**
-   * The module graph reaches a file the granted manifest does not pin (D51):
+   * The module graph reaches a file the granted manifest does not pin (D52):
    * a directory symlink that escaped the scan, an import of a file that no
    * grant covers, or an entry outside the pinned set. The host refuses before
    * the module is created, so un-granted bytes are never evaluated.

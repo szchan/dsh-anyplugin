@@ -136,7 +136,7 @@ export interface MaterialMod {
   /** Kernel budget for every registration this mod declares. */
   timeoutMs?: number
   /**
-   * D25/D51 pin carried by the emitter: one digest over the **whole plugin
+   * D25/D52 pin carried by the emitter: one digest over the **whole plugin
    * tree** (plugin-relative paths, `.git`/`node_modules`/plugin data excluded).
    * Absent on a hand-written config, and then the mod is refused before
    * `loadMod` — a mod is `exec`-class and default-off.

@@ -321,7 +321,7 @@ function validateInstalledMod(mod: InstalledMod, file: string, line: number, lin
       if (!(field in fileRaw)) throw new InstallsFileError(`missing mod file field "${field}"`, atFile(index, 'path'))
     }
     const { path, sha256, bytes } = item as InstalledModFile
-    // D51: tree paths are plugin-relative. The digest is over those paths, so
+    // D52: tree paths are plugin-relative. The digest is over those paths, so
     // an absolute path would make the same bytes hash differently at two
     // checkouts and would tie the lock to one machine.
     if (typeof path !== 'string' || path.length === 0 || isAbsolute(path)) {

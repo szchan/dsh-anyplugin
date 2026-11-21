@@ -15,7 +15,7 @@
  * also the target, so a move is a new target. The hash, never the path or mtime,
  * is what the grant actually pins.
  *
- * A mod is an artifact over the **whole plugin tree** (D51): a mod may import
+ * A mod is an artifact over the **whole plugin tree** (D52): a mod may import
  * any file under its root, so every authored file is code-capable and every
  * one is pinned, in ascending plugin-relative path order (the derived rule
  * documented in `hash.ts`). `.git`, `node_modules` and the plugin's data

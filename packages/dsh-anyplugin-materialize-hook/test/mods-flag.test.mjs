@@ -20,7 +20,7 @@ const applyUrl = new URL('../src/index.ts', import.meta.url).href
 test('without --experimental-vm-modules: one warning for two apply() calls, one trace refusal per mod', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-vm-flag-'))
   // Trace files live outside the pinned tree: the mod artifact now covers the
-  // whole plugin root (D51), and a trace written into it would change the file
+  // whole plugin root (D52), and a trace written into it would change the file
   // set between the pin and the re-list.
   const logs = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-vm-flag-logs-'))
   try {

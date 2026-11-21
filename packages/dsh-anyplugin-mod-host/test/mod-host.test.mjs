@@ -438,7 +438,7 @@ test('without --experimental-vm-modules the host refuses before touching the mod
 })
 
 // ---------------------------------------------------------------------------
-// D51 (M4): the linker is bounded by the granted set, and the snapshot bytes —
+// D52 (M4): the linker is bounded by the granted set, and the snapshot bytes —
 // not whatever is on disk — are what evaluates.
 // ---------------------------------------------------------------------------
 

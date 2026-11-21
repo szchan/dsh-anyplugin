@@ -19,7 +19,7 @@
  * layer, never the lock, and `uninstall` removes the lock row while leaving
  * the layers alone — a workspace's policy outlives a reinstall.
  */
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -411,14 +411,19 @@ export function installPlugin(options: InstallOptions): InstallResult {
   // missing relative target as a wrong-directory error.
   const state = readLifecycle(paths, { allowMissingConfig: true })
 
-  const root = resolve(options.pluginDir)
+  // Install records the directory the loader will open, not the link the user
+  // typed: the materializer refuses a root whose realpath differs, so recording
+  // a symlink would write a grant + lock that can never boot (MUST 1). Resolve
+  // once here; every later read uses `root`.
+  let root: string
   let stat
   try {
+    root = realpathSync(resolve(options.pluginDir))
     stat = statSync(root)
   } catch (error) {
     throw new InstallCliError(
       'unreadable-directory',
-      `${root}: ${(error as Error).message}`,
+      `${resolve(options.pluginDir)}: ${(error as Error).message}`,
       'pass a directory that exists and contains a plugin manifest',
     )
   }
