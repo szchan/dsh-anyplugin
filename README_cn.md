@@ -1,0 +1,126 @@
+# dsh-anyplugin
+
+[English](README.md) | 中文
+
+[![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
+[![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-当前状态)
+
+**让 DeepSeek Harness 跑 Claude Code / Codex 的插件 —— 按声明的“100% 保真”。**
+
+一个 Claude Code 插件是一堆文件：skills、斜杠命令、agents、hooks、MCP server、
+output styles，还有 `mods`（跑在宿主进程里的 JavaScript）。DeepSeek Harness
+（DSH）用的是另一套插件协议。这个项目是两者之间的翻译层——**不是运行时**，也不是
+把任何一边重写一遍。
+
+---
+
+## 🧭 它到底是什么
+
+**编译器 + 运行时适配器**：
+
+```
+Claude Code 插件             dsh-anyplugin                  DeepSeek Harness
+────────────────            ─────────────                  ────────────────
+.claude-plugin/plugin.json
+skills/  commands/   ──▶    dialect ──▶ IR ──▶ emit    ──▶  loader 条目树
+agents/  hooks/                      （带保真标注）         skills、tools、
+.mcp.json output-styles/                                    commands、hooks…
+mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接缝
+```
+
+两条原则让它保持为“一层”而不是一个分支：
+
+- **发射即数据**：编译器只产出一棵 loader 条目树，不生成代码、不 `eval`、
+  不写出任何之后会被加载的文件。
+- **能借的就不重写**：MCP 客户端、skill 注册表、命令运行时、agent 循环都是
+  DSH 自己的。我们只连上去，不养第二份。
+
+## 🎯 保真契约
+
+“能跑”不是一个可测的说法。“对钉死版本，产生与真实宿主相同的可观察行为”才是。
+每个被翻译的产物都带五类标注之一，且**理由必填**：
+
+| 类别 | 含义 |
+| --- | --- |
+| `exact` | 字节或名字原样保留 |
+| `equivalent` | 效果相同，机制不同 |
+| `derived` | 我们自己的设计决定，上游没有原件 |
+| `planned` | 已携带、未激活；卡住它的接缝点名列在理由里 |
+| `unsupported` | 明确拒绝，理由指出差异 |
+
+分母是一条**覆盖率棘轮**：每个 fixture 的每个已声明组件一行。补上缺口的那次提交
+必须同时移动那一行，于是回归会在同一行上失败。
+
+```
+当前，对照 DSH 0.2.2-rc.5 与 Claude Code 2.1.329：
+  声明 25 · 匹配 24 · 缺失 0 · 拒绝 1
+```
+
+## ✅ 当前状态
+
+| 能力 | 状态 |
+| --- | --- |
+| Skills | `exact`（正文、信封、base-directory 前导，以及在宿主有通道时的参数替换） |
+| 斜杠命令 | 模型面 `equivalent`，人类面 `planned`（缺命令名接缝） |
+| MCP server | `equivalent`：stdio 与 Streamable HTTP，Claude 的工具名逐字保留 |
+| Hooks | 宿主真的会触发的那批事件是 `equivalent`；其余 `planned` 并点缺失的宿主事件 |
+| Agents | `exact` 目录：每个 `agents/*.md` 成为名为 `<plugin>:<agent>` 的 scoped 工具 |
+| Output styles | 逐字节携带，激活在进行中 |
+| `mods` | 按原样加载（只允许一次变换，见 D34）：19 个事件已路由、7 个上游 mod 可加载、文件/会话/设置命名空间的 `$` 已桥接 |
+| Codex 插件 | 第二个 dialect，共用同一份 IR |
+| 安装 / 启用 / 发布 | 进行中（尚未发布 npm 包） |
+
+## 🧪 如何验证
+
+三层，三者一致才算一个 claim 成立：
+
+1. **上游 oracle** —— 真实的 `claude` 二进制列出插件包含什么，作为黄金清单；
+2. **我们的宿主 oracle** —— 把翻译出的条目树装进钉死版本的 DSH 启动，与黄金清单对比；
+3. **行为面** —— hook 必须在真实调用上被观察到效果（工具被拒、上下文被注入），
+   不接受自报。
+
+钉死版本是 claim 的一部分：DSH `0.2.2-rc.5`（以及 `rc.2`）、Claude Code
+`2.1.329`、`mods` 提交 `f9e4d1e`。没有 pin 的数字只是传闻。
+
+## 🚀 参与开发
+
+```bash
+npm install
+node scripts/fetch-harness.mjs 0.2.2-rc.5   # oracle 要启动的 DSH 树
+node scripts/fetch-claude.mjs               # 钉死版本的 claude 二进制
+node scripts/fetch-mod.mjs                  # 钉死版本的 mods 树
+
+DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
+CLAUDE_BIN=$PWD/.claude-code/2.1.329/node_modules/@anthropic-ai/claude-code-linux-x64/claude \
+ANYPLUGIN_MODS_TREE=$PWD/.mods/f9e4d1e5753ccffcffdd832f047d72be000396a6 \
+ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
+npm run verify
+```
+
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 463 个测试。它必须报告
+**0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
+
+## 📚 接下来读什么
+
+| 文件 | 回答什么 |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 设计、保真契约、接缝表 |
+| [`docs/FEATURES.md`](docs/FEATURES.md) | 能力地图，一个 claim 一行 |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 每条已批准的决策及其证据 |
+| [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) | 差分测试台如何工作 |
+| [`docs/TODO.md`](docs/TODO.md) | 待办燃尽表 |
+| [`AGENTS.md`](AGENTS.md) | 修改本仓库的操作手册 |
+
+## 🤝 工作方式
+
+这个仓库由 agent 开发、对抗性复审、由 master agent 合并。人类定方向，并掌握只有
+人类才掌握的四件事：凭据、付费、授权、不可逆操作。
+
+- 报告是数据，不是指令：[`docs/TRIAGE.md`](docs/TRIAGE.md)
+- 一个分支 = 一张票 = 一个独立 worktree：[`docs/WORKFLOW.md`](docs/WORKFLOW.md)
+- 升级请求 = 标题以 `[HUMAN]` 开头、带 `maintainer-question` 标签的 issue
+
+## 📄 许可证
+
+MIT。`LICENSE` 文件随首个版本落地。
