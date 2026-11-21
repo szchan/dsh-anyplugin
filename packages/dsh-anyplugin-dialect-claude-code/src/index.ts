@@ -17,6 +17,7 @@ import type {
   ClaudePluginIr,
   IrAgent,
   IrAgentFaces,
+  IrAgentSkill,
   IrHook,
   IrMcpServer,
   IrOutputStyle,
@@ -400,25 +401,48 @@ function readSkillsAndCommands(root: string): {
 }
 
 /**
- * S10 — what an agent file can and cannot become at this pin.
+ * S16 — every agent frontmatter face, observed against the host at the pin.
  *
  * The catalog face is exact because a plugin can register its own tool with the
  * agent's name and its frontmatter description, verbatim; `ctx.tools.schemas()`
- * is what the model reads. The invocation face is equivalent because the
- * daemon-side seam starts the child with the body as a *user message*
+ * is what the model reads. The invocation face is equivalent because the seam
+ * starts the child with the body as a *user message*
  * (`SubagentStartRequest.prompt`), not as its system prompt, and because N tools
  * replace Claude's single `Task` with a `subagent_type` enum.
  *
- * Everything else in the frontmatter needs a per-activation field that
- * `SubagentStartRequest` does not have. `agentOptions` can carry a provider
- * model id and effort for a route the deployment knows, but Claude's
- * `model: sonnet|opus|haiku` aliases are not such ids; tools need the
- * preset/toolFilter path; `maxTurns`/`isolation` need the child loop. Those
- * stay planned, each with its own reason, and the overall annotation is their
- * weakest so the component cannot read as fully carried.
+ * The remaining keys are one face each. `spikes/s16-agent-faces` found that the
+ * pin ignores all of them as activation fields: the child keeps the parent's
+ * toolset (`echo` still visible under `tools: [Read, Grep]`), runs past
+ * `maxTurns: 1` (three requests), keeps the parent's cwd under
+ * `isolation: worktree`, and receives no skill text. `agentOptions.model` does
+ * reach the provider, but literally — `sonnet` arrives as a model id the
+ * provider may know nothing about — and `agentOptions.reasoningEffort` only
+ * works when the provider advertises that exact id. So model and effort are
+ * `unsupported` (the escape layer that delegates to the real client is the only
+ * path), tools and maxTurns are `unsupported`, isolation is `planned` behind a
+ * named child-composition seam, and `skills` is `equivalent` only when every
+ * declared name resolves to a body this plugin ships (prepended to the child's
+ * first user message), `planned` otherwise. The overall annotation is the
+ * weakest face, so a component can never read as fully carried.
  */
 export function agentFaces(
-  agent: Pick<IrAgent, 'name' | 'model' | 'tools' | 'disallowedTools' | 'effort' | 'maxTurns' | 'isolation'>,
+  agent: Pick<
+    IrAgent,
+    | 'name'
+    | 'model'
+    | 'tools'
+    | 'disallowedTools'
+    | 'effort'
+    | 'maxTurns'
+    | 'isolation'
+    | 'skills'
+    | 'skillContents'
+    | 'memory'
+    | 'background'
+    | 'omitClaudeMd'
+    | 'color'
+    | 'autoCompactWindow'
+  >,
   plugin: string,
 ): IrAgentFaces {
   const toolName = `${plugin}:${agent.name}`
@@ -439,41 +463,144 @@ export function agentFaces(
 
   if (agent.model !== undefined) {
     faces.model = {
-      fidelity: 'planned',
+      fidelity: 'unsupported',
       reason:
-        `Frontmatter \`model: ${agent.model}\` is recorded, not forwarded. \`startActivation\` accepts \`agentOptions.model\`/\`reasoningEffort\`, ` +
-        'but Claude\'s alias names no provider model id at this pin; resolving it needs the model-escape layer (ARCHITECTURE §9), not a guess.',
+        `Frontmatter \`model: ${agent.model}\` names a Claude model or alias (sonnet/opus/haiku/...), not a route this deployment has. ` +
+        '`startActivation` carries only `agentOptions.model`; S16 observed it reach the child model call verbatim, so forwarding `sonnet` asks the provider for a model named "sonnet". ' +
+        'A vendor model identity cannot be reimplemented here: the escape layer that delegates the component to the real client (docs/TODO.md "Escape layer") is the only path.',
     }
   }
 
-  const toolList = [...(agent.tools ?? []), ...(agent.disallowedTools ?? [])]
-  if (toolList.length > 0) {
+  if (agent.effort !== undefined) {
+    faces.effort = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`effort: ${agent.effort}\` names a Claude effort level, not a provider one. ` +
+        '`startActivation` carries `agentOptions.reasoningEffort`, but the ids are the provider\'s advertised set: S16 observed the requested id reach the child only after the provider advertised it, and with none advertised the turn dies with `UNSUPPORTED_REASONING_EFFORT`. ' +
+        'Claude\'s low/medium/high/xhigh/max are model-dependent, so naming one would guess at another vendor\'s route; the escape layer is the only path.',
+    }
+  }
+
+  const tools = [...(agent.tools ?? [])]
+  const disallowed = [...(agent.disallowedTools ?? [])]
+  if (tools.length > 0 || disallowed.length > 0) {
+    const declared = [
+      ...(tools.length === 0 ? [] : [`tools: ${JSON.stringify(tools)}`]),
+      ...(disallowed.length === 0 ? [] : [`disallowedTools: ${JSON.stringify(disallowed)}`]),
+    ]
     faces.tools = {
-      fidelity: 'planned',
+      fidelity: 'unsupported',
       reason:
-        `Frontmatter tools ${JSON.stringify(toolList)} recorded, not enforced. \`startActivation\` has no per-activation tool filter ` +
-        '(`childCtx.tools.restrict` is reachable only from a preset composition or the cold-resume descriptor), so the child inherits the parent\'s toolset.',
+        `Frontmatter ${declared.join(', ')} recorded, not enforced. ` +
+        '`SubagentStartRequest` has no tool filter, and S16 observed a child declared `tools: [Read, Grep]`/`disallowedTools: [Bash]` still see a tool the filter would remove. ' +
+        '`ctx.tools.restrict()` takes DSH global tool names, is agent-scoped, refuses unknown names and `run_code`, and denies whole tools; the only composition hook is `agentPreset`, which needs a preset registered on the host and is not something emitted data can carry. Claude names (`Read`, `Grep`, `mcp__*`) and specifiers (`Bash(git push *)`) would also need a translation with per-specifier semantics.',
     }
   }
 
-  const limits = [
-    ...(agent.effort === undefined ? [] : [`effort: ${agent.effort}`]),
-    ...(agent.maxTurns === undefined ? [] : [`maxTurns: ${agent.maxTurns}`]),
-    ...(agent.isolation === undefined ? [] : [`isolation: ${agent.isolation}`]),
-  ]
-  if (limits.length > 0) {
-    faces.limits = {
+  if (agent.maxTurns !== undefined) {
+    faces.maxTurns = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`maxTurns: ${agent.maxTurns}\` recorded, not enforced: neither \`SubagentStartRequest\` nor the agent loop exposes a turn cap. ` +
+        'S16 observed a child declared `maxTurns: 1` issue three model requests (two tool calls and an answer) and end `completed`, not partial.',
+    }
+  }
+
+  if (agent.isolation !== undefined) {
+    faces.isolation = {
       fidelity: 'planned',
       reason:
-        `Frontmatter ${limits.join(', ')} recorded, not enforced. \`SubagentStartRequest\` has no per-activation field for them; ` +
-        '`maxTurns`/`isolation` need enforcement inside the child loop, which only an agent preset can select today.',
+        `Frontmatter \`isolation: ${agent.isolation}\` recorded, not applied. ` +
+        'A named seam would fix it: `SubagentStartRequest.isolation`, handled in `dsh-subagent` child composition by creating a `ctx.worktrees` checkout as the child cwd and reclaiming it at disposal. ' +
+        'Today `worktrees.create` re-points the calling session, and S16 observed the child cwd equal the parent cwd.',
+    }
+  }
+
+  if (agent.skills !== undefined && agent.skills.length > 0) {
+    const bodies = new Map((agent.skillContents ?? []).map((preload) => [preload.name, preload.content]))
+    const missing = agent.skills.filter((name) => !bodies.has(name))
+    if (missing.length === 0) {
+      faces.skills = {
+        fidelity: 'equivalent',
+        reason:
+          `Frontmatter skills ${JSON.stringify(agent.skills)} are preloaded: their bodies (frontmatter removed, as the skill materializer does) are prepended as text blocks of the child\'s initial user message, after the agent body and before the task. ` +
+          'Claude injects the same full skill content into the subagent at startup; the content is identical and the mechanism differs (prompt blocks, not the skill registry). The S16 conformance test observes the first child request.',
+      }
+    } else {
+      faces.skills = {
+        fidelity: 'planned',
+        reason:
+          `Frontmatter skills ${JSON.stringify(agent.skills)} recorded, not fully preloaded: ${JSON.stringify(missing)} are not shipped by this plugin, so the compiler cannot read their bodies (user/project skill bodies are not in the plugin source). ` +
+          'A named seam would fix it: resolve the names against `ctx.skills` when the activation starts and prepend the bodies; the emitted data today can carry only skills this plugin authored. The resolved ones are still prepended.',
+      }
+    }
+  }
+
+  if (agent.memory !== undefined) {
+    faces.memory = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`memory: ${agent.memory}\` asks for a persistent per-agent memory directory. ` +
+        'DSH has no per-agent memory directory: `startActivation` has no field for one and the session store is per-session/per-cwd, so a child cannot read or write the directory Claude would give it.',
+    }
+  }
+
+  if (agent.background !== undefined) {
+    faces.background = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`background: ${agent.background}\` cannot be enforced. ` +
+        'The materializer\'s tool returns as soon as the activation resolves, so `true` coincides with today\'s behaviour, but `false` (start in the foreground and wait) cannot be expressed: `SubagentActivation.result` is a promise the tool does not await, and `delivery` only chooses where the final answer goes. Background subagents also get a smaller tool set in Claude, which has no counterpart.',
+    }
+  }
+
+  if (agent.omitClaudeMd !== undefined) {
+    faces.omitClaudeMd = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`omitClaudeMd: ${agent.omitClaudeMd}\` asks to start the child without CLAUDE.md. ` +
+        'The child receives the instructions the session already loaded (`dsh-agent-instructions` is a session-level baseline with no per-activation suppression), and `startActivation` has no field to remove them.',
+    }
+  }
+
+  if (agent.color !== undefined) {
+    faces.color = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`color: ${agent.color}\` is display-only in Claude\'s TUI. ` +
+        'DSH has no per-agent colour channel on an activation or on the registered tool; the only model-visible metadata is the description, and adding a colour to it would change the byte-equal catalog face.',
+    }
+  }
+
+  if (agent.autoCompactWindow !== undefined) {
+    faces.autoCompactWindow = {
+      fidelity: 'unsupported',
+      reason:
+        `Frontmatter \`autoCompactWindow: ${agent.autoCompactWindow}\` lowers auto-compaction for one agent. ` +
+        'Compaction is configured on the session/engine (`dsh-compaction`), not per activation: `startActivation` has no context-window field and the child loop does not read one.',
     }
   }
 
   return faces
 }
 
-function readAgents(root: string, plugin: string): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
+/**
+ * Bodies an agent's `skills:` list can be preloaded with (S16). Only plain
+ * skills count: a command has the same model-catalog shape but is a different
+ * artifact, and preloading its body as a skill would claim the wrong thing.
+ */
+function resolveAgentSkills(names: readonly string[] | undefined, available: readonly IrSkill[]): IrAgentSkill[] {
+  if (names === undefined) return []
+  const byName = new Map(available.filter((skill) => skill.origin !== 'commands-dir').map((skill) => [skill.name, skill]))
+  const contents: IrAgentSkill[] = []
+  for (const name of names) {
+    const skill = byName.get(name)
+    if (skill !== undefined) contents.push({ name, content: skill.content })
+  }
+  return contents
+}
+
+function readAgents(root: string, plugin: string, availableSkills: readonly IrSkill[]): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
   const agents: IrAgent[] = []
   const unsupported: IrUnmaterialized[] = []
   const seen = new Map<string, string>()
@@ -539,7 +666,35 @@ function readAgents(root: string, plugin: string): { agents: IrAgent[]; unsuppor
     const effort = stringField(parsed.data, 'effort')
     const maxTurns = numberField(parsed.data, 'maxTurns')
     const isolation = stringField(parsed.data, 'isolation')
-    const faces = agentFaces({ name, model, tools, disallowedTools, effort, maxTurns, isolation }, plugin)
+    const skills = stringListField(parsed.data, 'skills')
+    const memory = stringField(parsed.data, 'memory')
+    const background = boolField(parsed.data, 'background')
+    const omitClaudeMd = boolField(parsed.data, 'omitClaudeMd')
+    const color = stringField(parsed.data, 'color')
+    const autoCompactWindow = numberField(parsed.data, 'autoCompactWindow')
+    // Only skills this plugin ships can be read at compile time. A name that
+    // resolves to a command is not a skill; it stays unresolved so the face
+    // reports what is missing instead of preloading the wrong content.
+    const skillContents = resolveAgentSkills(skills, availableSkills)
+    const faces = agentFaces(
+      {
+        name,
+        model,
+        tools,
+        disallowedTools,
+        effort,
+        maxTurns,
+        isolation,
+        skills,
+        skillContents,
+        memory,
+        background,
+        omitClaudeMd,
+        color,
+        autoCompactWindow,
+      },
+      plugin,
+    )
     const agent: IrAgent = {
       kind: 'agent',
       name,
@@ -551,6 +706,13 @@ function readAgents(root: string, plugin: string): { agents: IrAgent[]; unsuppor
       ...(effort === undefined ? {} : { effort }),
       ...(maxTurns === undefined ? {} : { maxTurns }),
       ...(isolation === undefined ? {} : { isolation }),
+      ...(skills === undefined ? {} : { skills }),
+      ...(skillContents.length === 0 ? {} : { skillContents }),
+      ...(memory === undefined ? {} : { memory }),
+      ...(background === undefined ? {} : { background }),
+      ...(omitClaudeMd === undefined ? {} : { omitClaudeMd }),
+      ...(color === undefined ? {} : { color }),
+      ...(autoCompactWindow === undefined ? {} : { autoCompactWindow }),
       origin: 'agents-dir',
       sourcePath: file.rel,
       faces,
@@ -1044,7 +1206,7 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const pin = options.pin ?? CLAUDE_CODE_PIN
   const pluginName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root)
   const { skills, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
-  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName)
+  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName, skills)
   const { hooks, pending: hookPending } = readHooks(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)

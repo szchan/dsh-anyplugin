@@ -149,7 +149,9 @@ test('rig report carries the agent fixture through the shipped materializer set'
     [
       ['catalog', 'exact'],
       ['invocation', 'equivalent'],
-      ['tools', 'planned'],
+      // S16: a frontmatter tool list is declared, not enforced — the child
+      // still sees every host tool, so the face is unsupported, not planned.
+      ['tools', 'unsupported'],
     ],
   )
 })
