@@ -132,17 +132,17 @@ const SYNTHETIC_LEDGER = [
   'settings.read:refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE',
   'env.get:ran',
   'session.messages:ran',
-  'ui.invalidate:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.status:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.log:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.open:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
-  'ui.close:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ui.invalidate:ran',
+  'ui.status:ran',
+  'ui.log:ran',
+  'ui.open:ran',
+  'ui.close:ran',
   'command.register:ran',
   'session.id:ran',
   'session.usage:ran',
   'telemetry.mark:ran',
   'telemetry.log:ran',
-  'ui.resolve:refused:ERR_MOD_HOST_UI_UNSUPPORTED',
+  'ui.resolve:ran',
 ]
 
 test('a mod and a classic hook share the turn; the rewrite executes per agent', { skip }, async () => {
@@ -677,17 +677,17 @@ const DIFF_LEDGER = [
   { site: 'settings.read', result: 'refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE', argument: 'no argument', evidence: 'no merged settings reader on this host; refused rather than served from plugin data' },
   { site: 'env.get', result: 'ran', argument: 'PATH', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'session.messages', result: 'ran', argument: 'no argument', evidence: 'diff session.start openOnRestore' },
-  { site: 'ui.invalidate', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
-  { site: 'ui.status', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
-  { site: 'ui.log', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
-  { site: 'ui.open', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
-  { site: 'ui.close', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.invalidate', result: 'ran', argument: '"ui.render"', evidence: 'headless render sink (#75): the event is recorded' },
+  { site: 'ui.status', result: 'ran', argument: '"ledger"', evidence: 'headless render sink (#75): the status line is recorded' },
+  { site: 'ui.log', result: 'ran', argument: '"ledger"', evidence: 'headless render sink (#75): the log entry is recorded' },
+  { site: 'ui.open', result: 'ran', argument: '{ id: "ledger" }', evidence: 'headless render sink (#75): the engine default tree is recorded' },
+  { site: 'ui.close', result: 'ran', argument: '{ id: "ledger" }', evidence: 'headless render sink (#75): the pane is removed' },
   { site: 'command.register', result: 'ran', argument: '{ name: "diff", description }', evidence: 'diff session.start' },
   { site: 'session.id', result: 'ran', argument: 'no argument', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'session.usage', result: 'ran', argument: 'no argument', evidence: 'diff session.start' },
   { site: 'telemetry.mark', result: 'ran', argument: '{ from: "diff-ledger" }', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'telemetry.log', result: 'ran', argument: '{ from: "diff-ledger" }', evidence: 'method availability; the fetched call is in hook code' },
-  { site: 'ui.resolve', result: 'refused:ERR_MOD_HOST_UI_UNSUPPORTED', argument: '{}', evidence: 'D32 element runtime' },
+  { site: 'ui.resolve', result: 'ran', argument: '{ surface: "terminal", component: "Pane" }', evidence: 'headless render sink (#75): the pinned element table' },
 ]
 
 // What the pinned `session.start` actually does through `$`: bind() asks
@@ -853,8 +853,24 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
           case 'telemetry.log':
             await method({ from: 'diff-ledger' })
             break
+          case 'ui.invalidate':
+            await method('ui.render')
+            break
+          case 'ui.status':
+          case 'ui.log':
+            await method('ledger')
+            break
+          case 'ui.open':
+            await method({ id: 'ledger' })
+            break
+          case 'ui.close':
+            await method({ id: 'ledger' })
+            break
+          case 'ui.resolve':
+            await method({ surface: 'terminal', component: 'Pane' })
+            break
           default:
-            // process.run and the six ui.* sites: the call must refuse.
+            // process.run is the one site this host still refuses.
             await method()
         }
         capability.push({ site: label, result: 'ran' })
@@ -955,6 +971,107 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
   }
 
   assert.equal(sha256(entry), before, 'the fixture load must not touch the authored bytes')
+})
+
+// Issue #75, end to end: a mod-painted pane is recorded by the headless sink
+// and read back through the one tool. The turn is real (the same probe, the
+// pinned harness); the drawing is data, and the unloaded control proves the
+// tool lives only while a pane does.
+test('a mod-painted pane is a validated tree that mod_ui returns (#75)', { skip }, async () => {
+  const readTools = (agent) => agent?.ctx?.get?.('tools') ?? agent?.ctx?.tools
+  const readUi = async (tools) => {
+    const raw = await tools.execute({
+      calls: [{ type: 'tool-call', id: 'call_mod_ui', name: 'mod_ui', arguments: '{}' }],
+      signal: new AbortController().signal,
+    })
+    return JSON.parse(JSON.stringify(raw))
+  }
+
+  const painted = mkdtempSync(join(tmpdir(), 'anyplugin-mods-ui-'))
+  const paintedTrace = join(painted, 'trace.jsonl')
+  const paintedCalls = []
+  let observed
+  let paintedNames = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(painted, paintedTrace, { mods: [{ entry: 'ui-sink.ts' }], plugin: 'ui-sink' }),
+      expected: [],
+      tool: bashTool(paintedCalls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      preExistingRoot: true,
+      onAgent: async (agent) => {
+        // Upstream's invalidate is fire-and-forget: let the queued redraw run
+        // before the tool reads the latest revision.
+        await new Promise((done) => setTimeout(done, 100))
+        const tools = readTools(agent)
+        assert.ok(tools !== undefined, 'the agent context reaches the tools service')
+        paintedNames = (tools.schemas?.() ?? []).map((schema) => schema.name)
+        assert.ok(paintedNames.includes('mod_ui'), `mod_ui is registered while a pane is open: ${paintedNames.join(', ')}`)
+        observed = await readUi(tools)
+      },
+      timeoutMs: 20_000,
+    })
+  } finally {
+    rmSync(painted, { recursive: true, force: true })
+  }
+
+  const text = JSON.stringify(observed)
+  assert.match(text, /mod_ui/, 'the tool call produced a result, not an error')
+  assert.doesNotMatch(text, /"isError":true/, text)
+  const payload = observed.results?.[0]?.result?.value
+  assert.ok(payload !== undefined, 'mod_ui returned a value')
+  assert.equal(observed.results[0].result.isError, false, JSON.stringify(observed))
+  assert.equal(payload.kind, 'mod-ui-headless')
+  assert.deepEqual(payload.panes.map((pane) => pane.id), ['ui-proof'], 'ui.close removed the temp pane')
+  const pane = payload.panes[0]
+  assert.equal(pane.title, 'UI proof')
+  assert.equal(pane.revision, 2, 'ui.invalidate ran the Pane hook again')
+  assert.deepEqual(pane.tree, {
+    type: 'Box',
+    props: { flexDirection: 'column' },
+    children: [{ type: 'Text', props: { color: 'green' }, children: ['headless proof 2'] }],
+  })
+  assert.equal(payload.status, 'ui-sink/ui-sink.ts: ui sink proof')
+  assert.deepEqual(payload.logs, [
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui sink proof', to: 'debug' },
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui.* render ui-proof', to: 'transcript' },
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui.* render ui-temp', to: 'transcript' },
+    { plugin: 'ui-sink/ui-sink.ts', text: 'ui.* render ui-proof', to: 'transcript' },
+  ])
+  // The tree hook's matcher names `props: { title: 'UI proof' }` and matched,
+  // which is why the tree above is its drawing; the `isFocused: true` sibling
+  // did not match, so its log is absent. Both prove the pin's matcher grammar.
+  assert.ok(
+    !payload.logs.some((entry) => String(entry.text).startsWith('props miss')),
+    'a matcher that names props must not run on a props mismatch',
+  )
+
+  // The control: a mod loaded with no pane must not contribute a tool.
+  const control = mkdtempSync(join(tmpdir(), 'anyplugin-mods-ui-control-'))
+  const controlTrace = join(control, 'trace.jsonl')
+  const controlCalls = []
+  let controlNames
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(control, controlTrace, { mods: [{ entry: 'seat.ts' }] }),
+      expected: [],
+      tool: bashTool(controlCalls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      preExistingRoot: true,
+      onAgent: async (agent) => {
+        await new Promise((done) => setTimeout(done, 50))
+        const tools = readTools(agent)
+        assert.ok(tools !== undefined, 'the control turn reaches the tools service')
+        controlNames = (tools.schemas?.() ?? []).map((schema) => schema.name)
+      },
+      timeoutMs: 20_000,
+    })
+  } finally {
+    rmSync(control, { recursive: true, force: true })
+  }
+  assert.ok(!controlNames.includes('mod_ui'), `no pane, no tool: ${controlNames.join(', ')}`)
 })
 
 // Issue #68, end to end: a guard hook must actually guard.

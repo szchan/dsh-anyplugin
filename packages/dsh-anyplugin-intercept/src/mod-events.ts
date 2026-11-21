@@ -256,7 +256,7 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
     evidence:
       'EngineEventOf prompt.context fires once per conversation while the engine computes the context blocks of the first user message; next(e) resolves to PromptContextResult { blocks } (d.ts:5282-5288 at the 2.1.329 pin; PromptContextBlock at d.ts:11332-11357, PromptContextInput at d.ts:11359, PromptContextResult at d.ts:11379-11410). The agent-scoped system-prompt/assemble waterfall owns the contexts that agent-loop renders into the user-role runtime-context message at each step (S9 395-423; dsh-system-prompt PromptContext). The route projects only the pin-named blocks (claudeMd, userEmail, attachedProject, currentDate) plus blocks the mod itself added; DSH operational contexts are never exposed to the mod and cannot be dropped by it. `instructionFiles` has no host projection and is reported unsupported at the mount; agents-md\'s handler no-ops without instruction files and needs $.session.root/$.fs.ancestors, which the bridge lacks.',
     caveat:
-      'The answer is cached once per seat until compaction/end (the host re-read); a /clear starts a new session and seat. $.ui.invalidate("prompt.context") is refused by the bridge (ERR_MOD_HOST_UI_UNSUPPORTED), so a mod cannot force the pin\'s re-read on the same seat.',
+      'The answer is cached once per seat until compaction/end (the host re-read); a /clear starts a new session and seat. $.ui.invalidate("prompt.context") now drops that cached answer through the headless render sink (#75), so the next assembly re-runs the hooks on the same seat.',
   },
 ])
 

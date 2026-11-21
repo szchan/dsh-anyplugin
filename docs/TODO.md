@@ -57,11 +57,29 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 - `$` bridge (ticket #46; measured by S15): across the five pinned mods the
   bridge is asked for 69 call sites / 30 `namespace.method` pairs in 11
-  namespaces. Sixteen methods are served; the six `ui.*` methods,
-  `process.run` and `settings.read` are typed refusals; `session.identity`,
-  `session.root`, `fs.ancestors`, `ui.ask`, `vcs.detect` and `vcs.diff` are
-  absent (`ui.ask` and `vcs.*` have no member at all, so they throw
-  `TypeError` rather than a typed refusal). `fs` resolves against the
+  namespaces. Twenty-two methods are served; the six `ui.*` members
+  `open/close/invalidate/log/status/resolve` are served through the headless
+  render sink (#75): a submitted tree is checked against the pin's surface
+  tables, element keys, required members and prop types (allowlists and literal
+  unions) before it is recorded, the latest revision is kept per pane, `ui.render`
+  and `ui.resolve` hooks are dispatched through the intercept kernel's
+  `runChain` as sink-owned synthetic events (not host routes), `ui.invalidate`
+  redraws on `ui.render`, drops the seat's prompt cache on
+  `prompt.context`/`prompt.section` and refuses the other cached events it owns
+  no cache for, and one `mod_ui` tool — registered only while a pane is open —
+  reads the panes back. The host synthesizes `ui.render` only for
+  `component: 'Pane'` on `surface: 'terminal'` and only for the mod's own panes;
+  the pin's `ui.open`/`ui.close` hooks (`claude-code.d.ts:8875`/`:8880`
+  @ 2.1.329) are declared but not dispatched, and `isPlaced: false` means open
+  but never drawn. Two behaviours are `derived`, because this host has no
+  drawing engine: the refusal sentence is ours (the pin draws the engine's own
+  component instead) and an invalid redraw keeps the last good tree.
+  `process.run`, `settings.read` and `ui.ask` are typed refusals (`ui.ask` is
+  declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a
+  person, which this host has no interaction for); `session.identity`,
+  `session.root`, `fs.ancestors`, `vcs.detect` and `vcs.diff` are absent
+  (`vcs.*` has no member, so it throws `TypeError` rather than a typed
+  refusal). `fs` resolves against the
   invocation session's cwd (absolute as written), `store` is rooted at the
   plugin data dir and confined on `realpath`, and `settings.read` serves only a
   host merged snapshot. `session.messages()` carries the tool-result turn in

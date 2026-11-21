@@ -689,8 +689,10 @@ so a mod cannot drop DSH's operational contexts; it runs once per seat until
 `compaction/end` (the host re-read) and reads back a `{ blocks }` answer, while
 `instructionFiles` is typed `unsupported` (the host projects instruction files
 into a user-role message, not into the assembly contexts, and
-`$.ui.invalidate` is refused by the bridge; a `/clear` starts a new session and
-therefore a new seat).
+`$.ui.invalidate` reaches the headless render sink: `ui.render` re-runs the
+pane's render hook with no drawing, and `prompt.context`/`prompt.section` drop
+this seat's cached assembly so the next draw asks again; a `/clear` starts a new
+session and therefore a new seat).
 The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`
@@ -866,13 +868,32 @@ What a faithful host needs, in dependency order:
    This is also the trust UI's data source, and it does not run a mod;
 2. **chain engine** — `next(e)` re-entry, tiers (`prepend|user|append|builtin`),
    `next.to`, `next.budget`, `next.signal`, `.catch`, per-event timeouts;
-3. **element runtime** — ~17 elements with validated prop schemas, render sites,
-   host-owned layout, focus routing, `invalidate` throttling;
+3. **element runtime** — *headless sink landed* (#75): the four pinned surface
+   tables, each element's keys and required members, and the pinned prop
+   allowlists are enforced before a tree is recorded, and the latest validated
+   tree is kept per pane. `open/close/invalidate/log/status/resolve` are served
+   through it; its `ui.render` and `ui.resolve` hooks are dispatched through the
+   intercept kernel's `runChain` as sink-owned synthetic events (the sink names
+   them, the kernel orders them — not a second path and not a host route); and
+   one `mod_ui` tool, registered only while a pane is open, reads the panes
+   back. The scope is stated plainly: the host synthesizes `ui.render` only for
+   `component: 'Pane'` on `surface: 'terminal'`, and only for the mod's own
+   panes; the pin's `ui.open` / `ui.close` hooks (`claude-code.d.ts:8875` /
+   `:8880` @ 2.1.329) are declared but not dispatched (the adapter reports them
+   unmapped), and `ui.render` for the other components (`ToolUse`,
+   `ContextMenu`, …) is planned. `isPlaced: false` means open but never drawn
+   (a first draw that produced no tree); a later invalid redraw keeps the last
+   good tree and its revision. Drawing, host-owned layout, focus routing and
+   `invalidate` throttling are still ahead. Two behaviours are `derived` because
+   this host has no drawing engine: the refusal sentence is ours (the pin draws
+   the engine's own component instead) and an invalid redraw keeps the last
+   good tree;
 4. **namespace bridges** — the measured `$` surface of a real mod first:
    clock / fs / store / settings / env / session / command / telemetry (10
-   namespaces, 23 call sites, #46), with `ui.*`, `process.run` and — until a
-   host merged-snapshot reader exists — `settings.read` as typed refusals; then
-   http / mcp / model / agent / audio / theme … from the pinned
+   namespaces, 23 call sites, #46), with `process.run` and — until a
+   host merged-snapshot reader exists — `settings.read` as typed refusals (the
+   six `ui.*` members the ledger calls are served by the headless sink above);
+   then http / mcp / model / agent / audio / theme … from the pinned
    `claude-code.d.ts`;
 5. **type generation** — a per-install `claude-code.d.ts`, because real mods
    typecheck against it.
@@ -1105,8 +1126,12 @@ test and the conformance test assert its registrations. The synthetic fixture
 is the `$` proof: `session.start` calls
 `$.session.usage → $.command.register → $.session.messages`, or
 `$.session.usage → $.clock.now → $.command.register → $.session.messages` when
-`usage()` returns `undefined`, then returns `next(e)`. Rendering the returned
-descriptors is still `planned`; D34 is a load-time transform, not an element
+`usage()` returns `undefined`, then returns `next(e)`. The returned
+descriptors are validated against the pinned surface tables, element keys,
+required members and prop types (allowlists and literal unions) and recorded by
+the headless render sink (#75) — the refusal sentence and the keep-last-tree
+fallback are `derived`, since the pin draws the engine's own component instead;
+drawing them is still `planned`; D34 is a load-time transform, not an element
 runtime.
 
 **`$` bridged (#46).** The pinned `diff` graph now loads *and* its
@@ -1114,14 +1139,26 @@ runtime.
 `$.` call sites across 10 namespaces: clock (`now`, `after`, `every`), fs
 (`stat`, `list`, `read`), store (`get`, `set`), settings (`read`), env (`get`),
 session (`messages`, `id`, `usage`), command (`register`), telemetry (`mark`,
-`log`), plus `process.run`, the six `ui.*` methods and `settings.read` (until a
-host merged-snapshot reader exists) as **typed refusals**. The static
-conformance ledger invokes the scanner's 23 sites in source order: 15 served
-sites complete, and eight refusal sites answer
-`ERR_MOD_HOST_EXEC_UNSUPPORTED` (D25's pinned-artifact / dynamic-exec rule),
-`ERR_MOD_HOST_UI_UNSUPPORTED` (the element runtime is planned), or
-`ERR_MOD_HOST_SETTINGS_UNAVAILABLE` (this host exposes no merged settings
-snapshot), never `undefined`. The ledger records the argument each row used:
+`log`), plus `process.run` and `settings.read` (until a host merged-snapshot reader
+exists) as **typed refusals**. The six `ui.*` members the ledger calls —
+`invalidate`, `status`, `log`, `open`, `close`, `resolve` — are served by
+the headless render sink (#75): each call records a validated tree or value
+and returns; nothing draws. The sink dispatches the pin's `ui.render` and
+`ui.resolve` hooks through the intercept kernel's `runChain` as synthetic
+events it owns (the sink names them, the kernel orders them; they are not host
+routes), and it validates a submitted tree against the pinned surface tables,
+element keys, required members and prop types (allowlists and literal unions).
+It synthesizes `ui.render` only for `component: 'Pane'` on `surface:
+'terminal'`, and only for the mod's own panes; the pin's `ui.open`/`ui.close`
+hooks (`claude-code.d.ts:8875`/`:8880` @ 2.1.329) are declared but not
+dispatched, and the other render components are `planned`. Its refusal sentence
+and its keep-last-tree policy are
+`derived`: the pin draws the engine's own component on an invalid tree, which
+this host cannot do. The static conformance ledger invokes the
+scanner's 23 sites in source order: 21 served sites complete, and the two
+refusal sites answer `ERR_MOD_HOST_EXEC_UNSUPPORTED` (D25's pinned-artifact /
+dynamic-exec rule) or `ERR_MOD_HOST_SETTINGS_UNAVAILABLE` (this host exposes
+no merged settings snapshot), never `undefined`. The ledger records the argument each row used:
 only `session.usage`, `clock.now`, `command.register` and `session.messages`
 are reached at load with diff's own arguments; the other served rows prove
 method availability with a representative argument, because diff's fs/store
@@ -1167,8 +1204,9 @@ this order: `session.usage` (there is no session yet, so the view is empty and
 header, so the authored clock fallback is skipped: three calls,
 `session.usage → command.register → session.messages`, against the live view.
 The other scanned sites are declared capabilities that load does not reach —
-`ui.render` is where `ui.*` and the `.tsx` descriptors would be used, and
-rendering remains `planned`. The conformance test asserts both the static
+`ui.render` is where `ui.*` and the `.tsx` descriptors are used: the pane's
+tree is validated and recorded by the headless sink (#75), while drawing
+remains `planned`. The conformance test asserts both the static
 ledger and the ordered dynamic sequence against the fetched graph, and the
 synthetic fixture asserts the ordered `ran` / `refused:<code>` ledger for
 every row.
@@ -1607,7 +1645,7 @@ the 16 classic events were not exercised by this turn. The load-time
 `session.start` has no session: `usage()`/`messages()` return empty shapes and
 `session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
 
-**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations**, **16 `$` calls**, and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: **16 served**, **8 typed refusals**, **6 absent** — the original three plus `ui.ask`, `vcs.detect` and `vcs.diff`. `ui.ask` and `vcs.*` are absent members, not refusals: `createModBridge` never defines them, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
+**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **11 handler invocations**, **16 `$` calls**, and **0 handler errors**; its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: with the headless render sink (#75) **22 served**, **3 typed refusals**, **5 absent**. The six `ui.*` members are served by the sink (trees validated against the pinned surface tables, latest revision recorded, nothing drawn; `ui.render`/`ui.resolve` hooks ride `runChain` as sink-dispatched synthetic events, not host routes); the refusals are `process.run`, `settings.read` and `ui.ask` (declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a person); the absent members are `session.identity`, `session.root`, `fs.ancestors`, `vcs.detect` and `vcs.diff` — `vcs.*` has no member, so the call throws `TypeError`; `vcs.detect`/`vcs.diff` are cited at `mods/diff/hooks/register.ts:962-963` and classified against the bridge table, not labelled served.
 
 **Host bug found, now fixed (#68).** `next.to`, declared by the pin
 (2.1.322 pin: `Next` at `claude-code.d.ts:5271-5352`, `GlobNext` at `:4236`; 2.1.329 pin: `Next` at `8289-8367` with `to` at
@@ -1694,7 +1732,7 @@ the unmapped engine events beyond the sites measured here.
 | v0.3 | Codex dialect via portable IR; LSP; output-styles (body carried in the IR; activation waits on D10's command alias, at-start provenance and the `keep-coding-instructions` rule); bin |
 | v0.4 | agents (per-agent tools or prompt template); themes (F2 ANSI seam); monitors; workflows |
 | v0.5 | `dsh-mod-host` alpha: static scanner + chain engine + fs/store/http/session bridges + `AbovePrompt` render site |
-| v0.6 | mod host beta: element runtime (~17 elements), panes, redraw scheduler, guard layer (sec-default equivalent) |
+| v0.6 | mod host beta: headless element sink (#75: validated trees recorded, panes served, one reader tool), drawing + redraw scheduler, guard layer (sec-default equivalent) |
 | v0.7 | Claude mod API adapter; symbol coverage tracked from the pinned `.d.ts`; `.tsx` and `Client` resolved |
 | v1.0 | full A–F contract green on the fixture set, mod coverage complete per declaration, pinned source versions, CI conformance |
 

@@ -26,3 +26,26 @@ export function commandRegistryFromContext() {
 export async function loadMod() {
   throw new Error('mods are not available in dsh-anyplugin 0.1.0; the mods kernel ships in v0.2')
 }
+
+/*
+ * The `$ui` sink's pinned tables live in the real host, whose module graph
+ * pulls in `@babel/core` for `.tsx`. 0.1.0 does not claim mods, so these names
+ * exist only to satisfy the hook materializer's import graph: the predicates
+ * answer "no" and anything that would produce a tree throws the same refusal
+ * `loadMod` throws. Nothing in a 0.1.0 config reaches them.
+ */
+export const UI_COMPONENTS = Object.freeze([])
+export const UI_SURFACES = Object.freeze([])
+export const UI_ENGINE_NODE = Object.freeze({ type: 'engine', ref: 0 })
+
+export function elementsForSurface() {
+  throw new Error('mods are not available in dsh-anyplugin 0.1.0; the mods kernel ships in v0.2')
+}
+
+export function uiEventPatternMatches() {
+  return false
+}
+
+export function uiRenderMatcherMatches() {
+  return false
+}

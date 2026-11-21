@@ -51,7 +51,7 @@ export function register(on: any): void {
     await record('session.usage', () => $.session.usage())
     await record('telemetry.mark', () => $.telemetry.mark({ site: 'mark' }))
     await record('telemetry.log', () => $.telemetry.log({ site: 'log' }))
-    await record('ui.resolve', () => $.ui.resolve({}))
+    await record('ui.resolve', () => $.ui.resolve({ surface: 'terminal', component: 'Pane' }))
 
     await $.store.set('bridge-ledger', rows)
     return next(event)
