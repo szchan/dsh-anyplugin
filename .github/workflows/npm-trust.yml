@@ -1,0 +1,58 @@
+name: npm-trust
+
+# One-time (and repeatable) trusted-publisher configuration for the first
+# published version. Trusted Publishing cannot be configured for a package that
+# does not exist yet, so v0.1.0 publishes with the account token and this
+# workflow links the package to GitHub Actions OIDC afterwards. From the next
+# release on, `release.yml` publishes without any token.
+#
+# Manual only: it must run *after* the package exists, and it changes an
+# account-level setting, so it is never triggered by a push or a tag.
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package name to link
+        required: true
+        default: dsh-anyplugin
+      workflow_file:
+        description: Release workflow file inside .github/workflows
+        required: true
+        default: release.yml
+      repository:
+        description: Repository that may publish (owner/repo)
+        required: true
+        default: szchan/dsh-anyplugin
+
+permissions:
+  contents: read
+
+jobs:
+  trust:
+    name: link the package to GitHub Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: The package must already exist
+        run: |
+          set -euo pipefail
+          if ! npm view "${{ inputs.package }}" version >/dev/null 2>&1; then
+            echo "::error::${{ inputs.package }} is not on the registry yet; publish it first (release.yml)"
+            exit 1
+          fi
+          npm view "${{ inputs.package }}" version
+
+      - name: Link the trusted publisher
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm trust github "${{ inputs.package }}" \
+            --file "${{ inputs.workflow_file }}" \
+            --repo "${{ inputs.repository }}" \
+            --allow-publish --yes
+          npm trust list "${{ inputs.package }}"
