@@ -13,6 +13,15 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pinLabelViolations } from './architecture-pin-labels.mjs'
+import {
+  EXCLUSIONS_FILE,
+  EXPECTED_ROWS_FILE,
+  FIXTURE_EXCLUSIONS,
+  expectedRowFixtures,
+  fixtureViolations,
+  fixturesDir,
+  topLevelFixtures,
+} from './fixture-ratchet.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const json = process.argv.includes('--json')
@@ -37,6 +46,7 @@ const ALLOWED = {
   'dsh-anyplugin-hook-runner': [],
   'dsh-anyplugin-skill-template': [],
   'dsh-anyplugin-command-template': [],
+  'dsh-anyplugin-guard': [],
   'dsh-anyplugin-trust': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-emit': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-install': ['dsh-anyplugin-dialect-claude-code', 'dsh-anyplugin-dialect-codex', 'dsh-anyplugin-emit', 'dsh-anyplugin-trust'],
@@ -240,6 +250,28 @@ for (const pkg of packages) {
         fail('R13 skip-reason', file, 'skip: must be an expression with a reason (a resolver helper), not a literal', index + 1)
       }
     })
+  }
+}
+
+// R14. A fixture directory is a claim, and every claim has an owner. The
+// coverage ratchet names its fixtures in EXPECTED_ROWS; the ones that answer a
+// different question are listed in FIXTURE_EXCLUSIONS with the test that reads
+// them. A directory in neither list is a fixture nobody asserts anything
+// about, and an exclusion for a directory that is gone is a reason that reads
+// as coverage. Either way the ratchet can drift without a red test.
+const coverageTest = join(root, EXPECTED_ROWS_FILE)
+if (!existsSync(coverageTest)) {
+  fail('R14 fixture-ratchet', coverageTest, `${EXPECTED_ROWS_FILE} is missing; the ratchet has no owner list`)
+} else {
+  const fixtures = topLevelFixtures(fixturesDir(root))
+  const rows = expectedRowFixtures(readFileSync(coverageTest, 'utf8'))
+  const ownerExists = (relativePath) => existsSync(join(root, relativePath))
+  for (const violation of fixtureViolations({ fixtures, rows, exclusions: FIXTURE_EXCLUSIONS, ownerExists })) {
+    fail(
+      'R14 fixture-ratchet',
+      join(root, violation.file ?? join('fixtures', violation.fixture)),
+      violation.message,
+    )
   }
 }
 

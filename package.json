@@ -58,6 +58,8 @@
     "spike:s12": "node spikes/s12-hook-fanout/run.mjs",
     "spike:s13": "node --experimental-vm-modules spikes/s13-mod-load/run.mjs",
     "check:features": "node scripts/check-features.mjs",
+    "guard:install": "node scripts/guard-install.mjs",
+    "guard:status": "node scripts/guard-status.mjs",
     "triage": "node scripts/triage.mjs",
     "check:decisions": "node scripts/check-decisions.mjs"
   },
