@@ -2050,3 +2050,46 @@ The mod host owns one UI sink per plugin load. Every submitted tree is validated
 **Consequences.** Six `$` ledger rows move from `refused` to `ran`; `ui.ask`, `$.process.run` and `$.settings.read` (with no merged snapshot) remain typed refusals. `mod_ui` is registered only while a pane is open. A regression in the sink's invalidation of `prompt.context` / `prompt.section` is now a test failure rather than an unobserved path.
 
 **Evidence.** `packages/dsh-anyplugin-mod-host/src/ui.ts` (surface tables and validator, 21 tests), `packages/dsh-anyplugin-mod-host/src/bridge.ts` (sink wiring), `packages/dsh-anyplugin-materialize-hook/src/index.ts` (synthetic dispatch), `packages/dsh-anyplugin-conformance/test/mods.test.mjs` (the pinned-turn revision-2 assertion), `packages/dsh-anyplugin-materialize-hook/test/prompt-cache.test.mjs`. Mutations for each MUST were run and reverted. 509/509 with zero skips on both pins after rebasing onto the release bundle. Merge `4b6cb5c`.
+
+---
+
+## D45 — Codex is a dialect selected by the record, and its proof is declared
+
+**Status:** ratified 2026-11-21. Merged with `#103`. Granularity: dialect selection,
+tool naming, and what counts as proof for a second upstream.
+
+`installs.yml` names its dialect, and `compileEntries` resolves that name through a
+registry of installed dialects (`claude-code`, `codex`). The lookup is an **own-key**
+lookup: `Object.hasOwn(DIALECTS, record.dialect)`. A record naming `constructor` (or
+any other `Object.prototype` member) produces the shaped refusal that names the
+installed dialects; a prototype member is not a dialect. The same own-key rule applies
+to every table keyed by user input — enablement ids are gated by the `:` split,
+`FIELDS` gates installs keys, `SCOPES` is a fixed list.
+
+The Codex dialect reads the portable 1.0.0 manifest
+(`agent-plugins.org/schemas/1.0.0/plugin.schema.json`), accepts `.mcp.json` and
+`plugin.json` as compatibility fallbacks, and treats `extensions.com.openai` as
+replacing `.codex-plugin/plugin.json` rather than merging it. Portable MCP servers
+register tools as `mcp__<server>__<tool>` — no plugin segment — which is why D33's
+budget is `5 + server + 2 + tool ≤ 64` with no 24-character server constraint of the
+Claude shape. An over-budget tool is skipped with a warning and its server row
+survives; it is never truncated, renamed, or hashed.
+
+The Codex golden is **hand-authored** (`hand-authored: the portable spec is the
+oracle`), and by D37 and #102 it never enters the observed ratchet: `EXPECTED_ROWS`
+has no Codex entry and the totals stay whatever the observed fixtures say. A Codex
+oracle later is a new decision and a second, independent ratchet — never a merge into
+this one.
+
+The DSH oracle's child matching accepts both bare and install-qualified ids
+(`mcp`, `anyplugin.<scope>#mcp`, and likewise `hook`, `agents`, `outputStyle`).
+Install-qualified ids were previously never matched, so an MCP tool emitted into an
+install-shaped entry was invisible to the oracle; that is the bug this decision
+records as fixed, not a new convention.
+
+**Consequences.** The `docs/FEATURES.md` row for Codex says
+"equivalent … no upstream oracle; fixtures are the spec" and nothing stronger;
+`dsh-anyplugin-dialect-codex` may only import `dsh-anyplugin-ir`; a Codex plugin whose
+per-tool name exceeds the shared budget is *skipped*, not refused, because its server
+still works; and D33's closing sentence ("not yet wired into `compileReport`") is
+superseded by this entry.
