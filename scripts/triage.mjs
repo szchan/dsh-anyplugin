@@ -63,6 +63,7 @@ const sections = {
   'Maintainer answers (resume)': [],
   'Blocked on a human': [],
   'In review (PR open)': [],
+  'In progress (no PR yet)': [],
   'External, untriaged': [],
   'External, awaiting evidence': [],
   'Pull requests': [],
@@ -96,6 +97,13 @@ for (const pr of prs) {
 for (const issue of issues) {
   if (linkedIssues.has(issue.number)) {
     sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: role(issue), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    continue
+  }
+  if (hasLabel(issue, 'ticket/in-progress')) {
+    // Claimed work with no PR yet is in flight too. Without this the queue
+    // undercounts WIP and the next round dispatches a second worker onto a
+    // ticket that is already moving (docs/TRIAGE.md §2).
+    sections['In progress (no PR yet)'].push({ number: issue.number, title: issue.title, role: role(issue), labels: labelsOf(issue), lastSpeaker: 'in flight' })
     continue
   }
   let list = []
