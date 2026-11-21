@@ -2093,3 +2093,57 @@ records as fixed, not a new convention.
 per-tool name exceeds the shared budget is *skipped*, not refused, because its server
 still works; and D33's closing sentence ("not yet wired into `compileReport`") is
 superseded by this entry.
+
+---
+
+## D46 — The kernel ships inside the hook entry, and the flag is part of the contract
+
+**Status:** ratified 2026-11-21. Merged with `#104`. Granularity: packaging shape,
+the runtime flag, the dependency set, and the cost the artifact states.
+
+`0.1.0` shipped the compile path only, and D43 said the mods kernel (v0.2) "needs
+its own entry and the `@babel/*` dependencies". `0.2.0` puts the kernel in the
+existing `lib/materialize/hook.js` and adds no subpath: one controller row and one
+materializer set per profile are simpler to reconcile than two entries, and a
+separate entry would have duplicated the same controller shape. **This amends D43's
+"mods need their own entry" consequence**; the rest of D43 stands — the artifact is
+built, the dependency set is asserted, and `check:pack` is the gate.
+
+The runtime dependency set is exactly three packages: `@babel/core@7.29.13`,
+`@babel/plugin-transform-react-jsx@7.29.7` (the one transform D34 allows) and
+`@modelcontextprotocol/client@2.2.0`. `cordis` stays a peer. Babel stays **external**
+in the bundle — `hook.js` imports it rather than inlining 11 MB — and `check:pack`
+fails on any drift: a removed package, a widened range, or an undeclared import.
+
+Mods require Node's `--experimental-vm-modules`. D30's realm is `node:vm`'s
+`SourceTextModule`, which is flag-gated, and the Desktop spawns the harness under
+its bundled Node without that flag; nothing in the harness adds it for the main
+process. This is a property of the runtime, not a choice we can hide, so the
+artifact states it: `README.md`, `README_cn.md` and `INSTALL.md` name the flag, and
+`check:pack` asserts it against the **extracted tarball** (not the checkout), so the
+packaged documentation cannot drift from the packaged code. At runtime, a profile
+with mod rows and no `SourceTextModule` warns **once per process** naming
+`NODE_OPTIONS`, while each mod still records its own refusal trace; classic hooks
+continue.
+
+The artifact states what it costs. The kernel is 84.6 KiB of a 203.9 KiB entry, the
+tarball is about 99 KiB, and a real `npm install` of that tarball pulls 60 packages /
+35 MB (Babel is 11 MB of it). A 128 KiB kernel ceiling is asserted, so the packaged
+size cannot grow silently in a release.
+
+The lock still cannot express `mods`: the installs schema is unchanged, so the kernel
+is reachable only from a hand-written hook row configuration until the lock gains the
+field, which is a separate decision.
+
+**Evidence (mutations, each red before revert):** removing `@babel/core`; widening
+its range to `^7.29.13`; inflating the recorded kernel size to 3×; deleting each of
+the three install-smoke probes (sec-default, kernel-probe, guard); passing
+`plugins: []` to the JSX transform; stripping the flag from the packaged
+`INSTALL.md`, from `README_cn.md`, and from `README.md`; re-adding a `0.1.0` sentence
+to the packaged `INSTALL.md`; resetting the once-per-process warning at the top of
+`apply()`. Both pins: 510 tests, 0 skipped.
+
+**Consequences:** a default Desktop launch refuses mods and keeps classic hooks
+running, and says so once; the packaged `INSTALL.md` may not discuss `0.1.0`, because
+it ships inside `0.2.0`; the numbers in this entry are asserted by `check:pack`, not
+remembered by prose.
