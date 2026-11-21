@@ -24,8 +24,10 @@ loader. Two subsystems share one spine:
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
 | `docs/DECISIONS.md` | Ratified decisions D1–D41. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
+| `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
+| `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
-| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S14) and what a spike must prove. |
+| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S15) and what a spike must prove. |
 | `docs/ARCHITECTURE.md` §13 | Open questions. If your work answers one, move it to a decision. |
 
 ## 3. Non-negotiables
@@ -80,6 +82,9 @@ docs/                  design and decisions (all prose docs live here)
   DECISIONS.md         ratified decision log
   TODO.md              ordered burn-down list (outcomes, not intentions)
   CONFORMANCE.md       the differential rig
+  FEATURES.md          the capability map (checked by scripts/check-features.mjs)
+  TRIAGE.md            how issues/PRs become work, and what a report may not do
+.dsh/skills/dsh-anyplugin/SKILL.md   the project skill agents load first
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
   dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
 spikes/                throwaway experiments; each answers one question (S1–S14)
@@ -98,8 +103,15 @@ npm install                       # workspace deps (uses the repo-local .npmrc c
 node spikes/s1-loader/run.mjs     # run a spike
 npm run rig -- verify --plugin <dir> --golden <file>   # conformance rig
 npm run capture:fixtures          # re-capture goldens after a pin bump; review the diff
-npm test                          # node --test over packages/ and spikes' assertions
+npm run verify                    # check:arch + check:features + check:decisions + tests
+npm run check:arch                # structural rules R1–R13
+npm run check:features            # the capability map still points at real files
+npm run check:decisions           # D1–D41 append-only (--update accepts new entries only)
+npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
 ```
+
+`verify` is the gate. It must report **0 skipped**: a skip means an environment
+variable is missing, and on CI a skip is a failure by design (D22/D24).
 
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.

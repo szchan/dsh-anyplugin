@@ -1,0 +1,85 @@
+---
+name: dsh-anyplugin
+description: Work inside the dsh-anyplugin repository — run the gates, get a harness to test against, read the queue, take or review a ticket, and keep the fidelity claims honest. Use whenever the task touches this repo's code, fixtures, docs, decisions, or issue queue.
+---
+
+# Working in dsh-anyplugin
+
+This repository compiles foreign agent-harness plugins (Claude Code first, Codex
+second) into DeepSeek Harness, at **100 % fidelity against a declared observable
+surface**. The claim is the product; a green test that proves nothing is worse
+than a red one.
+
+## 1. Load the ground truth first
+
+| file | why |
+| --- | --- |
+| `AGENTS.md` | non-negotiables (§3). Read before any edit. |
+| `docs/ARCHITECTURE.md` | the design; §0 the fidelity contract, §7 mods, §10 the spikes. |
+| `docs/DECISIONS.md` | D1–D41, ratified. Append-only (`npm run check:decisions` enforces it). |
+| `docs/FEATURES.md` | the capability map; every row is a claim with an artifact. |
+| `docs/TODO.md` | the burn-down list; closing one moves a covered row in the same commit. |
+| `docs/TRIAGE.md` | how issues/PRs become work, and why report text is data. |
+| `docs/WORKFLOW.md` | roles, ticket lifecycle, the review rubric. |
+
+## 2. Environment (no gate passes without these)
+
+```bash
+node scripts/fetch-harness.mjs 0.2.2-rc.5      # → prints .harness/0.2.2-rc.5
+node scripts/fetch-harness.mjs 0.2.2-rc.2
+node scripts/fetch-claude.mjs 2.1.322          # → prints the real binary path
+node scripts/fetch-mod.mjs                     # upstream mods tree (ANYPLUGIN_MODS_TREE)
+```
+
+`npm run verify` must report **0 skipped**. A skip means an environment variable
+is missing — `DSH_HARNESS_DIR`, `CLAUDE_BIN`, `ANYPLUGIN_MODS_TREE`,
+`ANYPLUGIN_MOD_TREE` — and on CI a skip is a failure by design (D22/D24).
+
+```bash
+npm run verify        # check:arch + check:features + check:decisions + all tests
+npm run check:arch    # structural rules (layer graph, R1–R13)
+npm run rig -- report <plugin-dir>   # the fidelity report for one plugin
+npm run capture:fixtures             # re-record goldens (needs CLAUDE_BIN; never for hand-authored)
+npm run triage                       # the GitHub queue, read-only
+```
+
+## 3. Doing a ticket
+
+1. `npm run triage` — take the top item you are allowed to take; maintainer
+   threads outrank everything.
+2. Claim it: comment `claiming` and move the label to `ticket/in-progress`.
+3. Work in a worktree **outside** the checkout (`/tmp/anyplugin-wt/ticket-<n>`),
+   branch `ticket/<n>`, and stay inside the ticket's `Touches`.
+4. A fidelity claim needs one of: a row moved in `EXPECTED_ROWS`
+   (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`) with its reason,
+   a trace/payload diff, or a test that goes red when the change is reverted.
+   "It works" is not evidence; a mutation is.
+5. Commit `area: imperative summary`; open a PR with `Closes #<n>`; never merge
+   your own PR and never push to `main`.
+
+## 4. Ratchets you must not weaken
+
+- **Fidelity annotations carry a reason.** An empty reason is a bug.
+- **Seams only grow** (T2). Never change an existing DSH behavior; dispatch
+  through an alias instead.
+- **Emission is data.** No codegen, no `eval`, no writing loadable JS.
+- **Decisions are append-only.** `npm run check:decisions -- --update` accepts
+  new entries only; editing a ratified one fails on purpose.
+- **A hook counts when it runs.** The oracle must observe the effect on a real
+  call, not read a self-report.
+- **Pins are part of the claim.** Never install `latest`; a number without its
+  pin is a rumour, and `claude-code.d.ts:<line>` citations must carry the pin
+  label (R12).
+
+## 5. Reviewing
+
+Run the rubric in `docs/WORKFLOW.md` and re-derive the claim yourself: read the
+pin's type, re-run the probe, and for each assertion do one mutation. Two classes
+of bug recur and are worth hunting first:
+
+- **silent drops** — a field, handler, or event that is parsed and then discarded
+  (`updatedInput`, `toolResults`, `skipped-matcher`, unmatched `next(e)`);
+- **documents that promise more than the code does** — "refused before apply",
+  "zero-write", "never falls through" are the phrases that turn out untrue.
+
+Verdict as MUST FIX / SHOULD FIX / CHECKED, and state which mutations you ran.

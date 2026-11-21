@@ -223,6 +223,25 @@ if (!existsSync(materializerMap)) {
   }
 }
 
+// R13. A skipped acceptance test must say why, and the why must come from a
+// helper. Two seasons of review turned on "which tests actually ran": a literal
+// `skip: true` is a dead test nobody noticed, and a hand-written reason string
+// drifts from the environment it describes. Every `skip:` here is an expression
+// (a call into the harness/claude resolvers) or it fails.
+for (const pkg of packages) {
+  const dir = join(root, 'packages', pkg, 'test')
+  if (!existsSync(dir)) continue
+  for (const file of walk(dir).filter((f) => f.endsWith('.test.mjs'))) {
+    const lines = readFileSync(file, 'utf8').split('\n')
+    lines.forEach((line, index) => {
+      const match = line.match(/skip:\s*(true|'(?:[^']*)'|"(?:[^"]*)")\s*[,}]/u)
+      if (match !== null) {
+        fail('R13 skip-reason', file, 'skip: must be an expression with a reason (a resolver helper), not a literal', index + 1)
+      }
+    })
+  }
+}
+
 const summary = {
   ok: violations.length === 0,
   packages: packages.length,
