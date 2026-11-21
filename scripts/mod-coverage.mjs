@@ -828,7 +828,9 @@ function extractDeclared() {
       declaredTotal: events.engine.length + events.op.length + events.classicSpellings.length,
       note:
         'declaredTotal counts EngineEventOf + OpEventOf + the `classic.<Event>` spellings of ClassicHookEvent. ' +
-        'The bare ClassicHookEvent names are the source of those 33 spellings and are not counted a second time.',
+        'The bare ClassicHookEvent names are the source of those 33 spellings and are not counted a second time. ' +
+        'served events are the live MOD_EVENT_ROUTES host routes; the sink-owned synthetic ui.render/ui.resolve ' +
+        'dispatches are not host routes and are not counted as served here.',
     },
     elements: {
       surfaces: elements.tables,

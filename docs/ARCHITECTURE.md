@@ -997,7 +997,9 @@ runtime actually serves, and records `declared`, `served` and `absent` for
 namespaces, methods, properties, events, elements, render sites and matcher
 types. Event keys are counted in their `classic.<Event>` spelling — the bare
 `ClassicHookEvent` union is the input to those spellings and is not counted a
-second time. `node scripts/mod-coverage.mjs` prints the totals and the absent
+second time. Served events are the live host routes; `ui.render` and
+`ui.resolve` are sink-owned synthetic dispatches, not host routes, and are not
+counted as served here. `node scripts/mod-coverage.mjs` prints the totals and the absent
 names grouped by namespace; `--update` rewrites the ledger, and the conformance
 test fails when the ledger drifts. This is a denominator, not a fidelity claim:
 a served name says the method is reachable, never that it behaves like the pin.
