@@ -59,25 +59,65 @@ export interface IrSkill {
   annotation: Annotation
 }
 
+/** A skill body the compiler resolved for an agent's `skills:` preload (S16). */
+export interface IrAgentSkill {
+  /** Name as declared in the agent frontmatter. */
+  name: string
+  /** Full body the host materializes for that skill; frontmatter removed. */
+  content: string
+}
+
 /**
  * An agent has more than one observable face, and they do not all survive the
- * same way (S10):
+ * same way (S10, S16):
  *
  * - `catalog` — what the model sees when it chooses the persona: its name and
  *   the frontmatter description. A registered tool carries both byte for byte.
  * - `invocation` — what happens when it is chosen. Claude's single `Task` tool
  *   starts a child whose system prompt is the agent body; ours is one tool per
  *   agent and the body is the child's first user message.
- * - `model`, `tools`, `limits` — frontmatter keys that need a per-activation
- *   seam the pin does not have; present only when the file declares them.
+ * - `model`, `effort`, `tools`, `maxTurns`, `isolation`, `skills`, and the
+ *   Claude-only `memory`/`background`/`omitClaudeMd`/`color`/`autoCompactWindow`
+ *   — one face per frontmatter key the file declares. A key is present only
+ *   when the file declares it, so the report can name every value the
+ *   transplant dropped or honoured. `tools` covers `tools` *and*
+ *   `disallowedTools`: the pin has one tool-set surface, not two.
+ * - `limits` — deprecated union field from before the per-key split; validated
+ *   when a producer still supplies it.
  */
 export interface IrAgentFaces {
   catalog: Annotation
   invocation: Annotation
   model?: Annotation
+  effort?: Annotation
   tools?: Annotation
+  maxTurns?: Annotation
+  isolation?: Annotation
+  skills?: Annotation
+  memory?: Annotation
+  background?: Annotation
+  omitClaudeMd?: Annotation
+  color?: Annotation
+  autoCompactWindow?: Annotation
+  /** @deprecated kept so a pre-S16 producer still validates; the dialect emits per-key faces. */
   limits?: Annotation
 }
+
+/** Every optional face key, in report order. */
+export const AGENT_FACE_KEYS = [
+  'model',
+  'effort',
+  'tools',
+  'maxTurns',
+  'isolation',
+  'skills',
+  'memory',
+  'background',
+  'omitClaudeMd',
+  'color',
+  'autoCompactWindow',
+  'limits',
+] as const
 
 export interface IrAgent {
   kind: 'agent'
@@ -90,12 +130,24 @@ export interface IrAgent {
   effort?: string
   maxTurns?: number
   isolation?: string
+  /**
+   * Names the file's `skills:` frontmatter asked to preload, in declaration
+   * order. `skillContents` carries only the ones this plugin authored, because
+   * the compiler cannot read a user/project skill (S16).
+   */
+  skills?: string[]
+  skillContents?: IrAgentSkill[]
+  memory?: string
+  background?: boolean
+  omitClaudeMd?: boolean
+  color?: string
+  autoCompactWindow?: number
   origin: 'agents-dir'
   sourcePath: string
   /**
-   * Per-face annotation (S10). `annotation` below is the weakest face, so the
-   * component is only as faithful as its worst surface. Present on agents read
-   * by the Claude dialect; an IR from an older producer may omit it.
+   * Per-face annotation (S10, S16). `annotation` below is the weakest face, so
+   * the component is only as faithful as its worst surface. Present on agents
+   * read by the Claude dialect; an IR from an older producer may omit it.
    */
   faces?: IrAgentFaces
   annotation: Annotation
@@ -333,7 +385,7 @@ export function validateIr(ir: ClaudePluginIr): string[] {
     const where = `agent ${JSON.stringify(agent.name)}`
     // Emittability is decided by the catalog face: the agent is emitted when
     // its name and description can be shown to the model, even if invocation
-    // or the model/tools/limits faces are still planned (S10). The overall
+    // or any per-key face is still planned/unsupported (S10, S16). The overall
     // annotation keeps the weakest face and its reason, so the report cannot
     // read as a whole success.
     const catalogFace = agent.faces?.catalog ?? agent.annotation
@@ -341,12 +393,37 @@ export function validateIr(ir: ClaudePluginIr): string[] {
       problems.push(`${where}: ${catalogFace.fidelity} catalog nodes must not sit in the emittable lists`)
     }
     problems.push(...annotationProblems(where, agent.annotation))
+    if (agent.skills !== undefined) {
+      if (!Array.isArray(agent.skills) || agent.skills.length === 0) problems.push(`${where}: skills must be a non-empty name list when present`)
+      for (const name of agent.skills ?? []) {
+        if (typeof name !== 'string' || name.trim() === '') problems.push(`${where}: skills contains an empty name`)
+      }
+    }
+    for (const preload of agent.skillContents ?? []) {
+      if (typeof preload?.name !== 'string' || preload.name.trim() === '') problems.push(`${where}: skillContents entry has an empty name`)
+      if (typeof preload?.content !== 'string' || preload.content.trim() === '') {
+        problems.push(`${where}: skillContents entry ${JSON.stringify(preload?.name)} has no body`)
+      }
+      if (agent.skills !== undefined && !agent.skills.includes(preload.name)) {
+        problems.push(`${where}: skillContents carries ${JSON.stringify(preload.name)} but skills does not declare it`)
+      }
+    }
     if (agent.faces) {
       problems.push(...annotationProblems(`${where} catalog face`, agent.faces.catalog))
       problems.push(...annotationProblems(`${where} invocation face`, agent.faces.invocation))
-      if (agent.faces.model) problems.push(...annotationProblems(`${where} model face`, agent.faces.model))
-      if (agent.faces.tools) problems.push(...annotationProblems(`${where} tools face`, agent.faces.tools))
-      if (agent.faces.limits) problems.push(...annotationProblems(`${where} limits face`, agent.faces.limits))
+      for (const face of AGENT_FACE_KEYS) {
+        const annotation = agent.faces[face]
+        if (annotation) problems.push(...annotationProblems(`${where} ${face} face`, annotation))
+      }
+      // An `equivalent` skills face means every declared skill body reached the
+      // child. A producer that has not resolved all of them must say `planned`.
+      if (agent.faces.skills?.fidelity === 'equivalent' && agent.skills !== undefined) {
+        const resolved = new Set((agent.skillContents ?? []).map((preload) => preload.name))
+        const missing = agent.skills.filter((name) => !resolved.has(name))
+        if (missing.length > 0) {
+          problems.push(`${where}: equivalent skills face but no body for ${JSON.stringify(missing)}`)
+        }
+      }
       const weakest = Math.max(
         ...Object.values(agent.faces).filter((face): face is Annotation => face !== undefined).map((face) => RANK[face.fidelity]),
       )

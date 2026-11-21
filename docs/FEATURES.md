@@ -34,7 +34,7 @@ it.
 | --- | --- | --- | --- |
 | Claude skills | `skills/<n>/SKILL.md`, root `SKILL.md` | `exact` (catalog) / `equivalent` (delivery: envelope + argument substitution differ) | `packages/dsh-anyplugin-dialect-claude-code/src/index.ts`, `packages/dsh-anyplugin-skill-template/src/index.ts`, D16/D17 |
 | Claude commands | `commands/*.md`, nested dropped | `equivalent` model face, `planned` human face | `packages/dsh-anyplugin-command-template/src/index.ts`, `packages/dsh-anyplugin-materialize-command/src/index.ts`, D10 |
-| Claude agents | `agents/<n>.md` | `exact` catalog (one tool per agent, `<plugin>:<agent>`), `equivalent` invocation | `packages/dsh-anyplugin-materialize-agents/src/index.ts`, D26 |
+| Claude agents | `agents/<n>.md` | `exact` catalog (one tool per agent, `<plugin>:<agent>`), `equivalent` invocation; frontmatter faces per §10 S16 — `skills` `equivalent` when the plugin ships them, `isolation` `planned`, `model`/`effort`/`tools`/`maxTurns`/`memory`/`background`/`omitClaudeMd`/`color`/`autoCompactWindow` `unsupported` | `packages/dsh-anyplugin-materialize-agents/src/index.ts`, `docs/ARCHITECTURE.md` §10 S16, D26 |
 | Claude MCP servers | `.mcp.json`, stdio + streamable HTTP | `equivalent` (tools/names/schemas byte-level; no reconnection policy) | `packages/dsh-anyplugin-materialize-mcp/src/index.ts`, D11/D12 |
 | Claude hooks | `hooks/hooks.json` command handlers | `equivalent` for routed events, `planned` otherwise | `packages/dsh-anyplugin-hook-runner/src/index.ts`, `packages/dsh-anyplugin-materialize-hook/src/index.ts`, D19/D20/D35 |
 | Claude output styles | `output-styles/<n>.md` | `equivalent` activation face / `planned` command face (row stays `planned`; carried byte-for-byte) | `fixtures/claude-output-styles`, `fixtures/claude-output-styles-activation`, D29/D37 |
@@ -81,5 +81,7 @@ it.
 - **GUI chrome (F3).** The foreign side has no such artifact, so it is `derived`
   and excluded from the denominator.
 - **Model identity in `agents/*.md`** (`model: sonnet`). Cannot be reimplemented
-  on this runtime; escape layer or `unsupported`.
+  on this runtime: the host has no alias-to-provider-model mapping (S16), so the
+  face is `unsupported`; the escape layer (delegate to the real client) is the
+  only path.
 - **Mod `$.ui.ask`.** No host interaction to ask into; absent member by design.
