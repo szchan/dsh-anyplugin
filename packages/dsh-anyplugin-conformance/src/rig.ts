@@ -10,6 +10,7 @@
  *   rig report  <plugin-dir> [--json] [--grants <grants.yml>]
  *   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
  *   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
+  rig revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
  *
  * `capture` records what the upstream host reports about a plugin. `verify`
  * replays the probe and diffs it against that golden, which is how a pin bump
@@ -130,26 +131,30 @@ const USAGE = `usage:
   rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
   rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
   rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
+  rig revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
   rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--drop-mods] [--dry-run] [--json]
   rig list    [--json]
   rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
   rig disable <plugin> [--scope <s>] [--dry-run] [--json]
   rig uninstall <plugin> [--dry-run] [--json]
   rig marketplace list --from <file> [--json]
-  rig marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--dry-run] [--json]
+  rig marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--yes] [--dry-run] [--json]
 
   marketplace reads a Claude (.claude-plugin/marketplace.json) or Codex
-  (.agents/plugins/marketplace.json) catalog without touching the network.
-  \`list\` prints each entry's name, description, source kind and policy, and
-  names every malformed entry instead of failing the file. \`install\` resolves
-  a "./" local source inside the catalog's root and then runs the same install
-  as \`rig install <dir>\`: one lock record, one enablement decision, the same
-  refusals and the same --dry-run. \`url\`, \`github\`, \`git-subdir\`, \`npm\`,
-  \`archive\` and \`command\` entries are listed but refused as unsupported —
-  installing one needs a fetch, a content hash pin and consent (D27), which is
-  slice 2 of #117. The record's source names the catalog and entry it came
-  from.
-
+  (.agents/plugins/marketplace.json) catalog without touching the network for
+  \`list\`. \`list\` prints each entry's name, description, source kind and
+  policy, and names every malformed entry instead of failing the file.
+  \`install\` resolves a "./" local source inside the catalog's root and then
+  runs the same install as \`rig install <dir>\`: one lock record, one
+  enablement decision, the same refusals and the same --dry-run. A \`url\`,
+  \`git-subdir\` or \`npm\` entry is fetched into
+  <lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/ only with
+  --yes, and the grant records the resolved commit/tarball hash; a moved pin
+  refuses until --yes accepts it. \`--dry-run\` prints the exact fetch command
+  and creates neither the cache nor a grant. \`github\`, \`archive\` and
+  \`command\` entries are listed but refused as unsupported. The record's
+  source names the catalog, entry, and (for a fetch) its integrity and
+  resolvedAt.
   --grants reads the hash-pinned exec grant store; without it the store is
   empty, so exec artifacts report refused:exec and are not emitted (D25).
   --scope is local, project, or user (default: user). \`grant\` prints every
@@ -315,7 +320,7 @@ function assertLifecycleOptions(command: string, args: Args): void {
  */
 const MARKETPLACE_OPTIONS: Record<string, readonly string[]> = {
   list: ['from', 'json', 'help'],
-  install: ['from', 'json', 'config', 'project', 'scope', 'dialect', 'force', 'allow-empty', 'dry-run', 'help'],
+  install: ['from', 'json', 'config', 'project', 'scope', 'dialect', 'force', 'allow-empty', 'yes', 'dry-run', 'help'],
 }
 
 function assertOptions(scope: string, args: Args, allowed: readonly string[]): void {
@@ -382,9 +387,20 @@ async function main(argv: string[]): Promise<number> {
       console.log(USAGE)
       return 0
     }
-    const [pluginDir, grantsFile] = requiredOptions(args, 'plugin', 'grants')
+    const capabilityOption = args.options.get('capability')
+    if (capabilityOption !== undefined && typeof capabilityOption !== 'string') {
+      throw new Error(`missing value for --capability\n${USAGE}`)
+    }
+    const [grantsFile] = requiredOptions(args, 'grants')
     const scope = parseScope(args.options.get('scope'))
     if (args.command === 'grant') {
+      const [pluginDir] = requiredOptions(args, 'plugin')
+      if (capabilityOption === 'network') {
+        throw new Error(`a network grant is recorded by \`rig marketplace install --yes\`, not by \`rig grant\`\n${USAGE}`)
+      }
+      if (capabilityOption !== undefined && capabilityOption !== 'exec') {
+        throw new Error(`--capability must be "exec" or "network"\n${USAGE}`)
+      }
       const run = runGrant(readPlugin(pluginDir), grantsFile, {
         scope,
         yes: args.options.get('yes') === true,
@@ -400,6 +416,21 @@ async function main(argv: string[]): Promise<number> {
     if (args.options.get('replace-revoke') === true || args.options.get('partial') === true) {
       throw new Error(`--replace-revoke and --partial apply only to grant\n${USAGE}`)
     }
+    if (capabilityOption === 'network') {
+      const [networkPlugin] = requiredOptions(args, 'plugin-id')
+      const [target] = requiredOptions(args, 'target')
+      const outcome = revokeNetworkGrant(grantsFile, networkPlugin, target, scope)
+      console.log(
+        args.options.get('json') === true
+          ? JSON.stringify(outcome, null, 2)
+          : `revoked ${outcome.capability} grant at ${outcome.scope} scope: ${outcome.plugin} ${outcome.target}`,
+      )
+      return 0
+    }
+    if (capabilityOption !== undefined && capabilityOption !== 'exec') {
+      throw new Error(`--capability must be "exec" or "network"\n${USAGE}`)
+    }
+    const [pluginDir] = requiredOptions(args, 'plugin')
     const [target] = requiredOptions(args, 'target')
     let plugin: ClaudePluginIr | undefined
     let pluginError: string | undefined
@@ -599,7 +630,7 @@ async function main(argv: string[]): Promise<number> {
     const dialect = args.options.get('dialect')
     if (dialect !== undefined && typeof dialect !== 'string') throw new Error(`missing value for --dialect\n${USAGE}`)
     try {
-      const result = installFromMarketplace({
+      const result = await installFromMarketplace({
         from,
         entry,
         ...lifecyclePaths(args),
@@ -607,6 +638,7 @@ async function main(argv: string[]): Promise<number> {
         ...(typeof dialect === 'string' ? { dialect } : {}),
         ...(args.options.get('force') === true ? { force: true } : {}),
         ...(args.options.get('allow-empty') === true ? { allowEmpty: true } : {}),
+        ...(args.options.get('yes') === true ? { yes: true } : {}),
         ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
       })
       console.log(json ? JSON.stringify(result, null, 2) : formatMarketplaceInstall(result))
@@ -709,6 +741,28 @@ export interface ResolutionView {
   allowedBy: { scope: Scope; artifactHash: string; grantedAt: string } | null
   verdict: string
   warning?: string
+}
+
+/**
+ * Revoke a network grant. Exec revokes are planned against a plugin directory;
+ * a network grant has no plugin to read, so the record itself is the target.
+ * `--yes` is refused for every revoke: revocation is immediate and needs no
+ * confirmation.
+ */
+export function revokeNetworkGrant(
+  file: string,
+  plugin: string,
+  target: string,
+  scope: Scope,
+): { plugin: string; capability: string; target: string; scope: Scope; alreadyRevoked: boolean; wrote: boolean } {
+  const before = readGrants(file)
+  const alreadyRevoked = before.revokes.some(
+    (record) => record.plugin === plugin && record.capability === 'network' && record.target === target && record.scope === scope,
+  )
+  if (!alreadyRevoked) {
+    updateGrants(file, (current) => revoke(current, { plugin, capability: 'network', target }, { scope }))
+  }
+  return { plugin, capability: 'network', target, scope, alreadyRevoked, wrote: !alreadyRevoked }
 }
 
 export interface RevokePlan {

@@ -109,9 +109,9 @@ test('list prints name, description, source kind and policy, and records what it
     assert.match(listed.stdout, /category: testing {2}version: 0\.1\.0/u)
     assert.match(listed.stdout, / {2}remote-helper {2}url {2}https:\/\/example\.invalid\/remote-helper\.git/u)
     assert.match(listed.stdout, /policy: AVAILABLE \/ ON_INSTALL/u)
-    assert.match(listed.stdout, /unsupported: url sources are not installable yet/u)
-    assert.match(listed.stdout, /D27/u)
-    assert.match(listed.stdout, /slice 2 of #117/u)
+    // url/git-subdir/npm are installable through a network grant; only the
+    // remaining kinds carry an `unsupported:` line, and this catalog has none.
+    assert.doesNotMatch(listed.stdout, /unsupported:/u)
     assert.match(listed.stdout, /note: marketplace: field "owner" is not carried by this slice/u)
     assert.match(listed.stdout, /note: entry "local-hello": field "author" is not carried by this slice/u)
     assert.match(listed.stdout, /problem: plugins\[2\] \("broken-entry"\) at line \d+: "source" must be/u)
@@ -134,8 +134,8 @@ test('list --json distinguishes "not installable here" from "malformed"', () => 
     assert.equal(local.installable, true)
     assert.deepEqual(local.source, { kind: 'local', path: './plugins/local-hello' })
     assert.equal(remote.name, 'remote-helper')
-    assert.equal(remote.installable, false)
-    assert.match(remote.unsupported, /fetch, a content hash pin and explicit consent/u)
+    assert.equal(remote.installable, true)
+    assert.equal(remote.unsupported, undefined)
     assert.equal(payload.problems.length, 1)
     assert.equal(payload.problems[0].name, 'broken-entry')
     assert.equal(typeof payload.problems[0].line, 'number')
@@ -253,24 +253,26 @@ test('a Codex marketplace resolves its object source under the marketplace root'
 // refusals: remote sources, malformed entries, escapes
 // ---------------------------------------------------------------------------
 
-test('a remote entry is refused as unsupported, naming the missing piece, and writes nothing', () => {
+test('a remote entry without a network grant is refused before the fetch, naming the command', () => {
   const box = sandbox()
   try {
     const refused = run(box, ['marketplace', 'install', 'remote-helper', '--from', catalog])
     assert.equal(refused.status, 1)
-    assert.match(refused.stderr, /refused \(unsupported-marketplace-source\)/u)
-    assert.match(refused.stderr, /entry "remote-helper" installs from url/u)
-    assert.match(refused.stderr, /a fetch, a content hash pin and explicit consent \(D27\)/u)
-    assert.match(refused.stderr, /slice 2 of #117/u)
+    assert.match(refused.stderr, /refused \(network-consent-required\)/u)
+    assert.match(refused.stderr, /entry "local-marketplace:remote-helper" is fetched, not read/u)
+    assert.match(refused.stderr, /GET https:\/\/example\.invalid\/remote-helper\.git/u)
+    assert.match(refused.stderr, /--yes/u)
+    assert.match(refused.stderr, /never authorizes exec\/mod/u)
     assert.equal(existsSync(box.lock), false, 'a refusal must not create the lock')
     assert.equal(existsSync(box.userLayer), false, 'a refusal must not enable anything')
+    assert.equal(existsSync(join(box.home, 'anyplugin', 'marketplace-cache')), false, 'a refusal must not fetch')
 
     const json = run(box, ['marketplace', 'install', 'remote-helper', '--from', catalog, '--json'])
     assert.equal(json.status, 1)
     const payload = JSON.parse(json.stdout)
     assert.equal(payload.ok, false)
-    assert.equal(payload.refusals[0].code, 'unsupported-marketplace-source')
-    assert.match(payload.refusals[0].reason, /D27/u)
+    assert.equal(payload.refusals[0].code, 'network-consent-required')
+    assert.match(payload.refusals[0].reason, /GET https:\/\/example\.invalid/u)
   } finally {
     cleanup(box.dir)
   }

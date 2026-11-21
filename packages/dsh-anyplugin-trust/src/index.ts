@@ -12,6 +12,7 @@
 export {
   EXEC_CAPABILITY,
   GRANTS_SCHEMA,
+  NETWORK_CAPABILITY,
   GrantsFileError,
   SCOPES,
   emptyGrants,

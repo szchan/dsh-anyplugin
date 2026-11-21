@@ -62,7 +62,7 @@ it.
 | Hash-pinned grants, re-consent on byte change | `derived` | `packages/dsh-anyplugin-trust/src/hash.ts`, `packages/dsh-anyplugin-trust/src/grants.ts`, D25 |
 | Grant/revoke CLI, all-or-nothing, revoke beats grant | `derived` | `packages/dsh-anyplugin-trust/src/authorize.ts`, D27 |
 | Install records + three scopes + idempotent reconcile | `derived` | `packages/dsh-anyplugin-install/src/index.ts`, D23 |
-| Marketplace catalogs: list, install a local entry by name | `derived` | `packages/dsh-anyplugin-conformance/src/marketplace.ts`, `fixtures/marketplace-local` |
+| Marketplace catalogs: list, install a local entry by name, and fetch `url`/`git-subdir`/`npm` entries under a per-fetch network grant | `derived` | `packages/dsh-anyplugin-conformance/src/marketplace.ts`, `packages/dsh-anyplugin-conformance/src/marketplace-fetch.ts`, `fixtures/marketplace-local` |
 | Enable/disable per project, narrowest scope wins | `derived` | `packages/dsh-anyplugin-install/src/enablements.ts` |
 | Mod through the lock: granted tree in `mods`, emitted to the hook row, re-read before `loadMod` | `derived` | `packages/dsh-anyplugin-install/src/installs.ts`, `packages/dsh-anyplugin-emit/src/index.ts`, `packages/dsh-anyplugin-conformance/test/mods-installed.test.mjs`, D25/D30 |
 

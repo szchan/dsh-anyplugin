@@ -75,6 +75,10 @@ export interface MarketplaceProvenance {
   marketplace: string
   entry: string
   version?: string
+  /** Content address of the fetched artifact: git commit, npm sha512, or url sha256. */
+  integrity?: string
+  /** ISO instant of the first fetch of these exact bytes; stable across reuse. */
+  resolvedAt?: string
 }
 
 /**
@@ -146,7 +150,9 @@ const HASH = /^sha256:[0-9a-f]{64}$/
 const BYTES = /^(0|[1-9][0-9]*)$/
 const SCHEMA_LINE = /^schema:\s+("(?:[^"\\]|\\.)*")\s*$/
 const PLUGINS_LINE = /^plugins:(?:\s*\[\s*\])?\s*$/
-const SOURCE_FIELDS = ['marketplace', 'entry', 'version'] as const
+const SOURCE_FIELDS = ['marketplace', 'entry', 'version', 'integrity', 'resolvedAt'] as const
+const INTEGRITY = /^(?:git:[0-9a-f]{40}|npm:[0-9a-f]{128}|sha256:[0-9a-f]{64})$/
+const RESOLVED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
 const MARKETPLACE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const MODS_LINE = /^mods:(?:\s*\[\s*\])?\s*$/
 const FILES_LINE = /^files:\s*$/
@@ -206,7 +212,7 @@ function validateSource(value: unknown, file: string, line: number): InstallSour
       throw new InstallsFileError(`unknown field "source.${key}"`, where)
     }
   }
-  const { marketplace, entry, version } = parsed
+  const { marketplace, entry, version, integrity, resolvedAt } = parsed
   if (typeof marketplace !== 'string' || marketplace.trim() === '') {
     throw new InstallsFileError('"source.marketplace" must be a non-empty string', where)
   }
@@ -222,8 +228,22 @@ function validateSource(value: unknown, file: string, line: number): InstallSour
   if (version !== undefined && (typeof version !== 'string' || !VERSION.test(version))) {
     throw new InstallsFileError('"source.version" must be non-empty and contain no whitespace', where)
   }
+  if (integrity !== undefined && (typeof integrity !== 'string' || !INTEGRITY.test(integrity))) {
+    throw new InstallsFileError(
+      '"source.integrity" must look like "git:<40 hex>", "npm:<128 hex>" or "sha256:<64 hex>"',
+      where,
+    )
+  }
+  if (resolvedAt !== undefined && (typeof resolvedAt !== 'string' || !RESOLVED_AT.test(resolvedAt) || Number.isNaN(Date.parse(resolvedAt)))) {
+    throw new InstallsFileError('"source.resolvedAt" must be an ISO-8601 UTC instant (…Z)', where)
+  }
+  if ((integrity === undefined) !== (resolvedAt === undefined)) {
+    throw new InstallsFileError('"source.integrity" and "source.resolvedAt" must be recorded together', where)
+  }
   const result: MarketplaceProvenance = { marketplace, entry }
   if (version !== undefined) result.version = version
+  if (integrity !== undefined) result.integrity = integrity
+  if (resolvedAt !== undefined) result.resolvedAt = resolvedAt
   return result
 }
 
@@ -241,6 +261,8 @@ function encodeSource(source: InstallSource): string {
     marketplace: source.marketplace,
     entry: source.entry,
     ...(source.version === undefined ? {} : { version: source.version }),
+    ...(source.integrity === undefined ? {} : { integrity: source.integrity }),
+    ...(source.resolvedAt === undefined ? {} : { resolvedAt: source.resolvedAt }),
   })
 }
 

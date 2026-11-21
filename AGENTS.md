@@ -106,7 +106,7 @@ npm run capture:fixtures          # re-capture goldens after a pin bump; review 
 npm run verify                    # check:arch + check:features + check:decisions + tests
 npm run check:arch                # structural rules R1–R13
 npm run check:features            # the capability map still points at real files
-npm run check:decisions           # D1–D52 append-only (--update accepts new entries only)
+npm run check:decisions           # D1–D53 append-only (--update accepts new entries only)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
 npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```
