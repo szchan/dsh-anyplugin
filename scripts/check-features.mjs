@@ -5,9 +5,10 @@
 // when a referenced path is gone, when a table with a "class" column contains a
 // row whose class is not one of the declared five, or when a table has no
 // evidence column. Those are the three ways a capability map becomes fiction.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { countOwnerViolations, ownedCounts } from './count-owners.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const file = join(root, 'docs', 'FEATURES.md')
@@ -65,9 +66,27 @@ if (tables === 0) problems.push('no tables found; the map has no rows')
 // 3. The snapshot must name the ratchet that owns the number.
 if (!/coverage\.test\.mjs/u.test(text)) problems.push('the snapshot must name the coverage ratchet')
 
+// 4. R15. A doc that states a count states its owner. The number is only true
+//    while the test that asserts it says so; a count without a test path can
+//    drift while the suite stays green. DECISIONS.md is exempt: it is the
+//    append-only historical record, hashed by check:decisions, and its counts
+//    are what was true when the entry was ratified — editing them to follow
+//    the suite would falsify the record.
+let owned = 0
+const docs = readdirSync(join(root, 'docs'))
+  .filter((name) => name.endsWith('.md') && name !== 'DECISIONS.md')
+  .sort()
+for (const name of docs) {
+  const document = readFileSync(join(root, 'docs', name), 'utf8')
+  owned += ownedCounts(document)
+  for (const violation of countOwnerViolations(document)) {
+    problems.push(`${name}:${violation.line}: ${violation.message}`)
+  }
+}
+
 if (problems.length > 0) {
   for (const problem of problems) console.error(`features: ${problem}`)
   console.error(`features: ${problems.length} problem(s) in docs/FEATURES.md`)
   process.exit(1)
 }
-console.log(`features: ${tables} tables, ${paths.size} referenced paths, classes within contract`)
+console.log(`features: ${tables} tables, ${paths.size} referenced paths, ${owned} count claims owned, classes within contract`)

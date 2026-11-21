@@ -64,7 +64,14 @@ it.
 | Install records + three scopes + idempotent reconcile | `derived` | `packages/dsh-anyplugin-install/src/index.ts`, D23 |
 | Enable/disable per project, narrowest scope wins | `derived` | `packages/dsh-anyplugin-install/src/enablements.ts` |
 
-## 5. Verification
+## 5. Repository guard (call-time policy, not a seam)
+
+| surface | what it does today | class | artifact |
+| --- | --- | --- | --- |
+| PreToolUse guard | denies `git push` to main/master, worker `gh pr merge`, writes outside the recorded worktree and `docs/DECISIONS.md` edits; installed as one `cordis.patch.yml` insert | `derived` | `packages/dsh-anyplugin-guard/src/index.ts`, `scripts/guard-install.mjs`, `scripts/guard-status.mjs` |
+| SubagentStart brief | appends the worktree path, ratchet totals and open rows to a worker's first `agent/pre-step` continuation | `derived` | `packages/dsh-anyplugin-guard/src/brief.ts` |
+
+## 6. Verification
 
 | tool | artifact |
 | --- | --- |
@@ -73,8 +80,10 @@ it.
 | Trace reader/differ (behaviour, positionally aligned) | `packages/dsh-anyplugin-conformance/src/trace.ts`, D18 |
 | Fidelity report (`rig report`) | `packages/dsh-anyplugin-conformance/src/report.ts` |
 | Pinned CI (two DSH pins, fetched harness + CLI + mods) | `.github/workflows/verify.yml`, D22/D24 |
+| Fixture ratchet (R14): every `fixtures/` directory is a ratchet row or a named exclusion | `scripts/fixture-ratchet.mjs`, `scripts/check-architecture.mjs` |
+| Count owners (R15): a doc count names the `.test.mjs` that asserts it | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
 
-## 6. What is deliberately not a feature
+## 7. What is deliberately not a feature
 
 - **Terminal themes (F2).** No host surface; `planned` until a palette seam
   exists (upstream proposal in `docs/TODO.md`).

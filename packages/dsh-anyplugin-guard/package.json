@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-guard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Our own PreToolUse guard plus the SubagentStart brief: call-time deny for pushes to main, worker merges, writes outside the worktree and hand edits of docs/DECISIONS.md, injected through the host seams the pin already has.",
+  "exports": { ".": "./src/index.ts" }
+}
