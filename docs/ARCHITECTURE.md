@@ -1298,16 +1298,21 @@ with a reason that names the alias hazard. The shell reader defaults to deny on 
 model — grouping, a background `&`, command substitution, backticks,
 here-strings, process substitution, `eval`/`source`/dot, `find -exec`, a shell
 reading stdin, unknown commands, unquoted `$` expansion — and refuses a
-worker's interpreter `-c`/`-e` payload that looks like a write or contains a
-literal process-spawn token (`interpreter-exec`). A worker may not run a **shell**
-script file either (`shell-script-unverified`): the bytes are
-writable and the reader does not read them, so the script could be rewritten
-to push main between the check and the run. Symlinks are resolved before
-confinement. A worker also cannot write inside `.git` (`git-dir-write`):
-appending a diff driver, a filter or a hook to `.git/config` would run on the
-next git command, which no command-line key check can see. `sudo` is refused
-for workers outright: it is not parsed, and on a host with passwordless sudo it
-would be root. The shell subset is deliberately narrow and is stated in the
+worker's interpreter `-c`/`-e` payload that looks like a write
+(`writeFileSync`, `renameSync`, `copyFileSync`, `cpSync`, `linkSync`, `symlinkSync`,
+`truncateSync`, Python/Ruby/PHP equivalents) or contains a literal process-spawn
+token (`exec`, `popen`, `spawn`, `system`, `subprocess`; `interpreter-exec`). A
+worker may not run a **shell** script file either (`shell-script-unverified`):
+the bytes are writable and the reader does not read them, so the script could be
+rewritten to push main between the check and the run. Symlinks are resolved
+before confinement. A worker cannot write inside `.git` through a modelled
+write — shell redirects and write verbs, structured `write`/`edit`/`apply_patch`,
+interpreter mutation literals (`interpreter-write`) and `tar -C <dir>`
+extraction (`git-dir-write`): appending a diff driver, a filter or a hook to
+`.git/config` would run on the next git command, which no command-line key
+check can see. `sudo` is refused for workers when it is the command that runs,
+after `env` options and leading assignments: it is not parsed, and on a host
+with passwordless sudo it would be root. The shell subset is deliberately narrow and is stated in the
 brief: one command list per call; `&&`, `||`, `|` and redirections
 (including `2>&1`) are modelled, everything else is refused.
 
@@ -1346,8 +1351,9 @@ open a PR, which is the workflow we want anyway. What the guard buys is that the
 `git config` — is caught at the call, before the network.
 
 The residual holes are named rather than papered over: worker interpreter
-payloads (only literal spawn spellings are denied, so `String.fromCharCode`,
-`globalThis['pro'+'cess']` or a downloaded script remain possible),
+payloads (only literal spawn spellings — including `exec` and `popen` — are
+denied, so `String.fromCharCode`, `globalThis['pro'+'cess']` or a downloaded
+script remain possible),
 `node scripts/*.mjs` and `npm run *` (both editable, so unverified), a
 `--no-verify` inside a command the reader did not model, non-git file writes
 from allowed tools, a root-run shell script, a root-written exec key that a host

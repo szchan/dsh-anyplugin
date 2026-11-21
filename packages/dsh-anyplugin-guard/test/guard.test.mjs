@@ -231,6 +231,8 @@ test('literal process-spawn payloads are refused; a plain one-liner is not', () 
     `node -e "require('child_process').execSync('git push origin main')"`,
     `python3 -c "import subprocess; subprocess.run(['git','push','origin','main'])"`,
     `ruby -e "system('git push origin main')"`,
+    `ruby -e 'exec("git","push","--no-verify","origin","HEAD:main")'`,
+    `python3 -c 'import os; os.popen("git push --no-verify origin HEAD:main")'`,
     `php -r "system('git push origin main');"`,
   ]) {
     const outcome = shell(command)
@@ -573,6 +575,34 @@ test('a worker cannot plant a driver in .git, and sudo is refused', () => {
   assert.equal(sudo.kind, 'deny')
   assert.equal(sudo.rule, 'sudo-refused')
   assert.equal(shell('sudo --preserve-env git status').rule, 'sudo-refused')
+})
+
+test('interpreter file mutations and tar extraction cannot write .git', () => {
+  for (const command of [
+    `node -e 'require("fs").renameSync("/tmp/evil", ".git/config")'`,
+    `node -e 'require("fs").copyFileSync("/tmp/evil", ".git/config")'`,
+    `node -e 'require("fs").cpSync("/tmp/evil", ".git/config")'`,
+    `node -e 'require("fs").symlinkSync("/tmp/evil", ".git/config")'`,
+    `node -e 'require("fs").truncateSync(".git/config")'`,
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'interpreter-write', command)
+  }
+  const tar = shell('tar -xf /tmp/evil.tar -C .git')
+  assert.equal(tar.kind, 'deny')
+  assert.equal(tar.rule, 'git-dir-write')
+  assert.equal(shell('tar -xf /tmp/evil.tar').kind, 'allow', 'extracting into the worktree is ordinary')
+})
+
+test('sudo is matched at command position, not as a word', () => {
+  for (const command of ['git commit -m sudo', 'git log --grep sudo', 'grep sudo README.md', 'echo sudo']) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+  assert.equal(shell('sudo git status').rule, 'sudo-refused')
+  assert.equal(shell('sudo --preserve-env git status').rule, 'sudo-refused')
+  assert.equal(shell('env -i -u X sudo git status').rule, 'sudo-refused')
+  assert.equal(shell('FOO=1 sudo git status').rule, 'sudo-refused')
 })
 
 test('the installed pre-push hook refuses every spelling git resolves to main', () => {

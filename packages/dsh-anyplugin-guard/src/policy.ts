@@ -788,7 +788,7 @@ const ALLOWED_COMMANDS = new Set([
 const SHELL_BASES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell'])
 const FIND_EXEC_FLAGS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 const WRITE_PAYLOAD =
-  /writeFileSync|appendFileSync|createWriteStream|writeFile\s*\(|fs\.write|open\s*\([^)]*['"][wa]|shutil\.|os\.(?:remove|rename|unlink|mkdir)|write_text\s*\(|File\.(?:write|open|delete|rename|unlink)|IO\.write|FileUtils\.|file_put_contents|fopen\s*\(|fwrite\s*\(|unlink\s*\(|rename\s*\(/u
+  /writeFileSync|appendFileSync|createWriteStream|writeFile\s*\(|fs\.write|open\s*\([^)]*['"][wa]|shutil\.|os\.(?:remove|rename|unlink|mkdir)|write_text\s*\(|File\.(?:write|open|delete|rename|unlink)|IO\.write|FileUtils\.|file_put_contents|fopen\s*\(|fwrite\s*\(|unlink\s*\(|rename(?:Sync)?\s*\(|copyFile(?:Sync)?\s*\(|cpSync\s*\(|link(?:Sync)?\s*\(|symlink(?:Sync)?\s*\(|truncate(?:Sync)?\s*\(/u
 
 /**
  * A single unquoted `&` backgrounds a command; the guard models only `&&`.
@@ -833,7 +833,8 @@ function interpreterWrite(tokens: string[]): boolean {
  * reviewer reproduced; it cannot close the class itself — `globalThis['pro'+'cess']`
  * and a downloaded script remain possible, and the docs say so.
  */
-const SPAWN_PAYLOAD = /child_process|execSync|execFileSync|execFile|spawn|os\.system|subprocess|system\(/u
+const SPAWN_PAYLOAD =
+  /child_process|\bexec[a-z]*\s*\(|\bpopen\b|Kernel\.exec|os\.exec|spawn|os\.system|subprocess|system\(/u
 
 function interpreterExec(tokens: string[]): boolean {
   const head = stripPrefix(tokens)
@@ -978,6 +979,16 @@ function segmentWriteTargets(segment: ShellSegment): string[] {
   const head = stripPrefix(segment.tokens)
   const command = baseCommand(head[0])
   const args = head.slice(1)
+  if (command === 'tar' && args.some((token) => token === '--extract' || token === '--get' || /^-[A-Za-z]*x/u.test(token))) {
+    for (let index = 0; index < args.length; index += 1) {
+      if (args[index] === '-C' || args[index] === '--directory') {
+        const value = args[index + 1]
+        if (value !== undefined) targets.push(value)
+      } else if (args[index].startsWith('--directory=')) {
+        targets.push(args[index].slice('--directory='.length))
+      }
+    }
+  }
   if (COPY_VERBS.has(command)) {
     const directory = args.indexOf('-t')
     if (directory >= 0 && args[directory + 1] !== undefined) {
@@ -1100,6 +1111,40 @@ function collectShellWrites(segments: ShellSegment[], cwd: string | undefined): 
   return writes
 }
 
+/**
+ * True when the command that actually runs is `sudo`, after `env` options and
+ * leading assignments. Matching the first four tokens instead would refuse
+ * `git commit -m sudo` and `grep sudo README.md`, which are ordinary work.
+ */
+function sudoAtCommandPosition(tokens: string[]): boolean {
+  let index = 0
+  while (index < tokens.length) {
+    const token = tokens[index]
+    if (token === 'env' || token === 'command') {
+      index += 1
+      while (index < tokens.length) {
+        const argument = tokens[index]
+        if (argument === '-u' || argument === '--unset') {
+          index += 2
+          continue
+        }
+        if (argument.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/u.test(argument)) {
+          index += 1
+          continue
+        }
+        break
+      }
+      continue
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+      index += 1
+      continue
+    }
+    return token === 'sudo'
+  }
+  return false
+}
+
 function judgeCommand(
   command: string,
   cwd: string | undefined,
@@ -1117,7 +1162,7 @@ function judgeCommand(
 
   if (agent.worker) {
     for (const segment of flat) {
-      if (segment.tokens[0] === 'sudo' || segment.tokens.slice(0, 4).includes('sudo')) {
+      if (sudoAtCommandPosition(segment.tokens)) {
         return deny(
           'sudo-refused',
           `refusing "${excerpt(segment.raw)}": a worker has no use for sudo; run the command with the directory permissions you were given`,

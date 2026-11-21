@@ -426,6 +426,14 @@ export function guardTable(options: { worktree: string; protectedRoot: string })
     { tool: 'bash', payload: 'sudo git push origin main', role: 'worker', expect: 'deny', rule: 'sudo-refused', note: 'sudo is not modelled' },
     { tool: 'bash', payload: 'git config foo.bar x', role: 'root', expect: 'deny', rule: 'git-config-write', note: 'root uses the same inert allowlist' },
     { tool: 'bash', payload: 'git -c user.name=X -c user.email=Y commit -m "x"', role: 'root', expect: 'allow', rule: 'allow', note: 'root -c uses the same inert allowlist' },
+    { tool: 'bash', payload: 'ruby -e \'exec("git","push","--no-verify","origin","HEAD:main")\'' , role: 'worker', expect: 'deny', rule: 'interpreter-exec', note: 'exec is a spawn spelling' },
+    { tool: 'bash', payload: 'python3 -c \'import os; os.popen("git push --no-verify origin HEAD:main")\'' , role: 'worker', expect: 'deny', rule: 'interpreter-exec', note: 'popen is a spawn spelling' },
+    { tool: 'bash', payload: `node -e 'import("node:fs").then(fs => fs.renameSync("${worktree}/evil", ".git/config"))'`, role: 'worker', expect: 'deny', rule: 'interpreter-write', note: 'renameSync is a mutation verb' },
+    { tool: 'bash', payload: `tar -xf ${protectedRoot}/evil.tar -C .git`, role: 'worker', expect: 'deny', rule: 'git-dir-write', note: 'extracting into .git writes a config' },
+    { tool: 'bash', payload: 'git commit -m sudo', role: 'worker', expect: 'allow', rule: 'allow', note: 'sudo in a message is not a command' },
+    { tool: 'bash', payload: 'grep sudo README.md', role: 'worker', expect: 'allow', rule: 'allow', note: 'sudo as an operand is not a command' },
+    { tool: 'bash', payload: 'echo sudo', role: 'worker', expect: 'allow', rule: 'allow', note: 'sudo as text is not a command' },
+    { tool: 'bash', payload: 'env -i -u X sudo git status', role: 'worker', expect: 'deny', rule: 'sudo-refused', note: 'sudo after env options is still the command' },
     { tool: 'bash', payload: 'git config user.name X', role: 'worker', expect: 'deny', rule: 'git-config-write', note: 'workers do not write config' },
   ]
 }
