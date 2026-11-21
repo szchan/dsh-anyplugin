@@ -10,9 +10,9 @@
  * First layer that mentions a plugin wins, even when it disables it. A plugin
  * nobody mentions is installed but inert. There is no fourth default.
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { InstallsFileError } from './installs.ts'
 
@@ -39,7 +39,7 @@ export interface ResolvedEnablement {
   grants: string[]
 }
 
-const SCOPES: Scope[] = ['local', 'project', 'user']
+export const SCOPES: Scope[] = ['local', 'project', 'user']
 const ID = /^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._@-]*$/
 const PLUGINS_LINE = /^\s*plugins:(?:\s*\[\s*\])?\s*$/
 const ENTRY_LINE = /^\s{2}(\S+):\s*\{\s*enabled:\s*(true|false)\s*(?:,\s*grants:\s*\[([^\]]*)\])?\s*\}\s*$/
@@ -116,6 +116,60 @@ export function parseEnablements(text: string, file = '<enablements>'): Enableme
     throw new InstallsFileError('empty file; expected `plugins:`', { file, line: 1 })
   }
   return { plugins }
+}
+
+/**
+ * Serialize one layer in the canonical form the parser above accepts.
+ *
+ * The writer is deliberately as small as the reader: sorted ids, one line per
+ * entry, `grants` preserved when present (the CLI never authors them, but a
+ * hand-written layer may carry them and a rewrite must not drop consent state).
+ */
+export function serializeEnablements(layer: EnablementLayer): string {
+  if (layer === null || typeof layer !== 'object' || layer.plugins === null || typeof layer.plugins !== 'object') {
+    throw new InstallsFileError('an enablement layer must be an object with a "plugins" record')
+  }
+  const ids = Object.keys(layer.plugins).sort()
+  for (const id of ids) {
+    if (!ID.test(id)) throw new InstallsFileError(`"${id}" is not a <dialect>:<plugin> id`)
+    const entry = layer.plugins[id]
+    if (entry === null || typeof entry !== 'object' || typeof entry.enabled !== 'boolean') {
+      throw new InstallsFileError(`enablement for "${id}" must have a boolean "enabled"`)
+    }
+    if (!Array.isArray(entry.grants) || entry.grants.some((grant) => typeof grant !== 'string' || grant.length === 0 || /[\s,]/.test(grant))) {
+      throw new InstallsFileError(`enablement for "${id}" has invalid grants`)
+    }
+  }
+  const lines = ['# dsh-anyplugin enablement — generated; edit through the installer.']
+  if (ids.length === 0) {
+    lines.push('plugins: []')
+  } else {
+    lines.push('plugins:')
+    for (const id of ids) {
+      const entry = layer.plugins[id]
+      const grants = entry.grants.length === 0 ? '' : `, grants: [${entry.grants.join(', ')}]`
+      lines.push(`  ${id}: { enabled: ${entry.enabled}${grants} }`)
+    }
+  }
+  return `${lines.join('\n')}\n`
+}
+
+/**
+ * Write one layer atomically (temp + rename), for the same reason
+ * `writeInstalls` does: a crash mid-write must not leave a half-valid layer
+ * that the next read would have to reject — or worse, read as "off".
+ */
+export function writeEnablements(file: string, layer: EnablementLayer): void {
+  const text = serializeEnablements(layer)
+  mkdirSync(dirname(file), { recursive: true })
+  const temporary = `${file}.${process.pid}.tmp`
+  try {
+    writeFileSync(temporary, text, 'utf8')
+    renameSync(temporary, file)
+  } catch (error) {
+    rmSync(temporary, { force: true })
+    throw error
+  }
 }
 
 /** First mention wins: local, then project, then user. No mention means inert. */

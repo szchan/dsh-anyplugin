@@ -1508,6 +1508,21 @@ does not invent one: the caller passes the decisions, and the result carries
 trusted child is still mounted. A refusal is a compile decision, not a loader
 failure, and is not reported as `failed`.
 
+The lifecycle CLI (`rig install|list|enable|disable|uninstall`) is a caller of
+this pipeline, not a second implementation. `install` reads the plugin, builds
+the record, and hands the complete lock to `writeInstalls`; `enable`/`disable`
+hand one layer to `writeEnablements`. Both writers validate first and replace
+by temp file + rename, so a typed refusal leaves the previous bytes untouched.
+`list` re-runs `prepareInstalledRecord` + `buildTransplantReport` per record,
+which is why its carry counts are the same rows `rig report` prints rather than
+a second counter. Reporting needs the ungated IR: `PreparedRecord` keeps both
+`ir` (gated, for emit) and `ungated` (for the report, which gates itself),
+because gating an already-gated IR would turn every refusal into a skipped row.
+`uninstall` removes the record and compares the desired entry tree before and
+after; with no installed record the tree is empty, so the next reconcile removes
+the group. Enablement and grants are deliberately not deleted: they are
+workspace policy, and a reinstall picks them up again.
+
 Ids are dialect-qualified and mangled (D7): group
 `anyplugin.<mangleId("<dialect>:<plugin>")>`, child
 `anyplugin.<mangleId("<dialect>:<plugin>")>#<mangleId(surface)>` (`skill`,

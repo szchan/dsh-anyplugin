@@ -72,7 +72,7 @@ export interface CompileOptions {
 /**
  * The dialect registry. A lock row names its dialect; the row owns the reader
  * and the pin that reader stamps on the IR. Adding a source agent is one row
- * here, not another branch in `prepareRecord`.
+ * here, not another branch in `prepareInstalledRecord`.
  *
  * `read` is typed as the Claude reader: both dialects return the same
  * `ClaudePluginIr`, and the point of the registry is that the install path
@@ -135,13 +135,32 @@ export interface CompileReport {
 }
 
 /** A record that passed every check and can be emitted. */
-interface PreparedRecord {
+export interface PreparedRecord {
   record: InstallRecord
   decision: TrustDecision
+  /** The IR after the trust gate: refused exec artifacts are `pending` nodes. */
   ir: ReturnType<typeof readClaudePlugin>
+  /**
+   * The IR exactly as the dialect read it. Reporting gates it again, and
+   * gating an already-gated IR would erase the refusal rows, so the report
+   * must start from this copy rather than `ir`.
+   */
+  ungated: ReturnType<typeof readClaudePlugin>
 }
 
-function prepareRecord(record: InstallRecord, options: CompileOptions): PreparedRecord {
+/**
+ * Read one lock record through its dialect and apply the trust gate.
+ *
+ * Exported because the CLI needs the same checks the controller does — a
+ * record is only usable when its dialect is known, its pin matches this build,
+ * its root is an absolute directory, and the artifact still calls itself by
+ * the recorded name. Re-implementing those checks in the CLI would be a second
+ * compiler that could disagree with this one.
+ */
+export function prepareInstalledRecord(
+  record: InstallRecord,
+  options: CompileOptions | { grants?: Grants } = {},
+): PreparedRecord {
   const id = `${record.dialect}:${record.name}`
   // `record.dialect` matches the install-file identifier grammar, but
   // `constructor` is a legal identifier and also an inherited
@@ -179,7 +198,7 @@ function prepareRecord(record: InstallRecord, options: CompileOptions): Prepared
   // Gate before emit: refused exec artifacts become `planned` pending nodes and
   // the emitter is given only the targets whose current hash is granted.
   const gated = gate(ir, options.grants ?? emptyGrants())
-  return { record, decision: gated.decision, ir: gated.ir }
+  return { record, decision: gated.decision, ir: gated.ir, ungated: ir }
 }
 
 function activationStyle(style: {
@@ -231,7 +250,7 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
       continue
     }
     try {
-      const compiled = prepareRecord(record, options)
+      const compiled = prepareInstalledRecord(record, options)
       prepared.push(compiled)
       decisions.push(compiled.decision)
       activationPlugins.push({

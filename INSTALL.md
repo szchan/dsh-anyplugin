@@ -81,12 +81,66 @@ Commands are not a sixth subpath: a slash command lands as a **skill** on its
 model face (`equivalent`). The human `/…` face is still `planned` and needs
 the host command-name seam (D10); wiring it is not part of 0.2.0.
 
-## 2. Tell the controller which plugins to run
+## 2. Install and enable a plugin
 
-The controller reads `$DSH_HOME/anyplugin/installs.yml` at boot. In 0.2.0 the
-installer that usually writes this file ships as a library, not a CLI, so write
-the canonical form by hand. A missing file means "no installs"; a malformed one
-fails the boot with a line number — it never silently uninstalls anything.
+The installer is the conformance rig in this checkout (`packages/dsh-anyplugin-conformance/src/rig.ts`);
+it is not a separate published executable yet. From the repository root:
+
+```bash
+npm run rig -- install <plugin-dir> [--scope user|project|local] [--name <name>] [--dialect claude-code|codex] [--force] [--allow-empty] [--dry-run] [--json]
+npm run rig -- list [--json]
+npm run rig -- enable <plugin> [--scope user|project|local] [--dry-run] [--json]
+npm run rig -- disable <plugin> [--scope user|project|local] [--dry-run] [--json]
+npm run rig -- uninstall <plugin> [--dry-run] [--json]
+```
+
+`install` reads `<plugin-dir>` with the dialect detected from its manifest
+(`.claude-plugin/plugin.json` → `claude-code`; a root `plugin.json` or
+`.codex-plugin/plugin.json` → `codex`, overridable with `--dialect`), compiles
+it through the same report path as `rig report`, and writes exactly one record
+to `$DSH_HOME/anyplugin/installs.yml` through the canonical lock writer. It
+then enables the plugin in the layer named by `--scope` (default `user`), but
+only if that layer does not already mention it — a previous `disable` is never
+silently flipped. `<plugin>` in `enable`/`disable`/`uninstall` is
+`<dialect>:<name>`, or a bare name that is unique in the lock.
+
+The command is idempotent: installing the same directory twice exits 0 and
+rewrites nothing. `--force` is the explicit override when the record's root or
+version changed. `--config <file>` re-points the lock (grants and data follow
+it), and `--project <dir>` selects the workspace whose scope layers are read.
+Paths resolve against the current directory: `<plugin-dir>` and a relative
+`--config` are cwd-relative, while the record stores `root` and `dataDir`
+absolutely. A command that needs an existing lock, given a relative
+`--config` that does not exist, refuses with `unreadable-lock` instead of
+reporting an empty lock from the wrong directory.
+Every mutating command accepts `--dry-run`, which prints the exact `-`/`+`
+lines and writes no byte. `--json` prints typed refusals as
+`{ok:false, refusals:[{code, reason, hint?}]}` and exits 1; the reason is the
+parser's own message, never a paraphrase.
+
+What `install` does **not** do:
+
+- It does not touch `PATH`; a plugin is data the controller reconciles, not an
+  executable shim.
+- It does not write profile config. Adding the bundle to a profile is still
+  `dsh plugin add` in §1; the installer only writes `installs.yml`, the scope
+  layer named by `--scope`, and (through the controller) `grants.yml`.
+- It does not seat mods. `installs.yml` has no `mods` field (D43/D46); the mod
+  kernel is reachable only from a hand-written hook row carrying `mods`, and
+  that is not an install path.
+- It does not grant `exec` artifacts. Hooks stay `refused:exec` until a
+  hash-pinned grant exists (D27); a plugin whose compile yields only refusals
+  is refused by default and can be recorded with `--allow-empty`, which
+  installs an inert-but-listed plugin and names the refusals in `list`.
+- `uninstall` removes the record and leaves the enablement layer and grants in
+  place, so a workspace's policy survives a reinstall; it prints which scopes
+  still mention the plugin and how many hash-pinned grants remain
+  (`grants: N retained`, also printed by `list`).
+
+A missing lock means "no installs"; a malformed one fails every lifecycle
+command with the parser's line number — it never silently uninstalls anything.
+
+The lock is still the contract, so here is the record `install` writes:
 
 ```yaml
 # $DSH_HOME/anyplugin/installs.yml
@@ -98,6 +152,7 @@ plugins:
     root: "/absolute/path/to/my-plugin"
     dataDir: "/absolute/path/to/dsh-anyplugin-data/my-plugin"
     pin: "claude-code@2.1.329"
+    source: "plugin-dir:plugins/my-plugin"
 ```
 
 `root` must be absolute and point at the plugin directory; `dataDir` is the
@@ -129,10 +184,27 @@ harness `dshHomePath`; `projectDir` defaults to the process working directory.
 
 ## 3. Enable the plugin
 
-Installing a plugin is not enabling it: an install record that no enabled layer
-mentions stays off. Enablement is layered, narrowest first — `local` overrides
-`project`, `project` overrides `user` — and the controller only reconciles what
-is enabled:
+Installing a plugin does not by itself enable it: an install record that no
+enabled layer mentions stays inert. `install` enables it at `--scope` in the
+same run; `enable` and `disable` edit one existing layer:
+
+```bash
+npm run rig -- enable claude-code:my-plugin --scope project
+npm run rig -- disable claude-code:my-plugin --scope project
+```
+
+Without `--scope`, the command edits the narrowest layer that already mentions
+the plugin, and falls back to `user`. `disable` writes `enabled: false`; it
+never deletes the record. If a narrower layer still decides the other way, the
+command prints a warning naming that layer, because `list` reports the
+*effective* state, not the line just written:
+
+```bash
+npm run rig -- list        # name, dialect, root, version, pin, enabled scopes, carry counts
+```
+
+Enablement is layered, narrowest first — `local` overrides `project`, `project`
+overrides `user` — and the controller only reconciles what is enabled:
 
 | scope | file |
 | --- | --- |
@@ -162,9 +234,11 @@ editing the hook invalidates the grant and asks again.
 
 Grants live in `$DSH_HOME/anyplugin/grants.yml` (canonical form, keyed by
 `plugin`, `capability`, `target`, `artifactHash`, `grantedAt`, `scope`). Grant
-issuance is the installer's job; in 0.2.0 write the grant by hand only when you
-have read the command line in the refusal log and accept it. A grant for a
-different byte sequence does nothing.
+issuance is `rig grant`'s job: it prints the target, mode, hash and exact
+command line before writing with `--yes`, and `install` never grants one for
+you. A hand-written grant is only acceptable when you have read the command
+line in the refusal log and accept it. A grant for a different byte sequence
+does nothing.
 
 ## 5. Remove it
 
@@ -181,9 +255,15 @@ the `anyplugin.` entries from the previous boot are not part of the profile and
 are not loaded. Deleting `$DSH_HOME/anyplugin/` removes the lock, grants and
 enablement layers together.
 
-To remove **one plugin** while keeping the bundle, delete its record from
-`installs.yml` (or set `enabled: false` in the layer that enabled it). At the
-next boot the reconciler removes that plugin's group and all of its children.
+To remove **one plugin** while keeping the bundle, run
+`npm run rig -- uninstall <plugin>` (it prints the record it removes, the
+scopes that still mention it, and the entry-tree group it no longer wants), or
+set `enabled: false` in the layer that enabled it. The entry disappears on the
+next reconcile — `uninstall` itself does not talk to a live loader, so it
+reports the desired-tree diff and the boot applies it. On the next boot the
+reconciler removes that plugin's group and all of its children. Deleting the
+record from `installs.yml` by hand has the same effect; the writer is only
+canonical, not privileged.
 
 ## 6. What is verified, not just claimed
 
