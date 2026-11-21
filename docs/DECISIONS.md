@@ -2493,3 +2493,66 @@ snapshot hand-off.
 - Read confinement is its own decision (D53); until then a mod reads what its
   process can read, and the grant must not be described as content
   confinement.
+
+## D53 — Remote marketplace fetches are network-class and pinned to the resolved artifact
+
+**Date:** 2026-11-21.
+
+A marketplace install may fetch `url`, `git-subdir` and `npm` sources only under
+a `network` grant in the existing grants store (no second store). The grant is
+keyed by `{plugin: <marketplace>:<entry>, capability: network, target:
+<kind>:<spec>, artifactHash: <integrity>}`, where `artifactHash` is
+`git:<commit>`, `npm:<sha512 of the packed tarball>` or `sha256:<downloaded
+bytes>`, at the install scope, and is written only after a successful install.
+
+- **Identity.** A URL's query string is bound into the target as an opaque
+  `#q=<16 hex>` fingerprint while output stays redacted; a changed query or
+  changed bytes is a different grant and asks again.
+- **Lock.** The lock's optional `source` may carry `integrity` + `resolvedAt`,
+  always together, inside the canonical quoted string. `dsh-anyplugin/installs@2`
+  does not move for this field, and grants stay `@1` with the hash grammar
+  widened to the three integrity kinds.
+- **Pins.** A floating ref records the commit it resolved to. A later install
+  resolving a different artifact refuses (`network-pin-moved`) before any new
+  bytes run; `--yes` accepts the move by updating the grant. A revoke is not
+  overridden by `--yes` and is expressible through
+  `rig revoke --capability network`.
+- **Dry run.** `--dry-run` fetches nothing and writes no cache, grant or lock.
+  Because it fetches nothing it cannot see a moved pin, so its preview reports
+  the integrity as unknown rather than asserting consent it could not check.
+- **Transport.** `https:` and `file:` only (`http:` refused before any request);
+  redirects must stay same-origin and must not add userinfo. Git arguments are
+  passed after `--`, and `ref` must be a plain ref (no leading `-`, no `..`,
+  `@{`, `//`, trailing `.`/`.lock`, control characters), because a ref is an
+  argv element that git can read as an option.
+- **Containment.** Fetched artifacts are cached content-addressed at
+  `<lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/`, must be plain
+  files (no symlinks), and go through the same single `installPlugin` writer as
+  directory installs. Archive members are refused for `..`, absolute paths,
+  backslashes, drive letters, duplicates and file/directory collisions, and the
+  decompressed size is capped. A `network` grant never authorizes an
+  `exec`-class artifact.
+
+**What D53 does not claim.**
+
+- The Windows tar path is validated by name only; CI runs `ubuntu-latest`.
+- Source credentials are refused, not stored; private repositories are out of
+  scope.
+- `url` sources must be gzipped tarballs.
+- `resolveGrant` picks the narrowest matching record without checking the
+  requested `--scope`, so a project-scope network grant also authorizes a
+  user-scope install, and a project revoke sticks against a user `--yes`. Both
+  directions fail closed; neither is a confinement claim.
+- `sha` wins over `ref` with no ancestry check.
+
+**Evidence.** `packages/dsh-anyplugin-conformance/src/marketplace-fetch.ts`
+(ref grammar, `--`, origin-equal redirects, redaction, integrity), `tar.ts`,
+`packages/dsh-anyplugin-trust/src/authorize.ts`, `marketplace.test.mjs`,
+`tar.test.mjs`, the 27-row mutation table in the PR, and the gate at both pins.
+
+**Consequences.**
+
+- A new fetch kind is a new grant key here, not a widening of an existing one.
+- A new integrity computation must be added to the hash grammar and to the
+  grant table together.
+- `network` and `exec` stay separate classes; a fetch never implies execution.
