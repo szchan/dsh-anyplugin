@@ -30,8 +30,6 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
-
       # A tag that disagrees with the manifest would publish 0.1.0 under v0.2.0.
       - name: Tag matches the package version
         run: |
@@ -44,7 +42,9 @@ jobs:
 
       # A tag is not evidence that the commit was reviewed: a tag can point at a
       # branch commit or a detached HEAD. Only a commit that is an ancestor of
-      # `origin/main` may publish. This runs before anything is built or pushed.
+      # `origin/main` may publish. This step and the tag check run before
+      # `npm ci`, so a tag on a branch commit never executes dependency install
+      # scripts while the job holds `contents: write` and `id-token: write`.
       - name: The tag is on main
         run: |
           set -euo pipefail
@@ -53,6 +53,8 @@ jobs:
             echo "::error::${GITHUB_SHA} is not an ancestor of origin/main; refusing to publish"
             exit 1
           fi
+
+      - run: npm ci
 
       # `verify` is the same gate PRs pass: structural checks, the packaged
       # tarball and its install smoke, the full test suite, and zero skips. Its
