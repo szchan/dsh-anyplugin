@@ -20,13 +20,16 @@
 //
 // Two host seams are named here rather than assumed:
 //
-//   * `PluginPackages` is the host's installation-path interception. It throws
-//     `node-addon-require-builtin unsupported: Unsupported/no-getter` on the
-//     pinned Node builds (24.12.0 and 24.22.2, napi-v9), so the profile borrows
-//     the installation's `@deepseek-ai` scope with a link — the same fallback
-//     `scripts/smoke-install.mjs` uses. The controller itself imports only
-//     node builtins; the link is for the `cordis-plugin-group` entry the
-//     loader mounts. `hostPath` in the boot below records which path was taken.
+//   * `PluginPackages` is the host's installation-path interception. It needs
+//     `node-addon-require-builtin`, whose napi binding fails with
+//     `Unsupported/no-getter` on some Node patches (24.22.2 and 24.12.0) and
+//     works on others (24.22.3, 24.21.0); S18 measures that patch boundary.
+//     When it initializes, the positive test below asserts its effect: no scope
+//     link, and the `cordis-plugin-group` entry resolves from the installation
+//     tree. When it cannot initialize, the profile borrows the installation's
+//     `@deepseek-ai` scope with a link — the same fallback
+//     `scripts/smoke-install.mjs` uses — and `hostPath` records that. On CI the
+//     fallback is a failure: the Node CI runs must prove closure.
 //   * The profile template bundle (the stock base application bundle) is not
 //     in the fetched harness union, so the profile lists only `dsh-anyplugin`
 //     and the services the assertions need (`skillRegistry`, `profileContext`)
@@ -47,13 +50,14 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test, { after } from 'node:test'
 
-import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
+import { harnessSkipReason, isCI, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const FIXTURE = join(repoRoot, 'fixtures', 'claude-skills-only')
@@ -187,9 +191,12 @@ async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false
   process.env.DSH_HOME = home
   const logs = []
   const moduleUrls = []
+  const groupUrls = []
   let ctx
   let hook
   let hostPath = 'Unsupported'
+  let pluginPackagesCapable = false
+  let scopeLink = null
 
   try {
     const packageDir = join(profileDir, 'node_modules', 'dsh-anyplugin')
@@ -212,6 +219,28 @@ async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false
     writeFileSync(rootConfig, '# dsh profile root — an empty entry list.\n[]\n')
 
     const resolution = await appBoot.createRuntimeResolution({ installAnchor, profile, home })
+
+    // Whether the addon can initialize is measured, not inferred from the
+    // version. If it can, the boot below must use it and the positive test
+    // asserts the effect; if it cannot, the fallback is allowed locally and
+    // is a failure in CI.
+    const requireFromInstall = createRequire(installAnchor)
+    try {
+      const addon = requireFromInstall('node-addon-require-builtin')
+      for (const id of [
+        'internal/modules/esm/loader',
+        'internal/modules/cjs/loader',
+        'internal/modules/helpers',
+        'internal/modules/esm/utils',
+        'internal/modules/esm/resolve',
+      ]) {
+        addon.requireBuiltin(id)
+      }
+      pluginPackagesCapable = true
+    } catch {
+      // The known Node loader patch failure; the fallback below has to stand
+      // in and the assertions decide whether that is allowed here.
+    }
     const profileContext = {
       name: PROFILE_NAME,
       dir: profile.dir,
@@ -229,6 +258,7 @@ async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false
       resolve(specifier, context, nextResolve) {
         const result = nextResolve(specifier, context)
         if (specifier === 'dsh-anyplugin') moduleUrls.push(result.url)
+        if (specifier === '@deepseek-ai/cordis-plugin-group') groupUrls.push(result.url)
         return result
       },
     })
@@ -257,12 +287,26 @@ async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false
         } catch (linkError) {
           if (linkError?.code !== 'EEXIST') throw linkError
         }
+        scopeLink = link
       }
       await hostCtx.plugin(SkillRegistry, {})
     })
     hook.deregister()
     hook = undefined
-    return { ctx, logs, moduleUrls, profileDir, packageDir, installsPath, home, scratch, hostPath }
+    return {
+      ctx,
+      logs,
+      moduleUrls,
+      groupUrls,
+      profileDir,
+      packageDir,
+      installsPath,
+      home,
+      scratch,
+      hostPath,
+      pluginPackagesCapable,
+      scopeLink,
+    }
   } catch (error) {
     if (hook !== undefined) hook.deregister()
     if (previousHome === undefined) delete process.env.DSH_HOME
@@ -298,61 +342,103 @@ async function withProfile(appBoot, SkillRegistry, mode, body, options) {
 
 test('positive: installs.yml mounts one active group and its skill child', options, async (t) => {
   const { appBoot, SkillRegistry, renderSkillContent, helloBody } = await hostPrimitives()
-  await withProfile(appBoot, SkillRegistry, 'positive', async ({ ctx, logs, moduleUrls, packageDir, installsPath, home, hostPath }) => {
-    assert.ok(home.startsWith(tmpdir()), 'the scratch home must stay under the temp dir')
-    assert.equal(ctx.fiber.state, 2, 'the harness itself must boot')
-    t.diagnostic(`host path: ${hostPath}`)
+  await withProfile(
+    appBoot,
+    SkillRegistry,
+    'positive',
+    async ({
+      ctx,
+      logs,
+      moduleUrls,
+      groupUrls,
+      profileDir,
+      packageDir,
+      installsPath,
+      home,
+      hostPath,
+      pluginPackagesCapable,
+    }) => {
+      assert.ok(home.startsWith(tmpdir()), 'the scratch home must stay under the temp dir')
+      assert.equal(ctx.fiber.state, 2, 'the harness itself must boot')
+      t.diagnostic(`host path: ${hostPath}`)
 
-    const entries = [...ctx.loader.entries()]
-    const controller = entries.find((entry) => entry.options?.id === 'dsh-anyplugin')
-    assert.ok(controller, 'the profile patch must insert the controller entry')
-    assert.equal(controller.fiber?.state, 2, 'the controller must be active')
+      if (pluginPackagesCapable) {
+        // The addon initializes on this Node, so the boot must use the host's
+        // interception. A fallback here would mean S17 proved the stand-in even
+        // though the real path was available.
+        assert.equal(hostPath, 'PluginPackages', 'a Node that initializes PluginPackages must boot through it')
+        assert.equal(
+          existsSync(join(profileDir, 'node_modules', '@deepseek-ai')),
+          false,
+          'the interception path must not create a scope-link stand-in',
+        )
+        assert.ok(groupUrls.length > 0, 'the group entry must resolve through the loader')
+        const installationPrefix = `${pathToFileURL(harness.harnessDir).href}/`
+        for (const url of groupUrls) {
+          assert.ok(
+            url.startsWith(installationPrefix),
+            `the group entry must resolve from the installation tree, got ${url}`,
+          )
+        }
+      } else if (isCI(process.env)) {
+        assert.fail(
+          `CI's Node ${process.version} cannot initialize PluginPackages, so installation closure is not asserted; ` +
+            'S18 measured 24.22.2 failing and 24.22.3 working — pin the gate to a Node on the working side',
+        )
+      } else {
+        assert.match(hostPath, /^scope-link/, 'an incapable Node must take the scope-link path')
+      }
 
-    const groups = entries.filter(
-      (entry) =>
-        entry.parent === ctx.loader.root &&
-        typeof entry.options?.id === 'string' &&
-        entry.options.id.startsWith('anyplugin.'),
-    )
-    assert.equal(groups.length, 1, 'exactly one plugin group')
-    const [group] = groups
-    assert.match(group.options.id, /^anyplugin\.claude-code/)
-    assert.match(group.options.id, /skills-only/)
-    assert.equal(group.options.group, true, 'the row must be a loader group')
-    assert.equal(group.fiber?.state, 2, 'the group must settle active')
+      const entries = [...ctx.loader.entries()]
+      const controller = entries.find((entry) => entry.options?.id === 'dsh-anyplugin')
+      assert.ok(controller, 'the profile patch must insert the controller entry')
+      assert.equal(controller.fiber?.state, 2, 'the controller must be active')
 
-    const children = group.options.config ?? []
-    const skillChild = children.find((child) => child.name === 'dsh-anyplugin/materialize/skill')
-    assert.ok(skillChild, 'the group must carry a skill child row')
-    assert.equal(ctx.loader.resolve(skillChild.id)?.fiber?.state, 2, 'the skill child must be active')
+      const groups = entries.filter(
+        (entry) =>
+          entry.parent === ctx.loader.root &&
+          typeof entry.options?.id === 'string' &&
+          entry.options.id.startsWith('anyplugin.'),
+      )
+      assert.equal(groups.length, 1, 'exactly one plugin group')
+      const [group] = groups
+      assert.match(group.options.id, /^anyplugin\.claude-code/)
+      assert.match(group.options.id, /skills-only/)
+      assert.equal(group.options.group, true, 'the row must be a loader group')
+      assert.equal(group.fiber?.state, 2, 'the group must settle active')
 
-    const skills = await ctx.skills.list()
-    assert.deepEqual(skills.map((skill) => skill.name).sort(), ['greet', 'hello'])
-    const rendered = renderSkillContent(await ctx.skills.get('hello'))
-    assert.ok(rendered.includes(helloBody), `rendered skill content must carry the fixture body:\n${rendered}`)
+      const children = group.options.config ?? []
+      const skillChild = children.find((child) => child.name === 'dsh-anyplugin/materialize/skill')
+      assert.ok(skillChild, 'the group must carry a skill child row')
+      assert.equal(ctx.loader.resolve(skillChild.id)?.fiber?.state, 2, 'the skill child must be active')
 
-    // The module URL is the claim: a mount of the checkout's `lib/index.js`
-    // would leave every other assertion above unchanged.
-    assert.ok(moduleUrls.length > 0, 'the bundle name must have been resolved')
-    const packageUrl = pathToFileURL(packageDir).href
-    for (const url of moduleUrls) {
-      assert.match(url, /\/dsh-anyplugin\/lib\/index\.js$/)
-      assert.ok(url.startsWith(`${packageUrl}/`), `the controller must load from the profile, got ${url}`)
-      assert.ok(!url.startsWith(pathToFileURL(repoRoot).href), `the controller must not load from the checkout, got ${url}`)
-    }
+      const skills = await ctx.skills.list()
+      assert.deepEqual(skills.map((skill) => skill.name).sort(), ['greet', 'hello'])
+      const rendered = renderSkillContent(await ctx.skills.get('hello'))
+      assert.ok(rendered.includes(helloBody), `rendered skill content must carry the fixture body:\n${rendered}`)
 
-    // Reading the scratch lock is visible in the reconcile line; the count it
-    // reports is deliberately not asserted (see the header: the include's
-    // load pass settles the group after the loader's await returns).
-    assert.ok(
-      logs.some(
-        (record) =>
-          record.name === 'dsh-anyplugin' &&
-          record.args.join(' ').includes(`from ${installsPath}`),
-      ),
-      'the controller must report reconciling the scratch installs.yml',
-    )
-  })
+      // The module URL is the claim: a mount of the checkout's `lib/index.js`
+      // would leave every other assertion above unchanged.
+      assert.ok(moduleUrls.length > 0, 'the bundle name must have been resolved')
+      const packageUrl = pathToFileURL(packageDir).href
+      for (const url of moduleUrls) {
+        assert.match(url, /\/dsh-anyplugin\/lib\/index\.js$/)
+        assert.ok(url.startsWith(`${packageUrl}/`), `the controller must load from the profile, got ${url}`)
+        assert.ok(!url.startsWith(pathToFileURL(repoRoot).href), `the controller must not load from the checkout, got ${url}`)
+      }
+
+      // Reading the scratch lock is visible in the reconcile line; the count it
+      // reports is deliberately not asserted (see the header: the include's
+      // load pass settles the group after the loader's await returns).
+      assert.ok(
+        logs.some(
+          (record) =>
+            record.name === 'dsh-anyplugin' &&
+            record.args.join(' ').includes(`from ${installsPath}`),
+        ),
+        'the controller must report reconciling the scratch installs.yml',
+      )
+    })
 })
 
 test('negative: no installs.yml boots the harness with zero plugins', options, async () => {

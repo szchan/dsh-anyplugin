@@ -117,7 +117,7 @@ function locate(root: string, source: HarnessSource): HarnessLocation {
   )
 }
 
-function isCI(env: NodeJS.ProcessEnv): boolean {
+export function isCI(env: NodeJS.ProcessEnv): boolean {
   return env.CI === 'true' || env.CI === '1'
 }
 
