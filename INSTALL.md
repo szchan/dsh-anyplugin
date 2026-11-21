@@ -139,6 +139,9 @@ What `install` does **not** do:
 
 A missing lock means "no installs"; a malformed one fails every lifecycle
 command with the parser's line number — it never silently uninstalls anything.
+At boot the controller reports the same parse error as a typed
+`InstallsFileError` on its own entry and mounts nothing; the rest of the
+harness still boots.
 
 The lock is still the contract, so here is the record `install` writes:
 
@@ -279,6 +282,22 @@ through the real loader, reconciles a fixture lock, and asserts the fixture's
 skill is listed by the harness skill registry. The smoke fails if `lib/` is
 missing or a published subpath does not resolve, so a package that would not
 install cannot be published.
+
+The profile path has its own test:
+`packages/dsh-anyplugin-conformance/test/profile-mount.test.mjs` boots a scratch
+profile through the host's `loadProfile` → `readProfilePatches` → `boot` (the
+launcher's primitives, in the launcher's order, including the profile's
+`package.json`, the bundle's `cordis.patch.yml` and an empty profile root
+`cordis.yml`) and asserts the controller's resolved module URL is inside the
+profile's `node_modules`, never this checkout. It also pins the three negatives
+the smoke cannot: no lock and a disabled plugin mount nothing, and a corrupt
+lock is a typed controller failure while the harness still boots. Where the
+host's `PluginPackages` interception cannot initialize (Node 24.12.0 and
+24.22.2 in this sandbox), the test links the harness scope into the profile and
+reports that in its diagnostic; `docs/ARCHITECTURE.md` §10 S17 records the
+limitation and the evidence. The test needs Node 22.15 for
+`module.registerHooks` (the published engine floor stays 22.14) and skips with
+that reason otherwise.
 
 The same smoke then loads real mods through the **packaged** hook entry, so the
 kernel is proven from the tarball and not only from `lib/`: it needs

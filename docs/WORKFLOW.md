@@ -81,7 +81,11 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
    fetches the pinned Claude CLI and both npm pins (0.2.2-rc.5 and 0.2.2-rc.2)
    once; the fetch installs the union the suite and spikes need, so there is no
    per-step install. CI fails on a skip, but it cannot test your Desktop
-   installation — so paste the local run in the PR.
+   installation — so paste the local run in the PR. CI and the reference
+   machine run Node 24; the profile-mount test needs `module.registerHooks`
+   (Node >= 22.15) and skips with a reason naming that version on older Node.
+   The package's published engine floor stays 22.14 — the floor describes the
+   package, not the suite.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
 
