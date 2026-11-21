@@ -989,6 +989,19 @@ This yields a cheap objective metric — `covered / total` symbols, rising
 monotonically — instead of an unbounded promise. That is what makes D3's
 commitment survivable.
 
+The measurement is `scripts/mod-coverage.mjs` plus the committed
+`fixtures/mods/coverage.json` (#130). The script scans the pinned
+`mods/types/claude-code.d.ts` with a declaration scanner (it does not import
+the declaration), calls the host's `$` factory to enumerate the methods the
+runtime actually serves, and records `declared`, `served` and `absent` for
+namespaces, methods, properties, events, elements, render sites and matcher
+types. Event keys are counted in their `classic.<Event>` spelling — the bare
+`ClassicHookEvent` union is the input to those spellings and is not counted a
+second time. `node scripts/mod-coverage.mjs` prints the totals and the absent
+names grouped by namespace; `--update` rewrites the ledger, and the conformance
+test fails when the ledger drifts. This is a denominator, not a fidelity claim:
+a served name says the method is reachable, never that it behaves like the pin.
+
 ### 7.5 Security inverts, and the static scan is the gift
 
 Claude says plainly: *"Mods aren't sandboxed"* and *"A mod is code that runs

@@ -54,8 +54,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 - [ ] **Mod host** (D3, ARCHITECTURE §7), in dependency order: static scanner →
       chain engine → element runtime → the remaining namespace bridges → type
-      generation from the pinned `claude-code.d.ts`. Coverage is
-      `covered / total` against that file, and it only moves up.
+      generation from the pinned `claude-code.d.ts`.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
@@ -63,6 +62,16 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- Mod coverage ledger (ticket #130): `scripts/mod-coverage.mjs` scans the pinned
+  `mods/types/claude-code.d.ts` by declaration, enumerates the runtime `$`
+  table by calling `createModBridge().dollar()`, and commits
+  `fixtures/mods/coverage.json` with `declared` / `served` / `absent` for
+  namespaces, methods, properties, events, elements, render sites and matcher
+  types. `--update` rewrites it; `mod-api-ledger.test.mjs` fails on drift, and a
+  served method removed from `bridge.ts` reddens it. The ledger is a
+  denominator, not a fidelity claim. The rest of the **Mod host** line (static
+  scanner, chain engine, element runtime, remaining bridges, type generation)
+  is still Later.
 - Codex install end to end (ticket #101): `compile.ts` resolves a lock row's
   `dialect` through a two-entry registry (`claude-code` → `readClaudePlugin` +
   `claude-code@2.1.329`; `codex` → `readCodexPlugin` +
