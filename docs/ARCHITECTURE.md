@@ -275,7 +275,12 @@ plugins:
     root: "/…/artifacts/claude-code/skills-only/0.0.1"
     dataDir: "/…/data/claude-code/skills-only"
     pin: "claude-code@2.1.322"
+    source: "{\"marketplace\":\"my-marketplace\",\"entry\":\"skills-only\"}"
 ```
+
+`source` is optional provenance (D23): a `plugin-dir:` label for a directory
+install, or a JSON object inside the quoted string naming the marketplace and
+entry a catalog install came from.
 
 The example above is an illustrative lock written at the 2.1.322 pin; the
 live pin is `CLAUDE_CODE_PIN` in the conformance package.
@@ -283,7 +288,8 @@ live pin is `CLAUDE_CODE_PIN` in the conformance package.
 `root` is versioned, `dataDir` is not. `pin` is the host version the artifact
 was read against (AGENTS.md §3.8), so a build that reads a different version
 rejects the record instead of silently reinterpreting it. The canonical writer
-sorts, quotes and writes atomically; the reader accepts only this subset and
+sorts, quotes and writes atomically; the reader accepts only these fields — the
+six required above plus an optional `source` provenance line (D23) — and
 rejects anything else with a line number rather than repairing it — "cannot
 parse" must never become "uninstalled".
 
@@ -1508,7 +1514,8 @@ does not invent one: the caller passes the decisions, and the result carries
 trusted child is still mounted. A refusal is a compile decision, not a loader
 failure, and is not reported as `failed`.
 
-The lifecycle CLI (`rig install|list|enable|disable|uninstall`) is a caller of
+The lifecycle CLI (`rig install|list|enable|disable|uninstall`, plus
+`rig marketplace list|install` over a local catalog) is a caller of
 this pipeline, not a second implementation. `install` reads the plugin, builds
 the record, and hands the complete lock to `writeInstalls`; `enable`/`disable`
 hand one layer to `writeEnablements`. Both writers validate first and replace

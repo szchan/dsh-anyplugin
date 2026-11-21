@@ -43,6 +43,12 @@ import {
   setPluginEnabled,
   uninstallPlugin,
 } from './install-cli.ts'
+import {
+  formatMarketplaceInstall,
+  formatMarketplaceList,
+  installFromMarketplace,
+  listMarketplace,
+} from './marketplace.ts'
 import { buildTransplantReport, formatDiff, formatTransplantReport } from './report.ts'
 import { SCOPES, readGrants, type Scope } from '../../dsh-anyplugin-trust/src/index.ts'
 import {
@@ -128,6 +134,20 @@ const USAGE = `usage:
   rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
   rig disable <plugin> [--scope <s>] [--dry-run] [--json]
   rig uninstall <plugin> [--dry-run] [--json]
+  rig marketplace list --from <file> [--json]
+  rig marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--dry-run] [--json]
+
+  marketplace reads a Claude (.claude-plugin/marketplace.json) or Codex
+  (.agents/plugins/marketplace.json) catalog without touching the network.
+  \`list\` prints each entry's name, description, source kind and policy, and
+  names every malformed entry instead of failing the file. \`install\` resolves
+  a "./" local source inside the catalog's root and then runs the same install
+  as \`rig install <dir>\`: one lock record, one enablement decision, the same
+  refusals and the same --dry-run. \`url\`, \`github\`, \`git-subdir\`, \`npm\`,
+  \`archive\` and \`command\` entries are listed but refused as unsupported —
+  installing one needs a fetch, a content hash pin and consent (D27), which is
+  slice 2 of #117. The record's source names the catalog and entry it came
+  from.
 
   --grants reads the hash-pinned exec grant store; without it the store is
   empty, so exec artifacts report refused:exec and are not emitted (D25).
@@ -284,10 +304,23 @@ const LIFECYCLE_OPTIONS: Record<string, readonly string[]> = {
 }
 
 function assertLifecycleOptions(command: string, args: Args): void {
-  const allowed = LIFECYCLE_OPTIONS[command] ?? []
+  assertOptions(command, args, LIFECYCLE_OPTIONS[command] ?? [])
+}
+
+/**
+ * Both marketplace subcommands have their own closed option set; `--from` is
+ * the only option a `list` can carry and the only one an `install` cannot do
+ * without. A typo must not silently mean "the catalog I meant".
+ */
+const MARKETPLACE_OPTIONS: Record<string, readonly string[]> = {
+  list: ['from', 'json', 'help'],
+  install: ['from', 'json', 'config', 'project', 'scope', 'dialect', 'force', 'allow-empty', 'dry-run', 'help'],
+}
+
+function assertOptions(scope: string, args: Args, allowed: readonly string[]): void {
   for (const key of args.options.keys()) {
     if (!allowed.includes(key)) {
-      throw new Error(`unknown option --${key} for ${command}\n  allowed: --${allowed.join(', --')}`)
+      throw new Error(`unknown option --${key} for ${scope}\n  allowed: --${allowed.join(', --')}`)
     }
   }
 }
@@ -303,7 +336,7 @@ async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
   const allowPinMismatch = args.options.get('allow-pin-mismatch') === true
-  const positionalCommands = new Set(['report', 'install', 'enable', 'disable', 'uninstall'])
+  const positionalCommands = new Set(['report', 'install', 'enable', 'disable', 'uninstall', 'marketplace'])
   if (!positionalCommands.has(args.command) && args.positionals.length > 0) {
     throw new Error(`unexpected argument: ${args.positionals[0]}\n${USAGE}`)
   }
@@ -517,6 +550,56 @@ async function main(argv: string[]): Promise<number> {
         ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
       })
       console.log(json ? JSON.stringify(result, null, 2) : formatUninstall(result))
+      return 0
+    } catch (error) {
+      return lifecycleRefusal(error, json)
+    }
+  }
+
+  if (args.command === 'marketplace') {
+    const [subcommand, ...rest] = args.positionals
+    if (subcommand === undefined) {
+      throw new Error(`missing marketplace subcommand (list or install)\n${USAGE}`)
+    }
+    const allowed = MARKETPLACE_OPTIONS[subcommand]
+    if (allowed === undefined) {
+      throw new Error(`unknown marketplace subcommand "${subcommand}" (list or install)\n${USAGE}`)
+    }
+    assertOptions(`marketplace ${subcommand}`, args, allowed)
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    const from = requiredOptions(args, 'from')[0]
+    const json = args.options.get('json') === true
+    if (subcommand === 'list') {
+      if (rest.length > 0) throw new Error(`unexpected argument: ${rest[0]}\n${USAGE}`)
+      try {
+        const result = listMarketplace({ from })
+        console.log(json ? JSON.stringify(result, null, 2) : formatMarketplaceList(result))
+        return result.ok ? 0 : 1
+      } catch (error) {
+        return lifecycleRefusal(error, json)
+      }
+    }
+    const [entry, ...extra] = rest
+    if (entry === undefined) throw new Error(`missing marketplace entry name\n${USAGE}`)
+    if (extra.length > 0) throw new Error(`unexpected argument: ${extra[0]}\n${USAGE}`)
+    const scope = optionalScope(args)
+    const dialect = args.options.get('dialect')
+    if (dialect !== undefined && typeof dialect !== 'string') throw new Error(`missing value for --dialect\n${USAGE}`)
+    try {
+      const result = installFromMarketplace({
+        from,
+        entry,
+        ...lifecyclePaths(args),
+        ...(scope === undefined ? {} : { scope }),
+        ...(typeof dialect === 'string' ? { dialect } : {}),
+        ...(args.options.get('force') === true ? { force: true } : {}),
+        ...(args.options.get('allow-empty') === true ? { allowEmpty: true } : {}),
+        ...(args.options.get('dry-run') === true ? { dryRun: true } : {}),
+      })
+      console.log(json ? JSON.stringify(result, null, 2) : formatMarketplaceInstall(result))
       return 0
     } catch (error) {
       return lifecycleRefusal(error, json)

@@ -62,6 +62,7 @@ it.
 | Hash-pinned grants, re-consent on byte change | `derived` | `packages/dsh-anyplugin-trust/src/hash.ts`, `packages/dsh-anyplugin-trust/src/grants.ts`, D25 |
 | Grant/revoke CLI, all-or-nothing, revoke beats grant | `derived` | `packages/dsh-anyplugin-trust/src/authorize.ts`, D27 |
 | Install records + three scopes + idempotent reconcile | `derived` | `packages/dsh-anyplugin-install/src/index.ts`, D23 |
+| Marketplace catalogs: list, install a local entry by name | `derived` | `packages/dsh-anyplugin-conformance/src/marketplace.ts`, `fixtures/marketplace-local` |
 | Enable/disable per project, narrowest scope wins | `derived` | `packages/dsh-anyplugin-install/src/enablements.ts` |
 
 ## 5. Repository guard (call-time policy, not a seam)

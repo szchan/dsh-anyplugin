@@ -16,6 +16,30 @@ import { dirname, isAbsolute } from 'node:path'
 
 export const INSTALLS_SCHEMA = 'dsh-anyplugin/installs@1'
 
+/**
+ * Where a record came from when it was installed through a marketplace: the
+ * catalog's own `name`, the entry the user asked for, and the version the
+ * entry advertised (when it declared one). A later pin bump can use this to
+ * say where a record came from without remembering the checkout.
+ */
+export interface MarketplaceProvenance {
+  marketplace: string
+  entry: string
+  version?: string
+}
+
+/**
+ * `source` provenance: either the legacy label string
+ * (`plugin-dir:fixtures/claude-skills-only`) or, for a marketplace install,
+ * the structured catalog identity.
+ *
+ * The file format is unchanged (D23): every value is one double-quoted JSON
+ * string. Structured provenance is a JSON object *inside* that string, so the
+ * reader stays exact and a `@1` reader still accepts the file (it only
+ * requires `source` to be a non-empty string).
+ */
+export type InstallSource = string | MarketplaceProvenance
+
 /** One installed plugin. Identity is `<dialect>:<name>`; `version` is metadata. */
 export interface InstallRecord {
   /** Foreign harness the plugin was written for. Only `claude-code` is known. */
@@ -30,8 +54,11 @@ export interface InstallRecord {
   dataDir: string
   /** Host pin the artifact was read against, e.g. `claude-code@2.1.329`. */
   pin: string
-  /** Provenance, e.g. `plugin-dir:fixtures/claude-skills-only` (optional). */
-  source?: string
+  /**
+   * Provenance, e.g. `plugin-dir:fixtures/claude-skills-only`, or the
+   * marketplace catalog identity for `rig marketplace install` (optional).
+   */
+  source?: InstallSource
 }
 
 export interface Installs {
@@ -65,6 +92,8 @@ const VERSION = /^\S+$/
 const PIN = /^[a-z][a-z0-9-]*@\S+$/
 const SCHEMA_LINE = /^schema:\s+("(?:[^"\\]|\\.)*")\s*$/
 const PLUGINS_LINE = /^plugins:(?:\s*\[\s*\])?\s*$/
+const SOURCE_FIELDS = ['marketplace', 'entry', 'version'] as const
+const MARKETPLACE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 interface Significant {
   text: string
@@ -90,19 +119,94 @@ function unquote(file: string, line: number, token: string): string {
   }
 }
 
-function validateRecord(record: Record<string, string>, file: string, line: number): InstallRecord {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Validate one `source` value, in either the string form the file holds or the
+ * object form a caller builds. Returns the canonical in-memory value so a
+ * writer cannot reorder or smuggle fields.
+ */
+function validateSource(value: unknown, file: string, line: number): InstallSource {
+  const where = { file, line }
+  let parsed: unknown
+  if (typeof value === 'string') {
+    if (value.trim() === '') throw new InstallsFileError('"source" must be a non-empty string', where)
+    if (!value.startsWith('{')) return value
+    try {
+      parsed = JSON.parse(value)
+    } catch {
+      throw new InstallsFileError('"source" opens with "{" but is not a JSON object', where)
+    }
+  } else {
+    parsed = value
+  }
+  if (!isPlainObject(parsed)) {
+    throw new InstallsFileError('"source" must be a label or a {marketplace, entry, version} object', where)
+  }
+  for (const key of Object.keys(parsed)) {
+    if (!(SOURCE_FIELDS as readonly string[]).includes(key)) {
+      throw new InstallsFileError(`unknown field "source.${key}"`, where)
+    }
+  }
+  const { marketplace, entry, version } = parsed
+  if (typeof marketplace !== 'string' || marketplace.trim() === '') {
+    throw new InstallsFileError('"source.marketplace" must be a non-empty string', where)
+  }
+  if (!MARKETPLACE_NAME.test(marketplace)) {
+    throw new InstallsFileError('"source.marketplace" must be the marketplace name (letters, digits, ".", "_", "-")', where)
+  }
+  if (typeof entry !== 'string' || entry.trim() === '') {
+    throw new InstallsFileError('"source.entry" must be a non-empty string', where)
+  }
+  if (!NAME.test(entry)) {
+    throw new InstallsFileError('"source.entry" must be a bare plugin name (no ":", "/" or spaces)', where)
+  }
+  if (version !== undefined && (typeof version !== 'string' || !VERSION.test(version))) {
+    throw new InstallsFileError('"source.version" must be non-empty and contain no whitespace', where)
+  }
+  const result: MarketplaceProvenance = { marketplace, entry }
+  if (version !== undefined) result.version = version
+  return result
+}
+
+/** The human-readable label recorded in the IR, e.g. `marketplace:local#hello`. */
+export function sourceText(source: InstallSource): string {
+  if (typeof source === 'string') return source
+  const version = source.version === undefined ? '' : `@${source.version}`
+  return `marketplace:${source.marketplace}#${source.entry}${version}`
+}
+
+/** The canonical string a record stores in the `source` field. */
+function encodeSource(source: InstallSource): string {
+  if (typeof source === 'string') return source
+  return JSON.stringify({
+    marketplace: source.marketplace,
+    entry: source.entry,
+    ...(source.version === undefined ? {} : { version: source.version }),
+  })
+}
+
+function validateRecord(record: Record<string, unknown>, file: string, line: number): InstallRecord {
   const where = { file, line }
   for (const field of REQUIRED) {
     if (!(field in record)) throw new InstallsFileError(`missing required field "${field}"`, where)
+    if (typeof record[field] !== 'string') throw new InstallsFileError(`"${field}" must be a string`, where)
   }
-  const { dialect, name, version, root, dataDir, pin, source } = record
+  const dialect = record.dialect as string
+  const name = record.name as string
+  const version = record.version as string
+  const root = record.root as string
+  const dataDir = record.dataDir as string
+  const pin = record.pin as string
+  const source = record.source === undefined ? undefined : validateSource(record.source, file, line)
   if (!DIALECT.test(dialect)) throw new InstallsFileError(`"dialect" must match ${DIALECT}`, where)
   if (!NAME.test(name)) throw new InstallsFileError(`"name" must be a bare plugin name (no ":", "/" or spaces)`, where)
   if (!VERSION.test(version)) throw new InstallsFileError('"version" must be non-empty and contain no whitespace', where)
   if (!isAbsolute(root)) throw new InstallsFileError('"root" must be an absolute path', where)
   if (!isAbsolute(dataDir)) throw new InstallsFileError('"dataDir" must be an absolute path', where)
   if (!PIN.test(pin)) throw new InstallsFileError('"pin" must look like "<tool>@<version>"', where)
-  if (source !== undefined && source.length === 0) throw new InstallsFileError('"source" must not be empty', where)
   const result: InstallRecord = { dialect, name, version, root, dataDir, pin }
   if (source !== undefined) result.source = source
   return result
@@ -123,11 +227,10 @@ export function validateInstalls(installs: Installs): void {
     if (record === null || typeof record !== 'object' || Array.isArray(record)) {
       throw new InstallsFileError('each plugin must be an object', { line })
     }
-    const raw = record as unknown as Record<string, string>
+    const raw = record as unknown as Record<string, unknown>
     const known = new Set<string>(FIELDS)
     for (const key of Object.keys(raw)) {
       if (!known.has(key)) throw new InstallsFileError(`unknown field "${key}"`, { line })
-      if (typeof raw[key] !== 'string') throw new InstallsFileError(`"${key}" must be a string`, { line })
     }
     const checked = validateRecord(raw, '<installs>', line)
     const id = `${checked.dialect}:${checked.name}`
@@ -258,7 +361,7 @@ export function serializeInstalls(installs: Installs): string {
       lines.push(`    root: ${quote(record.root)}`)
       lines.push(`    dataDir: ${quote(record.dataDir)}`)
       lines.push(`    pin: ${quote(record.pin)}`)
-      if (record.source !== undefined) lines.push(`    source: ${quote(record.source)}`)
+      if (record.source !== undefined) lines.push(`    source: ${quote(encodeSource(record.source))}`)
     }
   }
   return `${lines.join('\n')}\n`
