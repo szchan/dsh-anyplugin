@@ -8,11 +8,11 @@
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-010-包含什么)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-020-包含什么)
 
 **让 DeepSeek Harness 跑 Claude Code 的插件 —— 只按本仓库对每类能力声明的
-保真度，不多一分。** Codex 是第二个 dialect，在 v0.3 发布；0.1.0 是 Claude
-Code 的编译路径。
+保真度，不多一分。** Codex 是第二个 dialect，在 v0.3 发布；0.2.0 是 Claude
+Code 的编译路径加上 mods 内核。
 
 一个 Claude Code 插件是一堆文件：skills、斜杠命令、agents、hooks、MCP server、
 output styles，还有 `mods`（跑在宿主进程里的 JavaScript）。DeepSeek Harness
@@ -59,13 +59,13 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 必须同时移动那一行，于是回归会在同一行上失败。
 
 
-## ✅ 0.1.0 包含什么
+## ✅ 0.2.0 包含什么
 
-下表描述的是**已发布的产物**，不是仓库里的开发树：每一行都是安装
-`dsh-anyplugin@0.1.0` 后真正得到的能力，`npm run verify` 会启动打出的
-tarball 来验证它。
+下表描述的是 **0.2.0 的产物**，不是仓库里的开发树：每一行都是安装
+`dsh-anyplugin@0.2.0` 真正得到的能力。npm 上已发布的是 `0.1.0`，
+`0.2.0` 就是本次发布的版本。`npm run verify` 会启动打出的 tarball 逐行验证。
 
-| 能力 | 在 0.1.0 中 |
+| 能力 | 在 0.2.0 中 |
 | --- | --- |
 | Skills | `exact`（正文、信封、base-directory 前导，以及在宿主有通道时的参数替换） |
 | 斜杠命令 | 以 **skills** 形式发布（模型面 `equivalent`）；人类 `/…` 面是 `planned`，需要宿主的命令名接缝（`D10`） |
@@ -73,28 +73,40 @@ tarball 来验证它。
 | Hooks | 宿主真的会触发的那批工具/生命周期事件是 `equivalent`；其余 `planned` 并点缺失的宿主事件 |
 | Agents | `exact`：每个 `agents/*.md` 成为名为 `<plugin>:<agent>` 的 scoped 工具 |
 | Output styles | **已发布**：profile 的激活记录选择一个 style（`D42`）；`/<plugin>:<name>` 别名仍缺命令名接缝（`D10`） |
-| `mods` | **不在 0.1.0**：内核在 v0.2 发布；在 lock 记录里写 `mods` 是 schema 错误 |
-| Codex 插件 | **不在 0.1.0**：第二个 dialect 在 v0.3 发布 |
-| 安装 / 启用 / 发布 | `dsh-anyplugin@0.1.0`（bundle + 控制器 + 协调器） |
+| `mods` | **已发布**：内核在 tarball 里（`D30`、`D31`、`D34`）——按原样加载 `.js`/`.mjs`/`.ts`（每个 mod 一个 `node:vm` realm），`.tsx` 只走那一次 classic pragma 变换；`$` 提供已测量的命名空间，seat 绑定每个 agent 的事件。hook 行的 config 可以带 `mods: [{ entry }]`；lock 的 schema 仍没有 `mods` 字段，所以 `dsh plugin add` 暂不安装 mods |
+| Codex 插件 | **不在 0.2.0**：第二个 dialect 在 v0.3 发布 |
+| 安装 / 启用 / 发布 | `dsh-anyplugin@0.2.0`（bundle + 控制器 + 协调器） |
 
-### 仓库里（尚未发布）
+### 0.2.0 明确拒绝什么
 
-下面的保真度工作存在于代码树中并由测试套件执行，但它**不在** 0.1.0 产物里，
-也不是安装时的承诺：
+内核会加载 mod，但不会假装提供宿主根本没有的调用面。以下仍是**带类型的拒绝**
+（留下记录的理由，绝不静默返回 `undefined`）：
+
+- `$.tool.register`：宿主没有注册工具的 op（`D32`）；
+- `$.ui.ask`：宿主没有与人交互的面；`$ui` 是无头渲染 sink（`D44`）；
+- `$.process.run`：exec 仍受信任门约束（`D32`、`D25`）；
+- 没有宿主合并快照时的 `$.settings.read`（`D32`）；
+- 首行注释不是 classic `h`/`Fragment` pragma 的 `.tsx`（`D34`），以及任何
+  `.tsx` 的源码位置声明。
+
+### 仓库证据（本次发布未改变）
 
 - 对照 DSH `0.2.2-rc.5` 与 Claude Code `2.1.329`：声明 25 · 匹配 24 ·
   缺失 0 · 拒绝 1（被拒绝的是上表点名的命令名接缝）；
-- `mods` 按原样加载（只允许一次变换，见 `D34`）：19 个事件已路由、7 个
-  上游 mod 可加载、文件/会话/设置命名空间的 `$` 已桥接 —— 这是 v0.2 要发布的
-  内核；
-- Codex 是共用同一份 IR 的第二个 dialect（v0.3）。
+- Codex 是共用同一份 IR 的第二个 dialect（v0.3）——唯一仍未发布的表面。
+
+内核是已发布的证据而不是承诺：`check:pack` 启动打出的 tarball，加载钉死的
+上游 `sec-default`（45 条 registration），证明 `$` 经无头桥的一次往返，在同一次
+turn 里保留一个 `classic.*` handler 和一个 classic hook，并在
+`tools/pre-execute` 上观察到 mod 发出的 deny。
 
 分母是一条**覆盖率棘轮**：每个 fixture 的每个已声明组件一行。补上缺口的那次
 提交必须同时移动那一行，于是回归会在同一行上失败。
 
 ## 📦 安装
 
-`dsh-anyplugin@0.1.0` 以一个 **bundle** 的形式发布给 DSH profile：
+`dsh-anyplugin@0.2.0`（本次发布；npm 上已发布的是 `0.1.0`）以一个
+**bundle** 的形式发布给 DSH profile：
 
 ```bash
 dsh plugin --profile <profile> add dsh-anyplugin
@@ -106,9 +118,27 @@ dsh plugin --profile <profile> add dsh-anyplugin
 `$DSH_HOME/anyplugin/installs.yml`，把已安装的插件协调进 loader。它不写
 profile 配置，也不生成代码。
 
-0.1.0 只包含**编译路径**：skills（斜杠命令以 skills 的模型面落地）、MCP、
-hooks、agents、由 profile 记录激活的 output style（D42）、安装/协调与信任门。
-mods 内核与 Codex 方言**不在**本版本内。版本声明为 DSH
+### 运行要求
+
+- **Node.js ≥ 22.14**；DSH `0.2.2-rc.2 || 0.2.2-rc.5`；Claude Code `2.1.329`。
+- **mods 需要 `--experimental-vm-modules`。** D30 把每个 mod 放进一个
+  `node:vm` realm，而 Node 只在那个 flag 下暴露 `SourceTextModule`。命令行：
+  `node --experimental-vm-modules …`。Desktop：启动 `dsh` 前
+  `export NODE_OPTIONS=--experimental-vm-modules` —— 一次 shell export 就够了，
+  环境会被捆绑的 Node 继承。缺少它时每个 mod 都会以 `ERR_MOD_HOST_LINK`
+  （“… run Node with --experimental-vm-modules (D30)”）被拒绝，classic hooks
+  照常运行，并且内核只把这条 flag 说**一次**，不是每个 mod 说一次。
+- **mods 目前只能从手写的 hook 行进入**（`mods: [{ entry }]`），直到 lock
+  schema 获得 `mods` 字段；`dsh plugin add` 暂不安装 mods。
+
+0.2.0 同时发布**编译路径** —— skills（斜杠命令以 skills 的模型面落地）、MCP、
+hooks、agents、由 profile 记录激活的 output style（D42）、安装/协调与信任门 ——
+以及 `lib/materialize/hook.js` 里的 **mods 内核**。hook 行的 config 带
+`mods: [{ entry }]` 时，会在自己的 `node:vm` realm 里按原样加载 mod；lock 的
+schema 仍没有 `mods` 字段，所以 `dsh plugin add` 暂不安装 mods。内核唯一的运行时
+依赖是 `@babel/core` 与 `@babel/plugin-transform-react-jsx`（那一次 classic
+pragma 变换，D34）；`check:pack` 会断言这个精确集合并打印内核的字节成本。
+Codex 方言**不在**本版本内。版本声明为 DSH
 `0.2.2-rc.2 || 0.2.2-rc.5`（`engines.dsh`：恰好是测试套件启动的两个版本，
 其他运行时都会被拒绝，直到它被测过 —— `dsh plugin
 allow-version` 可授予精确版本豁免）与 Claude Code `2.1.329`。
@@ -126,7 +156,7 @@ lock、启用层、行配置覆盖、`exec` 授权文件，以及如何移除 bu
    不接受自报。
 
 钉死版本是 claim 的一部分：DSH `0.2.2-rc.5`（以及 `rc.2`）、Claude Code
-`2.1.329`，以及仓库内 mods 工作的 `mods` 提交 `f9e4d1e`。没有 pin 的数字只是传闻。
+`2.1.329`，以及 mods 工作的 `mods` 提交 `f9e4d1e`。没有 pin 的数字只是传闻。
 
 ## 🚀 参与开发
 

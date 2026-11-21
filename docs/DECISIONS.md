@@ -2050,3 +2050,100 @@ The mod host owns one UI sink per plugin load. Every submitted tree is validated
 **Consequences.** Six `$` ledger rows move from `refused` to `ran`; `ui.ask`, `$.process.run` and `$.settings.read` (with no merged snapshot) remain typed refusals. `mod_ui` is registered only while a pane is open. A regression in the sink's invalidation of `prompt.context` / `prompt.section` is now a test failure rather than an unobserved path.
 
 **Evidence.** `packages/dsh-anyplugin-mod-host/src/ui.ts` (surface tables and validator, 21 tests), `packages/dsh-anyplugin-mod-host/src/bridge.ts` (sink wiring), `packages/dsh-anyplugin-materialize-hook/src/index.ts` (synthetic dispatch), `packages/dsh-anyplugin-conformance/test/mods.test.mjs` (the pinned-turn revision-2 assertion), `packages/dsh-anyplugin-materialize-hook/test/prompt-cache.test.mjs`. Mutations for each MUST were run and reverted. 509/509 with zero skips on both pins after rebasing onto the release bundle. Merge `4b6cb5c`.
+
+---
+
+## D45 — Codex is a dialect selected by the record, and its proof is declared
+
+**Status:** ratified 2026-11-21. Merged with `#103`. Granularity: dialect selection,
+tool naming, and what counts as proof for a second upstream.
+
+`installs.yml` names its dialect, and `compileEntries` resolves that name through a
+registry of installed dialects (`claude-code`, `codex`). The lookup is an **own-key**
+lookup: `Object.hasOwn(DIALECTS, record.dialect)`. A record naming `constructor` (or
+any other `Object.prototype` member) produces the shaped refusal that names the
+installed dialects; a prototype member is not a dialect. The same own-key rule applies
+to every table keyed by user input — enablement ids are gated by the `:` split,
+`FIELDS` gates installs keys, `SCOPES` is a fixed list.
+
+The Codex dialect reads the portable 1.0.0 manifest
+(`agent-plugins.org/schemas/1.0.0/plugin.schema.json`), accepts `.mcp.json` and
+`plugin.json` as compatibility fallbacks, and treats `extensions.com.openai` as
+replacing `.codex-plugin/plugin.json` rather than merging it. Portable MCP servers
+register tools as `mcp__<server>__<tool>` — no plugin segment — which is why D33's
+budget is `5 + server + 2 + tool ≤ 64` with no 24-character server constraint of the
+Claude shape. An over-budget tool is skipped with a warning and its server row
+survives; it is never truncated, renamed, or hashed.
+
+The Codex golden is **hand-authored** (`hand-authored: the portable spec is the
+oracle`), and by D37 and #102 it never enters the observed ratchet: `EXPECTED_ROWS`
+has no Codex entry and the totals stay whatever the observed fixtures say. A Codex
+oracle later is a new decision and a second, independent ratchet — never a merge into
+this one.
+
+The DSH oracle's child matching accepts both bare and install-qualified ids
+(`mcp`, `anyplugin.<scope>#mcp`, and likewise `hook`, `agents`, `outputStyle`).
+Install-qualified ids were previously never matched, so an MCP tool emitted into an
+install-shaped entry was invisible to the oracle; that is the bug this decision
+records as fixed, not a new convention.
+
+**Consequences.** The `docs/FEATURES.md` row for Codex says
+"equivalent … no upstream oracle; fixtures are the spec" and nothing stronger;
+`dsh-anyplugin-dialect-codex` may only import `dsh-anyplugin-ir`; a Codex plugin whose
+per-tool name exceeds the shared budget is *skipped*, not refused, because its server
+still works; and D33's closing sentence ("not yet wired into `compileReport`") is
+superseded by this entry.
+
+---
+
+## D46 — The kernel ships inside the hook entry, and the flag is part of the contract
+
+**Status:** ratified 2026-11-21. Merged with `#104`. Granularity: packaging shape,
+the runtime flag, the dependency set, and the cost the artifact states.
+
+`0.1.0` shipped the compile path only, and D43 said the mods kernel (v0.2) "needs
+its own entry and the `@babel/*` dependencies". `0.2.0` puts the kernel in the
+existing `lib/materialize/hook.js` and adds no subpath: one controller row and one
+materializer set per profile are simpler to reconcile than two entries, and a
+separate entry would have duplicated the same controller shape. **This amends D43's
+"mods need their own entry" consequence**; the rest of D43 stands — the artifact is
+built, the dependency set is asserted, and `check:pack` is the gate.
+
+The runtime dependency set is exactly three packages: `@babel/core@7.29.13`,
+`@babel/plugin-transform-react-jsx@7.29.7` (the one transform D34 allows) and
+`@modelcontextprotocol/client@2.2.0`. `cordis` stays a peer. Babel stays **external**
+in the bundle — `hook.js` imports it rather than inlining 11 MB — and `check:pack`
+fails on any drift: a removed package, a widened range, or an undeclared import.
+
+Mods require Node's `--experimental-vm-modules`. D30's realm is `node:vm`'s
+`SourceTextModule`, which is flag-gated, and the Desktop spawns the harness under
+its bundled Node without that flag; nothing in the harness adds it for the main
+process. This is a property of the runtime, not a choice we can hide, so the
+artifact states it: `README.md`, `README_cn.md` and `INSTALL.md` name the flag, and
+`check:pack` asserts it against the **extracted tarball** (not the checkout), so the
+packaged documentation cannot drift from the packaged code. At runtime, a profile
+with mod rows and no `SourceTextModule` warns **once per process** naming
+`NODE_OPTIONS`, while each mod still records its own refusal trace; classic hooks
+continue.
+
+The artifact states what it costs. The kernel is 84.6 KiB of a 203.9 KiB entry, the
+tarball is about 99 KiB, and a real `npm install` of that tarball pulls 60 packages /
+35 MB (Babel is 11 MB of it). A 128 KiB kernel ceiling is asserted, so the packaged
+size cannot grow silently in a release.
+
+The lock still cannot express `mods`: the installs schema is unchanged, so the kernel
+is reachable only from a hand-written hook row configuration until the lock gains the
+field, which is a separate decision.
+
+**Evidence (mutations, each red before revert):** removing `@babel/core`; widening
+its range to `^7.29.13`; inflating the recorded kernel size to 3×; deleting each of
+the three install-smoke probes (sec-default, kernel-probe, guard); passing
+`plugins: []` to the JSX transform; stripping the flag from the packaged
+`INSTALL.md`, from `README_cn.md`, and from `README.md`; re-adding a `0.1.0` sentence
+to the packaged `INSTALL.md`; resetting the once-per-process warning at the top of
+`apply()`. Both pins: 510 tests, 0 skipped.
+
+**Consequences:** a default Desktop launch refuses mods and keeps classic hooks
+running, and says so once; the packaged `INSTALL.md` may not discuss `0.1.0`, because
+it ships inside `0.2.0`; the numbers in this entry are asserted by `check:pack`, not
+remembered by prose.

@@ -8,12 +8,14 @@
  * generated code and the controller never writes profile config: the lock and
  * the grants file are read, the loader is reconciled, and nothing is persisted.
  *
- * What is shipped in 0.1.0 is the *compile path*: skills (a slash command lands
- * as a skill on its model face), MCP servers, hooks whose host events exist,
- * agents, and one activated output style. The mods kernel is a separate
- * release; the lock schema has no `mods` field (a record carrying one is a
- * schema error), and the packaged hook materializer refuses a `mods` list it
- * is handed rather than loading JavaScript the package cannot describe.
+ * What is shipped in 0.2.0 is the *compile path* — skills (a slash command
+ * lands as a skill on its model face), MCP servers, hooks whose host events
+ * exist, agents, one activated output style — and the *mods kernel* in
+ * `lib/materialize/hook.js`. A hook row's config may carry `mods: [{ entry }]`,
+ * which the packaged materializer loads as authored (D30/D31/D34); mods need
+ * Node's `--experimental-vm-modules`. The lock schema has no `mods` field (a
+ * record carrying one is a schema error), so the kernel is reachable only from
+ * a hand-written hook row, not from `dsh plugin add`.
  */
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
