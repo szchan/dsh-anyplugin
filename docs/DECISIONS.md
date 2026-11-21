@@ -2221,3 +2221,44 @@ writes, because the unmodelled route is residual 4; the tool layer, not the hook
 is what the documentation calls authoritative; a rule that cannot be expressed
 in the table does not get a doc sentence that implies it. D47 records the code
 one merge behind it, as D43–D46 did, because a PR may not edit this file.
+
+---
+
+## D48 — every agent face is either observed or refused; the host has no turn cap
+
+**Date:** 2026-11-21 · **Status:** ratified · **Supersedes:** D26's per-key
+`planned` for the frontmatter fields it listed (D26's catalog and invocation
+clauses stand)
+
+S16 (`docs/ARCHITECTURE.md` §10, `spikes/s16-agent-faces/run.mjs`) drives a real
+child through the installed harness and records what each `agents/*.md`
+frontmatter key actually does here. The rule, applied per key and never in
+bulk: a face is `equivalent` only when the child is observed to receive the
+effect, `planned` only when a named host field would carry it, `unsupported`
+when the host has no field at all — and the reason says what is missing.
+
+| key | class | why (S16 evidence) |
+| --- | --- | --- |
+| `skills` | `equivalent`, qualified | the child's first user message is exactly persona → host `renderSkillContent` envelope (`provider: anyplugin`, `resourceBase: undefined`) → task → host closing note; the body inside the envelope is the plugin's `SKILL.md` body. Not carried: the `Base directory for this skill:` hint, the skill's resource files, and provider-managed loading. A declared name that is absent or has an empty body is `planned` with "ship a SKILL.md with no body", and the child receives no `<skill_content>`. |
+| `isolation` | `planned` | ignored: the child header `cwd` equals the root's. Named seam: an `isolation` field on `SubagentStartRequest`, handled in child composition with `ctx.worktrees`, because `worktrees.create` today re-points the calling session — calling it from the materializer would move the parent. |
+| `model` | `unsupported` | a top-level `model: sonnet` is accepted and ignored (child model is the provider's); `agentOptions.model: 'sonnet'` reaches the provider as the raw id, with no alias resolution. A Claude alias names no provider model id; translating it would guess. Escape layer is the only path. |
+| `effort` | `unsupported` | no `reasoningEffort` from frontmatter; `agentOptions.reasoningEffort` works only when the provider advertises that effort, otherwise `UNSUPPORTED_REASONING_EFFORT`. The id space belongs to the provider, not to Claude. Escape layer is the only path. |
+| `tools` / `disallowedTools` | `unsupported` | the child still sees the caller's tool set. `SubagentStartRequest` has no filter; `ctx.tools.restrict` is agent-scoped over DSH global names, and Claude names/specifiers have no one-to-one mapping, so forwarding the list would restrict the wrong set. Escape layer is not applicable — only `ctx.tools.restrict` or an `agentPreset` composition can express this. |
+| `maxTurns` | `unsupported` | `maxTurns: 1` makes three requests and ends `completed`, because neither `SubagentStartRequest` (nine fields) nor the agent loop has a turn cap, and there is no "partial at the limit" outcome to map onto. |
+| `memory`, `background`, `omitClaudeMd`, `color`, `autoCompactWindow` | `unsupported` | each key is ignored and the host has no surface that reads an equivalent value; the per-key reasons in §10 S16 are the text a report must reuse. No escape layer exists for these values either. |
+
+**The pin.** The child's first user message is asserted exactly, including the
+host's closing note. That note is a copied literal at the pin
+(`dsh-subagent/lib/index.js:422 @ 0.2.2-rc.5`): when the host changes it the
+test reddens and must be updated deliberately. Only the envelope is rendered by
+the host module. S16 does **not** run Claude; "the body bytes are what Claude
+would inject" is a claim from the pinned `claude-code 2.1.329` client and docs,
+not an observation. Equivalence is claimed for what DSH does with the bytes.
+
+**Consequences:** no sentence may say DSH honours a key the table calls
+`unsupported`; a key that gains a host field is a new decision and a new S16
+row, not an edit here; `model`/`effort` are the only faces whose fidelity route
+is the escape layer, and `tools` names its two composition routes; the S16
+spike runs in CI beside S10/S11 and a missing harness fails the job (D22); and
+`isolation` is the one remaining face that a T2 seam can promote without
+touching this table's other rows.
