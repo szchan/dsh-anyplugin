@@ -123,11 +123,37 @@ adopted, rewritten in place under the contributor's name, or merged "to be nice"
 
 ## 6. When an agent needs a human
 
-Open an issue with `maintainer-question`, state the decision being requested, the
-options, the default the agent will take if the human says nothing, and the
-deadline-free rule: **no silent blocking**. If the work can proceed on a declared
-default, it proceeds and records the default in the issue; only a decision that
-would bend §3 waits indefinitely.
+An escalation is one issue, and it carries three markers so it is findable from
+any client — notification mail, the issue list, a saved search:
+
+| marker | value |
+| --- | --- |
+| title prefix | `[HUMAN] ` (literal, first thing in the title) |
+| label | `maintainer-question` |
+| first line of the body | `<!-- needs-human -->` |
+
+Saved search for the queue:
+`https://github.com/szchan/dsh-anyplugin/issues?q=is%3Aissue+is%3Aopen+label%3Amaintainer-question`
+
+The body has exactly four parts, in this order:
+
+1. **Decision** — one sentence, phrased as a choice, not a status report.
+2. **Options** — each with its cost and what it forecloses.
+3. **Default** — what the agent does if the issue is still unanswered when the
+   default becomes actionable. A default that would bend §3 of `AGENTS.md` is
+   not a default; the work stops instead.
+4. **Why it cannot be settled here** — the specific check the agent ran, and why
+   that check is the human's to make (a secret, a permission, a purchase, a
+   legal choice).
+
+Everything an agent can settle by reproduction stays out of this queue. The
+queue is for the four things only a human holds: credentials, billing, rights,
+and irreversibility. "I am not sure" is not one of them — research it, test it,
+and write down what you chose.
+
+**No silent blocking.** If the work can proceed on a declared default, it
+proceeds and records the default in the issue; only a decision that would bend §3
+waits indefinitely.
 
 ## 7. What the loop guarantees
 
