@@ -1272,7 +1272,7 @@ run degraded *by design*.
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
 | hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
-| subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships them, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
+| subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
 | notification channel | present | `monitor` unsupported |
@@ -1785,15 +1785,22 @@ harness (real agent loop, subagent runtime, fork provider; a recording
 child-side observation: every frontmatter key passed as an unknown top-level
 field, the `agentOptions` escape, and `maxTurns: 1` against a child that keeps
 calling a tool. What is read is the child's first model request, its session
-header's `cwd`, and the number of requests it made. The spike reports **10/10**
-checks and writes `spikes/s16-agent-faces/out/report.json`. Claude's documented
-semantics are read from the pinned client at `2.1.329`
-(https://code.claude.com/docs/en/sub-agents.md), not inferred from this layer.
-`packages/dsh-anyplugin-conformance/test/agent-faces.test.mjs` repeats the one
-implemented face through the materializer's public tool:
+header's `cwd`, and the number of requests it made. The source check parses
+`SubagentStartRequest` and requires its exact nine fields, so a regex that
+cannot match is red rather than vacuously green. The spike reports **10/10**
+checks and writes `spikes/s16-agent-faces/out/report.json`; reverting the
+source-check regex to its first (non-matching) form reports **9/10** with that
+check `FAIL`. Claude's documented semantics are read from the pinned client at
+`2.1.329` (https://code.claude.com/docs/en/sub-agents.md), not inferred from
+this layer. `packages/dsh-anyplugin-conformance/test/agent-faces.test.mjs`
+repeats the observable faces through the materializer's public tool:
 `probeAgentInvocationWithDsh` (`packages/dsh-anyplugin-conformance/src/oracles/dsh.ts`)
 boots the pinned harness, invokes `<plugin>:<agent>` through `ctx.tools.execute`,
-and returns the request the child actually sent.
+and returns the request the child actually sent. Two checks are CI-gated from
+the child's side: the `skills` preload (its envelope is rendered by the pinned
+host `renderSkillContent`, so any divergence reddens) and `maxTurns: 1` with a
+two-tool-call loop, which observes three child requests and `stopReason:
+'completed'`.
 
 | face | state | evidence (test + observation) | reason |
 | --- | --- | --- | --- |
@@ -1802,7 +1809,7 @@ and returns the request the child actually sent.
 | `tools` / `disallowedTools` | `unsupported` | S16 A: a child declared `tools: [Read, Grep]` and `disallowedTools: [Bash]` still sees `echo` in its request. | `SubagentStartRequest` has no tool filter. `ctx.tools.restrict()` is agent-scoped, takes DSH global tool names, refuses unknown names and `run_code`, and denies whole tools; the only composition hook is `agentPreset`, which needs a host-registered preset, not emitted data. Claude names (`Read`, `Grep`, `mcp__*`) and specifiers (`Bash(git push *)`) have no one-to-one mapping, so forwarding the list would restrict the wrong set. |
 | `maxTurns` | `unsupported` | S16 C: `maxTurns: 1` child makes three requests (two tool calls and an answer) and ends `completed`, not partial. | Neither `SubagentStartRequest` nor the agent loop has a turn cap; the host has no "partial at the limit" outcome to map onto. |
 | `isolation` | `planned` | S16 A: `isolation: worktree` is ignored — the child header `cwd` equals the root's. | Named seam: add `isolation` to `SubagentStartRequest`, handled in `dsh-subagent` child composition by creating a `ctx.worktrees` checkout as the child cwd and reclaiming it at disposal. Today `worktrees.create` re-points the *calling* session, so using it from the materializer would move the parent, not isolate the child. |
-| `skills` | `equivalent` | `agent-faces.test.mjs`: the child's first user request carries the persona body, then `<skill_content name="s16-preload">` with the full skill body, then the task, in that order; one request, `stopReason: 'completed'`. | Implemented: the dialect resolves plugin-local skill names at compile time, and the materializer prepends each body as its own text block. Same content Claude injects at startup, different mechanism (prompt text, not a skill registry entry), so `equivalent` rather than `exact`. A name the plugin does not ship is `planned`: the seam is resolving it against `ctx.skills` at activation time. |
+| `skills` | `equivalent` / `planned` (absent or empty body) | `agent-faces.test.mjs`: the child's first user request carries the persona body, then the host's exact envelope for `s16-preload` (rendered by the pinned `renderSkillContent`, byte-set equal), then the task, in that order; one request, `stopReason: 'completed'`. A frontmatter-only SKILL.md is `planned` and the child request carries no empty skill block. | Implemented: the dialect resolves plugin-local skill names at compile time and the materializer emits the host's `renderSkillContent` shape at the pin (`<skill_content>`, the `<skill_resources>` provider note, `<skill_instructions>`). The body bytes match Claude's startup injection, but the `Base directory for this skill:` hint, the skill's resource files and provider-managed loading are **not** carried; that is why this is `equivalent`, not `exact`. A name the plugin does not ship, or ships with an empty body, is `planned` (the seam is resolving it against `ctx.skills` at activation time); an empty body is never preloaded and never claims `equivalent`. |
 | `memory` | `unsupported` | S16 A: the key is ignored; no memory text reaches the child. | DSH has no per-agent memory store or directory, and none of the session's persistence is keyed by agent name. Adding one is a new persistence surface and a new trust question, not a pass-through. |
 | `background` | `unsupported` | S16 A: the key is ignored; the tool still returns at activation. | The materializer's tool is caller-facing and returns when `startActivation` resolves; DSH has no field to keep a child running detached while the parent waits, and the "smaller tool set" half is the `tools` face. `background: true` happens to match the shape DSH already has, `false` is unexpressible, so the key is not honoured. |
 | `omitClaudeMd` | `unsupported` | S16 A: the key is ignored; the child receives the host's baseline instructions. | `dsh-agent-instructions` loads a session-scoped instructions baseline; there is no per-activation suppression and the child is a new session that inherits it. |
@@ -1815,12 +1822,15 @@ remains only as a deprecated union field for an IR producer that still writes th
 old shape.
 
 **What this does not prove.** One stub adapter, one pin: `equivalent` for
-`skills` claims the content the child reads, not that a real model behaves the
-same. The resolved set is the plugin's own `skills/` directory; a skill from a
-user or project directory is not preloaded, and Claude's ability to invoke an
-unlisted skill through its Skill tool is not measured here. The `unsupported`
-states are facts about `0.2.2-rc.5`, not eternal impossibilities: `isolation` is
-the one with a named seam; it is `planned` rather than faked.
+`skills` claims the body the child reads, not that a real model behaves the
+same. The skill envelope is the host's, but the `Base directory for this skill:`
+hint, the skill's resource files and provider-managed loading are not carried;
+the body travels as prompt text. The resolved set is the plugin's own `skills/`
+directory; a skill from a user or project directory is not preloaded, and
+Claude's ability to invoke an unlisted skill through its Skill tool is not
+measured here. The `unsupported` states are facts about `0.2.2-rc.5`, not
+eternal impossibilities: `isolation` is the one with a named seam; it is
+`planned` rather than faked.
 The spike must be re-run when the pin moves; the table, the annotations and
 `agent-faces.test.mjs` carry the pin's name.
 

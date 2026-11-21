@@ -107,6 +107,38 @@ export function agentProblem(agent: MaterialAgent, plugin: string | undefined): 
  * The tool definition for one agent. Exported so the test can assert the exact
  * description (byte equality) without booting a harness.
  */
+/** The provider label the host puts in a skill's `<skill_resources>` note. */
+const SKILL_PROVIDER = 'anyplugin'
+
+// The host's `escapeAttr`/`escapeText` (dsh-skill `renderSkillContent`), so the
+// envelope is byte-identical for any name or provider label.
+const escapeSkillAttr = (value: string): string =>
+  value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
+const escapeSkillText = (value: string): string =>
+  value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+
+/**
+ * The host's own skill envelope at 0.2.2-rc.5 (`dsh-skill/src/index.ts:170`,
+ * `renderSkillContent`) for a skill with no resource base: the
+ * provider-managed note is what the host renders when it has no directory or
+ * URL to point at. The conformance test builds the expected bytes by calling
+ * the pinned host function, so any drift reddens.
+ */
+function renderSkillEnvelope(preload: MaterialAgentSkill): string {
+  return [
+    `<skill_content name="${escapeSkillAttr(preload.name)}">`,
+    '<skill_resources>',
+    `Resources for this skill are managed by provider "${escapeSkillText(SKILL_PROVIDER)}".`,
+    'Load referenced resources only as needed.',
+    '</skill_resources>',
+    '',
+    '<skill_instructions>',
+    preload.content,
+    '</skill_instructions>',
+    '</skill_content>',
+  ].join('\n')
+}
+
 export function agentTool(agent: MaterialAgent, ctx: any, config: Config): unknown {
   const toolName = `${config.plugin}:${agent.name}`
   return {
@@ -157,18 +189,23 @@ export function agentTool(agent: MaterialAgent, ctx: any, config: Config): unkno
       const label =
         typeof args?.description === 'string' && args.description.trim() !== '' ? args.description.trim() : agent.name
       // Persona first, then each preloaded skill body, then the parent's task.
-      // None of it is ever a tool description; the skill envelope mirrors the
-      // host's `renderSkillContent` shape so the child reads a skill, not a
-      // loose paragraph (S16).
+      // None of it is ever a tool description. The envelope is byte-for-byte
+      // the host's own `renderSkillContent` output for a skill with no
+      // resource base (S16); the conformance test renders the expected bytes
+      // with the pinned host function, so a prefix or suffix addition reddens.
       const blocks: { type: 'text'; text: string }[] = [{ type: 'text', text: agent.content }]
       for (const preload of agent.skillContents ?? []) {
-        if (typeof preload?.name !== 'string' || typeof preload?.content !== 'string' || preload.content.trim() === '') {
-          continue
+        if (typeof preload?.name !== 'string' || typeof preload?.content !== 'string') {
+          throw new Error(
+            `agent ${JSON.stringify(toolName)} carries a malformed skill preload; refusing to start a child that would silently drop it`,
+          )
         }
-        blocks.push({
-          type: 'text',
-          text: `<skill_content name="${preload.name.replace(/"/g, '&quot;')}">\n${preload.content}\n</skill_content>`,
-        })
+        if (preload.content.trim() === '') {
+          throw new Error(
+            `agent ${JSON.stringify(toolName)} declares skill ${JSON.stringify(preload.name)} with an empty body; the host would preload nothing, so the equivalent face would be a lie`,
+          )
+        }
+        blocks.push({ type: 'text', text: renderSkillEnvelope(preload) })
       }
       blocks.push({ type: 'text', text: prompt })
       const started = await subagents.startActivation({

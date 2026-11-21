@@ -57,6 +57,7 @@
     "spike:s11": "node spikes/s11-prompt-scope/run.mjs",
     "spike:s12": "node spikes/s12-hook-fanout/run.mjs",
     "spike:s13": "node --experimental-vm-modules spikes/s13-mod-load/run.mjs",
+    "spike:s16": "node spikes/s16-agent-faces/run.mjs",
     "check:features": "node scripts/check-features.mjs",
     "triage": "node scripts/triage.mjs",
     "check:decisions": "node scripts/check-decisions.mjs"

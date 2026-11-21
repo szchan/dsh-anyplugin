@@ -332,14 +332,25 @@ function readSkillsAndCommands(root: string): {
 
   const rootSkill = readIfFile(join(root, 'SKILL.md'))
   if (rootSkill !== undefined) {
-    const skill = skillFromFile(
-      { rel: 'SKILL.md', abs: join(root, 'SKILL.md'), depth: 0 },
-      root,
-      'root-skill',
-      SKILL_EQUIVALENT,
-      basename(root),
-    )
-    if (skill) skills.push(skill)
+    if (rootSkill.trim() === '') {
+      // A zero-byte file is present but carries nothing; saying it is missing
+      // would be false, and calling it a skill would claim a body it lacks.
+      pending.push({
+        surface: 'skills',
+        name: basename(root),
+        sourcePath: 'SKILL.md',
+        annotation: { fidelity: 'planned', reason: 'SKILL.md is empty; nothing to load.' },
+      })
+    } else {
+      const skill = skillFromFile(
+        { rel: 'SKILL.md', abs: join(root, 'SKILL.md'), depth: 0 },
+        root,
+        'root-skill',
+        SKILL_EQUIVALENT,
+        basename(root),
+      )
+      if (skill) skills.push(skill)
+    }
   }
 
   const skillsDir = join(root, 'skills')
@@ -348,7 +359,8 @@ function readSkillsAndCommands(root: string): {
       const abs = join(skillsDir, entry.name)
       if (entry.isDirectory()) {
         const file = join(abs, 'SKILL.md')
-        if (!readIfFile(file)) {
+        const text = readIfFile(file)
+        if (text === undefined) {
           pending.push({
             surface: 'skills',
             name: entry.name,
@@ -357,6 +369,17 @@ function readSkillsAndCommands(root: string): {
               fidelity: 'planned',
               reason: 'Directory has no SKILL.md; nothing to load. Kept in the report so an empty skill slot is visible.',
             },
+          })
+          continue
+        }
+        if (text.trim() === '') {
+          // `readIfFile` returns '' for a zero-byte file, which used to fall
+          // into the "no SKILL.md" branch and report a false reason.
+          pending.push({
+            surface: 'skills',
+            name: entry.name,
+            sourcePath: `skills/${entry.name}/SKILL.md`,
+            annotation: { fidelity: 'planned', reason: 'SKILL.md is empty; nothing to load.' },
           })
           continue
         }
@@ -444,6 +467,7 @@ export function agentFaces(
     | 'autoCompactWindow'
   >,
   plugin: string,
+  emptySkills: readonly string[] = [],
 ): IrAgentFaces {
   const toolName = `${plugin}:${agent.name}`
   const catalog: Annotation = {
@@ -518,20 +542,35 @@ export function agentFaces(
 
   if (agent.skills !== undefined && agent.skills.length > 0) {
     const bodies = new Map((agent.skillContents ?? []).map((preload) => [preload.name, preload.content]))
-    const missing = agent.skills.filter((name) => !bodies.has(name))
-    if (missing.length === 0) {
+    const bodiless = agent.skills.filter((name) => emptySkills.includes(name))
+    const missing = agent.skills.filter((name) => !bodies.has(name) && !bodiless.includes(name))
+    const preloaded = agent.skills.filter((name) => bodies.has(name))
+    if (bodiless.length === 0 && missing.length === 0) {
       faces.skills = {
         fidelity: 'equivalent',
         reason:
-          `Frontmatter skills ${JSON.stringify(agent.skills)} are preloaded: their bodies (frontmatter removed, as the skill materializer does) are prepended as text blocks of the child\'s initial user message, after the agent body and before the task. ` +
-          'Claude injects the same full skill content into the subagent at startup; the content is identical and the mechanism differs (prompt blocks, not the skill registry). The S16 conformance test observes the first child request.',
+          `Frontmatter skills ${JSON.stringify(agent.skills)} are preloaded: each full body (frontmatter removed, as the skill materializer does) is a text block of the child\'s initial user message, after the agent body and before the task. ` +
+          'Claude 2.1.329 injects the full skill content at startup behind a `Base directory for this skill: <dir>` line; this uses the host\'s own `renderSkillContent` shape at the pin (`<skill_content name>`, a `<skill_resources>` provider note, `<skill_instructions>`). ' +
+          'The body bytes are identical and the first child request is observed (S16), but the base-directory hint, the skill\'s resource files and provider-managed loading are not carried: the body travels as prompt text, not as a registry skill.',
       }
     } else {
+      const problems = [
+        ...(bodiless.length === 0
+          ? []
+          : [`${JSON.stringify(bodiless)} ship a SKILL.md with no body, so the host would preload nothing`]),
+        ...(missing.length === 0
+          ? []
+          : [`${JSON.stringify(missing)} are not shipped by this plugin, so the compiler cannot read their bodies`]),
+      ]
       faces.skills = {
         fidelity: 'planned',
         reason:
-          `Frontmatter skills ${JSON.stringify(agent.skills)} recorded, not fully preloaded: ${JSON.stringify(missing)} are not shipped by this plugin, so the compiler cannot read their bodies (user/project skill bodies are not in the plugin source). ` +
-          'A named seam would fix it: resolve the names against `ctx.skills` when the activation starts and prepend the bodies; the emitted data today can carry only skills this plugin authored. The resolved ones are still prepended.',
+          `Frontmatter skills ${JSON.stringify(agent.skills)} recorded, not fully preloaded: ${problems.join('; ')}. ` +
+          (preloaded.length === 0
+            ? 'No body is prepended for this agent. '
+            : `The ${preloaded.length} with a body ${preloaded.length === 1 ? 'is' : 'are'} still prepended. `) +
+          'A named seam would fix the rest: resolve the names against `ctx.skills` when the activation starts and prepend the bodies; emitted data can carry only bodies this plugin authored. ' +
+          'Claude would inject the full content of every listed skill at startup.',
       }
     }
   }
@@ -589,15 +628,26 @@ export function agentFaces(
  * skills count: a command has the same model-catalog shape but is a different
  * artifact, and preloading its body as a skill would claim the wrong thing.
  */
-function resolveAgentSkills(names: readonly string[] | undefined, available: readonly IrSkill[]): IrAgentSkill[] {
-  if (names === undefined) return []
+function resolveAgentSkills(
+  names: readonly string[] | undefined,
+  available: readonly IrSkill[],
+): { contents: IrAgentSkill[]; empty: string[] } {
+  if (names === undefined) return { contents: [], empty: [] }
   const byName = new Map(available.filter((skill) => skill.origin !== 'commands-dir').map((skill) => [skill.name, skill]))
   const contents: IrAgentSkill[] = []
+  const empty: string[] = []
   for (const name of names) {
     const skill = byName.get(name)
-    if (skill !== undefined) contents.push({ name, content: skill.content })
+    if (skill === undefined) continue
+    if (skill.content.trim() === '') {
+      // An empty body is not a preload. Report it as empty rather than
+      // silently dropping the name: `equivalent` would then be a lie.
+      empty.push(name)
+      continue
+    }
+    contents.push({ name, content: skill.content })
   }
-  return contents
+  return { contents, empty }
 }
 
 function readAgents(root: string, plugin: string, availableSkills: readonly IrSkill[]): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
@@ -675,7 +725,8 @@ function readAgents(root: string, plugin: string, availableSkills: readonly IrSk
     // Only skills this plugin ships can be read at compile time. A name that
     // resolves to a command is not a skill; it stays unresolved so the face
     // reports what is missing instead of preloading the wrong content.
-    const skillContents = resolveAgentSkills(skills, availableSkills)
+    const resolvedSkills = resolveAgentSkills(skills, availableSkills)
+    const skillContents = resolvedSkills.contents
     const faces = agentFaces(
       {
         name,
@@ -694,6 +745,7 @@ function readAgents(root: string, plugin: string, availableSkills: readonly IrSk
         autoCompactWindow,
       },
       plugin,
+      resolvedSkills.empty,
     )
     const agent: IrAgent = {
       kind: 'agent',

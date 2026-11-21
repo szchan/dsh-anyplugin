@@ -86,6 +86,29 @@ test('invoking the tool starts a child with the body ahead of the task', async (
   ])
 })
 
+test('a skill preload with an empty body is refused, not silently dropped', async () => {
+  const subagents = {
+    startActivation() {
+      throw new Error('a child must not start for an empty preload')
+    },
+  }
+  const { ctx, tools } = fakeContext({ subagents })
+  apply(ctx, {
+    plugin: PLUGIN,
+    agents: [
+      {
+        ...REVIEWER,
+        skills: ['blank'],
+        skillContents: [{ name: 'blank', content: '  \n' }],
+      },
+    ],
+  })
+  await assert.rejects(
+    () => tools.get(`${PLUGIN}:reviewer`).execute({ prompt: 'task' }, { agent: { id: 'lead' } }),
+    /empty body/,
+  )
+})
+
 test('without the subagents service the catalog loads and invocation names the seam', async () => {
   const { ctx, tools, warnings } = fakeContext({ hasSubagents: false })
   assert.doesNotThrow(() => apply(ctx, { plugin: PLUGIN, agents: [REVIEWER] }))

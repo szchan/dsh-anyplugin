@@ -50,8 +50,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
       generation from the pinned `claude-code.d.ts`. Coverage is
       `covered / total` against that file, and it only moves up.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
-      cannot be reimplemented on this runtime; delegate to the real host or
-      annotate `unsupported`.
+      cannot be reimplemented on this runtime; S16 annotates the faces
+      `unsupported`, and delegating the component to the real host is the only
+      path to honouring them.
 
 ## Done
 
@@ -198,7 +199,9 @@ own work while `next`/`$` still pause.
 - S10 agents (D26) — one tool per `<plugin>:<agent>`, description byte for
   byte, body as the first block of the child user message; `fixtures/claude-agents`
   matches its row in `coverage.test.mjs` (the nested planner is not loaded at
-  the pin), and model/tools/limits stay `planned` with reasons.
+  the pin). Every frontmatter face is now answered per S16 (§10): `skills`
+  `equivalent` when the plugin ships a non-empty body, `isolation` `planned`,
+  the rest `unsupported` with reasons, never silently passed through.
 - S8: hooks ride the tool waterfalls (`tools/pre-execute` deny →
   `Error: <reason>`, `tools/post-execute` value + `additionalContexts`); the
   guard list is denial-only and is not used (D19).

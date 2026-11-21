@@ -658,6 +658,12 @@ export interface DshAgentInvocationOptions {
   toolName: string
   /** The task the parent passes; used to find the child's first request. */
   task: string
+  /**
+   * Turn the child's first N model requests into calls to an `s16-progress`
+   * probe tool instead of an answer (the maxTurns face). The tool is
+   * registered by this probe; N+1 requests prove no turn cap was applied.
+   */
+  toolLoop?: number
   /** How long to wait for boot, the tool and the child, in milliseconds. */
   timeoutMs?: number
 }
@@ -709,6 +715,7 @@ export async function probeAgentInvocationWithDsh(
 
   const calls: DshModelCall[] = []
   let childSessionId: string | undefined
+  let loopRequests = options.toolLoop ?? 0
   class RecordingAdapter extends LlmAdapter {
     async resolveModel(provider: string, model: string): Promise<unknown> {
       return {
@@ -747,6 +754,17 @@ export async function probeAgentInvocationWithDsh(
         })),
         tools: (streamOptions.tools ?? []).map((tool) => tool.name),
       })
+      if (loopRequests > 0) {
+        loopRequests -= 1
+        for (const chunk of toolCallChunks({
+          id: `s16_loop_${calls.length}`,
+          name: 's16-progress',
+          arguments: '{}',
+        })) {
+          yield chunk
+        }
+        return
+      }
       for (const chunk of textChunks('stub answer')) yield chunk
     }
   }
@@ -776,6 +794,17 @@ export async function probeAgentInvocationWithDsh(
     ctx.llm.registerAdapter(['fake'], new RecordingAdapter())
     await until(() => Boolean(ctx.get('llm')), timeoutMs, 'llm service')
     await until(() => Boolean(ctx.get('agentLoop')), timeoutMs, 'agent loop service')
+    if ((options.toolLoop ?? 0) > 0) {
+      // The child can only loop if it has a tool to call. This is the probe's
+      // own tool, not the agent's; registering it changes no face under test.
+      ctx.tools.register({
+        name: 's16-progress',
+        description: 'anyplugin S16 probe tool; returns immediately',
+        parameters: { type: 'object', properties: {}, additionalProperties: true },
+        output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: () => [] },
+        execute: async () => ({ progress: true }),
+      })
+    }
 
     // The root cwd is the process cwd; the S16 isolation observation compares
     // the child header against it. No fixture path is used as a directory.

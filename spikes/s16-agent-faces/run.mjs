@@ -280,7 +280,7 @@ async function main() {
   )
   check(
     'top-level `effort` is ignored: the child request has no reasoningEffort',
-    aCall?.reasoningEffort === undefined,
+    aCall !== undefined && aCall.reasoningEffort === undefined,
     JSON.stringify({ reasoningEffort: aCall?.reasoningEffort }),
   )
   check(
@@ -333,11 +333,22 @@ async function main() {
   const start = types.indexOf('export interface SubagentStartRequest')
   const request = types.slice(start, types.indexOf('\n}', start))
   const faceFields = ['tools', 'disallowedTools', 'model', 'effort', 'maxTurns', 'isolation', 'skills', 'memory', 'background', 'omitClaudeMd', 'color', 'autoCompactWindow']
-  const carried = faceFields.filter((field) => new RegExp(`^\\s+${field}\\??:`, 'm').test(request))
+  // Parse every declared property name, then require the interface's exact
+  // non-face set. The first version matched `^\s+tools\??:` against lines
+  // written `readonly cwd?:`, so it could never match and the check passed on
+  // an empty result; the exact-set assertion makes a reverted regex red.
+  const fields = request
+    .split('\n')
+    .map((line) => /^\s+(?:readonly\s+)?([A-Za-z_$][\w$]*)\??:/.exec(line)?.[1])
+    .filter((field) => field !== undefined)
+  const expectedFields = ['cwd', 'agentPreset', 'label', 'prompt', 'parent', 'signal', 'agentOptions', 'outputSchema', 'maxDepth']
+  const carried = faceFields.filter((field) => fields.includes(field))
   check(
-    'SubagentStartRequest carries none of the ten frontmatter keys (only prompt/parent/agentOptions/...)',
-    carried.length === 0,
-    JSON.stringify({ carried, fields: request.split('\n').filter((line) => /^\s+\w+\??:/.test(line)).map((line) => line.trim().split(/[?:]/)[0]) }),
+    'SubagentStartRequest declares exactly its nine request fields and carries no frontmatter key',
+    carried.length === 0 &&
+      fields.length === expectedFields.length &&
+      expectedFields.every((field, index) => fields[index] === field),
+    JSON.stringify({ carried, fields }),
   )
 
   const report = { harness: HARNESS, source: HARNESS_SOURCE, version: version(), checks, calls: adapter.calls.map((call) => ({ model: call.model, reasoningEffort: call.reasoningEffort, tools: call.tools, texts: call.texts.map((entry) => `${entry.role}:${entry.text.slice(0, 60)}`) })) }
