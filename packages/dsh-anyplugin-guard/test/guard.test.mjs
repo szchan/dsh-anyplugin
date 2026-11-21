@@ -799,18 +799,25 @@ test('a failed profile write rolls the pre-push hook back', () => {
 })
 
 test('an install from a linked worktree is refused before it can touch the main hooks', () => {
-  const before = readPrePushHook(join(hooksDirectory(checkout), 'pre-push'))
+  const main = mkdtempSync(join(tmpdir(), 'guard-main-'))
+  const linked = join(main, 'linked')
   const profile = mkdtempSync(join(tmpdir(), 'guard-linked-'))
   try {
-    const result = spawnSync(process.execPath, ['scripts/guard-install.mjs', '--profile-dir', profile], {
-      cwd: checkout,
+    execFileSync('git', ['init', '-q', main])
+    execFileSync('git', ['-C', main, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '-b', 'ticket/linked', linked])
+    const hooks = hooksDirectory(main)
+    const before = readPrePushHook(join(hooks, 'pre-push'))
+    const result = spawnSync(process.execPath, [join(checkout, 'scripts/guard-install.mjs'), '--profile-dir', profile], {
+      cwd: linked,
       encoding: 'utf8',
     })
     assert.equal(result.status, 1, result.stdout + result.stderr)
     assert.match(result.stderr, /linked worktree/u)
-    assert.equal(readPrePushHook(join(hooksDirectory(checkout), 'pre-push')), before)
+    assert.equal(readPrePushHook(join(hooks, 'pre-push')), before, 'the main checkout hook was not touched')
   } finally {
     rmSync(profile, { recursive: true, force: true })
+    rmSync(main, { recursive: true, force: true })
   }
 })
 
