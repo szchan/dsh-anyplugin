@@ -1,0 +1,62 @@
+name: release
+
+# Publishing is a tag, never a branch push: only the master opens the gate, and
+# a `v*` tag is the human-authorized event this workflow reacts to.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the GitHub release for the tag
+      id-token: write # npm provenance (OIDC token to the transparency log)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the release notes want the commits since the last tag
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      # A tag that disagrees with the manifest would publish 0.1.0 under v0.2.0.
+      - name: Tag matches the package version
+        run: |
+          set -euo pipefail
+          version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${version}"
+            exit 1
+          fi
+
+      # The install smoke boots a real loader, so the job needs the pinned
+      # harness. The tarball, not the source tree, is what gets installed.
+      - name: Fetch the pinned harness for the install smoke
+        run: echo "DSH_HARNESS_DIR=$(node scripts/fetch-harness.mjs 0.2.2-rc.5)" >> "$GITHUB_ENV"
+
+      - name: Build, pack and install-smoke the tarball
+        run: npm run check:pack
+
+      # v0.1.0 bootstraps with the account token. From 0.1.1 the package is
+      # linked to the trusted publisher, and NODE_AUTH_TOKEN is removed: the
+      # OIDC identity then authorizes both the publish and its provenance.
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" --title "dsh-anyplugin ${GITHUB_REF_NAME}" --generate-notes

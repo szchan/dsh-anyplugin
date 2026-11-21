@@ -73,7 +73,29 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 | Output styles | 逐字节携带，激活在进行中 |
 | `mods` | 按原样加载（只允许一次变换，见 D34）：19 个事件已路由、7 个上游 mod 可加载、文件/会话/设置命名空间的 `$` 已桥接 |
 | Codex 插件 | 第二个 dialect，共用同一份 IR |
-| 安装 / 启用 / 发布 | 进行中（尚未发布 npm 包） |
+| 安装 / 启用 / 发布 | `dsh-anyplugin@0.1.0`（bundle + 控制器 + 协调器）；mods 与 Codex 在后续版本 |
+
+## 📦 安装
+
+`dsh-anyplugin@0.1.0` 以一个 **bundle** 的形式发布给 DSH profile：
+
+```bash
+dsh plugin --profile <profile> add dsh-anyplugin
+```
+
+在 profile 的 bundle 列表里启用它（Web 的插件页会代劳；手工方式是在
+`<profile>/package.json` 里加一项），然后启动 profile。bundle 的
+`cordis.patch.yml` 只插入一行控制器；控制器读取
+`$DSH_HOME/anyplugin/installs.yml`，把已安装的插件协调进 loader。它不写
+profile 配置，也不生成代码。
+
+0.1.0 只包含**编译路径**：skills、commands（模型面）、MCP、hooks、agents、
+安装/协调与信任门。output styles 仍是 `planned`；mods 内核与 Codex 方言
+**不在**本版本内。版本声明为 DSH `^0.2.2-rc.2`（`engines.dsh`，在
+`0.2.2-rc.2` 与 `0.2.2-rc.5` 上验证）与 Claude Code `2.1.329`。
+
+lock、启用层、行配置覆盖、`exec` 授权文件，以及如何移除 bundle 或单个插件，
+见 [**INSTALL.md**](INSTALL.md)。
 
 ## 🧪 如何验证
 
@@ -102,7 +124,7 @@ ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
 npm run verify
 ```
 
-`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 463 个测试。它必须报告
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 464 个测试。它必须报告
 **0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
 
 ## 📚 接下来读什么
@@ -127,4 +149,4 @@ npm run verify
 
 ## 📄 许可证
 
-MIT。`LICENSE` 文件随首个版本落地。
+MIT，见 [LICENSE](LICENSE)。

@@ -5,6 +5,8 @@ node_modules/
 # pinned Claude Code CLI fetched by scripts/fetch-claude.mjs
 .claude-code/
 dist/
+# built package entries (npm run build); packed by npm, never committed
+lib/
 *.log
 .DS_Store
 tmp/

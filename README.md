@@ -77,7 +77,32 @@ today, against DSH 0.2.2-rc.5 and Claude Code 2.1.329:
 | Output styles | carried byte-for-byte, activation in flight |
 | `mods` | loaded as authored (one transform, `D34`): 19 events routed, 7 upstream mods load, `$` bridges for the file/session/settings namespaces |
 | Codex plugins | second dialect, sharing the same IR |
-| Install / enable / release | in flight (no published package yet) |
+| Install / enable / release | `dsh-anyplugin@0.1.0` (bundle + controller + reconciler); mods and Codex ship in later releases |
+
+## 📦 Install it
+
+`dsh-anyplugin@0.1.0` is published as **one bundle** for a DSH profile:
+
+```bash
+dsh plugin --profile <profile> add dsh-anyplugin
+```
+
+Enable it in the profile's bundle list (the Web Plugins page does this; by hand
+it is one entry in `<profile>/package.json`), then boot the profile. The
+bundle's `cordis.patch.yml` inserts a single controller row; the controller
+reads `$DSH_HOME/anyplugin/installs.yml` and reconciles the installed plugins
+into the loader. Nothing is written to your profile config, and no code is
+generated.
+
+0.1.0 ships the **compile path**: skills, commands (model face), MCP servers,
+hooks, agents, install/reconcile, and the trust gate. Output styles are carried
+as `planned`, and the mods kernel and Codex dialect are **not** part of this
+release. The version claim is DSH `^0.2.2-rc.2` (`engines.dsh`, tested against
+`0.2.2-rc.2` and `0.2.2-rc.5`) and Claude Code `2.1.329`.
+
+[**INSTALL.md**](INSTALL.md) has the lock and enablement formats, how to
+override the row's config, the grant file for `exec` artifacts, and how to
+remove the bundle or one plugin.
 
 ## 🧪 How it is verified
 
@@ -109,7 +134,7 @@ npm run verify
 ```
 
 `verify` runs the structural rules, the capability map check, the append-only
-decision check, and 463 tests. It must report **0 skipped**: a skip means an
+decision check, and 464 tests. It must report **0 skipped**: a skip means an
 environment variable is missing, and on CI a skip is a failure by design.
 
 ## 📚 Read next
@@ -135,4 +160,4 @@ credentials, billing, rights, and irreversible actions.
 
 ## 📄 License
 
-MIT. The `LICENSE` file lands with the first release.
+MIT — see [LICENSE](LICENSE).
