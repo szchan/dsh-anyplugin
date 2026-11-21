@@ -94,9 +94,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `process.run`, `settings.read` and `ui.ask` are typed refusals (`ui.ask` is
   declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a
   person, which this host has no interaction for); `session.identity`,
-  `session.root`, `fs.ancestors`, `vcs.detect` and `vcs.diff` are absent
-  (`vcs.*` has no member, so it throws `TypeError` rather than a typed
-  refusal). `fs` resolves against the
+  `session.root` and `fs.ancestors` are absent. `vcs.detect`/`vcs.diff` are
+  served read-only for git (#119); the other four `vcs` members refuse
+  `ERR_MOD_HOST_VCS_UNSUPPORTED`. `fs` resolves against the
   invocation session's cwd (absolute as written), `store` is rooted at the
   plugin data dir and confined on `realpath`, and `settings.read` serves only a
   host merged snapshot. `session.messages()` carries the tool-result turn in

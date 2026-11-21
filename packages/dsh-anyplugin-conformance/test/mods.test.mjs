@@ -7,8 +7,9 @@
 // proves the seat is per-agent, and the trace file proves load-before-turn
 // ordering because apply settles before the loader reports success.
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -660,8 +661,8 @@ const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest(
 // The static capability ledger: every site the scanner sees in the pinned
 // graph, in source order. `ran` means the bridged namespace served the call;
 // `refused:<code>` means the call was made and the typed refusal came back;
-// `missing` means this host serves no such namespace at all (2.1.329's new
-// `vcs`), recorded rather than papered over.
+// `missing` means the namespace member is absent altogether, and no row uses
+// it at this pin because 2.1.329's `vcs` is now served.
 const DIFF_LEDGER = [
   { site: 'clock.now', result: 'ran', argument: 'session.start fallback', evidence: 'diff session.start' },
   { site: 'clock.after', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
@@ -670,8 +671,8 @@ const DIFF_LEDGER = [
   { site: 'fs.stat', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads the git dir HEAD from hook code' },
   { site: 'fs.list', result: 'ran', argument: '.', evidence: 'method availability; the fetched call reads entry kinds from hook code' },
   { site: 'fs.read', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads registration.ts from hook code' },
-  { site: 'vcs.detect', result: 'missing', argument: '—', evidence: '2.1.329 adds a vcs namespace; createModBridge does not serve it (recorded gap, not a typed refusal)' },
-  { site: 'vcs.diff', result: 'missing', argument: '—', evidence: '2.1.329 adds a vcs namespace; createModBridge does not serve it (recorded gap, not a typed refusal)' },
+  { site: 'vcs.detect', result: 'ran', argument: 'the ledger repository', evidence: 'git working copy: vcs, root, revision and branch answered by the host git' },
+  { site: 'vcs.diff', result: 'ran', argument: '{ path: root, vcs: "git", base: "head" }', evidence: 'git working tree vs HEAD: one modified and one untracked file' },
   { site: 'store.get', result: 'ran', argument: 'ledger', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'store.set', result: 'ran', argument: 'ledger = {from: diff}', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'settings.read', result: 'refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE', argument: 'no argument', evidence: 'no merged settings reader on this host; refused rather than served from plugin data' },
@@ -800,6 +801,35 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     env: process.env,
     warn: (message) => warnings.push(message),
   })
+
+  // `vcs.*` is asked against a real working copy, because the answer is the
+  // claim: a fabricated one would let a broken bridge look served. The repo
+  // carries one committed file, one modification and one untracked file.
+  const vcsRepo = mkdtempSync(join(tmpdir(), 'anyplugin-diff-ledger-vcs-'))
+  const vcsDataDir = mkdtempSync(join(tmpdir(), 'anyplugin-diff-ledger-vcs-data-'))
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_AUTHOR_NAME: 'diff ledger',
+    GIT_AUTHOR_EMAIL: 'ledger@example.invalid',
+    GIT_COMMITTER_NAME: 'diff ledger',
+    GIT_COMMITTER_EMAIL: 'ledger@example.invalid',
+  }
+  const git = (...args) => execFileSync('git', args, { cwd: vcsRepo, env: gitEnv, stdio: 'ignore' })
+  git('init', '-b', 'main')
+  writeFileSync(join(vcsRepo, 'tracked.txt'), 'one\n')
+  git('add', '--', 'tracked.txt')
+  git('commit', '-m', 'ledger', '--no-gpg-sign')
+  writeFileSync(join(vcsRepo, 'tracked.txt'), 'one\ntwo\n')
+  writeFileSync(join(vcsRepo, 'untracked.txt'), 'new\n')
+  const vcsBridge = createModBridge({
+    plugin: 'diff/register.ts',
+    dataDir: vcsDataDir,
+    session: () => ({ id: 'diff-ledger-vcs', cwd: vcsRepo, messages: [], usage: {} }),
+    env: process.env,
+    warn: () => {},
+  })
   try {
     // The static ledger: every scanned site is actually invoked, in scan
     // order, through the bridged $. Refusals must carry a stable code; every
@@ -809,7 +839,7 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     const capability = []
     for (const site of scan.calls) {
       const label = `${site.namespace}.${site.method}`
-      const namespace = bridge.dollar()[site.namespace]
+      const namespace = site.namespace === 'vcs' ? vcsBridge.dollar().vcs : bridge.dollar()[site.namespace]
       const method = namespace?.[site.method]
       if (typeof method !== 'function') {
         capability.push({ site: label, result: 'missing' })
@@ -869,6 +899,22 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
           case 'ui.resolve':
             await method({ surface: 'terminal', component: 'Pane' })
             break
+          case 'vcs.detect': {
+            const copy = await method({ path: vcsRepo })
+            assert.equal(copy.vcs, 'git', 'the ledger repository is a git working copy')
+            assert.equal(copy.root, realpathSync(vcsRepo))
+            assert.equal(copy.branch, 'main')
+            break
+          }
+          case 'vcs.diff': {
+            const answer = await method({ path: vcsRepo, vcs: 'git', base: 'head' })
+            assert.equal(answer.base, 'HEAD')
+            assert.deepEqual(
+              answer.files.map((file) => file.path),
+              ['tracked.txt', 'untracked.txt'],
+            )
+            break
+          }
           default:
             // process.run is the one site this host still refuses.
             await method()
@@ -881,7 +927,7 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     assert.deepEqual(
       capability.map((row) => ({ site: row.site, result: row.result })),
       DIFF_LEDGER.map((row) => ({ site: row.site, result: row.result })),
-      'every scanned site ran, refused with a typed code, or is a recorded missing surface',
+      'every scanned site ran or refused with a typed code',
     )
 
     const calls = []
@@ -966,7 +1012,10 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     second.dispose()
     reloaded.dispose()
   } finally {
+    vcsBridge.dispose()
     bridge.dispose()
+    rmSync(vcsRepo, { recursive: true, force: true })
+    rmSync(vcsDataDir, { recursive: true, force: true })
     rmSync(dataDir, { recursive: true, force: true })
   }
 
