@@ -51,8 +51,8 @@ test('an output style is planned and names the reachable seam and its gaps', (t)
   assert.equal(style.annotation.fidelity, 'planned')
   assert.equal(isCarried(style.annotation), false)
   assert.match(style.annotation.reason, /body is carried byte for byte/)
-  assert.match(style.annotation.reason, /applying it is planned/)
-  assert.match(style.annotation.reason, /invocation\.agent\.ctx/)
+  assert.match(style.annotation.reason, /carried byte for byte and applied as authored/)
+  assert.match(style.annotation.reason, /payload\.agent\.ctx\.systemPrompt\.section/)
   assert.match(style.annotation.reason, /complete: true/)
   assert.match(style.annotation.reason, /S11/)
   assert.match(style.annotation.reason, /agent\/created/, 'the provenance gap is named')
@@ -61,6 +61,12 @@ test('an output style is planned and names the reachable seam and its gaps', (t)
   assert.match(style.annotation.reason, /keep-coding-instructions/, 'the composition gap is named')
   assert.match(style.annotation.reason, /force-for-plugin/, 'the session-wide activation rule is named')
   assert.match(style.annotation.reason, /terse bullet points/, 'the style description is recorded, not dropped')
+  assert.ok(style.faces, 'the row splits into the faces the two seams can reach')
+  assert.equal(style.faces.activation.fidelity, 'equivalent', 'the spoken half is reachable through S11')
+  assert.equal(style.faces.command.fidelity, 'planned', 'the named half still needs D10')
+  assert.match(style.faces.activation.reason, /complete: true/)
+  assert.match(style.faces.activation.reason, /interpolate: false/)
+  assert.match(style.faces.command.reason, /D10/)
   assert.equal(
     ir.unsupported.some((row) => row.surface === 'outputStyles'),
     false,
@@ -79,7 +85,7 @@ test('a style without a frontmatter name falls back to its filename', (t) => {
   assert.equal(style.name, 'plain')
   assert.equal(style.body, '\nBe brief.\n')
   assert.equal(style.annotation.fidelity, 'planned')
-  assert.match(style.annotation.reason, /invocation\.agent\.ctx/)
+  assert.match(style.annotation.reason, /payload\.agent\.ctx\.systemPrompt\.section/)
 })
 
 test('a manifest outputStyles declaration is planned explicitly', (t) => {

@@ -12,7 +12,14 @@
  * that is what "inert" means here. Making it a disabled entry instead is not
  * possible at the group level: cordis' `Entry.disabled` getter returns false
  * for a group entry, so `disabled: true` would be accepted and ignored (S1).
+ *
+ * Output styles are the one selection this layer makes: the profile activation
+ * record (or a plugin's `force-for-plugin`) names at most one style, and the
+ * compiler places it on the plugin that owns it. Resolution happens *after*
+ * every record is prepared, so a refusal can be typed against the actual IR
+ * rather than guessed from the lock.
  */
+import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
@@ -23,6 +30,15 @@ import type { InstallRecord, Installs } from './installs.ts'
 import { validateInstalls } from './installs.ts'
 import { readEnablements, resolveEnablement, type Enablements } from './enablements.ts'
 import { childEntryId, pluginEntryId, pluginScope } from './identity.ts'
+import {
+  readActivation,
+  resolveActivation,
+  type ActivationPlugin,
+  type ActivationRefusalCode,
+  type ActivationResolution,
+  type ActivationStyle,
+  type OutputStylesFile,
+} from './output-styles.ts'
 
 export interface CompileOptions {
   /** Absolute module specifiers for the materializers this build ships. */
@@ -44,6 +60,12 @@ export interface CompileOptions {
    * `installs.yml` and passes it here.
    */
   grants?: Grants
+  /**
+   * Already-read output-style activation record (ticket #77). Absent means
+   * `readActivation` reads `$DSH_HOME/anyplugin/output-styles.yml`; a missing
+   * file is no explicit activation, and a malformed one is an error at load.
+   */
+  activation?: OutputStylesFile
 }
 
 const SUPPORTED_DIALECT = 'claude-code'
@@ -84,6 +106,71 @@ export interface CompileReport {
    * row is reported here and the rest still compile.
    */
   problems: CompileProblem[]
+  /**
+   * The output-style decision for this compile. `none` and `active` are normal;
+   * `refused` is typed (`unknown-plugin`, `plugin-disabled`,
+   * `plugin-unreadable`, `unknown-style`, `empty-style`) and carries the trace
+   * that says why no style was applied. A refusal is deliberately not a
+   * `problem`: the rest of the lock still compiles, and the caller surfaces the
+   * refusal instead of mistaking it for "nothing to do".
+   */
+  activation: ActivationResolution
+}
+
+/** A record that passed every check and can be emitted. */
+interface PreparedRecord {
+  record: InstallRecord
+  decision: TrustDecision
+  ir: ReturnType<typeof readClaudePlugin>
+}
+
+function prepareRecord(record: InstallRecord, options: CompileOptions): PreparedRecord {
+  const id = `${record.dialect}:${record.name}`
+  if (record.dialect !== SUPPORTED_DIALECT) {
+    fail(`plugin "${id}" uses unsupported dialect "${record.dialect}" (only ${SUPPORTED_DIALECT} is installed)`)
+  }
+  if (record.pin !== EXPECTED_PIN) {
+    fail(`plugin "${id}" was installed against pin "${record.pin}", this build reads "${EXPECTED_PIN}"`)
+  }
+  if (!isAbsolute(record.root)) fail(`plugin "${id}" has a non-absolute root "${record.root}"`)
+  try {
+    if (!statSync(record.root).isDirectory()) {
+      fail(`plugin "${id}" root ${JSON.stringify(record.root)} is not a directory`)
+    }
+  } catch (error) {
+    if ((error as Error).message.startsWith('compileEntries:')) throw error
+    const code = (error as NodeJS.ErrnoException).code ?? 'unknown'
+    fail(`plugin "${id}" root ${JSON.stringify(record.root)} could not be read (${code}): ${(error as Error).message}`)
+  }
+
+  const ir = readClaudePlugin(record.root, record.source === undefined ? {} : { source: record.source })
+  if (ir.plugin.name !== record.name) {
+    fail(`plugin "${id}" claims name "${record.name}" but ${record.root} declares "${ir.plugin.name}"`)
+  }
+  if (ir.pin.tool !== CLAUDE_CODE_PIN.tool || ir.pin.version !== CLAUDE_CODE_PIN.version) {
+    fail(`plugin "${id}" was read at ${ir.pin.tool}@${ir.pin.version}, expected ${EXPECTED_PIN}`)
+  }
+
+  // Gate before emit: refused exec artifacts become `planned` pending nodes and
+  // the emitter is given only the targets whose current hash is granted.
+  const gated = gate(ir, options.grants ?? emptyGrants())
+  return { record, decision: gated.decision, ir: gated.ir }
+}
+
+function activationStyle(style: {
+  name: string
+  description?: string
+  body: string
+  keepCodingInstructions?: boolean
+  forceForPlugin?: boolean
+}): ActivationStyle {
+  return {
+    name: style.name,
+    ...(style.description === undefined ? {} : { description: style.description }),
+    body: style.body,
+    ...(style.keepCodingInstructions === undefined ? {} : { keepCodingInstructions: style.keepCodingInstructions }),
+    ...(style.forceForPlugin === undefined ? {} : { forceForPlugin: style.forceForPlugin }),
+  }
 }
 
 /**
@@ -101,6 +188,8 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
   const entries: EntryOptions[] = []
   const decisions: TrustDecision[] = []
   const problems: CompileProblem[] = []
+  const prepared: PreparedRecord[] = []
+  const activationPlugins: ActivationPlugin[] = []
   const records = [...installs.plugins].sort((a, b) => {
     const left = `${a.dialect}:${a.name}`
     const right = `${b.dialect}:${b.name}`
@@ -108,20 +197,78 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
   })
 
   for (const record of records) {
-    const enablement = resolveEnablement(`${record.dialect}:${record.name}`, layers)
-    if (!enablement.enabled) continue
+    const id = `${record.dialect}:${record.name}`
+    const enablement = resolveEnablement(id, layers)
+    if (!enablement.enabled) {
+      // Disabled plugins are still named to the resolver: an explicit record
+      // that names one is a `plugin-disabled` refusal, not `unknown-plugin`.
+      activationPlugins.push({ name: record.name, enabled: false })
+      continue
+    }
     try {
-      const compiled = compileRecord(record, options)
+      const compiled = prepareRecord(record, options)
+      prepared.push(compiled)
       decisions.push(compiled.decision)
-      if (compiled.entry) entries.push(compiled.entry)
-    } catch (error) {
-      problems.push({
-        plugin: `${record.dialect}:${record.name}`,
-        reason: (error as Error).message.replace(/^compileEntries:\s*/, ''),
+      activationPlugins.push({
+        name: record.name,
+        enabled: true,
+        styles: (compiled.ir.outputStyles ?? []).map(activationStyle),
       })
+    } catch (error) {
+      const reason = (error as Error).message.replace(/^compileEntries:\s*/, '')
+      problems.push({ plugin: id, reason })
+      // An enabled record that failed to prepare is `plugin-unreadable`, not
+      // `unknown-plugin`: the lock row exists, its IR just could not be read.
+      activationPlugins.push({ name: record.name, enabled: true, problem: reason })
     }
   }
-  return { entries, decisions, problems }
+
+  // Read the record only after every preparation, so resolution can name the
+  // actual styles. A malformed file throws here, at load: there is no silent
+  // "no style" path.
+  const activation = resolveActivation(activationPlugins, options.activation ?? readActivation({ home: options.home }))
+
+  for (const record of prepared) {
+    const selected = activation.kind === 'active' && activation.plugin === record.record.name
+      ? {
+          plugin: activation.plugin,
+          name: activation.style.name,
+          ...(activation.style.description === undefined ? {} : { description: activation.style.description }),
+          body: activation.style.body,
+          ...(activation.style.keepCodingInstructions === undefined ? {} : { keepCodingInstructions: activation.style.keepCodingInstructions }),
+          ...(activation.style.forceForPlugin === undefined ? {} : { forceForPlugin: activation.style.forceForPlugin }),
+          // Ticket #77: only an explicit `false` replaces the prompt; an absent
+          // key appends, so the host's coding instructions stay.
+          complete: activation.style.keepCodingInstructions === false,
+          source: activation.source,
+          trace: activation.trace,
+        }
+      : undefined
+    const emitted = emitPlugin(record.ir, {
+      materializers: options.materializers,
+      ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
+      trusted: record.decision.allowed,
+      // The lock is the only place that knows where `${CLAUDE_PLUGIN_DATA}`
+      // points: versioned artifacts get a root, data survives an update.
+      dataDir: record.record.dataDir,
+      ...(selected === undefined ? {} : { outputStyle: selected }),
+    })
+    if (!emitted.entry) continue
+    const scope = pluginScope(record.record.dialect, record.record.name)
+    const children = emitted.entry.config
+    if (!Array.isArray(children)) fail(`plugin "${record.record.dialect}:${record.record.name}" emitted a group without a config array`)
+    const qualified = (children as EntryOptions[]).map((child) => ({
+      ...child,
+      id: childEntryId(scope, child.id),
+    }))
+    entries.push({
+      ...emitted.entry,
+      id: pluginEntryId(record.record.dialect, record.record.name),
+      config: qualified,
+    })
+  }
+
+  return { entries, decisions, problems, activation }
 }
 
 /**
@@ -131,62 +278,36 @@ export function compileReport(installs: Installs, options: CompileOptions): Comp
  *
  * A per-record problem fails closed here instead of being dropped: callers that
  * want to keep compiling the rest of the lock and report each problem must use
- * `compileReport`. Refused artifacts are decisions, not problems.
+ * `compileReport`. Refused artifacts are decisions, not problems. A refused
+ * output-style activation is likewise not a problem — it is returned on
+ * `compileReport().activation` — so this function's behaviour for a bad
+ * activation record is unchanged: no style child, no throw.
  */
+export class OutputStyleActivationError extends Error {
+  readonly code: ActivationRefusalCode
+  readonly requested: string
+  readonly trace: string
+
+  constructor(activation: Extract<ActivationResolution, { kind: 'refused' }>) {
+    super(
+      `compileEntries: output style activation ${JSON.stringify(activation.requested)} was refused (${activation.code}): ${activation.reason}`,
+    )
+    this.name = 'OutputStyleActivationError'
+    this.code = activation.code
+    this.requested = activation.requested
+    this.trace = activation.trace
+  }
+}
+
 export function compileEntries(installs: Installs, options: CompileOptions): EntryOptions[] {
   const report = compileReport(installs, options)
   if (report.problems.length > 0) {
     throw new Error(`compileEntries: ${report.problems.map((problem) => problem.reason).join('; ')}`)
   }
+  // A refused activation is a configuration error, not "nothing to do": the
+  // convenience path fails closed so a bad record cannot silently compile the
+  // lock without the style the operator asked for. Callers that must keep
+  // compiling use `compileReport` and read `activation` themselves.
+  if (report.activation.kind === 'refused') throw new OutputStyleActivationError(report.activation)
   return report.entries
-}
-
-function compileRecord(
-  record: InstallRecord,
-  options: CompileOptions,
-): { entry?: EntryOptions; decision: TrustDecision } {
-  const id = `${record.dialect}:${record.name}`
-  if (record.dialect !== SUPPORTED_DIALECT) {
-    fail(`plugin "${id}" uses unsupported dialect "${record.dialect}" (only ${SUPPORTED_DIALECT} is installed)`)
-  }
-  if (record.pin !== EXPECTED_PIN) {
-    fail(`plugin "${id}" was installed against pin "${record.pin}", this build reads "${EXPECTED_PIN}"`)
-  }
-  if (!isAbsolute(record.root)) fail(`plugin "${id}" has a non-absolute root "${record.root}"`)
-
-  const ir = readClaudePlugin(record.root, record.source === undefined ? {} : { source: record.source })
-  if (ir.plugin.name !== record.name) {
-    fail(`plugin "${id}" claims name "${record.name}" but ${record.root} declares "${ir.plugin.name}"`)
-  }
-  if (ir.pin.tool !== CLAUDE_CODE_PIN.tool || ir.pin.version !== CLAUDE_CODE_PIN.version) {
-    fail(`plugin "${id}" was read at ${ir.pin.tool}@${ir.pin.version}, expected ${EXPECTED_PIN}`)
-  }
-
-  // Gate before emit: refused exec artifacts become `planned` pending nodes and
-  // the emitter is given only the targets whose current hash is granted.
-  const gated = gate(ir, options.grants ?? emptyGrants())
-  const emitted = emitPlugin(gated.ir, {
-    materializers: options.materializers,
-    ...(options.sdkRoot === undefined ? {} : { sdkRoot: options.sdkRoot }),
-    trusted: gated.decision.allowed,
-    // The lock is the only place that knows where `${CLAUDE_PLUGIN_DATA}`
-    // points: versioned artifacts get a root, data survives an update.
-    dataDir: record.dataDir,
-  })
-  if (!emitted.entry) return { decision: gated.decision }
-  const scope = pluginScope(record.dialect, record.name)
-  const children = emitted.entry.config
-  if (!Array.isArray(children)) fail(`plugin "${id}" emitted a group without a config array`)
-  const qualified = (children as EntryOptions[]).map((child) => ({
-    ...child,
-    id: childEntryId(scope, child.id),
-  }))
-  return {
-    entry: {
-      ...emitted.entry,
-      id: pluginEntryId(record.dialect, record.name),
-      config: qualified,
-    },
-    decision: gated.decision,
-  }
 }

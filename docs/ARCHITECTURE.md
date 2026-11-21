@@ -16,7 +16,7 @@
 | **C** Effects | tool-call arguments, file writes, spawned processes, exit codes, stdio protocol traffic | byte-identical |
 | **D** Control flow | allow / deny / block decisions (`exit 2`, `decision:"block"`, `continue:false`, permission results) | equivalent |
 | **E** Trust | approval prompts, grant records, scope of effect | equivalent |
-| **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `planned` — D10's `/<plugin>:<name>` alias, at-start provenance, the `keep-coding-instructions` composition rule, and no `plugin details` inventory at 2.1.322 |
+| **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `equivalent` through the agent-scoped prompt seam (S11) on top-level agents and forks, selected by the profile activation record or `force-for-plugin`; the human `/<plugin>:<name>` half stays `planned` — D10's alias, and no `plugin details` inventory at 2.1.322 |
 | **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | every declared color |
 | **F3** GUI chrome | cards, overlays, charts, shadows | **derived** — not in the denominator; Claude has no such artifact to translate |
 | **F4** Assets | icons / complete SVGs | byte-identical |
@@ -136,15 +136,17 @@ that does not exist yet is under **Not yet built**, not in this table.
 | `dsh-anyplugin-materialize-hook` | IR → the tool and lifecycle waterfalls, through the one kernel (D19) |
 | `dsh-anyplugin-materialize-mcp` | IR → the MCP client, with Claude Code's exact tool names (D12) |
 | `dsh-anyplugin-materialize-agents` | one model-facing tool per agent file; the child is started through `ctx.subagents` (S10) |
+| `dsh-anyplugin-materialize-output-style` | IR → the selected style body at `agent/created`, through `agent.ctx.systemPrompt.section`; profile-wide, one selection at a time (ticket #77) |
 | `dsh-anyplugin-conformance` | fixtures + record/replay diff (first-class, not an afterthought) |
 
 **Not yet built.** The original map also named `dsh-anyplugin-ui` (client half:
 install list, fidelity report, trust grants), `dsh-anyplugin-dialect-portable`
 (the shared `agent-plugins.org` reader; `dsh-anyplugin-dialect-codex` reads that
 shape itself today), and
-`dsh-anyplugin-materialize-{bin,theme,output-style,monitor,workflow}`. Themes
-and output styles are carried as `planned` IR rows but have no materializer
-(S11); the rest are roadmap items. The host-controller surface the old row
+`dsh-anyplugin-materialize-{bin,theme,monitor,workflow}`. Themes are carried as
+`planned` IR rows with no materializer; output styles are carried the same way
+but do have one — `dsh-anyplugin-materialize-output-style` applies the selected
+body through the agent-scoped prompt seam (S11). The host-controller surface the old row
 called `dsh-anyplugin` — the `anyplugin` command family and an API for the UI —
 is not built either: the root package is the private workspace root, and
 reconcile lives in `dsh-anyplugin-install`.
@@ -299,6 +301,52 @@ the scope layers; there is no loader entry to read a flag from.
 Consequences we surface in the UI: "installed, enabled in 2 of 5 projects",
 and a per-workspace badge. The reconciler is workspace-aware: it materializes
 the project's resolved set, so switching workspaces changes the runtime tree.
+
+**Axis 3 — activation (profile-global, one selection).** Output styles are
+prompt text, not a tool, so activating one is a selection rather than a
+surface: at most one style is active for the profile. It lives in the same
+profile anyplugin dir, read-only (AGENTS.md §3.4):
+
+```yaml
+schema: "dsh-anyplugin/output-styles@1"
+outputStyles:
+  active: "output-styles-activation:append-style"
+```
+
+`active` is `<plugin>:<style>`, where the style name is the one Claude
+registers (frontmatter `name`, else the file stem). A missing file is "no
+explicit activation". The syntax is the canonical subset D23 uses; anything
+else is a load error with a line number — "cannot parse" never becomes "no
+style". A record that exists but cannot be read (`EACCES`, `EISDIR`, …) is a
+load error naming the code, never a silent fallback to force-for-plugin, and
+`outputStyles: {}` followed by an `active` row is a contradictory record.
+An empty or whitespace-only body is a typed `empty-style` refusal rather than
+a silent no-op; the parser preserves bytes, only application is refused.
+Resolution is typed too: `unknown-plugin`, `plugin-disabled`,
+`plugin-unreadable`, `unknown-style`, `empty-style`. A refusal is reported on
+`compileReport.activation` and is not a `problem`, so the rest of the lock
+still compiles and a caller can show the reason; the install convenience path
+(`compileEntries`) turns it into `OutputStyleActivationError` instead, so a
+refused selection never compiles silently. An explicit record always wins,
+including when it refuses; `force-for-plugin: true` applies only when its
+plugin is enabled and no explicit record names a style, and the trace names
+which rule won. A whitespace-only forced style is skipped in favour of a later
+valid one and refused with the same `empty-style` code when it is the only
+candidate. That precedence is deliberate: upstream documents
+`force-for-plugin` as overriding the user's selection, but this layer has no
+host `outputStyle` setting, so the profile record is the operator's explicit
+statement and overriding it would invert the only control the operator has.
+The selection is emitted as one `outputStyle` child on the owning plugin;
+`dsh-anyplugin-materialize-output-style` registers an `agent/created` listener
+and applies the body through `payload.agent.ctx.systemPrompt.section(...)` with
+`interpolate: false`, and `complete: true` only when the frontmatter says
+`keep-coding-instructions: false`. Anything else — including an absent key —
+appends a section and keeps the host's coding instructions. The listener skips
+agents whose origin is `subagent`: upstream applies styles to the main
+conversation and forks, and a `complete` section on a child would replace its
+whole prompt. The body is applied as authored. The activation face is
+`equivalent`; the row's overall class stays `planned` because the human
+`/<plugin>:<name>` command half is not reachable (D10).
 
 ## 6. Trust model
 
@@ -1121,7 +1169,7 @@ run degraded *by design*.
 | hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, model/tools/limits `planned`; a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
-| per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) but stay `planned` per style, with the seam and all four gaps named; activation waits on D10's command alias, at-start provenance, the composition rule, and an oracle that can see styles; no global injection |
+| per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
 | shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
@@ -2080,17 +2128,44 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   session-wide while the plugin is enabled; a DSH carry must choose an explicit
   activation path rather than inject at load.
 
+  **5. Activated (ticket #77).** The gap list above is the state at the S11
+  answer; activation has since closed (i), (iii) and (iv) without changing the
+  row's class. Provenance is the profile activation record's plugin name (the
+  record is read at load, so an unreadable record or plugin is a typed load
+  error/refusal rather than a guess); the oracle is a composed-prompt probe
+  that boots the pinned harness, loads the entry, runs one turn on a stub
+  adapter and returns the system prompt the model received; composition is the
+  split the ticket specified — `keep-coding-instructions: false` maps to
+  `complete: true`, any other value (including absent) appends a section, and
+  the activation face's reason names that divergence from Claude's documented
+  default explicitly. The materializer skips agents whose origin is
+  `subagent`; upstream applies a style to the main conversation and a fork,
+  and a complete section on a child would replace its whole prompt. An empty
+  or whitespace-only body is refused as `empty-style` (a whitespace-only
+  forced style is skipped in favour of a later valid one, and refused when it
+  is the only candidate), and a refused selection makes `compileEntries`
+  throw `OutputStyleActivationError` instead of compiling silently. (ii)
+  remains, so the command face stays `planned`.
+  `output-styles-activation.test.mjs` asserts the appended bytes
+  (`baseline + "\n\n" + body`), the replaced bytes (`prompt === body`), the
+  forced selection, an absent keep-coding key appending, an inactive style's
+  absence, an unknown-style refusal that leaves the prompt byte-identical to
+  the baseline, and one test per role — main, sibling and fork receive the
+  style, a subagent does not.
+
   **What this buys, and what it does not.** Each flat `output-styles/*.md` is
-  now an `IrOutputStyle` row in `ir.outputStyles`, carrying its body byte for
-  byte (`output-styles-carry.test.mjs` hashes the IR body against the file);
-  the row is still `planned`, and its reason names the reachable seam and all
-  four gaps. A nested file, and a `manifest:outputStyles` declaration, remain
-  `pending`: the flat surface is the only one this dialect reads. Activation is
-  not implemented — there is no materializer and no emitted prompt — and the
-  upstream CLI's inventory still has no output-style line, so
-  `fixtures/claude-output-styles` is hand-authored and carries no `.inventory`
-  golden; it is asserted by the body hash and excluded from the oracle loop.
-  No fidelity total changes: an absent golden adds no oracle row.
+  an `IrOutputStyle` row in `ir.outputStyles`, carrying its body byte for
+  byte (`output-styles-carry.test.mjs` hashes the IR body against the file).
+  Its annotation splits into two faces: activation `equivalent` (reachable
+  through the agent-scoped prompt seam and now materialized) and command
+  `planned` (D10), so the overall row stays `planned` and the report keeps
+  printing `class=planned carry=skipped`. A nested file, and a
+  `manifest:outputStyles` declaration, remain `pending`: the flat surface is
+  the only one this dialect reads. The upstream CLI's inventory still has no
+  output-style line, so both fixtures are hand-authored and carry no
+  `.inventory` golden: `fixtures/claude-output-styles` is asserted by the body
+  hash, and `fixtures/claude-output-styles-activation` by the composed prompt
+  bytes. No fidelity total changes: an absent golden adds no oracle row.
 
   Reproduce:
 

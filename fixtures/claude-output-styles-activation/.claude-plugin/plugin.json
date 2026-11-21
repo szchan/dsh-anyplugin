@@ -1,0 +1,5 @@
+{
+  "name": "output-styles-activation",
+  "version": "0.0.1",
+  "description": "Fixture: every composition key an output style can declare, plus one style nothing activates."
+}

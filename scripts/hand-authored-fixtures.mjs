@@ -12,4 +12,8 @@ export const HAND_AUTHORED_FIXTURES = new Map([
     'claude-output-styles',
     'claude plugin details at 2.1.322 prints no output-style line (D29); the body hash is the evidence, so there is no upstream inventory to capture',
   ],
+  [
+    'claude-output-styles-activation',
+    'claude plugin details at 2.1.322 prints no output-style line (D29); activation is observed as composed prompt bytes, not as an inventory, so there is no upstream golden to capture',
+  ],
 ])

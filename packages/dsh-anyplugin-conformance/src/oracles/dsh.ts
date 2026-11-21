@@ -76,11 +76,11 @@ interface BootedHarness {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-function loadFromHarness(harnessDir: string, specifier: string): Promise<any> {
+export function loadFromHarness(harnessDir: string, specifier: string): Promise<any> {
   return import(pathToFileURL(join(harnessDir, specifier)).href)
 }
 
-async function until(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
+export async function until(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     if (predicate()) return
@@ -95,7 +95,7 @@ async function until(predicate: () => boolean, timeoutMs: number, label: string)
  * scope; an npm harness does not, so the install root (which carries the
  * `package.json` written by `fetch-harness.mjs`) is the anchor there.
  */
-function loaderBaseUrl(harnessDir: string): string {
+export function loaderBaseUrl(harnessDir: string): string {
   const product = join(harnessDir, 'dsh')
   const anchor = existsSync(join(product, 'package.json')) ? product : join(harnessDir, '..', '..')
   return pathToFileURL(anchor + '/').href

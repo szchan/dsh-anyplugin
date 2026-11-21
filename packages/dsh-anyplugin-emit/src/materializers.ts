@@ -20,6 +20,10 @@ export const DEFAULT_MATERIALIZERS = {
   // the key is inert. It stays in the map so R11 can account for every
   // materializer package rather than silently exempting one.
   command: 'dsh-anyplugin-materialize-command',
+  // The activation half of an output style (ticket #77): at `agent/created` it
+  // applies the selected body through the agent-scoped `SystemPrompt` section
+  // seam (S11). Unlike the other keys it is a selection, not a surface.
+  outputStyle: 'dsh-anyplugin-materialize-output-style',
 } as const
 
 /** Absolute module specifier for a sibling materializer package. */

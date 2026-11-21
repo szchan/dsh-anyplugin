@@ -15,15 +15,6 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Next
 
-- [ ] **Output-style activation** (S11; the byte-for-byte carry has landed).
-      Apply a carried `outputStyles:<name>` body at agent start. Activation
-      waits on the D10 command-alias decision for `/<plugin>:<name>`, a call on
-      at-start provenance (`agent/created` carries the agent but no plugin id),
-      the composition rules (`keep-coding-instructions`; `force-for-plugin` is
-      session-wide, so applying a style must stay an explicit activation
-      choice), and an oracle that can see styles (the pinned CLI inventory does
-      not list them).
-
 ## Upstream proposals (union-only seams, T2)
 
 Each is a small, independent change that never alters existing behavior. Listed

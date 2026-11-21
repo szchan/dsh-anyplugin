@@ -20,6 +20,7 @@ import type {
   IrHook,
   IrMcpServer,
   IrOutputStyle,
+  IrOutputStyleFaces,
   IrPin,
   IrSkill,
   IrUnmaterialized,
@@ -935,35 +936,69 @@ function readMcp(root: string, plugin: string): {
 }
 
 /**
- * Why an output style is planned rather than carried at this pin. S11 proves
- * the seam exists and is per-agent: a command handler receives
- * `invocation.agent`, and a section registered on that agent's context with
- * `complete: true` replaces exactly that agent's system prompt. What is not
- * settled is the activation surface and the remaining fidelity rules, so the
- * dialect records the reachable seam without pretending it is wired.
+ * Why an output style can be carried at this pin, and the two faces that
+ * decide how far.
+ *
+ * Upstream spec (pinned): `claude-code.d.ts:9867 @ 2.1.329` lists a plugin
+ * output style as `<plugin>:<style>`; `claude-code.d.ts:11238 @ 2.1.329`
+ * describes the composed prompt's `outputStyle` as
+ * `{ name, isKeepingCodingInstructions } | null`. The frontmatter keys are
+ * documented at https://code.claude.com/docs/en/output-styles @ 2.1.329.
+ *
+ * The spoken half is reachable: S11 proved an `agent/created` listener on the
+ * agent's own context can register a `SystemPrompt` section with
+ * `complete: true`, and the section is then the agent's whole prompt (and
+ * survives compaction). The named half is not: `/<plugin>:<name>` still needs
+ * the additive command-alias seam (D10), and this dialect never fakes a
+ * command.
  */
-const OUTPUT_STYLE_SEAM =
-  'DSH 0.2.2-rc.5 can carry it: a command handler receives `invocation.agent`, and `invocation.agent.ctx.systemPrompt.section({ complete: true })` replaces that agent\'s system prompt byte for byte; `createAgent(..., { setup })`, an `agent/created` listener, `dsh-persona`, and an agent preset reach the same scoped seam (S11). ' +
-  'Applying output-styles waits on four gaps: (i) an at-start contribution needs plugin provenance — `agent/created` carries the agent but no plugin id — or a plugin-created agent; ' +
-  '(ii) the `/<plugin>:<name>` activation needs the additive command-alias seam (D10), because a command name cannot contain `:` until that lands (an alias would be new additive work, not an existing equivalent); ' +
-  '(iii) `claude plugin details` does not inventory output styles at 2.1.322, so the inventory oracle cannot anchor the row; proving activation needs a fixture that compares a dumped composed prompt; ' +
-  '(iv) `keep-coding-instructions: true` keeps Claude\'s built-in coding instructions, which a `complete` section cannot express because it replaces the whole prompt; `force-for-plugin` applies a style session-wide while the plugin is enabled, so activation must be an explicit user choice, never an injected default.'
+const OUTPUT_STYLE_ACTIVATION =
+  'Activation is applied at agent start: the materializer registers an `agent/created` listener whose handler calls `payload.agent.ctx.systemPrompt.section(...)` on the agent\'s own context (S11), so a sibling agent is unaffected. ' +
+  'The section sets `interpolate: false`, because a style body is prompt text, not a template, and sets `complete: true` only when the frontmatter says `keep-coding-instructions: false`; otherwise the body is appended as a section and the host\'s own instructions stay. ' +
+  'It is `equivalent`, not `exact`: the surrounding system prompt is DSH\'s rather than Claude\'s, the body is applied as authored where Claude trims its prompt, and an absent `keep-coding-instructions` appends here where Claude\'s documented default removes its coding instructions. ' +
+  'The named half `/<plugin>:<name>` (claude-code.d.ts:9867 @ 2.1.329) stays `planned`: the additive command-alias seam does not exist (D10). ' +
+  '`force-for-plugin: true` applies only when its plugin is enabled and no explicit profile record overrides it; an explicit record wins and the compile trace names the winner. That precedence is declared here on purpose: the docs page (https://code.claude.com/docs/en/output-styles @ 2.1.329) says force overrides the user\'s selection, but the profile activation record is this layer\'s only activation channel, so it is the operator\'s explicit statement and none of the host\'s own settings are being overridden.'
 
-function outputStyleReason(name: string, description: string | undefined): string {
+function outputStyleReason(name: string, description: string | undefined, keepCodingInstructions: boolean | undefined): string {
   const label = description === undefined
     ? `Output style ${JSON.stringify(name)}`
     : `Output style ${JSON.stringify(name)} (${JSON.stringify(description)})`
-  return `${label} is prompt text applied at agent start; its body is carried byte for byte, but applying it is planned. ${OUTPUT_STYLE_SEAM}`
+  const composition = keepCodingInstructions === undefined
+    ? 'An absent `keep-coding-instructions` stays absent: the body is appended as a section and no declaration is synthesized.'
+    : keepCodingInstructions
+      ? '`keep-coding-instructions: true` appends the body as a section, so the coding instructions stay alongside it.'
+      : '`keep-coding-instructions: false` makes the body the complete prompt through `complete: true`.'
+  return `${label} is prompt text applied at agent start when a profile record activates it; its body is carried byte for byte and applied as authored. The spoken half is \`equivalent\`; the row stays \`planned\` because the human \`/<plugin>:<name>\` command needs the additive command-alias seam (D10) and \`claude plugin details\` does not inventory output styles at 2.1.322 (D37), so there is no inventory anchor. ${composition} ${OUTPUT_STYLE_ACTIVATION}`
+}
+
+function outputStyleFaces(name: string, description: string | undefined, keepCodingInstructions: boolean | undefined): IrOutputStyleFaces {
+  const activation = [
+    `Output style ${JSON.stringify(name)} applies at agent start through the agent-scoped system-prompt seam (S11).`,
+    keepCodingInstructions === false
+      ? '`keep-coding-instructions: false` makes the body the complete prompt (`complete: true`), so the host\'s coding instructions are replaced.'
+      : keepCodingInstructions === true
+        ? '`keep-coding-instructions: true` appends the body as a section, so the host\'s coding instructions stay.'
+        : 'An absent `keep-coding-instructions` appends the body as a section; the documented default is not synthesized.',
+    'Equivalent, not exact: DSH\'s surrounding prompt is not Claude\'s, the body is applied as authored (Claude trims its prompt), and an absent `keep-coding-instructions` appends where Claude\'s default removes its coding instructions.',
+    'The section sets `interpolate: false`, because a style body is prompt text, not a template.',
+  ].join(' ')
+  const command = `The human \`/<plugin>:<name>\` command for ${JSON.stringify(name)} is planned: a command name cannot contain \`:\` until the additive command-alias seam lands (D10), and this dialect does not fake an alias.`
+  return {
+    activation: { fidelity: 'equivalent', reason: outputStyleReason(name, description, keepCodingInstructions) + ' ' + activation },
+    command: { fidelity: 'planned', reason: command },
+  }
 }
 
 /**
  * Claude's `output-styles/*.md` is F1: the body is the prompt the model reads at
  * agent start. A flat file is carried as an `IrOutputStyle` — identity from the
  * frontmatter `name` (falling back to the file stem, as the host does), the
- * description for the row, and the body byte for byte. The row stays `planned`
- * because carrying the bytes is not applying them: activation waits on the four
- * gaps in the reason. A nested file is outside the flat surface and stays in
- * `pending`; so does a manifest-declared directory, which is not read at all.
+ * description for the row, the two composition keys as written, and the body
+ * byte for byte. The overall row stays `planned` because the named half is not
+ * reachable; the activation face is `equivalent` and the materializer applies
+ * it through the agent-scoped prompt seam. A nested file is outside the flat
+ * surface and stays in `pending`; so does a manifest-declared directory, which
+ * is not read at all.
  */
 function readOutputStyles(root: string): { styles: IrOutputStyle[]; pending: IrUnmaterialized[] } {
   const dir = join(root, 'output-styles')
@@ -987,13 +1022,18 @@ function readOutputStyles(root: string): { styles: IrOutputStyle[]; pending: IrU
     const parsed = parseFrontmatter(readFileSync(file.abs, 'utf8'))
     const name = stringField(parsed.data, 'name') ?? fallback
     const description = stringField(parsed.data, 'description')
+    const keepCodingInstructions = boolField(parsed.data, 'keep-coding-instructions')
+    const forceForPlugin = boolField(parsed.data, 'force-for-plugin')
     styles.push({
       surface: 'outputStyles',
       name,
       ...(description === undefined ? {} : { description }),
+      ...(keepCodingInstructions === undefined ? {} : { keepCodingInstructions }),
+      ...(forceForPlugin === undefined ? {} : { forceForPlugin }),
+      faces: outputStyleFaces(name, description, keepCodingInstructions),
       body: parsed.body,
       sourcePath: file.rel,
-      annotation: { fidelity: 'planned', reason: outputStyleReason(name, description) },
+      annotation: { fidelity: 'planned', reason: outputStyleReason(name, description, keepCodingInstructions) },
     })
   }
   return { styles, pending }

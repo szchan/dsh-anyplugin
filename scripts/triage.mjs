@@ -62,6 +62,8 @@ const sections = {
   'Maintainer asks (new)': [],
   'Maintainer answers (resume)': [],
   'Blocked on a human': [],
+  'In review (PR open)': [],
+  'In progress (no PR yet)': [],
   'External, untriaged': [],
   'External, awaiting evidence': [],
   'Pull requests': [],
@@ -75,7 +77,35 @@ try {
   process.exit(1)
 }
 
+let prs = []
+try {
+  prs = ghJson(['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,author,isDraft,reviewDecision,statusCheckRollup,headRefOid,updatedAt,body'])
+} catch {
+  prs = []
+}
+
+// An issue whose PR is already open is not an ask, an answer, or an untriaged
+// report: it is work in flight. Listing it as a queue item invites a second
+// worker to claim the same ticket (docs/TRIAGE.md §2).
+const linkedIssues = new Set()
+for (const pr of prs) {
+  for (const match of String(pr.body ?? '').matchAll(/\b(?:closes|fixes|resolves)\s+#(\d+)\b/gi)) {
+    linkedIssues.add(Number(match[1]))
+  }
+}
+
 for (const issue of issues) {
+  if (linkedIssues.has(issue.number)) {
+    sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: role(issue), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    continue
+  }
+  if (hasLabel(issue, 'ticket/in-progress')) {
+    // Claimed work with no PR yet is in flight too. Without this the queue
+    // undercounts WIP and the next round dispatches a second worker onto a
+    // ticket that is already moving (docs/TRIAGE.md §2).
+    sections['In progress (no PR yet)'].push({ number: issue.number, title: issue.title, role: role(issue), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    continue
+  }
   let list = []
   try {
     list = comments(issue.number)
@@ -99,13 +129,6 @@ for (const issue of issues) {
   } else if (!agentAfterHuman && hasLabel(issue, 'needs-evidence')) {
     sections['External, awaiting evidence'].push(item)
   }
-}
-
-let prs = []
-try {
-  prs = ghJson(['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,author,isDraft,reviewDecision,statusCheckRollup,headRefOid,updatedAt'])
-} catch {
-  prs = []
 }
 
 for (const pr of prs) {
