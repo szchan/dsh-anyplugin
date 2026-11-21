@@ -22,12 +22,12 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D46. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D47. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
 | `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
-| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S15) and what a spike must prove. |
+| `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S16) and what a spike must prove. |
 | `docs/ARCHITECTURE.md` §13 | Open questions. If your work answers one, move it to a decision. |
 
 ## 3. Non-negotiables
@@ -87,7 +87,7 @@ docs/                  design and decisions (all prose docs live here)
 .dsh/skills/dsh-anyplugin/SKILL.md   the project skill agents load first
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
   dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
-spikes/                throwaway experiments; each answers one question (S1–S14)
+spikes/                throwaway experiments; each answers one question (S1–S16)
 fixtures/              foreign-plugin fixtures used by the conformance rig
 scripts/               repo tooling that is not a package
 ```
@@ -106,7 +106,7 @@ npm run capture:fixtures          # re-capture goldens after a pin bump; review 
 npm run verify                    # check:arch + check:features + check:decisions + tests
 npm run check:arch                # structural rules R1–R13
 npm run check:features            # the capability map still points at real files
-npm run check:decisions           # D1–D46 append-only (--update accepts new entries only)
+npm run check:decisions           # D1–D47 append-only (--update accepts new entries only)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
 npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```

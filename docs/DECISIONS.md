@@ -2147,3 +2147,77 @@ to the packaged `INSTALL.md`; resetting the once-per-process warning at the top 
 running, and says so once; the packaged `INSTALL.md` may not discuss `0.1.0`, because
 it ships inside `0.2.0`; the numbers in this entry are asserted by `check:pack`, not
 remembered by prose.
+
+---
+
+## D47 — The guard is a convention checker at the tool seam; the hook is defence in depth
+
+**Status:** ratified 2026-11-21 (ticket #80, PR #89).
+
+Two seams carry the working rules:
+
+- `tools/pre-execute` sees every tool call (name, arguments) and may deny it
+  before anything runs. This is the authoritative layer for everything the
+  model does through a tool;
+- `agent/pre-step` appends one briefing block at the first step of a worker.
+
+The pre-push hook is **not** authoritative. It is installed only by
+`npm run guard:install`, it runs after the refs are discovered and before the
+objects are sent, `--no-verify` skips it, and `guard:status` reports when
+`core.hooksPath` has moved it. It exists for the paths that reach git without a
+tool call the tool layer can read — and for nothing else.
+
+**Rules, as shipped and asserted by the 109-row table:**
+
+- worker pushes must be exactly `git push [-u] origin <one refspec that is not
+  main>`; bare pushes, extra refspecs, other remotes, `--receive-pack`,
+  `send-pack`, `update-ref`, wildcards and `--no-verify` are refused;
+- workers may not write git config (`git config`, `-c`, `--config-env`); the
+  `-c` allowlist is a closed set of inert keys (identity, `color.*`, `core.quotepath`,
+  `core.autocrlf`, `core.filemode`, `core.symlinks`, `core.ignorecase`, a set of
+  `diff.*` presentation keys, `i18n.commitEncoding`), lowercased before matching,
+  and root passes through the same table;
+- workers may not write inside `.git` for modelled writes: shell redirection,
+  `tee`, `cp`, `mv`, `sed -i`, structured `write`/`edit`/`apply_patch`, the
+  interpreter file-mutation verbs (`writeFileSync`, `renameSync`, `copyFileSync`,
+  `cpSync`, `linkSync`, `symlinkSync`, `truncateSync`), and `tar -C` (separate or
+  attached) into `.git`; writes outside the worktree are refused for the
+  modelled forms;
+- workers may not `sudo`: the token is matched at command position, after
+  `env`, `command`, `exec`, `nice`, `timeout` and `xargs`;
+- unmodelled shell shapes (`shell-unmodelled`), worker script files
+  (`shell-script-unverified`) and a sentence that names a remotes refspec onto
+  main are refused rather than guessed.
+
+**Masking is lexical, not semantic.** Quoted literals are replaced with
+position-preserving spaces before tokens are matched, so `console.log("exec(")`
+allows while a real call beside a string denies. Comments are not masked, so
+`node -e '// exec("git push")'` is a false positive; it is harmless, and masking
+comments is left as a possible refinement.
+
+**Residuals, named so no document claims more than the table proves:**
+
+1. interpreter dynamic code — `node -e 'eval("…execSync(\"git push --no-verify
+   origin HEAD:main\")")'`, `String.fromCharCode(...)`, `globalThis['pro'+'cess']`,
+   downloaded code;
+2. editable entry points whose bytes are not verified — `node scripts/*.mjs`,
+   `npm run *`;
+3. `--no-verify` inside an unmodelled shape (a script, an alias, a string);
+4. file writes in shapes not in the write vocabulary, including the eval-wrapped
+   forms of (1);
+5. root-run shell scripts (`bash scripts/x.sh`) — allowed for root, bytes unverified;
+6. root-written exec keys through the filesystem (`appendFileSync(".git/config", …)`)
+   and a later `git diff --ext-diff`;
+7. git features outside the modelled subcommands (root `git update-ref`); the
+   server remains the authority for `main`;
+8. config already present, or written outside the guard, with a diff driver that
+   a later allowed `git diff --ext-diff` executes;
+9. a `sudo` launcher spelling outside the modelled set, or a host where `sudo`
+   succeeds without a password.
+
+**Consequences:** the guard is described as a convention checker everywhere;
+sentences like "a worker cannot write inside `.git`" are scoped to modelled
+writes, because the unmodelled route is residual 4; the tool layer, not the hook,
+is what the documentation calls authoritative; a rule that cannot be expressed
+in the table does not get a doc sentence that implies it. D47 records the code
+one merge behind it, as D43–D46 did, because a PR may not edit this file.
