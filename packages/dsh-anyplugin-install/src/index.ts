@@ -7,6 +7,7 @@
  */
 export * from './installs.ts'
 export * from './enablements.ts'
+export * from './output-styles.ts'
 export * from './identity.ts'
 export * from './compile.ts'
 export * from './reconcile.ts'

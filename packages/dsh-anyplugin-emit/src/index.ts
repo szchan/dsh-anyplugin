@@ -64,6 +64,31 @@ export interface Materializers {
   [surface: string]: string | undefined
 }
 
+/**
+ * The one output style a compile activated (ticket #77).
+ *
+ * A style is a selection, not a surface: the profile activation record (or
+ * `force-for-plugin`) chooses at most one, so the emitter places at most one
+ * child. Carrying every style and selecting at the host would make the prompt
+ * depend on registration order.
+ */
+export interface EmittedOutputStyle {
+  /** Plugin that owns the style; the identity is `<plugin>:<style>`. */
+  plugin: string
+  name: string
+  description?: string
+  /** The body exactly as the dialect read it; the materializer applies it as authored. */
+  body: string
+  keepCodingInstructions?: boolean
+  forceForPlugin?: boolean
+  /** `true` makes the body the complete prompt (`keep-coding-instructions: false`). */
+  complete: boolean
+  /** Which channel won: an explicit profile record, or the plugin's own force flag. */
+  source: 'explicit' | 'force'
+  /** Human-readable trace from the resolver, copied into the entry config. */
+  trace: string
+}
+
 export interface EmitOptions {
   materializers: Materializers
   /**
@@ -87,6 +112,12 @@ export interface EmitOptions {
    * variable unset, as a hand-written config would.
    */
   dataDir?: string
+  /**
+   * The style the profile activation record (or `force-for-plugin`) selected.
+   * Absent means nothing is applied: a carried style is not an active one, and
+   * an unknown or refused name must not fall back silently (ticket #77).
+   */
+  outputStyle?: EmittedOutputStyle
 }
 
 export interface EmitResult {
@@ -273,6 +304,32 @@ export function emitPlugin(ir: ClaudePluginIr, options: EmitOptions): EmitResult
       // Trusted but unresolved fails closed: never emit a child emit cannot pin.
       refused.push(name)
     }
+  }
+
+  // The activation child is placed last so the group order reads sympathetically
+  // to a human scanning the entry, and because prompt text is applied at agent
+  // start rather than registered as a tool. `considered` deliberately excludes
+  // it: the report row for a carried style stays `carry=skipped`, since emit
+  // does not decide the carry (the materializer applies a selection).
+  const style = options.outputStyle
+  const styleMaterializer = options.materializers.outputStyle
+  if (style !== undefined && styleMaterializer !== undefined) {
+    children.push({
+      id: 'outputStyle',
+      name: styleMaterializer,
+      config: {
+        plugin: style.plugin,
+        name: style.name,
+        ...(style.description === undefined ? {} : { description: style.description }),
+        body: style.body,
+        ...(style.keepCodingInstructions === undefined ? {} : { keepCodingInstructions: style.keepCodingInstructions }),
+        ...(style.forceForPlugin === undefined ? {} : { forceForPlugin: style.forceForPlugin }),
+        complete: style.complete,
+        source: style.source,
+        trace: style.trace,
+      },
+    })
+    emitted.push('outputStyles')
   }
 
   if (children.length === 0) return { entry: null, emitted, considered, skipped, refused }
