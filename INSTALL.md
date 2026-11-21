@@ -1,9 +1,9 @@
 # Installing `dsh-anyplugin`
 
 `dsh-anyplugin@0.1.0` is the first published release. It is **one bundle** whose
-patch inserts **one row** — the controller. Everything else (skills, commands,
-MCP servers, hooks, agents, an activated output style) is created at runtime by
-reconciling the lock file
+patch inserts **one row** — the controller. Everything else (skills, including
+commands on their model face, MCP servers, hooks, agents, an activated output
+style) is created at runtime by reconciling the lock file
 `installs.yml`; the package writes no profile config and generates no code.
 
 What 0.1.0 ships:
@@ -11,7 +11,7 @@ What 0.1.0 ships:
 | surface | state in 0.1.0 |
 | --- | --- |
 | Skills | loaded into the harness skill registry |
-| Slash commands | model face (`equivalent`); the human face is still `planned` |
+| Slash commands | land as **skills** on their model face (`equivalent`); the human `/…` face is still `planned` (D10) |
 | MCP servers | stdio and Streamable HTTP, Claude's tool names kept verbatim |
 | Hooks | the events the host actually fires; `exec`-class hooks need a grant |
 | Agents | one scoped tool per `agents/*.md` |
