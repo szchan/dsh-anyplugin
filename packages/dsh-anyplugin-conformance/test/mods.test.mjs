@@ -7,8 +7,9 @@
 // proves the seat is per-agent, and the trace file proves load-before-turn
 // ordering because apply settles before the loader reports success.
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -303,6 +304,65 @@ test('a reload re-seats a root that stays live', { skip }, async () => {
     const pre = trace.filter((record) => record.event === 'PreToolUse')
     assert.equal(pre.length, 2)
     for (const record of pre) assert.deepEqual(record.sources, ['synthetic/seat.ts#1', 'PreToolUse#0'])
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('a booted turn lets an authored mod observe detect then diff through $vcs', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-vcs-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_AUTHOR_NAME: 'vcs turn',
+    GIT_AUTHOR_EMAIL: 'turn@example.invalid',
+    GIT_COMMITTER_NAME: 'vcs turn',
+    GIT_COMMITTER_EMAIL: 'turn@example.invalid',
+  }
+  const git = (...args) => execFileSync('git', args, { cwd: dataDir, env: gitEnv, stdio: 'ignore' })
+  git('init', '-b', 'main')
+  writeFileSync(join(dataDir, 'tracked.txt'), 'one\n')
+  git('add', '--', 'tracked.txt')
+  git('commit', '-m', 'init', '--no-gpg-sign')
+  writeFileSync(join(dataDir, 'tracked.txt'), 'one\ntwo\n')
+  writeFileSync(join(dataDir, 'untracked.txt'), 'fresh\n')
+  const calls = []
+  try {
+    // The root session's cwd is the entry's pluginData directory (seeded here
+    // with the repository), so the mod's load-time session.start asks $vcs
+    // about the same working copy the real agent will run in.
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, {
+        pluginRoot: join(repoRoot, 'fixtures', 'mods', 'vcs-turn'),
+        plugin: 'vcs-turn',
+        mods: [{ entry: 'vcs.ts' }],
+      }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      preExistingRoot: true,
+      timeoutMs: 15_000,
+    })
+
+    // The mod stored this itself through `$store`; the host did not log it.
+    const observation = stored(dataDir)['vcs-observation']
+    assert.equal(observation.vcs, 'git')
+    assert.equal(observation.root, realpathSync(dataDir))
+    assert.equal(observation.branch, 'main')
+    assert.equal(observation.revisionLength, 40)
+    assert.equal(observation.base, 'HEAD')
+    assert.equal(observation.unknown, null)
+    const files = new Map(observation.files.map((file) => [file.path, file]))
+    assert.ok(files.has('tracked.txt'), 'the modified tracked file is in the mod observation')
+    assert.equal(files.get('tracked.txt').added, 1)
+    assert.equal(files.get('tracked.txt').isUntracked, false)
+    assert.equal(files.get('tracked.txt').patchHasHunk, true)
+    assert.ok(files.has('untracked.txt'), 'the untracked file is in the mod observation')
+    assert.equal(files.get('untracked.txt').isUntracked, true)
+    assert.equal(files.get('untracked.txt').added, 1)
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
@@ -673,8 +733,8 @@ const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest(
 // The static capability ledger: every site the scanner sees in the pinned
 // graph, in source order. `ran` means the bridged namespace served the call;
 // `refused:<code>` means the call was made and the typed refusal came back;
-// `missing` means this host serves no such namespace at all (2.1.329's new
-// `vcs`), recorded rather than papered over.
+// `missing` means the namespace member is absent altogether, and no row uses
+// it at this pin because 2.1.329's `vcs` is now served.
 const DIFF_LEDGER = [
   { site: 'clock.now', result: 'ran', argument: 'session.start fallback', evidence: 'diff session.start' },
   { site: 'clock.after', result: 'ran', argument: '1 ms, cancelled', evidence: 'method availability; the fetched call is in hook code' },
@@ -683,8 +743,8 @@ const DIFF_LEDGER = [
   { site: 'fs.stat', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads the git dir HEAD from hook code' },
   { site: 'fs.list', result: 'ran', argument: '.', evidence: 'method availability; the fetched call reads entry kinds from hook code' },
   { site: 'fs.read', result: 'ran', argument: 'register.ts in the mod root', evidence: 'method availability; the fetched call reads registration.ts from hook code' },
-  { site: 'vcs.detect', result: 'missing', argument: '—', evidence: '2.1.329 adds a vcs namespace; createModBridge does not serve it (recorded gap, not a typed refusal)' },
-  { site: 'vcs.diff', result: 'missing', argument: '—', evidence: '2.1.329 adds a vcs namespace; createModBridge does not serve it (recorded gap, not a typed refusal)' },
+  { site: 'vcs.detect', result: 'ran', argument: 'the ledger repository', evidence: 'git working copy: vcs, root, revision and branch answered by the host git' },
+  { site: 'vcs.diff', result: 'ran', argument: '{ path: root, vcs: "git", base: "head" }', evidence: 'git working tree vs HEAD: one modified and one untracked file' },
   { site: 'store.get', result: 'ran', argument: 'ledger', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'store.set', result: 'ran', argument: 'ledger = {from: diff}', evidence: 'method availability; the fetched call is in hook code' },
   { site: 'settings.read', result: 'refused:ERR_MOD_HOST_SETTINGS_UNAVAILABLE', argument: 'no argument', evidence: 'no merged settings reader on this host; refused rather than served from plugin data' },
@@ -813,6 +873,35 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     env: process.env,
     warn: (message) => warnings.push(message),
   })
+
+  // `vcs.*` is asked against a real working copy, because the answer is the
+  // claim: a fabricated one would let a broken bridge look served. The repo
+  // carries one committed file, one modification and one untracked file.
+  const vcsRepo = mkdtempSync(join(tmpdir(), 'anyplugin-diff-ledger-vcs-'))
+  const vcsDataDir = mkdtempSync(join(tmpdir(), 'anyplugin-diff-ledger-vcs-data-'))
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_AUTHOR_NAME: 'diff ledger',
+    GIT_AUTHOR_EMAIL: 'ledger@example.invalid',
+    GIT_COMMITTER_NAME: 'diff ledger',
+    GIT_COMMITTER_EMAIL: 'ledger@example.invalid',
+  }
+  const git = (...args) => execFileSync('git', args, { cwd: vcsRepo, env: gitEnv, stdio: 'ignore' })
+  git('init', '-b', 'main')
+  writeFileSync(join(vcsRepo, 'tracked.txt'), 'one\n')
+  git('add', '--', 'tracked.txt')
+  git('commit', '-m', 'ledger', '--no-gpg-sign')
+  writeFileSync(join(vcsRepo, 'tracked.txt'), 'one\ntwo\n')
+  writeFileSync(join(vcsRepo, 'untracked.txt'), 'new\n')
+  const vcsBridge = createModBridge({
+    plugin: 'diff/register.ts',
+    dataDir: vcsDataDir,
+    session: () => ({ id: 'diff-ledger-vcs', cwd: vcsRepo, messages: [], usage: {} }),
+    env: process.env,
+    warn: () => {},
+  })
   try {
     // The static ledger: every scanned site is actually invoked, in scan
     // order, through the bridged $. Refusals must carry a stable code; every
@@ -822,7 +911,7 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     const capability = []
     for (const site of scan.calls) {
       const label = `${site.namespace}.${site.method}`
-      const namespace = bridge.dollar()[site.namespace]
+      const namespace = site.namespace === 'vcs' ? vcsBridge.dollar().vcs : bridge.dollar()[site.namespace]
       const method = namespace?.[site.method]
       if (typeof method !== 'function') {
         capability.push({ site: label, result: 'missing' })
@@ -882,6 +971,22 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
           case 'ui.resolve':
             await method({ surface: 'terminal', component: 'Pane' })
             break
+          case 'vcs.detect': {
+            const copy = await method({ path: vcsRepo })
+            assert.equal(copy.vcs, 'git', 'the ledger repository is a git working copy')
+            assert.equal(copy.root, realpathSync(vcsRepo))
+            assert.equal(copy.branch, 'main')
+            break
+          }
+          case 'vcs.diff': {
+            const answer = await method({ path: vcsRepo, vcs: 'git', base: 'head' })
+            assert.equal(answer.base, 'HEAD')
+            assert.deepEqual(
+              answer.files.map((file) => file.path),
+              ['tracked.txt', 'untracked.txt'],
+            )
+            break
+          }
           default:
             // process.run is the one site this host still refuses.
             await method()
@@ -894,8 +999,19 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     assert.deepEqual(
       capability.map((row) => ({ site: row.site, result: row.result })),
       DIFF_LEDGER.map((row) => ({ site: row.site, result: row.result })),
-      'every scanned site ran, refused with a typed code, or is a recorded missing surface',
+      'every scanned site ran or refused with a typed code',
     )
+    // The ledger above covers what the pinned mod authors. The other four
+    // `vcs` members are part of the same served-or-refused contract even
+    // though no scanned site reaches them; each refuses with a named code,
+    // never `undefined` and never a fabricated engine answer.
+    for (const member of ['isolate', 'list', 'status', 'release']) {
+      await assert.rejects(
+        vcsBridge.dollar().vcs[member]({}),
+        (error) => error?.code === 'ERR_MOD_HOST_VCS_UNSUPPORTED' && String(error.message).includes(`$.vcs.${member}`),
+        `$.vcs.${member} must be a typed refusal`,
+      )
+    }
 
     const calls = []
     const load = await loadMod({
@@ -979,7 +1095,10 @@ test('fixtures/mods/diff loads, matches the scan, and reaches the kernel', async
     second.dispose()
     reloaded.dispose()
   } finally {
+    vcsBridge.dispose()
     bridge.dispose()
+    rmSync(vcsRepo, { recursive: true, force: true })
+    rmSync(vcsDataDir, { recursive: true, force: true })
     rmSync(dataDir, { recursive: true, force: true })
   }
 

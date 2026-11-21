@@ -561,7 +561,6 @@ const NEW_NO_HOST_EVENTS: Readonly<Record<string, string>> = Object.freeze({
 })
 
 const NEW_ENGINE_CATEGORIES: Readonly<Record<string, ModUnmappedCategory>> = Object.freeze({
-  ...Object.fromEntries(VCS_EVENTS.map((event) => [event, 'missing bridge' as const])),
   ...Object.fromEntries(Object.keys(NEW_NO_HOST_EVENTS).map((event) => [event, 'no host event' as const])),
 })
 
@@ -581,7 +580,7 @@ const ENGINE_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
   ),
   ...reasons(
     VCS_EVENTS,
-    'createModBridge defines no vcs namespace, so $.vcs.* cannot resolve; the engine events have no host route either. Recorded missing at 2.1.329, not refused.',
+    'DSH fires no vcs event at these points. The bridge serves $.vcs.detect and $.vcs.diff as read-only git calls (bridge.ts, ticket #119), and $.vcs.isolate/list/status/release are typed refusals (ERR_MOD_HOST_VCS_UNSUPPORTED) because the host makes no copy and keeps no worktree trust record; a mod observes those calls, not events, at the 2.1.329 pin.',
   ),
   ...NEW_NO_HOST_EVENTS,
   'tool.check':
