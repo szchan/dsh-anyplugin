@@ -363,10 +363,10 @@ console.log(`$ refusals on the executed path: ${refused.length}`)
 console.log('')
 console.log('authored $ demand (scanned from all five mods; status is the bridge surface):')
 // The bridge surface, member for member (createModBridge in
-// packages/dsh-anyplugin-mod-host/src/bridge.ts). A name not in this table is
-// absent, not refused: `$.ui.ask` and `$.vcs.*` throw "not a function" rather
-// than a typed ModBridgeError. Keep this table in sync with the bridge; the
-// point of the table is that a new namespace cannot be reported as served by
+// packages/dsh-anyplugin-mod-host/src/bridge.ts). A name outside the served
+// and refused tables is absent, not refused: it throws "not a function"
+// rather than a typed ModBridgeError. Keep these tables in sync with the
+// bridge; the point is that a new namespace cannot be reported as served by
 // accident.
 const BRIDGE_SERVES = {
   session: ['id', 'cwd', 'messages', 'usage'],
@@ -376,23 +376,43 @@ const BRIDGE_SERVES = {
   store: ['get', 'set', 'delete', 'keys'],
   settings: ['read'],
   env: ['get'],
-  ui: [],
+  // #75 serves the six headless ui members; ask answers through a person and
+  // refuses with the sink's typed code.
+  ui: ['invalidate', 'status', 'log', 'open', 'close', 'resolve', 'ask'],
   command: ['register'],
   telemetry: ['mark', 'log'],
+  // #119 serves the read-only git members; the other four are typed refusals.
+  vcs: ['detect', 'diff'],
 }
-const UI_REFUSED = new Set(['invalidate', 'status', 'log', 'open', 'close', 'resolve'])
+const BRIDGE_REFUSES = new Map([
+  ['process.run', 'ERR_MOD_HOST_EXEC_UNSUPPORTED'],
+  ['settings.read', 'ERR_MOD_HOST_SETTINGS_SOURCE'],
+  ['ui.ask', 'ERR_MOD_HOST_UI_UNSUPPORTED'],
+  ['vcs.isolate', 'ERR_MOD_HOST_VCS_UNSUPPORTED'],
+  ['vcs.list', 'ERR_MOD_HOST_VCS_UNSUPPORTED'],
+  ['vcs.status', 'ERR_MOD_HOST_VCS_UNSUPPORTED'],
+  ['vcs.release', 'ERR_MOD_HOST_VCS_UNSUPPORTED'],
+])
 const surfaceStatus = (key) => {
   const [namespace, method] = key.split('.')
+  const refusal = BRIDGE_REFUSES.get(key)
+  if (refusal !== undefined) return `refused:${refusal}`
   const members = BRIDGE_SERVES[namespace]
   if (members === undefined) return 'missing'
-  if (namespace === 'ui' && UI_REFUSED.has(method)) return 'refused:ERR_MOD_HOST_UI_UNSUPPORTED'
-  if (key === 'process.run') return 'refused:ERR_MOD_HOST_EXEC_UNSUPPORTED'
-  if (key === 'settings.read') return 'refused:ERR_MOD_HOST_SETTINGS_SOURCE'
   return members.includes(method) ? 'served' : 'missing'
 }
+const tally = { served: 0, refused: 0, missing: 0 }
 for (const row of [...demand.values()].sort((a, b) => b.mods.size - a.mods.size || a.key.localeCompare(b.key))) {
-  console.log(`  ${String(row.mods.size)}/5 ${row.key.padEnd(22)} ${surfaceStatus(row.key).padEnd(38)} ${[...row.mods].join(', ')}`)
+  const status = surfaceStatus(row.key)
+  if (status === 'served') tally.served += 1
+  else if (status === 'missing') tally.missing += 1
+  else tally.refused += 1
+  console.log(`  ${String(row.mods.size)}/5 ${row.key.padEnd(22)} ${status.padEnd(38)} ${[...row.mods].join(', ')}`)
 }
+console.log('')
+console.log(
+  `authored $ partition: ${tally.served} served + ${tally.refused} typed refusals + ${tally.missing} absent = ${demand.size} pairs`,
+)
 if (process.exitCode === 1) {
   console.log('')
   console.log('result: FAILED (see s15-mod-demand: FAIL lines above)')

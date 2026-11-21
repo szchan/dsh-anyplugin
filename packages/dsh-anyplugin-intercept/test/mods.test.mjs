@@ -161,12 +161,12 @@ test('the 19 engine events added at 2.1.329 carry an explicit category', () => {
     'tool.offer': 'no host event',
     'telemetry.log': 'no host event',
     'telemetry.mark': 'no host event',
-    'vcs.detect': 'missing bridge',
-    'vcs.diff': 'missing bridge',
-    'vcs.isolate': 'missing bridge',
-    'vcs.list': 'missing bridge',
-    'vcs.status': 'missing bridge',
-    'vcs.release': 'missing bridge',
+    'vcs.detect': 'no host event',
+    'vcs.diff': 'no host event',
+    'vcs.isolate': 'no host event',
+    'vcs.list': 'no host event',
+    'vcs.status': 'no host event',
+    'vcs.release': 'no host event',
     'session.send': 'no host event',
     'session.stop': 'no host event',
   }
@@ -177,8 +177,8 @@ test('the 19 engine events added at 2.1.329 carry an explicit category', () => {
     assert.doesNotMatch(MOD_UNMAPPED_REASONS[event], /not an event/, `${event} must name a host gap, not "not in spec"`)
   }
   for (const event of ['vcs.detect', 'vcs.diff', 'vcs.isolate', 'vcs.list', 'vcs.status', 'vcs.release']) {
-    assert.match(MOD_UNMAPPED_REASONS[event], /createModBridge/)
-    assert.match(MOD_UNMAPPED_REASONS[event], /missing/)
+    assert.match(MOD_UNMAPPED_REASONS[event], /no vcs event/)
+    assert.match(MOD_UNMAPPED_REASONS[event], /ERR_MOD_HOST_VCS_UNSUPPORTED/)
   }
   for (const event of MOD_OP_EVENTS) {
     assert.equal(modUnmappedCategory(event), 'no host event', event)

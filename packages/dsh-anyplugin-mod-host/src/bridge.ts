@@ -10,10 +10,10 @@
  * the agent that is running this invocation.
  *
  * What is bridged is the surface a real mod (the pinned `diff` graph) calls:
- * clock, fs, store, settings, env, session, command, telemetry and the six
- * headless `ui` members. The two namespaces that would break the trust
- * boundary are refused with stable, catchable codes instead of returning
- * `undefined`:
+ * clock, fs, store, settings, env, session, command, telemetry, the six
+ * headless `ui` members, and the read-only `vcs` members `detect` and `diff`.
+ * The two namespaces that would break the trust boundary are refused with
+ * stable, catchable codes instead of returning `undefined`:
  *
  * - `ui.ask`: the pin declares it, but its answer comes from a person and this
  *   host has no interaction to carry one (D32 leaves the surface open); the
@@ -31,10 +31,30 @@
  * this host has no such reader, so it refuses with a typed code instead of
  * serving a plugin-data file and calling it settings.
  *
+ * `vcs` is served for git only and is read-only. `detect` and `diff` run the
+ * host's `git` through `execFile` (never a shell) with a timeout, no network
+ * verb, no write and `--no-optional-locks`; external diff drivers, textconv,
+ * the fsmonitor hook and every repository-configured `filter.*` clean/process
+ * driver are disabled or neutralised because the repository configures them
+ * and this host does not run a program a repository chooses. The filter
+ * overrides travel through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` rather than
+ * `-c`, because git splits `-c key=value` at the first `=` and a driver key
+ * can itself contain one. A relative
+ * `path` resolves under the session working directory, which is what the
+ * pinned `$` prose says for `detect` even though the field comment says
+ * absolute; a name over the pin's 4096-character bound refuses the call. The
+ * child process always starts inside the session working directory; a path
+ * outside it is refused before any process is spawned, unless `detect`
+ * already reported that exact working-copy root through a path inside the
+ * session.
+ * `isolate`, `list`, `status` and `release` are typed refusals with a named
+ * reason, never `undefined`.
+ *
  * Refusals are values a mod can observe: async call sites reject with
  * `ModBridgeError`, sync `ui` getters throw it. Nothing here swallows a
  * failure and returns `undefined`.
  */
+import { execFile } from 'node:child_process'
 import {
   lstatSync,
   mkdirSync,
@@ -46,7 +66,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, resolve } from 'node:path'
 
 import { codeOf, describeValue, messageOf } from './errors.ts'
 import { isWithin } from './resolve.ts'
@@ -100,6 +120,12 @@ export type ModBridgeErrorCode =
   | 'ERR_MOD_HOST_COMMAND_REJECTED'
   /** The load was disposed; a new handler invocation is already impossible. */
   | 'ERR_MOD_HOST_DISPOSED'
+  /** `$.vcs.*` was given something that is not the pinned input shape. */
+  | 'ERR_MOD_HOST_VCS_INVALID'
+  /** `$.vcs.detect`/`diff` could not run git (missing binary, timeout, non-zero exit). */
+  | 'ERR_MOD_HOST_VCS_FAILED'
+  /** A pinned `vcs` member this host has no bridge for (typed refusal, not `undefined`). */
+  | 'ERR_MOD_HOST_VCS_UNSUPPORTED'
 
 export interface ModBridgeErrorOptions {
   /** The plugin the bridge belongs to; the message names it. */
@@ -162,7 +188,7 @@ export interface ModBridgeOptions {
   readonly plugin: string
   /** `${CLAUDE_PLUGIN_DATA}`: the durable store's root (the pinned store is plugin-scoped). */
   readonly dataDir?: string
-  /** The working directory `fs` resolves relative paths against; defaults to `process.cwd()`. */
+  /** The working directory `fs` resolves relative paths against, and the boundary for `vcs` paths. */
   readonly cwd?: string
   /**
    * DSH's command service, when the host context has one. A resolver is
@@ -378,6 +404,148 @@ export function commandRegistryFromContext(ctx: any): () => ModBridgeCommandRegi
       return undefined
     }
   }
+}
+
+// ---- vcs -------------------------------------------------------------------
+
+/** The one system this bridge serves; the pinned `VcsWorkingCopy.vcs` slug is `git`. */
+const VCS_GIT = 'git'
+/** A hung git must not hold a handler open; the pinned surface carries no timeout of its own. */
+const VCS_TIMEOUT_MS = 10_000
+/** Beyond this a diff call refuses instead of returning a silently truncated patch. */
+const VCS_MAX_BUFFER = 32 * 1024 * 1024
+/** The pinned `VcsDiffFile` name bound (`claude-code.d.ts:20244` @ 2.1.329, pin). */
+const VCS_MAX_NAME = 4096
+/** The empty tree, so a repository with no commit yet can still answer `base: 'head'`. */
+const VCS_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+/**
+ * Every invocation carries these. `--no-optional-locks` is the read-only
+ * promise; the two overrides keep a repository-owned fsmonitor hook, and a
+ * core.quotepath-quoted name, out of a read. No verbose/network verb is ever
+ * assembled, and the argv is fixed here, never taken from the caller.
+ */
+const VCS_GLOBAL_ARGS = [
+  '--no-pager',
+  '--no-optional-locks',
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.quotepath=false',
+] as const
+
+/**
+ * `git` inherits the host environment except every `GIT_*` switch (an
+ * inherited `GIT_DIR`/`GIT_WORK_TREE` would redirect the read around the path
+ * confinement) and the pager. Optional locks and the terminal prompt stay off
+ * even where a repository would set them back.
+ */
+const vcsEnv = (): Record<string, string> => {
+  const copy: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (key.startsWith('GIT_') || key === 'PAGER' || key === 'LESS' || key === 'LV') continue
+    copy[key] = value
+  }
+  copy.GIT_OPTIONAL_LOCKS = '0'
+  copy.GIT_PAGER = 'cat'
+  copy.GIT_TERMINAL_PROMPT = '0'
+  return copy
+}
+
+interface VcsNumstatFile {
+  readonly path: string
+  readonly renamedFrom: string | null
+  readonly added: number
+  readonly removed: number
+  readonly isBinary: boolean
+}
+
+/**
+ * Parses `git diff --numstat -z`: `<added>\t<removed>\t<path>\0`, except a
+ * rename, which is `<added>\t<removed>\t\0<old>\0<new>\0`, and a binary,
+ * which is `-\t-\t<path>\0`. Paths are root-relative and unquoted.
+ */
+const parseNumstat = (text: string): VcsNumstatFile[] => {
+  const files: VcsNumstatFile[] = []
+  const tokens = text.split('\0')
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === undefined || token === '') continue
+    const first = token.indexOf('\t')
+    const second = first === -1 ? -1 : token.indexOf('\t', first + 1)
+    if (first === -1 || second === -1) continue
+    const addedText = token.slice(0, first)
+    const removedText = token.slice(first + 1, second)
+    let path = token.slice(second + 1)
+    let renamedFrom: string | null = null
+    if (path === '') {
+      renamedFrom = tokens[index + 1] ?? null
+      path = tokens[index + 2] ?? ''
+      index += 2
+    }
+    if (path === '') continue
+    const isBinary = addedText === '-' || removedText === '-'
+    files.push({
+      path,
+      renamedFrom,
+      added: isBinary ? 0 : (Number.parseInt(addedText, 10) || 0),
+      removed: isBinary ? 0 : (Number.parseInt(removedText, 10) || 0),
+      isBinary,
+    })
+  }
+  return files
+}
+
+/** The pinned patch: hunks from the first `@@`, so no file headers and no mode/rename lines. */
+const patchBody = (text: string): string => {
+  const match = /^@@/m.exec(text)
+  return match === null ? '' : text.slice(match.index)
+}
+
+/**
+ * Query parameters a remote may carry an answer token in. The pin's promise is
+ * "credentials stripped", not just `user:password@`, so a token in the query
+ * string is removed before the URL is handed to a mod.
+ */
+const VCS_CREDENTIAL_PARAM =
+  /^(?:access[_-]?token|token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|key|auth|authorization|signature|sig|credential|credentials|sas|sastoken|googleaccessid|x-goog-signature|x-goog-credential|x-goog-security-token|x-amz-signature|x-amz-credential|x-amz-security-token)$/i
+
+/**
+ * The pinned remote is the URL with userinfo, credential-bearing query
+ * parameters and a credential-bearing fragment removed. Names are matched
+ * after percent-decoding; a fragment is dropped whole when any of its
+ * parameters is credential-bearing, because a fragment has no other meaning
+ * to a remote.
+ */
+const withoutCredentials = (url: string): string => {
+  const stripped = url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, '$1')
+  const hashAt = stripped.indexOf('#')
+  let head = hashAt === -1 ? stripped : stripped.slice(0, hashAt)
+  const fragment = hashAt === -1 ? '' : stripped.slice(hashAt + 1)
+  const carriesCredential = (part: string): boolean => {
+    let name = part.split('=')[0] ?? ''
+    try {
+      name = decodeURIComponent(name)
+    } catch {
+      // Keep the raw name; a malformed escape cannot widen the match.
+    }
+    return name !== '' && VCS_CREDENTIAL_PARAM.test(name)
+  }
+  const queryAt = head.indexOf('?')
+  if (queryAt !== -1) {
+    const base = head.slice(0, queryAt)
+    const params = head.slice(queryAt + 1).split('&')
+    const kept = params.filter((param) => param === '' || !carriesCredential(param))
+    if (kept.length !== params.length) head = kept.length === 0 ? base : `${base}?${kept.join('&')}`
+  }
+  if (fragment === '' || fragment.split('&').some(carriesCredential)) return head
+  return `${head}#${fragment}`
+}
+
+/** First two meaningful stderr lines, bounded, so a refusal names git's own words. */
+const gitDetail = (stderr: string): string => {
+  const detail = stderr.split('\n').map((line) => line.trim()).filter((line) => line !== '').slice(0, 2).join('; ')
+  return detail.length > 300 ? `${detail.slice(0, 297)}...` : detail
 }
 
 export function createModBridge(options: ModBridgeOptions): ModBridge {
@@ -866,6 +1034,556 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     warn(`${label}: telemetry.${kind} ${jsonText(entry)}`)
   }
 
+  // ---- vcs -----------------------------------------------------------------
+
+  interface GitRun {
+    readonly status: number
+    readonly stdout: Buffer
+    readonly stderr: Buffer
+  }
+
+  interface VcsWorkingCopy {
+    readonly dir: string
+    readonly sessionRoot: string
+    readonly cwd: string
+    readonly root: string | null
+  }
+
+  // A working-copy root `detect` reported through a path inside the session is
+  // the one outside-the-session path `diff` may serve: the pinned `diff` graph
+  // calls `diff({ path: detect().root })`. Membership is load state, never a
+  // caller-supplied allowance.
+  const vcsRoots = new Map<string, Set<string>>()
+
+  const runGit = (
+    args: readonly string[],
+    cwd: string,
+    allowExit: readonly number[] = [0],
+    configEnv: Readonly<Record<string, string>> = {},
+  ): Promise<GitRun> =>
+    new Promise<GitRun>((resolveRun, rejectRun) => {
+      execFile(
+        VCS_GIT,
+        [...VCS_GLOBAL_ARGS, ...args],
+        {
+          cwd,
+          env: { ...vcsEnv(), ...configEnv },
+          timeout: VCS_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+          maxBuffer: VCS_MAX_BUFFER,
+          windowsHide: true,
+          encoding: 'buffer',
+        },
+        (error, stdout, stderr) => {
+          const out = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? '')
+          const err = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? '')
+          if (error === null) {
+            resolveRun({ status: 0, stdout: out, stderr: err })
+            return
+          }
+          const rawCode: unknown = (error as { code?: unknown }).code
+          const status = typeof rawCode === 'number' ? rawCode : undefined
+          if (status !== undefined && allowExit.includes(status)) {
+            resolveRun({ status, stdout: out, stderr: err })
+            return
+          }
+          // Throwing out of this callback would escape the caller's await; a
+          // refusal must arrive as the rejected promise the mod can catch.
+          try {
+            if (status !== undefined) {
+              const detail = gitDetail(err.toString('utf8'))
+              fail(
+                'ERR_MOD_HOST_VCS_FAILED',
+                `git ${args[0] ?? '<no verb>'} exited ${status}${detail === '' ? '' : `: ${detail}`}`,
+                error,
+              )
+            }
+            if (rawCode === 'ENOENT') {
+              fail(
+                'ERR_MOD_HOST_VCS_FAILED',
+                `cannot run ${VCS_GIT}: no executable was found on PATH (the bridge inherits PATH and never accepts an executable from a caller)`,
+              )
+            }
+            if (rawCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || rawCode === 'ENOBUFS') {
+              fail(
+                'ERR_MOD_HOST_VCS_FAILED',
+                `git ${args[0] ?? '<no verb>'} wrote more than ${VCS_MAX_BUFFER} bytes; the call is refused rather than truncated`,
+              )
+            }
+            if (error.killed === true || (error.signal !== undefined && error.signal !== null)) {
+              fail(
+                'ERR_MOD_HOST_VCS_FAILED',
+                `git ${args[0] ?? '<no verb>'} did not finish within ${VCS_TIMEOUT_MS} ms and was killed`,
+              )
+            }
+            fail('ERR_MOD_HOST_VCS_FAILED', `git ${args[0] ?? '<no verb>'} could not run: ${messageOf(error)}`, error)
+          } catch (refusal) {
+            rejectRun(refusal)
+          }
+        },
+      )
+    })
+
+  const gitValue = async (args: readonly string[], cwd: string): Promise<string | undefined> => {
+    const run = await runGit(args, cwd, [0, 1])
+    if (run.status !== 0) return undefined
+    const text = run.stdout.toString('utf8').trim()
+    return text === '' ? undefined : text
+  }
+
+  // A repository can configure `filter.<driver>.clean`/`.process` and select
+  // it from `.gitattributes`; git would then run that command while diffing
+  // the worktree, even with external diff and textconv off. Every driver key
+  // found in any config scope is neutralised with an empty value on each
+  // worktree-touching invocation. The overrides travel through the
+  // environment rather than `-c`: git splits `-c key=value` at the first `=`,
+  // so a key such as `filter.a=b.clean` cannot be addressed as `-c` at all.
+  // `GIT_CONFIG_KEY_n`/`VALUE_n` carry key and value separately. Enumerating
+  // keys is a read; the git process that does it runs no filter.
+  const vcsFilterEnv = async (cwd: string): Promise<Record<string, string>> => {
+    const run = await runGit(['config', '--name-only', '-z', '--get-regexp', '^filter\\.'], cwd, [0, 1])
+    if (run.status !== 0) return {}
+    const keys = run.stdout
+      .toString('utf8')
+      .split('\0')
+      .filter((key) => key !== '')
+    if (keys.length === 0) return {}
+    const overrides: Record<string, string> = { GIT_CONFIG_COUNT: String(keys.length) }
+    keys.forEach((key, index) => {
+      overrides[`GIT_CONFIG_KEY_${index}`] = key
+      overrides[`GIT_CONFIG_VALUE_${index}`] = ''
+    })
+    return overrides
+  }
+
+  const vcsText = (site: string, value: unknown, field: string): string => {
+    if (typeof value !== 'string' || value === '' || value.includes('\0')) {
+      fail('ERR_MOD_HOST_VCS_INVALID', `${site}: ${field} must be a non-empty string without NUL, got ${describeValue(value)}`)
+    }
+    return value
+  }
+
+  const vcsRecord = (site: string, input: unknown): Record<string, unknown> => {
+    if (!isRecord(input)) fail('ERR_MOD_HOST_VCS_INVALID', `${site}: input must be an object, got ${describeValue(input)}`)
+    return input
+  }
+
+  /**
+   * Resolves the pinned `path` input to a real folder and confines it to the
+   * session working directory. Every refusal here happens before a process is
+   * spawned; the recorded roots are the roots a previous `detect`/`diff`
+   * reported from a path that was inside the session.
+   */
+  const vcsDirOf = (agent: unknown, value: unknown, site: string): { dir: string; sessionRoot: string } => {
+    if (typeof value !== 'string' || value === '' || value.includes('\0')) {
+      fail('ERR_MOD_HOST_VCS_INVALID', `${site}: path must be a non-empty string without NUL, got ${describeValue(value)}`)
+    }
+    let sessionRoot: string
+    try {
+      sessionRoot = realpathSync(resolve(sessionCwd(agent)))
+    } catch (error) {
+      const code = codeOf(error)
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        fail('ERR_MOD_HOST_PATH_MISSING', `${site}: the session working directory cannot be resolved: ${messageOf(error)}`, error)
+      }
+      fail('ERR_MOD_HOST_FS', `${site}: the session working directory cannot be resolved: ${messageOf(error)}`, error)
+    }
+    const lexical = isAbsolute(value) ? resolve(value) : resolve(sessionRoot, value)
+    let dir: string
+    try {
+      dir = realpathSync(lexical)
+    } catch (error) {
+      const code = codeOf(error)
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        fail('ERR_MOD_HOST_PATH_MISSING', `${site}: ${JSON.stringify(value)} does not exist`, error)
+      }
+      fail('ERR_MOD_HOST_FS', `${site}: ${JSON.stringify(value)} cannot be resolved: ${messageOf(error)}`, error)
+    }
+    let isDirectory = false
+    try {
+      isDirectory = statSync(dir).isDirectory()
+    } catch (error) {
+      fail('ERR_MOD_HOST_FS', `${site}: ${JSON.stringify(value)} cannot be inspected: ${messageOf(error)}`, error)
+    }
+    if (!isDirectory) {
+      fail('ERR_MOD_HOST_VCS_INVALID', `${site}: ${JSON.stringify(value)} is not a folder; the pinned input is the folder to inspect`)
+    }
+    const recorded = vcsRoots.get(sessionRoot)
+    if (!isWithin(sessionRoot, dir) && !(recorded?.has(dir) ?? false)) {
+      fail(
+        'ERR_MOD_HOST_PATH_OUTSIDE',
+        `${site}: ${JSON.stringify(value)} resolves to ${dir}, outside the session working directory ${sessionRoot}; a working-copy root detect already reported is the one exception`,
+      )
+    }
+    return { dir, sessionRoot }
+  }
+
+  const vcsWorkingCopyOf = async (agent: unknown, value: unknown, site: string): Promise<VcsWorkingCopy> => {
+    const { dir, sessionRoot } = vcsDirOf(agent, value, site)
+    // git runs inside the session directory even when `value` is a recorded
+    // root above it; discovery still finds that root. No caller path becomes a
+    // child-process cwd outside the session.
+    const cwd = isWithin(sessionRoot, dir) ? dir : sessionRoot
+    const run = await runGit(['rev-parse', '--show-toplevel'], cwd, [0, 128])
+    if (run.status !== 0) {
+      const stderr = run.stderr.toString('utf8')
+      if (/not a git repository|not a working tree|must be run in a work tree/i.test(stderr)) {
+        return { dir, sessionRoot, cwd, root: null }
+      }
+      fail('ERR_MOD_HOST_VCS_FAILED', `${site}: git rev-parse --show-toplevel exited ${run.status}: ${gitDetail(stderr)}`)
+    }
+    const reported = run.stdout.toString('utf8').trim()
+    if (reported === '') fail('ERR_MOD_HOST_VCS_FAILED', `${site}: git rev-parse --show-toplevel reported no folder`)
+    let root: string
+    try {
+      root = realpathSync(reported)
+    } catch (error) {
+      fail(
+        'ERR_MOD_HOST_VCS_FAILED',
+        `${site}: git reported the working-copy root ${JSON.stringify(reported)}, which cannot be resolved: ${messageOf(error)}`,
+        error,
+      )
+    }
+    if (!isWithin(root, dir)) {
+      fail('ERR_MOD_HOST_VCS_FAILED', `${site}: git reported ${root} as the working-copy root, but ${dir} is not inside it`)
+    }
+    const recorded = vcsRoots.get(sessionRoot) ?? new Set<string>()
+    recorded.add(root)
+    vcsRoots.set(sessionRoot, recorded)
+    return { dir, sessionRoot, cwd, root }
+  }
+
+  const vcsDefaultBranchOf = async (cwd: string): Promise<{ name: string; ref: string } | null> => {
+    const ref = await gitValue(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], cwd)
+    if (ref === undefined || !ref.startsWith('refs/remotes/origin/')) return null
+    const name = ref.slice('refs/remotes/origin/'.length)
+    if (name === '' || name === 'HEAD') return null
+    const commit = await gitValue(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd)
+    return commit === undefined ? null : { name, ref }
+  }
+
+  const vcsDetect = async (agent: unknown, input: unknown): Promise<unknown> => {
+    const record = vcsRecord('$.vcs.detect', input)
+    const copy = await vcsWorkingCopyOf(agent, record.path, '$.vcs.detect')
+    if (copy.root === null) return null
+    const cwd = copy.cwd
+    const [gitDirText, commonDirText, revision, branch, defaultRef, remote] = await Promise.all([
+      gitValue(['rev-parse', '--absolute-git-dir'], cwd),
+      gitValue(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd),
+      gitValue(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd),
+      gitValue(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd),
+      gitValue(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], cwd),
+      gitValue(['config', '--get', 'remote.origin.url'], cwd),
+    ])
+    if (gitDirText === undefined || commonDirText === undefined) {
+      fail('ERR_MOD_HOST_VCS_FAILED', '$.vcs.detect: git did not report the git directory')
+    }
+    const realpathOfVcs = (value: string, what: string): string => {
+      try {
+        return realpathSync(value)
+      } catch (error) {
+        fail(
+          'ERR_MOD_HOST_VCS_FAILED',
+          `$.vcs.detect: git reported the ${what} ${JSON.stringify(value)}, which cannot be resolved: ${messageOf(error)}`,
+          error,
+        )
+      }
+    }
+    const gitDir = realpathOfVcs(gitDirText, 'git directory')
+    const commonDir = realpathOfVcs(commonDirText, 'common git directory')
+    // A linked worktree: the shared `.git` sits in the main working copy, so
+    // its parent is `mainRoot`. A bare main repository has no main working
+    // copy, and the pin says null where it is not known. A submodule checkout
+    // is its own repository, but the superproject is the working copy that
+    // registered it; this host does not inspect that parent, so it reports
+    // null rather than claiming the submodule root is the main copy.
+    const superproject = await gitValue(['rev-parse', '--show-superproject-working-tree'], cwd)
+    const mainRoot =
+      superproject !== undefined
+        ? null
+        : gitDir === commonDir
+          ? copy.root
+          : basename(commonDir) === '.git'
+            ? dirname(commonDir)
+            : null
+    let defaultBranch: string | null = null
+    if (defaultRef !== undefined && defaultRef.startsWith('refs/remotes/origin/')) {
+      const candidate = defaultRef.slice('refs/remotes/origin/'.length)
+      if (candidate !== '' && candidate !== 'HEAD') {
+        const commit = await gitValue(['rev-parse', '--verify', '--quiet', `${defaultRef}^{commit}`], cwd)
+        if (commit !== undefined) defaultBranch = candidate
+      }
+    }
+    return {
+      vcs: VCS_GIT,
+      root: copy.root,
+      mainRoot,
+      revision: revision ?? null,
+      branch: branch ?? null,
+      defaultBranch,
+      remote: remote === undefined ? null : withoutCredentials(remote),
+    }
+  }
+
+  const vcsMatches = (path: string, renamedFrom: string | null, filter: readonly string[] | undefined): boolean => {
+    if (filter === undefined) return true
+    return filter.some((wanted) =>
+      wanted === '' ||
+      path === wanted ||
+      renamedFrom === wanted ||
+      path.startsWith(`${wanted}/`) ||
+      (renamedFrom !== null && renamedFrom.startsWith(`${wanted}/`)),
+    )
+  }
+
+  const vcsPathFilter = (value: unknown): string[] | undefined => {
+    if (value === undefined) return undefined
+    if (!Array.isArray(value)) {
+      fail('ERR_MOD_HOST_VCS_INVALID', `$.vcs.diff: paths must be an array, got ${describeValue(value)}`)
+    }
+    const filter: string[] = []
+    for (const entry of value) {
+      const text = vcsText('$.vcs.diff', entry, 'paths[]')
+      if (text.length > VCS_MAX_NAME) {
+        fail(
+          'ERR_MOD_HOST_VCS_INVALID',
+          `$.vcs.diff: a paths[] entry is ${text.length} characters, over the pin's ${VCS_MAX_NAME}-character name bound`,
+        )
+      }
+      if (isAbsolute(text) || /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\')) {
+        fail('ERR_MOD_HOST_VCS_INVALID', `$.vcs.diff: paths must be relative to the working-copy root, got ${JSON.stringify(text)}`)
+      }
+      const normalized = posix.normalize(text)
+      if (normalized === '..' || normalized.startsWith('../')) {
+        fail('ERR_MOD_HOST_VCS_INVALID', `$.vcs.diff: ${JSON.stringify(text)} leaves the working-copy root`)
+      }
+      const clean = normalized === '.' ? '' : normalized.replace(/\/+$/, '')
+      if (!filter.includes(clean)) filter.push(clean)
+    }
+    return filter
+  }
+
+  const vcsUntrackedFile = async (
+    root: string,
+    cwd: string,
+    path: string,
+    isStatOnly: boolean,
+    configEnv: Readonly<Record<string, string>>,
+  ): Promise<Record<string, unknown>> => {
+    const row: Record<string, unknown> = {
+      path,
+      renamedFrom: null,
+      added: 0,
+      removed: 0,
+      isBinary: false,
+      isUntracked: true,
+    }
+    let stats
+    try {
+      stats = lstatSync(join(root, path))
+    } catch (error) {
+      reportOnce(
+        `vcs.untracked.${path}`,
+        `$.vcs.diff: untracked ${JSON.stringify(path)} could not be inspected: ${messageOf(error)}; it is listed without a patch`,
+      )
+      return row
+    }
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      // A symlink, FIFO or socket has no bytes this host reads; git would
+      // track a symlink by target, but the pinned patch is file content.
+      return row
+    }
+    const absolute = join(root, path)
+    if (isStatOnly) {
+      const run = await runGit(
+        ['diff', '--no-index', '--numstat', '-z', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', absolute],
+        cwd,
+        [0, 1],
+        configEnv,
+      )
+      const parsed = parseNumstat(run.stdout.toString('utf8'))[0]
+      if (parsed !== undefined) {
+        row.added = parsed.added
+        row.removed = parsed.removed
+        row.isBinary = parsed.isBinary
+      }
+      return row
+    }
+    const run = await runGit(
+      ['diff', '--no-index', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', absolute],
+      cwd,
+      [0, 1],
+      configEnv,
+    )
+    const text = run.stdout.toString('utf8')
+    if (/^Binary files /m.test(text)) {
+      row.isBinary = true
+      return row
+    }
+    const body = patchBody(text)
+    if (body !== '') {
+      row.added = body.split('\n').filter((line) => line.startsWith('+')).length
+      row.patch = body
+    }
+    return row
+  }
+
+  const vcsDiff = async (agent: unknown, input: unknown): Promise<unknown> => {
+    const record = vcsRecord('$.vcs.diff', input)
+    const pathValue = vcsText('$.vcs.diff', record.path, 'path')
+    const vcs = vcsText('$.vcs.diff', record.vcs, 'vcs')
+    const base = record.base
+    if (base !== 'head' && base !== 'default') {
+      fail('ERR_MOD_HOST_VCS_INVALID', `$.vcs.diff: base must be "head" or "default", got ${describeValue(base)}`)
+    }
+    const filter = vcsPathFilter(record.paths)
+    if (record.isStatOnly !== undefined && typeof record.isStatOnly !== 'boolean') {
+      fail('ERR_MOD_HOST_VCS_INVALID', `$.vcs.diff: isStatOnly must be a boolean, got ${describeValue(record.isStatOnly)}`)
+    }
+    const isStatOnly = record.isStatOnly === true
+    const copy = await vcsWorkingCopyOf(agent, pathValue, '$.vcs.diff')
+    if (copy.root === null) {
+      // The pin's diff result has an `unknown` arm exactly for "no hook can
+      // say", and `detect` answers null here: return the arm, do not throw.
+      return {
+        unknown: `$.vcs.diff: ${JSON.stringify(pathValue)} is not in a working copy, so there is nothing to diff; $.vcs.detect answers null here`,
+      }
+    }
+    const root: string = copy.root
+    if (vcs !== VCS_GIT) {
+      return {
+        unknown: `$.vcs.diff: this host serves ${VCS_GIT}; ${JSON.stringify(vcs)} has no bridge at the 2.1.329 pin`,
+      }
+    }
+    const cwd = copy.cwd
+    const configEnv = await vcsFilterEnv(cwd)
+    const revision = await gitValue(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd)
+    let treeish: string
+    let baseLabel: string
+    if (base === 'head') {
+      // What is checked out; an unborn branch diffs against the empty tree,
+      // which is a read, not a `git commit`.
+      treeish = revision ?? VCS_EMPTY_TREE
+      baseLabel = 'HEAD'
+    } else {
+      const defaultBranch = await vcsDefaultBranchOf(cwd)
+      if (defaultBranch === null) {
+        return {
+          unknown: `$.vcs.diff: ${JSON.stringify(pathValue)} has no default branch (refs/remotes/origin/HEAD is absent), so base "default" cannot be answered`,
+        }
+      }
+      if (revision === undefined) {
+        return {
+          unknown: `$.vcs.diff: ${JSON.stringify(pathValue)} has no commit checked out, so base "default" cannot be answered`,
+        }
+      }
+      const merge = await runGit(['merge-base', revision, defaultBranch.ref], cwd, [0, 1])
+      if (merge.status !== 0) {
+        return { unknown: `$.vcs.diff: ${defaultBranch.name} and HEAD share no merge base` }
+      }
+      treeish = merge.stdout.toString('utf8').trim()
+      baseLabel = defaultBranch.name
+    }
+    if (treeish === '') fail('ERR_MOD_HOST_VCS_FAILED', '$.vcs.diff: git reported an empty base commit')
+    if (filter !== undefined && filter.length === 0) return { base: baseLabel, files: [] }
+
+    const statRun = await runGit(
+      ['diff', '-M', '--numstat', '-z', '--no-color', '--no-ext-diff', '--no-textconv', treeish, '--'],
+      cwd,
+      [0],
+      configEnv,
+    )
+    const tracked = parseNumstat(statRun.stdout.toString('utf8'))
+    // Untracked files never appear in `git diff`; `-- :/` makes the listing
+    // repo-wide even when the child cwd is a subdirectory.
+    const untrackedRun = await runGit(
+      ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', ':/'],
+      cwd,
+      [0],
+      configEnv,
+    )
+    const untracked = untrackedRun.stdout.toString('utf8').split('\0').filter((entry) => entry !== '')
+    const files: Array<Record<string, unknown>> = []
+    for (const change of tracked) {
+      if (!vcsMatches(change.path, change.renamedFrom, filter)) continue
+      files.push({
+        path: change.path,
+        renamedFrom: change.renamedFrom,
+        added: change.added,
+        removed: change.removed,
+        isBinary: change.isBinary,
+        isUntracked: false,
+      })
+    }
+    for (const path of untracked) {
+      if (!vcsMatches(path, null, filter)) continue
+      files.push(await vcsUntrackedFile(root, cwd, path, isStatOnly, configEnv))
+    }
+    for (const file of files) {
+      const name = String(file.path)
+      const previous = typeof file.renamedFrom === 'string' ? file.renamedFrom : null
+      if (name.length > VCS_MAX_NAME || (previous !== null && previous.length > VCS_MAX_NAME)) {
+        fail(
+          'ERR_MOD_HOST_VCS_FAILED',
+          `$.vcs.diff: git reported a name longer than the pin's ${VCS_MAX_NAME}-character bound; the result would not match the pinned shape, so the call is refused`,
+        )
+      }
+    }
+    files.sort((left, right) => {
+      const a = String(left.path)
+      const b = String(right.path)
+      return a < b ? -1 : a > b ? 1 : 0
+    })
+    if (!isStatOnly) {
+      for (const file of files) {
+        if (file.isUntracked === true || file.isBinary === true) continue
+        const added = typeof file.added === 'number' ? file.added : 0
+        const removed = typeof file.removed === 'number' ? file.removed : 0
+        if (added + removed === 0) continue
+        const path = String(file.path)
+        const renamedFrom = typeof file.renamedFrom === 'string' ? file.renamedFrom : null
+        // Both names keep a rename a rename; a one-sided pathspec makes git
+        // print an add and a delete instead.
+        const spec = ['--', `:(top,literal)${path}`]
+        if (renamedFrom !== null && renamedFrom !== path) spec.push(`:(top,literal)${renamedFrom}`)
+        const patchRun = await runGit(
+          ['diff', '-M', '--no-color', '--no-ext-diff', '--no-textconv', treeish, ...spec],
+          cwd,
+          [0],
+          configEnv,
+        )
+        const body = patchBody(patchRun.stdout.toString('utf8'))
+        if (body !== '') file.patch = body
+      }
+    }
+    return { base: baseLabel, files }
+  }
+
+  // These four are pinned members this host does not implement: the engine
+  // owns worktree bookkeeping (create/list/remove) and a trust record, and
+  // this host keeps neither. A typed refusal says so; it is never `undefined`
+  // and never a fabricated `{ deny }`/`{ kept }`/`[]` that claims state.
+  const vcsIsolate = async (): Promise<never> =>
+    fail(
+      'ERR_MOD_HOST_VCS_UNSUPPORTED',
+      '$.vcs.isolate: the host creates no worktree or copy on a mod call (the pinned engine answers { deny } when it makes none: for a Git worktree, spawn an agent with `isolation: "worktree"`); this host owns no copy bookkeeping, so the call is refused at the 2.1.329 pin (D40)',
+    )
+  const vcsList = async (): Promise<never> =>
+    fail(
+      'ERR_MOD_HOST_VCS_UNSUPPORTED',
+      '$.vcs.list: the pinned engine lists Git worktrees only for a repository the person trusted; this host keeps no trust record or worktree directory, so it refuses instead of inventing a list',
+    )
+  const vcsStatus = async (): Promise<never> =>
+    fail(
+      'ERR_MOD_HOST_VCS_UNSUPPORTED',
+      '$.vcs.status: the pinned engine answers only for a copy it made for an agent of this process; this host makes no copies, so it refuses instead of an `{ unknown }` it cannot back',
+    )
+  const vcsRelease = async (): Promise<never> =>
+    fail(
+      'ERR_MOD_HOST_VCS_UNSUPPORTED',
+      '$.vcs.release: the pinned engine removes nothing on this call and answers `{ kept }` for a copy it owns; this host owns no copy, so it refuses with a named reason instead of claiming one was kept',
+    )
+
   // ---- the table -----------------------------------------------------------
 
   const dollar = (agent?: unknown): Record<string, unknown> => {
@@ -923,6 +1641,14 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
       telemetry: {
         mark: (entry: unknown): void => emitTelemetry('mark', entry),
         log: (entry: unknown): void => emitTelemetry('log', entry),
+      },
+      vcs: {
+        detect: (input: unknown): Promise<unknown> => vcsDetect(agent, input),
+        diff: (input: unknown): Promise<unknown> => vcsDiff(agent, input),
+        isolate: (): Promise<never> => vcsIsolate(),
+        list: (): Promise<never> => vcsList(),
+        status: (): Promise<never> => vcsStatus(),
+        release: (): Promise<never> => vcsRelease(),
       },
     }
   }
