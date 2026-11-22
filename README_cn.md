@@ -62,8 +62,7 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 ## ✅ 0.2.0 包含什么
 
 下表描述的是 **0.2.0 的产物**，不是仓库里的开发树：每一行都是安装
-`dsh-anyplugin@0.2.0` 真正得到的能力。npm 上已发布的是 `0.1.0`，
-`0.2.0` 就是本次发布的版本。`npm run verify` 会启动打出的 tarball 逐行验证。
+`dsh-anyplugin@0.2.0` 真正得到的能力。它就是在 npm 上发布的版本，带签名的 SLSA provenance。`npm run verify` 会启动打出的 tarball 逐行验证。
 
 | 能力 | 在 0.2.0 中 |
 | --- | --- |
@@ -105,7 +104,7 @@ turn 里保留一个 `classic.*` handler 和一个 classic hook，并在
 
 ## 📦 安装
 
-`dsh-anyplugin@0.2.0`（本次发布；npm 上已发布的是 `0.1.0`）以一个
+`dsh-anyplugin@0.2.0`（已发布，从 registry 安装）以一个
 **bundle** 的形式发布给 DSH profile：
 
 ```bash
