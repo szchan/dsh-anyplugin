@@ -10,7 +10,7 @@
 // isolation or in three full-suite-shape runs.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,6 +134,29 @@ test('a real guard denial is counted by the digest and the evidence JSON', async
   assert.deepEqual(evidence.guardDenials.byRole, [{ role: 'worker', count: 1 }])
   assert.equal(evidence.guardDenials.recent.at(-1).rule, 'git-push-main')
   assert.equal(evidence.guardDenials.unreadable, 0)
+})
+
+test('an unwritable evidence directory fails before the digest, not after it', (t) => {
+  // Root ignores the mode bits, so the check only means something for a normal user.
+  if (process.getuid?.() === 0) {
+    t.skip('runs as root: directory modes are not enforced')
+    return
+  }
+  const base = mkdtempSync(join(tmpdir(), 'audit-unwritable-'))
+  const auditDir = join(base, 'audit')
+  mkdirSync(auditDir)
+  chmodSync(auditDir, 0o500)
+  try {
+    const result = runAudit(auditDir, ['--days', '1'])
+    assert.notEqual(result.status, 0, 'an audit that cannot write its evidence must fail')
+    assert.match(result.stderr, /audit-evidence: cannot write/u)
+    assert.ok(result.stderr.includes(auditDir), `stderr must name ${auditDir}`)
+    assert.equal(readdirSync(auditDir).length, 0, 'no partial evidence file')
+    assert.doesNotMatch(result.stdout, /audit digest/u, 'the digest must not be printed')
+  } finally {
+    chmodSync(auditDir, 0o700)
+    rmSync(base, { recursive: true, force: true })
+  }
 })
 
 test('a missing log is reported as absent, not as zero denials', () => {
