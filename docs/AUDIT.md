@@ -374,7 +374,7 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
         "gate-rules.test.mjs R15 counter-examples",
         "features-rules.test.mjs gate call-site"
       ],
-      "proof": "scripts/features-rules.test.mjs"
+      "proof": "packages/dsh-anyplugin-conformance/test/gate-rules.test.mjs"
     },
     {
       "id": "F8",
