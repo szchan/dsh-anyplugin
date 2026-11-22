@@ -403,11 +403,15 @@ async function main() {
   // restored immediately; PATH is never touched.
   const probes = { S19_KEEP: 'keep', S19_API_TOKEN: 'do-not-leak', DSH_S19_SCRUB: 'drop' }
   const saved = Object.fromEntries(Object.keys(probes).map((key) => [key, process.env[key]]))
-  Object.assign(process.env, probes)
-  const scrubbed = scrubbedParentEnv()
-  for (const key of Object.keys(probes)) {
-    if (saved[key] === undefined) delete process.env[key]
-    else process.env[key] = saved[key]
+  let scrubbed
+  try {
+    Object.assign(process.env, probes)
+    scrubbed = scrubbedParentEnv()
+  } finally {
+    for (const key of Object.keys(probes)) {
+      if (saved[key] === undefined) delete process.env[key]
+      else process.env[key] = saved[key]
+    }
   }
   check(
     'the scrub keeps ordinary names and PATH, and drops DSH_* and credential-looking names',

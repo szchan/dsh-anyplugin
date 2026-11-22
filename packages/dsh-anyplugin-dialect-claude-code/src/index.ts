@@ -1260,8 +1260,9 @@ function readMcp(root: string, plugin: string): {
  * src/index.ts:224-257, applied at :1716). That route diverges, so it is
  * declined for now rather than shipped silently:
  *
- * - the rewritten command is the `tool_input` later hooks and the transcript
- *   see, so the plugin's PATH prefix becomes part of the observed call;
+ * - the rewritten command is the `tool_input` later hooks and the hook trace
+ *   see, so the plugin's PATH prefix becomes part of the observed call, while
+ *   the session transcript still carries the model's original;
  * - PowerShell syntax differs, so one rewrite grammar cannot serve both tools;
  * - Claude appends plugin bins after the user's entries; a rewrite has to make
  *   that ordering decision itself, and a prepend would win where Claude loses.
@@ -1272,7 +1273,7 @@ function readMcp(root: string, plugin: string): {
  */
 const BIN_REASON =
   'bin/ needs the model shell PATH. The managed environment cannot supply it: at 0.2.2-rc.5 and 0.2.2-rc.2 on Linux, dsh-shell-env accepts declared DSH_* keys only (register() throws `bash env contributor "s19-path" declared invalid key "PATH"`) and refuses an undeclared key at resolve with SHELL_ENV_CONTRIBUTION_INVALID; the model-facing bash and pwsh tools (pwsh was source-read only on Linux) send only that overlay and expose no env parameter. ' +
-  'It is expressible only as a per-call rewrite through the tools/pre-execute seam (packages/dsh-anyplugin-materialize-hook/src/index.ts:224-257 rewrites exec.arguments before next()), which we decline for now because it diverges: later hooks and the transcript see the rewritten command as tool_input, pwsh syntax differs, and Claude\'s rule that plugin bins follow the user\'s entries becomes an ordering choice inside the rewrite. ' +
+  'It is expressible only as a per-call rewrite through the tools/pre-execute seam (packages/dsh-anyplugin-materialize-hook/src/index.ts:224-257 rewrites exec.arguments before next()), which we decline for now because it diverges: later hooks and the hook trace see the rewritten command as tool_input, while the session transcript still carries the model\'s original; pwsh syntax differs, and Claude\'s rule that plugin bins follow the user\'s entries becomes an ordering choice inside the rewrite. ' +
   'Planned for the union-only PATH contribution proposed in docs/TODO.md.'
 
 /**

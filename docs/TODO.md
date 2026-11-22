@@ -47,7 +47,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
       listener seams and the five notification-only records are wired; what
       remains is host support for the sixteen events above.
 - [ ] `dsh-shell-env` — an ordered external-PATH contribution for plugin
-      `bin/`. Anchor (S19, pinned 0.2.2-rc.5): `register()` throws
+      `bin/`. Anchor (S19, pinned 0.2.2-rc.5 and 0.2.2-rc.2): `register()` throws
       `bash env contributor "X" declared invalid key "PATH"` at
       `dsh-shell-env/src/index.ts:133-135`; the key type is `` `DSH_${string}` ``
       (`dsh-subprocess/src/types.ts:16`); the model-facing shell request has no
@@ -56,9 +56,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
       PATH (`dsh-bash-local/src/index.ts:172`,
       `dsh-subprocess-local/src/spawn.ts:45-46`). A per-call
       `tools/pre-execute` rewrite can prepend the directory (S19 proves it runs
-      a command), but it diverges: the rewritten text is the `tool_input` later
-      hooks and the transcript see, pwsh syntax differs, and the ordering rule
-      becomes an in-rewrite choice. Proposal: an append-only `extraPath` (or
+      a command), but it diverges: later hooks and the hook trace see the
+      rewritten `tool_input`, while the session transcript still carries the
+      model's original; pwsh syntax differs, and the ordering rule becomes an
+      in-rewrite choice. Proposal: an append-only `extraPath` (or
       equivalent) on `ShellExecRequest`/`ShellEnvRegistry`, applied *after* the
       inherited PATH so the user's own entries still win (Claude's order),
       owned by plugin scope, and gated by the `bin/` files' exec grant (D25).

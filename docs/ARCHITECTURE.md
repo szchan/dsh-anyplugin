@@ -1952,7 +1952,7 @@ oracle.
   weights.
 
 Fixtures: skills-only; hook-heavy (blocking + injection); MCP + commands;
-agents + bin + theme.
+agents + theme. `bin/` is a `planned` annotation row (S19), not a fixture.
 
 ### 10.5 S15 result: what the five pinned mods demand on one real turn
 
@@ -2292,24 +2292,27 @@ command, `probecmd` runs (exit 0), and disposing the listener returns the call
 to 127. So the surface is expressible without a core change.
 
 It is still `planned`, not `equivalent`, because that route diverges and we
-decline it for now. The rewritten command is the `tool_input` later hooks and
-the transcript see, not the model's original; pwsh syntax differs, so one
-rewrite grammar cannot serve both shells; and Claude's "plugin bins after the
-user's entries" ordering becomes a choice inside the rewrite — a prepend wins
-where Claude loses. The dialect reason names both measured refusals and these
-divergences. The union-only PATH contribution in `docs/TODO.md` is the shape
+decline it for now. Later hooks and the hook trace see the rewritten command as
+`tool_input`; the session transcript still carries the model's original
+(`packages/dsh-anyplugin-conformance/test/mods.test.mjs:591-635` asserts
+`use.input` is `{ command: 'ls' }`). pwsh syntax differs, so one rewrite grammar
+cannot serve both shells; and Claude's "plugin bins after the user's entries"
+ordering becomes a choice inside the rewrite — a prepend wins where Claude
+loses. The dialect reason names both measured refusals and these divergences. The union-only PATH contribution in `docs/TODO.md` is the shape
 that would make the row `equivalent` without them; until it lands, the row
 stays `planned`. Exec classification is unchanged: D25 pins `bin` files and the
 grant shows the command line; nothing here injects a PATH silently.
 
 **What this does not prove.** The rewrite check proves a command runs under a
-listener that prepends the probe bin; it does not reproduce Claude's ordering
-or the transcript shape a real hook produces, and S19 does not ship that
-listener. pwsh was source-read only on Linux, never booted, so its rewrite
-grammar is an argument from its source, not a measurement. A future PATH
-contribution must append after the inherited entries rather than prepend, and
-the row moves to `equivalent` only with a probe of that order. It also does not
-prove the proposal in `docs/TODO.md` is the right shape.
+listener that prepends the probe bin; it does not reproduce Claude's ordering,
+and S19 does not ship that listener. The transcript statement rests on the
+conformance test at `packages/dsh-anyplugin-conformance/test/mods.test.mjs:591-635`
+(the stored `use.input` is the model's original), not on a new spike check.
+pwsh was source-read only on Linux, never booted, so its rewrite grammar is an
+argument from its source, not a measurement. A future PATH contribution must
+append after the inherited entries rather than prepend, and the row moves to
+`equivalent` only with a probe of that order. It also does not prove the
+proposal in `docs/TODO.md` is the right shape.
 
 
 ## 11. Non-goals
