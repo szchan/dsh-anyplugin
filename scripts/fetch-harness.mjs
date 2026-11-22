@@ -89,6 +89,8 @@ export const HARNESS_PACKAGES = {
   'dsh-fs-observation-policy': 'S9: fs observation policy behind the FileChanged row',
   'dsh-user-questions': 'S9: question service for the unprobed Elicitation rows',
   'dsh-experimental-worktree': 'S9/S23: worktree service for the routed WorktreeCreate/Remove rows',
+  'dsh-sandbox': 'S23: real sandbox for the worktree removal path',
+  'dsh-sandbox-policy': 'S23: sandbox policy for the worktree removal path',
   'dsh-agent-instructions': 'S9: instructions service for the InstructionsLoaded row',
   'dsh-tool-fs-search': 'S9: fs search tools for the unprobed tool-event rows',
 

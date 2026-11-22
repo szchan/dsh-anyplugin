@@ -242,9 +242,9 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
   const sessionsRoot = join(dataDir, 'sessions')
   mkdirSync(sessionsRoot, { recursive: true })
   const ctx = new Context()
-  // The worktree reclamation reads these two services; dsh-workspace and
-  // dsh-session-query are transitive packages, not members of the fetched
-  // union, so they are one-method doubles (the S23 spike does the same).
+  // The worktree reclamation reads the workspace registry and the session
+  // query; both are transitive, not members of the fetched union, so they are
+  // one-method doubles (the S23 spike does the same).
   ctx.provide('workspaceRegistry', { archivedSessionIds: new Set() })
   ctx.provide('sessionQuery', {
     async listSessions() {

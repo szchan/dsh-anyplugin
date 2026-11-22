@@ -102,14 +102,14 @@ test('R14: a fake owner and a row for a missing fixture are both violations', ()
 
 test('R15: a count in a paragraph without an owning test is a violation', () => {
   const text = [
-    'The one number the project reports: **27 declared / 26 matched / 0 missing / 1 refused** rows',
+    'The one number the project reports: **32 declared / 31 matched / 0 missing / 1 refused** rows',
     'in the coverage ratchet (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
     '',
     'Across 14 absent members.',
     '',
     '| rows | owner |',
     '| --- | --- |',
-    '| 27 declared | `packages/dsh-anyplugin-conformance/test/coverage.test.mjs` |',
+    '| 32 declared | `packages/dsh-anyplugin-conformance/test/coverage.test.mjs` |',
   ].join('\n')
   const violations = countOwnerViolations(text)
   assert.equal(violations.length, 1)
@@ -119,7 +119,7 @@ test('R15: a count in a paragraph without an owning test is a violation', () => 
 })
 
 test('R15: a count whose paragraph names the test passes, and a heading is a claim too', () => {
-  const owned = 'The ratchet: 27 declared, see `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`.'
+  const owned = 'The ratchet: 32 declared, see `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`.'
   assert.deepEqual(countOwnerViolations(owned), [])
   assert.equal(ownedCounts(owned), 1)
   const heading = countOwnerViolations('## 3 absent\n\nprose without a number\n')
