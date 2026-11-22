@@ -925,7 +925,12 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     return view.cwd
   }
 
-  /** The directory relative fs paths resolve against; the host option, not `$.session.cwd()`. */
+  /**
+   * The directory relative fs paths resolve against: the attached session's
+   * cwd when it has one, else the host option, else `process.cwd()`. This stays
+   * synchronous for fs/vcs; it is not `$.session.cwd()`, which refuses when no
+   * session cwd is observable.
+   */
   const sessionCwd = (agent: unknown): string => sessionOfAgent(agent)?.cwd ?? options.cwd ?? process.cwd()
 
   const sessionMessages = async (agent: unknown): Promise<readonly Record<string, unknown>[]> =>

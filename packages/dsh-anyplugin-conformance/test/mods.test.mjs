@@ -301,6 +301,7 @@ test('a mod session.start handler calls the pinned $.session.cwd method', { skip
     const seen = stored(dataDir)['session-cwd']
     assert.ok(seen, 'the session.start handler stored what it observed')
     assert.equal(seen.kind, 'function', '$.session.cwd is the pinned method, not a string')
+    assert.equal(seen.promise, true, 'the raw return is a thenable: the pin says `() => Promise<string>`')
     assert.equal(typeof seen.cwd, 'string', 'the method resolved a string')
     assert.ok(seen.cwd.length > 0, 'the resolved cwd is non-empty')
     assert.ok(isAbsolute(seen.cwd), `the resolved cwd is absolute: ${String(seen.cwd)}`)

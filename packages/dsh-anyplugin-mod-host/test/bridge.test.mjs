@@ -210,10 +210,12 @@ test('bridge omissions, freshness, timers, dispose and refusals are observable',
   }
 })
 
-// #134: the pin declares `$.session.cwd: () => Promise<string>`, so both the
-// callable shape and the session's own directory are asserted. The work dir is
-// deliberately not the process cwd: a string-valued `cwd` (the old shape) or a
-// `process.cwd()` fallback would fail this test.
+// #134: the pin declares `$.session.cwd: () => Promise<string>`, so the
+// callable shape, the promise it returns and the session's own directory are
+// all asserted. The work dir is deliberately not the process cwd: a
+// string-valued `cwd` (the old shape), a synchronous method (a hybrid that
+// returns the string on the attached path), or a `process.cwd()` fallback
+// would fail this test.
 test('bridge serves $.session.cwd as a method of the attached session cwd', async () => {
   const base = mkdtempSync(join(tmpdir(), 'anyplugin-bridge-cwd-'))
   const sessionWork = join(base, 'session-work')
@@ -227,7 +229,9 @@ test('bridge serves $.session.cwd as a method of the attached session cwd', asyn
   try {
     const $ = bridge.dollar()
     assert.equal(typeof $.session.cwd, 'function')
-    assert.equal(await $.session.cwd(), sessionWork)
+    const answer = $.session.cwd()
+    assert.ok(answer instanceof Promise, 'the pinned method returns a Promise, not a bare string')
+    assert.equal(await answer, sessionWork)
     assert.notEqual(await $.session.cwd(), process.cwd())
   } finally {
     bridge.dispose()
