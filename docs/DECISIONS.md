@@ -2556,3 +2556,52 @@ bytes>`, at the install scope, and is written only after a successful install.
 - A new integrity computation must be added to the hash grammar and to the
   grant table together.
 - `network` and `exec` stay separate classes; a fetch never implies execution.
+## D54 — Installation closure is asserted on the Node CI runs
+
+**Date:** 2026-11-21. **Supersedes** the "install closure remains unproven"
+bullet of D50.
+
+D50 made the bundle's "installed" claim rest on the host profile path and
+recorded one piece as unproven: whether the harness installs the
+`PluginPackages` interception, or only finds packages through a scope-link
+stand-in. This entry closes that piece with an assertion instead of a note.
+
+**Decision.**
+
+- S17 asserts closure at boot: the host reports `hostPath === 'PluginPackages'`,
+  the profile carries no `@deepseek-ai` scope-link stand-in, and every group
+  entry's module URL resolves inside the installation tree (realpath).
+- On a Node that cannot initialize the interception, the local gate takes the
+  disclosed `scope-link` branch and says so in its diagnostic. Under CI — one
+  predicate, `CI === 'true' || CI === '1'` (`harness.ts`) — it fails with a
+  message that names the closure rather than falling back.
+- S18 measures the boundary and derives its answer from the measured rows:
+  Node 24.12.0 and 24.22.2 initialize 0/5 builtins and throw
+  `Unsupported/no-getter`; Node 24.21.0 (Desktop) and 24.22.3 (what CI's
+  `setup-node '24'` resolves to today) initialize 5/5. The boundary is a Node
+  patch, not a harness pin.
+
+**Evidence.** `profile-mount.test.mjs` (closure assertions), `harness.ts`
+(`isCI`), `spikes/s18-install-closure/` (four-row measurement, answer derived
+from rows), CI logs showing `host path: PluginPackages` at both pins. The
+assertion is not vacuous: a pre-created profile scope link, a forced
+`scope-link` host path, a group entry symlinked outside the installation, and
+an inert `PluginPackages` class each redden it with its own message; faking the
+probe in either direction reddens the agreement check. `CI=1` on an incapable
+Node fails with the closure message (a prior spelling of the predicate only
+checked `CI=true` and passed — that is why `isCI` is now shared and unit-tested).
+
+**Consequences.**
+
+- Any "installable" claim in docs or release notes must cite S17, and S17's
+  headline says "on the Node CI runs", not "on the gate's Node" — the local
+  gate may be incapable and then takes the disclosed weaker branch.
+- CI's Node floats with `'24'`. A future patch that loses the interception
+  fails the gate loudly instead of silently passing through a scope link.
+- Unclaimed here: Nodes outside the measured set when the gate runs off CI;
+  non-linux-x64 platforms; import shapes the three assertions do not observe.
+  A harness whose installation mechanism works but is invisible to these
+  assertions is a new decision, not a silent widening of this one.
+- `node-addon-require-builtin` is a dependency of `dsh-app-boot`
+  (`^0.1.9`); the fetched trees used here resolve `0.1.10`, and the harness
+  pin does not fix the addon patch.

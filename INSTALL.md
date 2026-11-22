@@ -507,11 +507,15 @@ launcher's primitives, in the launcher's order, including the profile's
 `cordis.yml`) and asserts the controller's resolved module URL is inside the
 profile's `node_modules`, never this checkout. It also pins the three negatives
 the smoke cannot: no lock and a disabled plugin mount nothing, and a corrupt
-lock is a typed controller failure while the harness still boots. Where the
-host's `PluginPackages` interception cannot initialize (Node 24.12.0 and
-24.22.2 in this sandbox), the test links the harness scope into the profile and
-reports that in its diagnostic; `docs/ARCHITECTURE.md` §10 S17 records the
-limitation and the evidence. The test needs Node 22.15 for
+lock is a typed controller failure while the harness still boots. On a Node
+where the host's `PluginPackages` interception initializes, the test asserts
+that path instead: the profile has no harness scope link, the group entry's
+module URL is under the installation tree, and a fallback fails the assertion.
+Where it cannot initialize (Node 24.12.0 and 24.22.2 in this sandbox), the test
+links the harness scope into the profile and reports that in its diagnostic;
+under CI that fallback is a failure, so the gate cannot silently stop asserting
+closure. `docs/ARCHITECTURE.md` §10 S17/S18 record the patch boundary (24.22.2
+fails, 24.22.3 works) and the evidence. The test needs Node 22.15 for
 `module.registerHooks` (the published engine floor stays 22.14) and skips with
 that reason otherwise.
 
