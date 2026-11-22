@@ -10,12 +10,11 @@
 // names, never to whichever citation happens to be closest.
 //
 // The grammar is deliberately narrow — the ledger's own vocabulary plus the
-// gate's test/fixture/row counts: `N declared`, `N served`, `N refused`,
-// `N refusals`, `N refused-only`, `N absent`, `N matched`, `N missing`,
-// `N test(s)`, `N fixture(s)`, `N row(s)`. `typed`, `total` and `coverage` are
-// accepted between the number and the noun. Numbers outside that vocabulary
-// (`N handler invocations`, `N sites`, `122/122`) are not claims this gate
-// compares; docs must not say otherwise.
+// gate's row count: `N declared`, `N served`, `N refused`, `N refusals`,
+// `N refused-only`, `N absent`, `N matched`, `N missing`, `N row(s)`. `typed`,
+// `total` and `coverage` are accepted between the number and the noun. Numbers
+// outside that vocabulary (`N handler invocations`, `N sites`, `122/122`) are
+// not claims this gate compares; docs must not say otherwise.
 //
 // The owner is named in the same paragraph or table row in one of two forms:
 //
@@ -29,13 +28,16 @@
 //     mentions the file is not an owner citation, and a claim next to one fails
 //     rather than borrowing a sectioned citation from further along.
 //
-// The category noun binds the owner family: namespace(s) read
-// `totals.namespaces`, member(s)/method(s) `totals.methods`, event(s)
-// `totals.events`, element(s) `totals.elements`, render site(s)
+// The category noun immediately after the claim binds the owner family:
+// namespace(s) read `totals.namespaces`, member(s)/method(s) `totals.methods`,
+// event(s) `totals.events`, element(s) `totals.elements`, render site(s)
 // `totals.renderSites`, a bridge `site` reads `mods.test.mjs` and a coverage
-// `row` reads `coverage.test.mjs`. A citation from another family is a
-// failure, not a pass. Tables are split row by row, so one row's citation
-// cannot certify the next row's claim.
+// `row` reads `coverage.test.mjs`. An earlier category word — a table's
+// first-cell label, a sentence topic — never competes. If the word after the
+// claim is a noun the map does not know (`9 served pairs`), that is a failure,
+// not a fallback; only when no noun follows does the nearest citation decide.
+// A citation from another family is a failure, not a pass. Tables are split
+// row by row, so one row's citation cannot certify the next row's claim.
 //
 // `docs/DECISIONS.md` is exempt at the call site: it is the append-only
 // historical record, hashed by `check:decisions`, and its counts are what was
@@ -52,13 +54,12 @@ const COVERAGE_TEST = 'packages/dsh-anyplugin-conformance/test/coverage.test.mjs
 const MODS_TEST = 'packages/dsh-anyplugin-conformance/test/mods.test.mjs'
 
 const CLAIM =
-  /(?<![\d./])\b(\d+)\s+(?:(?:typed|total|coverage)\s+)?(declared|served|refused-only|refusals?|refused|absent|matched|missing|tests?|fixtures?|rows?)\b/giu
+  /(?<![\d./])\b(\d+)\s+(?:(?:typed|total|coverage)\s+)?(declared|served|refused-only|refusals?|refused|absent|matched|missing|rows?)\b/giu
 const OWNER_REF = /`((?:packages|docs|spikes|fixtures|scripts|\.github)\/[^`\s]+?\.(?:json|test\.mjs))`/gu
 const SECTION_AFTER = /^[\s,;:()]*`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/u
 const SECTION_NAME = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u
 const EXPECTED_OBJECT = /export\s+const\s+EXPECTED_COUNTS\s*=\s*\{([^}]*)\}/u
 const CODE_SPAN = /`[^`\n]*`/gu
-const CATEGORY = /\b(render[ -]sites?|namespaces?|members?|methods?|events?|elements?|sites?|rows?|fixtures?)\b/giu
 
 const KEY = {
   declared: 'declared',
@@ -70,13 +71,111 @@ const KEY = {
   absent: 'absent',
   matched: 'matched',
   missing: 'missing',
-  test: 'tests',
-  tests: 'tests',
-  fixture: 'fixtures',
-  fixtures: 'fixtures',
   row: 'rows',
   rows: 'rows',
 }
+
+// Words that may follow a claim without naming a count category: articles,
+// prepositions, conjunctions, auxiliaries and the vocabulary's own adjectives.
+// Any other word right after the claim is an unknown category, not a licence
+// to fall back to whichever citation is closest.
+const NON_NOUN = new Set([
+  'a',
+  'about',
+  'across',
+  'after',
+  'again',
+  'all',
+  'also',
+  'an',
+  'and',
+  'are',
+  'around',
+  'as',
+  'at',
+  'available',
+  'be',
+  'been',
+  'being',
+  'before',
+  'between',
+  'both',
+  'but',
+  'by',
+  'can',
+  'complete',
+  'could',
+  'coverage',
+  'did',
+  'do',
+  'does',
+  'during',
+  'each',
+  'even',
+  'every',
+  'expected',
+  'fewer',
+  'for',
+  'from',
+  'had',
+  'has',
+  'have',
+  'if',
+  'in',
+  'into',
+  'is',
+  'its',
+  'just',
+  'less',
+  'listed',
+  'may',
+  'might',
+  'more',
+  'must',
+  'no',
+  'not',
+  'of',
+  'on',
+  'only',
+  'or',
+  'our',
+  'over',
+  'per',
+  'plus',
+  'recorded',
+  'reported',
+  'see',
+  'should',
+  'since',
+  'so',
+  'still',
+  'than',
+  'that',
+  'the',
+  'then',
+  'their',
+  'these',
+  'this',
+  'those',
+  'through',
+  'to',
+  'total',
+  'typed',
+  'under',
+  'until',
+  'via',
+  'was',
+  'were',
+  'when',
+  'where',
+  'while',
+  'will',
+  'with',
+  'within',
+  'without',
+  'would',
+  'your',
+])
 
 /** The owner family a category noun selects. */
 function categoryOf(word) {
@@ -101,9 +200,6 @@ function categoryOf(word) {
   }
   if (value.startsWith('row')) {
     return { label: 'coverage row', path: COVERAGE_TEST, section: 'EXPECTED_COUNTS' }
-  }
-  if (value.startsWith('fixture')) {
-    return { label: 'fixture', path: COVERAGE_TEST, section: 'EXPECTED_COUNTS' }
   }
   return null
 }
@@ -167,15 +263,28 @@ function ownerRefs(text) {
   return refs
 }
 
-/** Category nouns in prose, with the family each one names. */
-function categories(text, ranges) {
-  const found = []
-  for (const match of text.matchAll(CATEGORY)) {
-    if (inside(match.index, ranges)) continue
-    const category = categoryOf(match[1])
-    if (category !== null) found.push({ ...category, start: match.index })
+/**
+ * The first prose word after a claim. Markdown decoration is skipped, but a
+ * citation code span, a table-cell boundary or another number ends the search:
+ * the noun that binds the owner is the one immediately after the number.
+ */
+function nextWord(text, offset) {
+  let index = offset
+  while (index < text.length) {
+    const character = text[index]
+    if (/\s/u.test(character)) {
+      index += 1
+      continue
+    }
+    if (character === '`' || character === '|') return null
+    if (/[A-Za-z]/u.test(character)) {
+      const word = text.slice(index).match(/^[A-Za-z][A-Za-z-]*/u)[0]
+      return { word, start: index, end: index + word.length }
+    }
+    if (/\d/u.test(character)) return null
+    index += 1
   }
-  return found
+  return null
 }
 
 const nearest = (items, offset) =>
@@ -243,18 +352,28 @@ function resolve(claim, ref, { ownerExists, readOwner }) {
 }
 
 /**
- * Pick the citation that may certify a claim. The category noun, not distance,
- * decides the family; a bare JSON path never licenses a neighbour's section.
+ * Pick the citation that may certify a claim. Only the noun right after the
+ * number binds the family; an unknown noun is an error, and an earlier table
+ * label or topic never competes. Distance decides only when no noun follows.
  */
-function chooseRef(claim, refs, foundCategories) {
+function chooseRef(claim, refs, text) {
   const label = `"${claim.text}"`
+  const next = nextWord(text, claim.end)
+  let category = null
+  if (next !== null) {
+    category = categoryOf(next.word)
+    if (category === null && !NON_NOUN.has(next.word.toLowerCase())) {
+      return {
+        problem: `"${claim.text} ${next.word}" uses a count category R15 does not know; add it to the map or reword`,
+      }
+    }
+  }
   const closest = nearest(refs, claim.offset)
   if (closest !== null && !closest.isTest && closest.section === null) {
     return {
       problem: `${label} names ${closest.path} without an object section; write the section (e.g. totals.methods) after the path`,
     }
   }
-  const category = nearest(foundCategories, claim.offset)
   if (category !== null) {
     const matching = refs.filter((ref) => matchesCategory(ref, category))
     if (matching.length === 0) {
@@ -300,13 +419,13 @@ function checkCounts(text, { ownerExists, readOwner } = {}) {
         value: Number(match[1]),
         noun: match[2].toLowerCase(),
         offset: match.index,
+        end: match.index + match[0].length,
       }))
     if (claims.length === 0) continue
     const refs = ownerRefs(paragraph.text)
-    const foundCategories = categories(paragraph.text, ranges)
     for (const claim of claims) {
       const line = paragraph.line + (paragraph.text.slice(0, claim.offset).match(/\n/gu)?.length ?? 0)
-      const choice = chooseRef(claim, refs, foundCategories)
+      const choice = chooseRef(claim, refs, paragraph.text)
       if (choice.problem !== undefined) {
         violations.push({ line, claim: claim.text, message: choice.problem })
         continue

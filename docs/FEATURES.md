@@ -83,7 +83,7 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 | Fidelity report (`rig report`) | `packages/dsh-anyplugin-conformance/src/report.ts` |
 | Pinned CI (two DSH pins, fetched harness + CLI + mods) | `.github/workflows/verify.yml`, D22/D24 |
 | Fixture ratchet (R14): every `fixtures/` directory is a ratchet row or a named exclusion | `scripts/fixture-ratchet.mjs`, `scripts/check-architecture.mjs` |
-| Count claims (R15): every claim in the R15 vocabulary (`N declared`, `N served`, `N refused`/`N refusals`/`N refused-only`, `N absent`, `N matched`, `N missing`, `N test(s)`, `N fixture(s)`, `N row(s)`) is compared with the number its owner states, keyed by the count's category noun | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
+| Count claims (R15): every claim in the R15 vocabulary (`N declared`, `N served`, `N refused`/`N refusals`/`N refused-only`, `N absent`, `N matched`, `N missing`, `N row(s)`) is compared with the number its owner states; the category noun after the number decides, an unknown noun fails, and a table label does not count | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
 
 ## 7. What is deliberately not a feature
 

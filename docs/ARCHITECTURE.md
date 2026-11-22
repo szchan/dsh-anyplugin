@@ -2595,27 +2595,31 @@ asserted (S17's note applies).
 **How the docs count check works (R15).** `npm run check:features` scans every
 `docs/*.md` except `DECISIONS.md` and treats a number followed by the R15
 vocabulary — declared, served, refused/refusals/refused-only, absent, matched,
-missing, test(s), fixture(s), row(s) — as a claim. A claim is bound to its owner
-by the category noun, not by proximity: namespace(s) read
+missing, row(s) — as a claim. A claim is bound to its owner by the category noun
+that immediately follows it, not by proximity: namespace(s) read
 `fixtures/mods/coverage.json` `totals.namespaces`, member(s)/method(s)
 `totals.methods`, event(s) `totals.events`, element(s) `totals.elements`, render
 site(s) `totals.renderSites`, a bridge site reads
 `packages/dsh-anyplugin-conformance/test/mods.test.mjs`, and a coverage row reads
-`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`. The owner is either
-a `.test.mjs` exporting `EXPECTED_COUNTS` with the key the count noun maps to,
-or a JSON path followed by the object-section code span to read; a section that
-does not own the claim's family is a failure, and a bare JSON path cannot borrow
-a later section. Each table row is its own claim context, so a citation at the
-end of one row cannot certify the next. The checker reads the owner and fails
-with the doc file and the claim's exact line, the claim text, and both numbers
-when they disagree; a missing file, a JSON path without a section, a citation
-from another family, or an owner without the key is also a failure.
-`DECISIONS.md` is exempt because it is the append-only historical record: its
-numbers are what was true when the entry was ratified, and rewriting them would
-falsify it. The gate never makes the doc's own digit the oracle — the owner's
-number is on the other side of the comparison, which is what makes a stale row
-like #152 visible — and the ledger is not trusted merely because the doc agrees
-with it: `packages/dsh-anyplugin-conformance/test/mod-api-ledger.test.mjs`
+`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`. An earlier category
+word — a table's first-cell label, a sentence topic — never competes. If the word
+after the number is a noun the map does not know (`9 served pairs`), that is a
+failure, not a fallback to the nearest citation; only when no noun follows
+(punctuation, another number, a code span) does the nearest citation decide. The
+owner is either a `.test.mjs` exporting `EXPECTED_COUNTS` with the key the count
+noun maps to, or a JSON path followed by the object-section code span to read; a
+section that does not own the claim's family is a failure, and a bare JSON path
+cannot borrow a later section. Each table row is its own claim context, so a
+citation at the end of one row cannot certify the next. The checker reads the
+owner and fails with the doc file and the claim's exact line, the claim text, and
+both numbers when they disagree; a missing file, a JSON path without a section, a
+citation from another family, an unknown count noun, or an owner without the key
+is also a failure. `DECISIONS.md` is exempt because it is the append-only
+historical record: its numbers are what was true when the entry was ratified, and
+rewriting them would falsify it. The gate never makes the doc's own digit the
+oracle — the owner's number is on the other side of the comparison, which is what
+makes a stale row like #152 visible — and the ledger is not trusted merely because
+the doc agrees with it: `packages/dsh-anyplugin-conformance/test/mod-api-ledger.test.mjs`
 asserts the generated totals under `npm run verify`, so a bridge change such as
 adding `identity` to the `session.id` table reddens that test even when the doc
 check stays green.
