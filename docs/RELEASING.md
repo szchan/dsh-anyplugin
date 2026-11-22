@@ -63,15 +63,28 @@ The job publishes with `npm publish --provenance --access public` using
 `id-token: write`; there is no `NODE_AUTH_TOKEN` in the environment and the
 workflow asserts that before publishing.
 
-Verify from the registry, not from the log:
+Verify from the registry, not from the log, and **run what the registry
+serves**:
 
 ```bash
-curl -s https://registry.npmjs.org/dsh-anyplugin | node -e "…"  # dist-tags.latest, dist.attestations
-npx dsh-anyplugin@<version> --help                              # the bin is real
+node scripts/verify-release.mjs --version <version>
 ```
 
-`npm view` may serve a cached manifest; `curl` against the registry does not.
-A published version carries `dist.attestations.provenance.predicateType = https://slsa.dev/provenance/v1`.
+It reads the registry document (the version exists, and
+`dist.attestations.provenance.predicateType` is `https://slsa.dev/provenance/v1`),
+packs the published tarball with `npm pack`, unpacks it, and runs *its*
+`lib/cli.js report` on `fixtures/claude-skills-only`. The report's own facts
+are the claim: `ok`, the fixture's plugin name, the `claude-code` pin, at
+least one component, and a surface and class on every component. Exit 1 lists
+each claim that did not hold. The script is not part of `verify` — it reaches
+the network; it is the post-publish step.
+
+Run it from outside the checkout. Inside one, `npx dsh-anyplugin@<version>`
+resolves the workspace bin, whose `lib/cli.js` only exists after a build, and
+the same command fails with `dsh-anyplugin: command not found`.
+
+`npm view` may serve a cached manifest; the script reads the registry over
+`fetch`, which does not.
 
 Then open the GitHub release for the tag and write what changed, in the same
 five-class vocabulary the docs use (what is now `exact` / `equivalent` / still

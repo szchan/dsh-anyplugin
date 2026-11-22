@@ -76,7 +76,8 @@
     "pack:ui": "node scripts/pack-ui.mjs",
     "check:ui": "node scripts/check-ui-pack.mjs",
     "perf": "node scripts/perf.mjs",
-    "ci": "node scripts/ci.mjs"
+    "ci": "node scripts/ci.mjs",
+    "verify:release": "node scripts/verify-release.mjs"
   },
   "dependencies": {
     "@babel/core": "7.29.13",
