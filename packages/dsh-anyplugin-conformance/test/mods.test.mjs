@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -278,6 +278,35 @@ test('a live root is seated by apply and session.start reports the live cwd', { 
 
     assert.deepEqual(calls, [{ command: 'ls-first' }])
     assert.deepEqual(observed, { command: 'ls-first' }, 'a later pre-execute listener sees the rewrite')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('a mod session.start handler calls the pinned $.session.cwd method', { skip }, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-cwd-'))
+  const traceFile = join(dataDir, 'trace.jsonl')
+  const calls = []
+  try {
+    await probeLifecycleWithDsh({
+      harnessDir: harness.harnessDir,
+      entry: modsEntry(dataDir, traceFile, { mods: [{ entry: 'session-cwd.ts' }] }),
+      expected: [],
+      tool: bashTool(calls),
+      toolCall: { id: 'call_bash', name: 'Bash', arguments: JSON.stringify({ command: 'ls' }) },
+      preExistingRoot: true,
+      timeoutMs: 15_000,
+    })
+
+    const seen = stored(dataDir)['session-cwd']
+    assert.ok(seen, 'the session.start handler stored what it observed')
+    assert.equal(seen.kind, 'function', '$.session.cwd is the pinned method, not a string')
+    assert.equal(typeof seen.cwd, 'string', 'the method resolved a string')
+    assert.ok(seen.cwd.length > 0, 'the resolved cwd is non-empty')
+    assert.ok(isAbsolute(seen.cwd), `the resolved cwd is absolute: ${String(seen.cwd)}`)
+    assert.equal(seen.cwd, dataDir, "the cwd is the live session header's, not the process cwd")
+    assert.notEqual(seen.cwd, process.cwd())
+    assert.deepEqual(calls, [{ command: 'ls' }], 'the turn still ran')
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }

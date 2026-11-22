@@ -209,3 +209,59 @@ test('bridge omissions, freshness, timers, dispose and refusals are observable',
     fresh.dispose()
   }
 })
+
+// #134: the pin declares `$.session.cwd: () => Promise<string>`, so both the
+// callable shape and the session's own directory are asserted. The work dir is
+// deliberately not the process cwd: a string-valued `cwd` (the old shape) or a
+// `process.cwd()` fallback would fail this test.
+test('bridge serves $.session.cwd as a method of the attached session cwd', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'anyplugin-bridge-cwd-'))
+  const sessionWork = join(base, 'session-work')
+  mkdirSync(sessionWork)
+  const bridge = createModBridge({
+    plugin: 'unit/mod.ts',
+    dataDir: join(base, 'data'),
+    cwd: join(base, 'host-work'),
+    session: () => ({ id: 'session-1', cwd: sessionWork, messages: [], usage: {} }),
+  })
+  try {
+    const $ = bridge.dollar()
+    assert.equal(typeof $.session.cwd, 'function')
+    assert.equal(await $.session.cwd(), sessionWork)
+    assert.notEqual(await $.session.cwd(), process.cwd())
+  } finally {
+    bridge.dispose()
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('bridge refuses $.session.cwd instead of falling back to process.cwd()', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-bridge-nocwd-'))
+  const withView = createModBridge({
+    plugin: 'unit/mod.ts',
+    dataDir,
+    cwd: process.cwd(),
+    session: () => ({ id: 'session-1', messages: [], usage: {} }),
+  })
+  const raw = { header: { id: 'raw-1' }, deriveMessages: () => [], usage: {} }
+  const withRawSession = createModBridge({
+    plugin: 'unit/mod.ts',
+    dataDir,
+    cwd: process.cwd(),
+    session: () => raw,
+  })
+  const unattached = createModBridge({ plugin: 'unit/mod.ts', dataDir, cwd: process.cwd() })
+  try {
+    for (const bridge of [withView, withRawSession, unattached]) {
+      await assert.rejects(
+        bridge.dollar().session.cwd(),
+        (error) => error.code === 'ERR_MOD_HOST_SESSION_UNAVAILABLE',
+      )
+    }
+  } finally {
+    withView.dispose()
+    withRawSession.dispose()
+    unattached.dispose()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})

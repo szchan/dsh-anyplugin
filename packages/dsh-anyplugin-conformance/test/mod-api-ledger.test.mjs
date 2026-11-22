@@ -61,7 +61,7 @@ test('the corrected totals partition declared/served/refused/absent/wrong-shape'
   const live = await computeCoverage()
   assertPartition(live)
 
-  assert.deepEqual(live.totals.methods, { declared: 100, served: 25, refused: 7, absent: 67, wrongShape: 1 })
+  assert.deepEqual(live.totals.methods, { declared: 100, served: 26, refused: 7, absent: 67, wrongShape: 0 })
   assert.deepEqual(live.totals.properties, { declared: 2, served: 0, refused: 0, absent: 2, wrongShape: 0 })
   assert.deepEqual(live.totals.namespaces, { declared: 24, served: 9, refusedOnly: 2, absent: 13 })
   assert.deepEqual(live.totals.events, { declared: 167, served: 19, absent: 148 })
@@ -117,15 +117,37 @@ test('namespace rows count service, not presence: refused-only namespaces have z
   assert.equal(live.served.namespaces.includes('settings'), false)
 })
 
-test('session.cwd is a wrong-shape extra, never served and never absent', async () => {
+test('session.cwd is served as the pinned method, never a wrong-shape extra (#134)', async () => {
   const live = await computeCoverage()
-  assert.deepEqual(live.wrongShape, [
-    { name: 'session.cwd', declared: 'method', runtime: 'property', valueType: 'string' },
-  ])
-  assert.deepEqual(live.shapeMismatches, [{ name: 'session.cwd', declared: 'method', served: 'property' }])
+  assert.deepEqual(live.wrongShape, [])
+  assert.deepEqual(live.shapeMismatches, [])
+  assert.equal(live.served.methods.includes('session.cwd'), true)
   assert.equal(live.served.properties.includes('session.cwd'), false)
   assert.equal(live.absent.methods.includes('session.cwd'), false)
-  assert.equal(live.served.methods.includes('session.cwd'), false)
+})
+
+// The wrong-shape classification still has to be exercised: forge a runtime
+// property where the pin declares a method and prove it stays out of both
+// served and absent while the partition holds.
+test('a runtime property where the pin declares a method is wrong shape, not served or absent', async () => {
+  await computeCoverage()
+  const runtime = await inspectRuntime()
+  const forged = {
+    ...runtime,
+    entries: runtime.entries.map((entry) =>
+      entry.namespace === 'session' && entry.name === 'id'
+        ? { ...entry, kind: 'property', valueType: 'string', code: undefined }
+        : entry,
+    ),
+  }
+  const distorted = buildLedger(readDeclaration(), forged)
+  assert.deepEqual(distorted.wrongShape, [
+    { name: 'session.id', declared: 'method', runtime: 'property', valueType: 'string' },
+  ])
+  assert.deepEqual(distorted.shapeMismatches, [{ name: 'session.id', declared: 'method', served: 'property' }])
+  assert.equal(distorted.served.methods.includes('session.id'), false)
+  assert.equal(distorted.absent.methods.includes('session.id'), false)
+  assertPartition(distorted)
 })
 
 test('elements are surface-qualified, so dropping one surface entry is visible', async () => {
