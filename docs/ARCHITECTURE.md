@@ -1644,6 +1644,35 @@ names a head, not that the head was the one the reviewer read. The guard decisio
 paragraph is its framing, not a second decision. Branch protection, the DSH
 file sandbox and CI are the boundary.
 
+The guard's refusals are also evidence, not only a tool result the transcript
+happens to contain. Every `tools/pre-execute` denial appends one JSON object to
+`<project checkout>/.audit/guard-denials.jsonl` (gitignored;
+`DSH_ANYPLUGIN_AUDIT_DIR` moves the directory). The checkout is the one that
+owns the repository's `.git`, not the directory the module was read from: the
+guard is often imported from a linked worktree, and a log written there would be
+invisible to an audit run from the main checkout. The audit reader uses the
+same derivation (`scripts/audit-checkout.mjs`), so a `--separate-git-dir`
+checkout and a submodule are read from the directory the guard wrote; the
+layout test asserts the reader and the recorder agree in the main checkout, a
+linked worktree, a separate-git-dir checkout and a submodule. The record is
+`{ts, role, rule, tool, cwd, worktree, session, subject}`: `rule` is the id the
+reason already names, `role` is `root` or `worker`, `cwd`/`worktree`/`session`
+are null when the call does not expose them, and `subject` is the redacted
+command or path the rule judged — capped at 300 characters, with `ghp_`,
+`github_pat_`, `sk-`/`xsk-`, `Bearer`/`Basic` headers, both `--token` spellings
+and long hex/base64/base64url runs replaced by `[redacted]`; the full
+`arguments` blob is never written. A long hex run and a git sha cannot be told
+apart at this length, so the sha is redacted too — the rule, tool and role still
+identify the record. The write is best-effort: one `O_APPEND` write on
+`O_NOFOLLOW|O_NONBLOCK` (so a symlink cannot redirect it and a FIFO cannot hang
+the guard), a non-regular file is refused, and any failure is reported once per
+process and never changes the verdict. Two app-level plugin loads that see one
+call write once (in-process dedupe on `session + callId`, last 512); the
+per-agent seat is brief-only and never mounts `tools/pre-execute`. The log is an
+observability record, not an enforcement boundary (D68, proposed):
+`audit:evidence` aggregates it — total, by rule, by role, the last five records
+— but nothing fails a merge on its absence.
+
 The SubagentStart brief has no seam of its own: `subagent/start` is an emit with
 no value channel, and `SubagentStartRequest` has no instructions field at this
 pin (§10 S10). The only place text can reach the child before its first model

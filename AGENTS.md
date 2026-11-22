@@ -22,7 +22,7 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D67. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D69. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
@@ -111,7 +111,8 @@ npm run verify                    # CI only (all five env vars, both pins); do n
 npm run ci                        # watch the verify run for the current branch and print the failure
 npm run check:arch                # structural rules R1–R14
 npm run check:features            # the capability map points at real files; owns R15
-npm run check:decisions           # D1–D67 append-only (--update accepts new entries only)
+npm run check:decisions           # D1–D69 append-only (--update accepts new entries only)
+npm run perf                      # our hot paths as base/head ratios (docs/PROFILING.md)
 npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
 npm run check:audit               # the audit ledger/report gate (part of verify)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
@@ -128,6 +129,13 @@ on CI a skip is a failure by design (D22/D24). Do not run it, `npm test`,
 `npm run build` or `npm run bench` locally; push and read `npm run ci`. Static
 checks (`check:arch`, `check:features`, `check:decisions`) are the only local
 gate, because they spawn nothing.
+
+If you must run a suite locally anyway (reproducing a flake the reviewer reported),
+`npm test` now takes a machine-wide slot (`scripts/gate-slot.mjs`) and runs with
+`--test-concurrency=2`: one run at a time, two workers, so three agents cannot
+saturate the host. A slot held by a live process is waited on; a dead holder or a
+lock older than an hour is reclaimed with a printed reason. `npm run perf` is the
+other CPU-heavy command — run it once, not in a loop, and never alongside a suite.
 
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.
