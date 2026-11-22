@@ -215,6 +215,7 @@ adds measurable caps:
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
 | master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (dormant until the guard is installed, F1) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| integration runner | merges `origin/main` into a ticket branch, pushes that branch, polls CI, assembles PR bodies, cleans worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, or one that touches `main` |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
 | auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, approve, merge, close an issue or PR; it proposes a decision and the master writes it | an audit PR the auditor approved, merged, or closed itself |
@@ -231,7 +232,11 @@ on the convention.
 The caps are heuristics, not gates. The evidence script reports the eight
 largest sessions with their `cwd`; a pass that sees a root session above the
 cap says so in `## Findings` and proposes a split (a scheduled audit session, a
-separate integrator, or a narrower ticket).
+narrower ticket, or an integration runner that polls CI and updates branches —
+never a session that merges; merge authority with the pinned head stays in the
+master, D73). The master alarm is evaluated on the window the pass reports
+(one day for the daily pass); the lifetime count stays printed but is context,
+not the verdict: a lead that runs for a month always exceeds a lifetime cap.
 
 ## 8. Splitting the audit
 
