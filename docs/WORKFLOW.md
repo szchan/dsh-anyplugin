@@ -205,6 +205,13 @@ commit so the head changes (`git commit --allow-empty -m "ci: re-run verify"`)
 and wait for the new run. Never merge without the check and never bypass the
 rule; the status is the gate, the empty commit only re-asks for it.
 
+The check that branch protection reads is the one the **push** event produces —
+that is why `verify` runs on every branch. A same-repo PR does not start a
+second run under the same name (two `verify` checks on one commit leave one
+pending and block the merge); a fork PR runs as `verify-pr`, which is
+informational. If a PR head shows no `verify` at all, the push run is missing,
+not the PR run.
+
 Do not "fix" a skipped test by making it not need the harness. Either it is a
 pure test (then it belongs in a pure package) or it belongs to the oracle. In CI
 a skip is a bug.
