@@ -72,6 +72,78 @@ function methodNotAllowed(allow: string): Response {
   })
 }
 
+/**
+ * The install mutation is reachable from a browser, so a cross-site page must
+ * not be able to use it as a blind write. `text/plain` is CORS-safelisted and
+ * needs no preflight, hence both checks: a JSON content type, and no foreign
+ * `Origin` / cross-site `Sec-Fetch-Site`. Missing Origin is accepted for
+ * non-browser callers (the resource route and tests).
+ */
+function sameOrigin(request: Request): boolean {
+  const site = request.headers.get('sec-fetch-site')
+  if (site !== null && site !== 'same-origin' && site !== 'none') return false
+  const origin = request.headers.get('origin')
+  if (origin === null) return true
+  if (origin === 'null') return false
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  const host = request.headers.get('host') ?? new URL(request.url).host
+  return parsed.host === host
+}
+
+function isJson(request: Request): boolean {
+  const header = request.headers.get('content-type')
+  if (header === null) return false
+  return header.split(';', 1)[0]?.trim().toLowerCase() === 'application/json'
+}
+
+/** `Content-Length`, when honest, rejects an oversized body before a byte is read. */
+function declaredLength(request: Request): number | null {
+  const raw = request.headers.get('content-length')
+  if (raw === null) return null
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
+/**
+ * Read at most `MAX_BODY_BYTES` of UTF-8. The cap counts bytes, not UTF-16
+ * units, and a chunked body is cancelled while streaming instead of being
+ * buffered first.
+ */
+async function readBody(request: Request): Promise<{ ok: true; text: string } | { ok: false }> {
+  const declared = declaredLength(request)
+  if (declared !== null && declared > MAX_BODY_BYTES) return { ok: false }
+  if (request.body === null) return { ok: true, text: '' }
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel()
+      return { ok: false }
+    }
+    chunks.push(value)
+  }
+  return { ok: true, text: new TextDecoder().decode(concatBytes(chunks, total)) }
+}
+
 /** The lifecycle entry is lazy: a profile that never opens the panel pays nothing. */
 async function lifecycle(): Promise<{
   listPlugins: (options: ReturnType<typeof paths>) => {
@@ -117,13 +189,13 @@ async function list(config: Config): Promise<Response> {
 }
 
 async function install(request: Request, config: Config): Promise<Response> {
-  const text = await request.text()
-  if (text.length > MAX_BODY_BYTES) {
+  const payload = await readBody(request)
+  if (!payload.ok) {
     return json({ ok: false, code: 'body-too-large', reason: `the install body exceeds ${MAX_BODY_BYTES} bytes` }, 413)
   }
   let body: unknown
   try {
-    body = JSON.parse(text)
+    body = JSON.parse(payload.text)
   } catch {
     return json({ ok: false, code: 'invalid-body', reason: 'the install body is not JSON' }, 400)
   }
@@ -165,6 +237,12 @@ export async function dispatch(request: Request, config: Config = {}): Promise<R
   }
   if (url.pathname === INSTALL) {
     if (request.method !== 'POST') return methodNotAllowed('POST')
+    if (!sameOrigin(request)) {
+      return json({ ok: false, code: 'cross-origin', reason: 'the install route accepts same-origin requests only' }, 403)
+    }
+    if (!isJson(request)) {
+      return json({ ok: false, code: 'unsupported-media-type', reason: 'the install body must be application/json' }, 415)
+    }
     return install(request, config)
   }
   return json({ ok: false, code: 'not-found', reason: `no route ${url.pathname}` }, 404)

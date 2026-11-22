@@ -113,11 +113,16 @@ function mountServer(apply, config) {
   return { routes, ctx }
 }
 
-function streamRequest(method, url, body) {
+function streamRequest(method, url, body, headers = {}) {
   const stream = Readable.from(body === undefined ? [] : [Buffer.from(body)])
   stream.method = method
   stream.url = url
-  stream.headers = body === undefined ? {} : { 'content-type': 'application/json' }
+  const merged = body === undefined ? {} : { 'content-type': 'application/json' }
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === null) delete merged[name]
+    else merged[name] = value
+  }
+  stream.headers = merged
   return stream
 }
 
@@ -136,9 +141,9 @@ function fakeResponse() {
   }
 }
 
-async function callHandler(handler, method, url, body) {
+async function callHandler(handler, method, url, body, headers = {}) {
   const response = fakeResponse()
-  await handler(streamRequest(method, url, body), response)
+  await handler(streamRequest(method, url, body, headers), response)
   let json
   try {
     json = JSON.parse(response.body.toString('utf8'))
@@ -325,15 +330,131 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal(typeof refused.json.reason, 'string')
   assert.deepEqual(readFileSync(box.installs), before, 'a refused install left installs.yml untouched')
 
+  // The install mutation is browser-reachable: a cross-site page must not be
+  // able to use it as a blind write, and a CORS-safelisted text/plain body must
+  // not slip past a JSON check.
+  const beforeGuards = readFileSync(box.installs)
+  const crossSite = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { origin: 'https://evil.example', 'sec-fetch-site': 'cross-site', 'content-type': 'text/plain' },
+  )
+  assert.equal(crossSite.status, 403)
+  assert.equal(crossSite.json.code, 'cross-origin')
+  assert.deepEqual(readFileSync(box.installs), beforeGuards, 'a cross-origin install wrote nothing')
+
+  const plain = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { 'content-type': 'text/plain' },
+  )
+  assert.equal(plain.status, 415)
+  assert.equal(plain.json.code, 'unsupported-media-type')
+
+  const untyped = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { 'content-type': null },
+  )
+  assert.equal(untyped.status, 415)
+  assert.equal(untyped.json.code, 'unsupported-media-type')
+
+  const crossSiteNoOrigin = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { 'sec-fetch-site': 'cross-site' },
+  )
+  assert.equal(crossSiteNoOrigin.status, 403)
+
+  const sameOrigin = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { host: 'panel.invalid', origin: 'http://panel.invalid' },
+  )
+  assert.equal(sameOrigin.status, 200, JSON.stringify(sameOrigin.json))
+  assert.equal(sameOrigin.json.action, 'unchanged')
+
+  // The declared length rejects an oversized body before the body stream is
+  // even touched; the chunked path is cancelled while streaming, counting
+  // bytes rather than UTF-16 units. Both use a duck-typed request so the test
+  // measures the panel's reader, not undici's own pump.
+  let bodyReads = 0
+  const declaredRequest = {
+    url: `http://panel.invalid${PREFIX}/install`,
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json', 'content-length': String(70 * 1024) }),
+    get body() {
+      bodyReads += 1
+      return null
+    },
+  }
+  const declaredResponse = await panel.dispatch(declaredRequest)
+  assert.equal(declaredResponse.status, 413)
+  assert.equal(bodyReads, 0, 'the declared-length path never touched the body')
+
+  let chunkedReads = 0
+  let chunkedCancelled = 0
+  const chunk = Buffer.from('€'.repeat(8000)) // 24,000 bytes, 8,000 UTF-16 units
+  const chunkedRequest = {
+    url: `http://panel.invalid${PREFIX}/install`,
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: {
+      getReader() {
+        return {
+          async read() {
+            chunkedReads += 1
+            return chunkedReads > 100 ? { done: true, value: undefined } : { done: false, value: chunk }
+          },
+          async cancel() {
+            chunkedCancelled += 1
+          },
+        }
+      },
+    },
+  }
+  const chunkedResponse = await panel.dispatch(chunkedRequest)
+  assert.equal(chunkedResponse.status, 413)
+  assert.ok(chunkedReads <= 3, `the chunked body was cancelled early (reads: ${chunkedReads})`)
+  assert.equal(chunkedCancelled, 1, 'the over-limit stream was cancelled')
+
+  // projectDir is the profile's workspace: a committed project layer can
+  // disable the plugin, and the panel reports that decision, not the user one.
+  mkdirSync(join(box.project, '.dsh'), { recursive: true })
+  writeFileSync(join(box.project, '.dsh', 'anyplugin.yml'), 'plugins:\n  claude-code:skills-only: { enabled: false }\n')
+  const overridden = await listRoute.resource(new Request(`http://panel.invalid${PREFIX}/installs`))
+  const overriddenBody = await overridden.json()
+  assert.equal(overriddenBody.plugins[0].enabled, false)
+  assert.equal(overriddenBody.plugins[0].scope, 'project')
+  rmSync(join(box.project, '.dsh'), { recursive: true, force: true })
+
   // Method rules and shapes through the same dispatch the routes use.
   assert.equal((await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`))).status, 405)
   assert.equal((await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`, { method: 'PUT' }))).status, 405)
   assert.equal((await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/unknown`))).status, 404)
-  const bad = await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`, { method: 'POST', body: 'not json' }))
+  const bad = await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: 'not json',
+  }))
   assert.equal(bad.status, 400)
   assert.equal((await bad.json()).code, 'invalid-body')
   const huge = await panel.dispatch(
-    new Request(`http://panel.invalid${PREFIX}/install`, { method: 'POST', body: 'x'.repeat(70 * 1024) }),
+    new Request(`http://panel.invalid${PREFIX}/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'x'.repeat(70 * 1024),
+    }),
   )
   assert.equal(huge.status, 413)
   assert.equal((await huge.json()).code, 'body-too-large')
@@ -408,23 +529,37 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   // The array was built in the vm realm; compare its contents, not its prototype.
   assert.deepEqual(Array.from(exports.inject), ['slots'])
 
+  const declared = new Set()
   const registered = []
-  exports.apply({
-    slots: {
-      register(options, component) {
-        registered.push({ options, component })
-        return () => {}
-      },
-      inject(_key, register) {
-        register()
-      },
+  const slots = {
+    register(options, component) {
+      // The shipped SlotCore's rule: a bare register throws until a parent (or
+      // this plugin's own `inject`) declares the slot.
+      if (!declared.has(options.name)) {
+        throw new Error(`slot "${options.name}" is not declared (a parent entry's children table must declare it)`)
+      }
+      registered.push({ options, component })
+      return () => {
+        const index = registered.findIndex((row) => row.options === options)
+        if (index !== -1) registered.splice(index, 1)
+      }
     },
-  })
+    inject(name, factory) {
+      declared.add(name)
+      const cleanup = factory()
+      return () => {
+        cleanup?.()
+        declared.delete(name)
+      }
+    },
+  }
+  const dispose = exports.apply({ slots })
   assert.equal(registered.length, 1)
   assert.equal(registered[0].options.name, 'settings.section')
   assert.equal(registered[0].options.id, 'anyplugin-ui')
   assert.equal(registered[0].options.order, 45)
   assert.equal(registered[0].options.label(), 'AnyPlugin')
+  assert.ok(declared.has('settings.section'), 'the client declared the slot before registering')
 
   // The panel's `fetch` is the server half's own dispatch: one JSON contract,
   // no second HTTP shape invented by the test.
@@ -460,4 +595,9 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   tree = render(registered[0].component)
   assert.match(textOf(tree), new RegExp(`installed ${ID}`))
   assert.deepEqual(calls.at(-1), [`${PREFIX}/install`, 'POST'])
+
+  // Disposing the plugin runs the cleanup the inject handshake returned.
+  assert.equal(typeof dispose, 'function')
+  dispose()
+  assert.equal(registered.length, 0, 'the slot registration was removed on dispose')
 })

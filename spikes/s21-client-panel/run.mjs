@@ -10,7 +10,7 @@
 // handshake a browser shell performs:
 //
 //   1. boot a real cordis `Context` + the real `Loader`, with a fixture package
-//      under `fixtures/node_modules/` that declares `dsh.client` and exports
+//      under `fixtures/` that declares `dsh.client` and exports
 //      `./client` (the shape the harness documents for third-party bundles);
 //   2. boot the host half of `dsh-client-modules`, which composes every enabled
 //      Loader entry into `window.__DSH_BOOT__` and registers a `/plugins` route
@@ -44,7 +44,7 @@ import vm from 'node:vm'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
 const VERSION = process.env.DSH_HARNESS_VERSION?.trim() || '0.2.2-rc.5'
-const FIXTURE = join(HERE, 'fixtures', 'node_modules', 'anyplugin-s21-panel')
+const FIXTURE = join(HERE, 'fixtures', 'anyplugin-s21-panel')
 const PACKAGE = 'anyplugin-s21-panel'
 const QUESTION =
   'can a third-party bundle register a client module through window.__ModuleLoader__.load({ id, factory }) and be mounted by the Desktop UI and by dsh web, with the bundle served by the host\'s /plugins route from an enabled Loader entry, without rebuilding the harness?'

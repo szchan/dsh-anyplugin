@@ -24,11 +24,19 @@
     }
   },
   "peerDependencies": {
-    "dsh-anyplugin": "0.2.0"
+    "dsh-anyplugin": "^0.2.0"
   },
   "peerDependenciesMeta": {
     "dsh-anyplugin": {
       "optional": true
     }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/szchan/dsh-anyplugin.git"
+  },
+  "engines": {
+    "node": ">=22.14"
   }
 }

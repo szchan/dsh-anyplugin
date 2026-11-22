@@ -47,6 +47,15 @@ after the merge, and tag again:
 git push --delete origin v0.2.0 && git tag -d v0.2.0
 ```
 
+## The optional panel
+
+`dsh-anyplugin-ui` is a second artifact (D61), not part of the root tarball.
+It has its own budget: `npm run check:ui` refuses a panel tarball above
+64 KiB, and `npm run pack:ui` produces the publishable tarball (the staging
+step rewrites `exports["."]` to the built `lib/index.js`). The release
+workflow publishes only the root package today; wiring a second OIDC publish
+for the panel is a release-workflow change, not a laptop publish.
+
 ## After the workflow
 
 The job publishes with `npm publish --provenance --access public` using

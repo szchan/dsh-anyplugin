@@ -57,7 +57,7 @@
     "build": "node scripts/build.mjs",
     "check:pack": "node scripts/check-pack.mjs",
     "prepack": "npm run build",
-    "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm run check:pack && npm test",
+    "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm run check:pack && npm run check:ui && npm test",
     "spike:s9": "node spikes/s9-host-events/run.mjs",
     "spike:s10": "node spikes/s10-agents/run.mjs",
     "spike:s11": "node spikes/s11-prompt-scope/run.mjs",
@@ -70,7 +70,9 @@
     "guard:install": "node scripts/guard-install.mjs",
     "guard:status": "node scripts/guard-status.mjs",
     "triage": "node scripts/triage.mjs",
-    "check:decisions": "node scripts/check-decisions.mjs"
+    "check:decisions": "node scripts/check-decisions.mjs",
+    "pack:ui": "node scripts/pack-ui.mjs",
+    "check:ui": "node scripts/check-ui-pack.mjs"
   },
   "dependencies": {
     "@babel/core": "7.29.13",

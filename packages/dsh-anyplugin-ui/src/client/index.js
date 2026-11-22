@@ -192,8 +192,14 @@ function Panel() {
 export const inject = ['slots']
 
 export function apply(ctx) {
-  ctx.slots.register(
-    { name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' },
-    Panel,
+  // The handshake every shipped settings section uses: `inject` makes the
+  // parent slot visible for this plugin fiber and hands the factory's cleanup
+  // (the unregister) to that fiber. A bare `register` throws
+  // `slot "settings.section" is not declared` on a fresh SlotCore.
+  return ctx.slots.inject('settings.section', () =>
+    ctx.slots.register(
+      { name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' },
+      Panel,
+    ),
   )
 }

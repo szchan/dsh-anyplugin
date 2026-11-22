@@ -157,9 +157,11 @@ reconcile lives in `dsh-anyplugin-install`.
 
 ### The published package
 
-The root package is `dsh-anyplugin` (0.2.0), and it is the one published artifact
-today. The optional panel is a second, separate artifact; its publication is
-proposed in the issue #147 PR and is not ratified here.
+The root package is `dsh-anyplugin` (0.2.0). D61 adds the programmatic
+`./install` subpath the optional panel uses; D61 also names the panel a
+separately published optional artifact, so the root tarball stays the compile
+path and the panel has its own artifact and budget (see "The optional panel"
+below).
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).
@@ -170,8 +172,9 @@ consumer's Node; that build is packaging, not code generation — the compiler
 still emits a pure-data `EntryTree` (`D1`), and nothing is written or evaluated
 at install time.
 
-`exports` publishes only what a patch row or the reconciler can name: `.` (the
-controller) and `./materialize/{skill,mcp,hook,agents,output-style}`.
+`exports` publishes only what a patch row, the reconciler or the panel can name:
+`.` (the controller), `./install` (the programmatic installer, D61) and
+`./materialize/{skill,mcp,hook,agents,output-style}`.
 The other runtime modules are bundled into those entries rather than published
 as separate subpaths, and the reconciler names materializers by published
 subpath (never by file URL), so the tarball can move without rewriting config.
@@ -191,18 +194,28 @@ halves that meet at a JSON route, not at a build step:
   `installPlugin` the CLI calls (D49) — so the manifest, version, compile and
   grant checks are the CLI's. The client's path is the only field read; scope
   and grants from the client are ignored, and a refusal is the CLI's typed
-  `{code, reason}` with HTTP 400.
+  `{code, reason}` with HTTP 400. The mutation is same-origin only: it needs
+  `application/json` (415 otherwise — `text/plain` is CORS-safelisted), refuses
+  a foreign `Origin` or cross-site `Sec-Fetch-Site` (403), and caps the body at
+  64 KiB by streaming the bytes and cancelling early (413). `projectDir`
+  defaults to the server process's `cwd`; a web server started outside the
+  workspace must pass it in the plugin config or the project enablement layer
+  is read from the wrong tree.
 - **client**: `src/client/index.js` is built by `scripts/build.mjs` into
   `lib/client.js`, a `window.__ModuleLoader__.load({ id: 'dsh-anyplugin-ui',
   factory })` bundle. It imports `react` from the host module table and
   renders into the `settings.section` slot. S21 (§10) proves the host
-  serves and mounts that shape without a harness rebuild at both pins.
+  composes the boot row and serves that shape without a harness rebuild at
+  both pins; registration and rendering were exercised against stubs, not a
+  real browser.
 
 A profile opts in by adding `dsh-anyplugin-ui` to `dsh.profile.bundles`; the
 package README carries the two lines. The repository manifest keeps
-`exports["."] = "./src/index.ts"` for R7, so publishing needs a step that points
-`exports["."]` at the prebuilt `./lib/index.js`; the panel test runs the
-copied package in that publish-time shape.
+`exports["."] = "./src/index.ts"` for R7, so `npm run pack:ui` stages `lib/` and
+points `exports["."]` at the prebuilt `./lib/index.js` before packing; the panel
+test runs the copied package in that publish-time shape. `npm run check:ui`
+enforces the panel's own 64 KiB tarball ceiling (D59 governs the root tarball
+only) and the artifact's file list.
 
 ## 3. AgentPlugin IR
 
@@ -2657,7 +2670,7 @@ adding `identity` to the `session.id` table reddens that test even when the doc
 check stays green.
 
 
-### S21 — a third-party client bundle mounts without a harness rebuild
+### S21 — a third-party client bundle is served without a harness rebuild
 
 **Question.** Can a third-party package register a client module through
 `window.__ModuleLoader__.load({ id, factory })` and be mounted by the Desktop
@@ -2667,7 +2680,7 @@ an enabled Loader entry, without rebuilding the harness? (issue #147)
 **Method.** `spikes/s21-client-panel` boots the host halves from the pinned
 tree — a real `Context`, the real `Loader`, and
 `@deepseek-ai/dsh-client-modules` — against
-`fixtures/node_modules/anyplugin-s21-panel`, a package that declares
+`fixtures/anyplugin-s21-panel`, a package that declares
 `dsh.client { platform: 'web' }` and exports a prebuilt `./client` classic
 script. The spike provides a probe `webServer` service, creates the Loader
 entry, boots the registry and checks the composed `window.__DSH_BOOT__` row,
@@ -2695,15 +2708,17 @@ carries a revisioned row (`plugins/??anyplugin-s21-panel/client.js&rev=<12 hex>`
 `clientPath` names the package's built bundle, and the route answers
 `200 text/javascript; charset=utf-8` with
 `cache-control: public, max-age=31536000, immutable`; `HEAD` is 200 with no
-body, an unknown revision is 404 and `POST` is 405. The browser half
-materializes the served bytes into a cordis plugin, `apply` registers
-`settings.section`, and the component renders with only the platform `react`
-seed. Removing the Loader entry drops the row. The spike passes 18/18 checks on
+body, an unknown revision is 404 and `POST` is 405. In the `vm` shell the
+browser half materializes the served bytes into a cordis plugin, `apply`
+registers `settings.section`, and the component renders with only the platform
+`react` seed. Removing the Loader entry drops the row. The spike passes 18/18 checks on
 both pins without writing to the harness tree; the report is
 `spikes/s21-client-panel/out/report.json` (gitignored; regenerate with
 `npm run spike:s21` and the pin's `DSH_HARNESS_DIR`).
 
-**What this does not prove.** The host serves *built* bytes only, so the
+**What this does not prove.** The composed boot payload and the served bundle
+are correct; `apply`/registration/rendering were exercised against stubs, and a
+real browser mount is inferred, not observed. The host serves *built* bytes only, so the
 `./client` file must exist after the package's build and before the entry
 starts; publishing a source file and compiling at install time is not a path
 this spike measured. On a Node where the `node-addon-require-builtin` addon is
