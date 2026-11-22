@@ -621,6 +621,11 @@ function digest(evidence) {
   } else {
     const sessions = evidence.sessions
     lines.push(`- ${sessions.sessions} sessions (${sessions.roots} root, ${sessions.children} child); presets: ${sessions.presets.map((row) => `${row.preset} ${row.count}`).join(', ')}`)
+    // The window selects *sessions* by transcript mtime; the per-session counts
+    // below cover the whole transcript, not just events inside the window. The
+    // largest-session total is therefore a lifetime figure, which is exactly the
+    // unit the role cap measures. Say so, or a 1-day digest reads as 1-day calls.
+    lines.push('- counts below are per included session\'s whole transcript: the window selects sessions by transcript mtime, not calls by time; largest-session totals are lifetime, the role-cap unit')
     lines.push(`- bash ${sessions.bashCalls} calls; leading \`cd\` ${sessions.cdPrefix} (${pct(sessions.cdPrefix, sessions.bashCalls)}); \`workdir\` ${sessions.workdir} (${pct(sessions.workdir, sessions.bashCalls)}); tool errors ${sessions.toolErrors}; verify ${sessions.verifyRuns}, check:* ${sessions.gateRuns}`)
     lines.push(`- tools: ${sessions.toolCalls.slice(0, 12).map((row) => `${row.name} ${row.count}`).join(', ')}`)
     lines.push('- top command groups: ' + sessions.bashGroups.slice(0, 12).map((row) => `\`${row.group}\` ${row.count}${row.failed > 0 ? ` (${row.failed} failed)` : ''}`).join(', '))

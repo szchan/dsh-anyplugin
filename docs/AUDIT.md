@@ -505,13 +505,12 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F16",
       "title": "Guard denials are not observable",
       "mechanism": "hook",
-      "status": "enforced",
+      "status": "dormant",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "proof": "packages/dsh-anyplugin-guard/test/denials.test.mjs",
-      "tracking": "#164",
-      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68).",
+      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), but on this machine the guard is not installed (F1): no pre-push hook, 0 installed worktrees, and no log file. Under §11 that is the definition of dormant, not enforced — the baseline's `enforced` read a merged mechanism as an active one. Activation is tracked by F1, not by a separate ticket.",
       "evidence": [
-        "2026-11-22 evidence: DENY lines 33 unknown / 21 shell-unmodelled, self-tests included",
+        "2026-11-22 09:00 evidence: guard not-installed, 1 desired / 0 installed, pre-push missing, no .audit/guard-denials.jsonl",
         "2026-11-22 D68: structured log merged in #181; digest counts total/by-rule/by-role and last five",
         "denials.test.mjs: one record per denial, dedupe by session+callId, four checkout layouts"
       ]
@@ -535,9 +534,10 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "reviewer",
       "status": "reviewed",
       "artifact": "docs/AUDIT.md",
-      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss.",
+      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199: an integrator session owns merge mechanics and PR-body assembly; the root keeps dispatch, decisions, and verdicts.",
       "evidence": [
-        "2026-11-22 evidence: root session-522222a9 2,470 tools, next child 1,073",
+        "2026-11-22 00:20 evidence: root session-522222a9 2,470 tools, next child 1,073",
+        "2026-11-22 09:00 evidence: same root 2,991 lifetime (1,112 in window), next child 1,073; split proposal #199",
         "docs/AUDIT.md §7 role caps"
       ]
     }
