@@ -130,26 +130,19 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
 3. Work only inside `Touches`. A file you need but did not declare is a signal:
    either say so in the PR body, or open a follow-up issue instead of widening
    the diff.
-4. Run `npm run verify` in the worktree. It must be green **before** the PR
-   opens, including the tests that need a harness or the upstream CLI. CI
-   fetches the pinned Claude CLI and both npm pins (0.2.2-rc.5 and 0.2.2-rc.2)
-   once; the fetch installs the union the suite and spikes need, so there is no
-   per-step install. CI fails on a skip, but it cannot test your Desktop
-   installation — so paste the local run in the PR. CI and the reference
-   machine run Node 24; the profile-mount test needs `module.registerHooks`
-   (Node >= 22.15) and skips with a reason naming that version on older Node.
-   The package's published engine floor stays 22.14 — the floor describes the
-   package, not the suite. The mod-coverage test also reads the fetched mod
-   tree: run `node scripts/fetch-mod.mjs` once, or set `ANYPLUGIN_MODS_TREE` to
-   an already-fetched tree. Without it `computeCoverage` throws with the fetch
-   instruction; it does not skip.
+4. **Do not run the suite locally.** Push the branch: `verify` runs on every
+   branch push (0.2.2-rc.5 and 0.2.2-rc.2, the pinned Claude CLI, one union
+   fetch), and `npm run ci` tells you what it said. Local runs are limited to the
+   static checks (`check:arch`, `check:features`, `check:decisions`), which read
+   files and start no child processes. This is #175: the maintainer's machine is
+   shared, and a botched local suite is a real cost.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
 
 ## Definition of done (a worker may not ship without all of these)
 
 - the acceptance checkboxes in the ticket are observably true;
-- `npm run verify` green locally (paste the summary line in the PR);
+- the `verify` run on the PR head is green (link the run, not a local paste);
 - every new behaviour has an assertion (a unit test, or a fixture row that moved
   because the behaviour really changed);
 - the PR body states each behavioural claim in a `Claim | Proof` table, the proof
