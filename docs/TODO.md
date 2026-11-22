@@ -47,8 +47,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 - [ ] **Mod host** (D3, ARCHITECTURE §7), in dependency order: static scanner →
       chain engine → element runtime → the remaining namespace bridges → type
-      generation from the pinned `claude-code.d.ts`. Coverage is
-      `covered / total` against that file, and it only moves up.
+      generation from the pinned `claude-code.d.ts`.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
@@ -56,6 +55,23 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- Mod coverage ledger (ticket #130): `scripts/mod-coverage.mjs` scans the pinned
+  `mods/types/claude-code.d.ts` by declaration and classifies every declared
+  symbol against the runtime `$` table as `served`, `refused` (a typed
+  `ERR_MOD_HOST_*` refusal under the recorded bridge configuration), `absent`, or
+  `wrongShape`. It commits `fixtures/mods/coverage.json` with those sets for
+  namespaces, methods, properties, events, surface-qualified elements, render
+  sites and matcher type aliases, and asserts each runtime-comparable
+  category's partition (matchers are counted by name only, not partitioned).
+  Namespace rows count service, not presence: `process` and `settings` are
+  refused-only (0 served members), so the declared 24 are 9 served / 2
+  refused-only / 13 absent.
+  `--update` rewrites it and rejects a runtime member the pin does not declare;
+  `mod-api-ledger.test.mjs` fails on drift, and a served method removed from
+  `bridge.ts` reddens it. Render sites are 1 served / 19 planned (`Pane` on
+  terminal only). The ledger is a denominator, not a fidelity claim. The rest of
+  the **Mod host** line (static scanner, chain engine, element runtime, remaining
+  bridges, type generation) is still Later.
 - Codex install end to end (ticket #101): `compile.ts` resolves a lock row's
   `dialect` through a two-entry registry (`claude-code` → `readClaudePlugin` +
   `claude-code@2.1.329`; `codex` → `readCodexPlugin` +
