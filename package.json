@@ -47,6 +47,7 @@
     "fetch:harness": "node scripts/fetch-harness.mjs",
     "fetch:claude": "node scripts/fetch-claude.mjs",
     "fetch:mod": "node scripts/fetch-mod.mjs",
+    "gen:types": "node scripts/gen-mod-types.mjs",
     "test": "node --experimental-vm-modules --test \"packages/**/*.test.mjs\" \"scripts/**/*.test.mjs\"",
     "pretest": "npm run build",
     "extract:hooks": "node scripts/extract-hook-payloads.mjs",

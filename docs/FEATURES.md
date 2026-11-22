@@ -51,7 +51,7 @@ it.
 | `register(on, options)` | options from the manifest, `Registration.catch` | `exact` | `packages/dsh-anyplugin-mod-host/src/options.ts`, D36 |
 | Event routing | 19 routed, 167 pinned, 148 categorized | `equivalent` | `packages/dsh-anyplugin-intercept/src/mod-events.ts`, D40 |
 | `next` surface | `to`, `signal`, `budget`, `trace`, eager trips | `exact` since D38 | `packages/dsh-anyplugin-intercept/src/index.ts`, D38 |
-| `$` bridge | 24 served, 3 typed refusals, 3 absent (S15, 2.1.329) | `equivalent` | `packages/dsh-anyplugin-mod-host/src/bridge.ts`, `docs/ARCHITECTURE.md` §10.5 S15 |
+| `$` bridge | 26 served, 7 typed refusals, 67 absent members (ledger, 2.1.329) | `equivalent` | `packages/dsh-anyplugin-mod-host/src/bridge.ts`, `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`, `docs/ARCHITECTURE.md` §10.5 S15 |
 | Element runtime | `$.ui.*` refusals are typed; sink is ticket #75 | `unsupported` | `docs/TODO.md` |
 | Seven pinned upstream mods | 7/7 loaded (45/10/11/4/6/8/1 registrations) | `exact` registration | `fixtures/mods/upstream.json`, D36/D39 |
 
