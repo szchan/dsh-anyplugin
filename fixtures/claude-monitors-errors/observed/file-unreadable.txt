@@ -1,0 +1,1 @@
+Error: monitors load failed from <plugin>/monitors/monitors.json: EACCES: permission denied, open ’<plugin>/monitors/monitors.json’

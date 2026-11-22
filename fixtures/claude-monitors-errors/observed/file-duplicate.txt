@@ -1,0 +1,1 @@
+Error: monitors load failed from <plugin>/monitors/monitors.json: [ { ”code”: ”custom”, ”path”: [], ”message”: ”Monitor names must be unique within a plugin” } ]

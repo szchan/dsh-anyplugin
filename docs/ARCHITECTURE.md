@@ -2823,6 +2823,15 @@ dialect carries that declaration as one `unsupported` row — field path, cause
 and the client's own error text — and compiles the rest. A valid declaration
 remains one `planned` row (D37).
 
+The quoted text is captured, not written from memory: every entry in
+`MONITOR_CLIENT_TEXT` (`packages/dsh-anyplugin-dialect-claude-code/src/monitor-client-text.ts`)
+is a slice of a `claude --plugin-dir <shape> plugin list` line stored in
+`fixtures/claude-monitors-errors/observed/<shape>.txt` (29 shapes, scrubbed
+temp path, `PROVENANCE.md` names the pin). `scripts/capture-monitor-errors.mjs`
+regenerates the corpus; `monitors.test.mjs` asserts each rendered entry is a
+substring of its captured line, so the reason cannot drift into invented text
+and a pin bump produces a reviewable diff.
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the

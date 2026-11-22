@@ -28,6 +28,7 @@ import type {
   IrUnmaterialized,
 } from '../../dsh-anyplugin-ir/src/index.ts'
 import { IR_SCHEMA, weakestAnnotation } from '../../dsh-anyplugin-ir/src/index.ts'
+import { monitorClientText, type MonitorClientTextKey } from './monitor-client-text.ts'
 
 export const CLAUDE_CODE_PIN: IrPin = { tool: 'claude-code', version: '2.1.329' }
 
@@ -1327,14 +1328,28 @@ class MonitorsRefusal extends Error {
   readonly source: string
   readonly at: string
   readonly detail: string
+  /** The captured client line this refusal quotes (see MONITOR_CLIENT_TEXT). */
   readonly client: string
+  /** True when the client printed its generic `monitors: Invalid input` line. */
+  readonly generic: boolean
 
-  constructor(kind: 'manifest' | 'file', source: string, at: string, detail: string, client: string) {
+  constructor(
+    kind: 'manifest' | 'file',
+    source: string,
+    at: string,
+    detail: string,
+    clientKey: MonitorClientTextKey,
+    clientParams: Record<string, string | number> = {},
+  ) {
+    const client = monitorClientText(clientKey, clientParams)
+    const generic = clientKey === 'manifestGeneric'
     super(
       `invalid monitors declaration in ${source}: ${at}: ${detail}. ` +
         (kind === 'manifest'
-          ? `The pinned client refuses the manifest (S22, claude-code@2.1.329): ${client}. The plugin is not loaded.`
-          : `The pinned client loads the plugin with errors (S22, claude-code@2.1.329): ${client}.`),
+          ? `The pinned client refuses the manifest (S22, claude-code@2.1.329) and prints: ${client}. ` +
+            (generic ? "That is the client's generic validation line; the field-level cause above is ours. " : '') +
+            'The plugin is not loaded.'
+          : `The pinned client loads the plugin with errors (S22, claude-code@2.1.329) and prints: ${client}.`),
     )
     this.name = 'MonitorsRefusal'
     this.kind = kind
@@ -1342,6 +1357,7 @@ class MonitorsRefusal extends Error {
     this.at = at
     this.detail = detail
     this.client = client
+    this.generic = generic
   }
 }
 
@@ -1350,9 +1366,10 @@ function monitorsInvalid(
   source: string,
   at: string,
   detail: string,
-  client: string,
+  clientKey: MonitorClientTextKey,
+  clientParams: Record<string, string | number> = {},
 ): never {
-  throw new MonitorsRefusal(kind, source, at, detail, client)
+  throw new MonitorsRefusal(kind, source, at, detail, clientKey, clientParams)
 }
 
 /**
@@ -1375,9 +1392,17 @@ function monitorsShape(value: unknown): string {
 function monitorsJson(text: string, source: string, kind: 'manifest' | 'file'): unknown {
   try {
     return JSON.parse(text)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    monitorsInvalid(kind, source, 'monitors', `not valid JSON (${detail})`, `JSON Parse error: ${detail}`)
+  } catch {
+    // The client prints only its JSON.parse prefix (`JSON Parse error:
+    // Expected '}'`), without V8's position/line suffix, so the quoted text is
+    // that prefix. The detail below is ours.
+    monitorsInvalid(
+      kind,
+      source,
+      'monitors',
+      'is not valid JSON',
+      kind === 'manifest' ? 'manifestGeneric' : 'fileInvalidJson',
+    )
   }
 }
 
@@ -1388,7 +1413,8 @@ function monitorsArray(value: unknown, source: string, kind: 'manifest' | 'file'
       source,
       'monitors',
       `must be an array of monitor declarations, not ${monitorsShape(value)}`,
-      `expected array, received ${monitorsZodShape(value)}`,
+      kind === 'manifest' ? 'manifestGeneric' : 'fileNotArray',
+      { shape: monitorsZodShape(value) },
     )
   }
   return value
@@ -1407,7 +1433,8 @@ function validateMonitorEntry(
       source,
       at,
       `must be an object, not ${monitorsShape(entry)}`,
-      `expected object, received ${monitorsZodShape(entry)}`,
+      kind === 'manifest' ? 'manifestGeneric' : 'fileNotObject',
+      { shape: monitorsZodShape(entry) },
     )
   }
   const record = entry as Record<string, unknown>
@@ -1418,7 +1445,8 @@ function validateMonitorEntry(
         source,
         at,
         `unrecognized key ${JSON.stringify(key)} (the accepted keys are name, command, description, when)`,
-        `Unrecognized key: ${JSON.stringify(key)}`,
+        kind === 'manifest' ? 'manifestUnknownKey' : 'fileUnknownKey',
+        { key },
       )
     }
   }
@@ -1430,7 +1458,8 @@ function validateMonitorEntry(
         source,
         `${at}.${key}`,
         'is required and must be a non-empty string',
-        'Invalid input: expected string, received undefined',
+        kind === 'manifest' ? 'manifestGeneric' : 'fileNotString',
+        { shape: 'undefined' },
       )
     }
     if (typeof value !== 'string') {
@@ -1439,7 +1468,8 @@ function validateMonitorEntry(
         source,
         `${at}.${key}`,
         `must be a string, not ${monitorsShape(value)}`,
-        `Invalid input: expected string, received ${monitorsZodShape(value)}`,
+        kind === 'manifest' ? 'manifestGeneric' : 'fileNotString',
+        { shape: monitorsZodShape(value) },
       )
     }
     if (value.length === 0) {
@@ -1448,7 +1478,7 @@ function validateMonitorEntry(
         source,
         `${at}.${key}`,
         'must be at least 1 character',
-        'Too small: expected string to have >=1 characters',
+        kind === 'manifest' ? 'manifestTooSmall' : 'fileTooSmall',
       )
     }
   }
@@ -1460,7 +1490,7 @@ function validateMonitorEntry(
       source,
       `${at}.when`,
       `must be "always" or "on-skill-invoke:<skill-name>", not ${monitorsShape(when)}`,
-      `Invalid input: expected "always"; Invalid input: expected string, received ${monitorsZodShape(when)}`,
+      kind === 'manifest' ? 'manifestGeneric' : 'fileWhenUnion',
     )
   }
   if (when === 'always') return
@@ -1470,7 +1500,7 @@ function validateMonitorEntry(
       source,
       `${at}.when`,
       `must be "always" or "on-skill-invoke:<skill-name>", not ${JSON.stringify(when)}`,
-      'Invalid string: must start with "on-skill-invoke:"; on-skill-invoke: must specify a skill name',
+      kind === 'manifest' ? 'manifestWhenFormat' : 'fileWhenFormat',
     )
   }
   if (when.length === 'on-skill-invoke:'.length) {
@@ -1479,7 +1509,7 @@ function validateMonitorEntry(
       source,
       `${at}.when`,
       '"on-skill-invoke:" must name a skill after the colon',
-      'on-skill-invoke: must specify a skill name',
+      kind === 'manifest' ? 'manifestWhenShort' : 'fileWhenShort',
     )
   }
 }
@@ -1499,7 +1529,7 @@ function rejectDuplicateNames(entries: unknown[], source: string, kind: 'manifes
         source,
         `monitors[${index}].name`,
         `duplicate monitor name ${JSON.stringify(name)} (names must be unique within a plugin)`,
-        'Monitor names must be unique within a plugin',
+        kind === 'manifest' ? 'manifestDuplicateName' : 'fileDuplicateName',
       )
     }
     seen.add(name)
@@ -1518,6 +1548,9 @@ function rejectDuplicateNames(entries: unknown[], source: string, kind: 'manifes
 function monitorsRefusedReason(refusal: MonitorsRefusal): string {
   return (
     `The pinned client rejects this declaration at claude-code@2.1.329: ${refusal.source} ${refusal.at}: ${refusal.detail}. Its own error text is: ${refusal.client}. ` +
+    (refusal.generic
+      ? "That line is the client's generic validation message; the field-level detail above is ours. "
+      : '') +
     'The client does not refuse the plugin: `claude plugin list` reports `Status: ✘ loaded with errors` and prints that error, while `claude plugin details` still exits 0 and serves the plugin\'s other components; `plugin details` lists no Monitors row. ' +
     'The S22 marketplace capture printed `Status: ✘ failed to load` for the same kind of declaration, so the two load paths diverge at this pin; this layer mirrors the directory form that `rig install <dir>` uses. ' +
     'The declaration is carried as this `unsupported` row and is not emitted (D37): DSH has no channel from a background process stdout into the model context, and a declaration the client itself rejects cannot be installed as if it were valid. The rest of the plugin compiles as before.'
@@ -1561,26 +1594,32 @@ function readMonitors(
   }
 }
 
-function fileErrorText(error: unknown, absolute: string): string {
-  const code = (error as { code?: string }).code
-  if (code === 'ENOENT') return `ENOENT: no such file or directory, lstat ${JSON.stringify(absolute)}`
-  if (code === 'EACCES') return `EACCES: permission denied, open ${JSON.stringify(absolute)}`
-  if (error instanceof Error) return error.message
-  return String(error)
-}
-
 function readDeclarationText(absolute: string, source: string): string {
   try {
     return readFileSync(absolute, 'utf8')
   } catch (error) {
-    monitorsInvalid('file', source, 'monitors', `cannot read ${JSON.stringify(absolute)}`, fileErrorText(error, absolute))
+    const code = (error as { code?: string }).code
+    const key: MonitorClientTextKey =
+      code === 'EACCES' ? 'fileUnreadable' : code === 'ENOENT' ? 'fileMissing' : 'fileNotRegularFile'
+    monitorsInvalid(
+      'file',
+      source,
+      'monitors',
+      `cannot read ${JSON.stringify(absolute)}`,
+      key,
+      { path: absolute },
+    )
   }
 }
 
 /**
  * The default file may simply be absent: `monitors/` with no `monitors.json` is
  * one of the shapes the client accepts. Any other stat failure, or a path that
- * is not a regular file, is a `file`-class rejection.
+ * is not a regular file, is a `file`-class rejection. The client's own wording
+ * for the directory/non-regular case is `not a regular file, or too large`
+ * (captured in fixtures/claude-monitors-errors/observed/file-is-directory.txt),
+ * so the detail here deliberately avoids EISDIR and the quoted text comes from
+ * MONITOR_CLIENT_TEXT.
  */
 function readDefaultDeclaration(absolute: string): string | undefined {
   const source = 'monitors/monitors.json'
@@ -1591,7 +1630,15 @@ function readDefaultDeclaration(absolute: string): string | undefined {
     const code = (error as { code?: string }).code
     // ENOTDIR means `monitors` itself is a plain file, which the client accepts.
     if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
-    monitorsInvalid('file', source, 'monitors', `cannot read ${JSON.stringify(absolute)}`, fileErrorText(error, absolute))
+    const key: MonitorClientTextKey = code === 'EACCES' ? 'fileUnreadable' : 'fileNotRegularFile'
+    monitorsInvalid(
+      'file',
+      source,
+      'monitors',
+      `cannot stat ${JSON.stringify(absolute)}`,
+      key,
+      { path: absolute },
+    )
   }
   if (info.isDirectory()) {
     monitorsInvalid(
@@ -1599,7 +1646,7 @@ function readDefaultDeclaration(absolute: string): string | undefined {
       source,
       'monitors',
       `${JSON.stringify(absolute)} is a directory, not a declaration file`,
-      'EISDIR: illegal operation on a directory, read',
+      'fileNotRegularFile',
     )
   }
   if (!info.isFile()) {
@@ -1607,8 +1654,8 @@ function readDefaultDeclaration(absolute: string): string | undefined {
       'file',
       source,
       'monitors',
-      `${JSON.stringify(absolute)} is not a regular file`,
-      `not a regular file: ${JSON.stringify(absolute)}`,
+      `${JSON.stringify(absolute)} is not a declaration file`,
+      'fileNotRegularFile',
     )
   }
   return readDeclarationText(absolute, source)
@@ -1619,12 +1666,16 @@ function readManifestDeclaration(absolute: string, declaration: string): string 
   try {
     info = statSync(absolute)
   } catch (error) {
+    const code = (error as { code?: string }).code
+    const key: MonitorClientTextKey =
+      code === 'EACCES' ? 'fileUnreadable' : code === 'ENOENT' ? 'fileMissing' : 'fileNotRegularFile'
     monitorsInvalid(
       'file',
       declaration,
       'monitors',
       `refers to ${JSON.stringify(declaration)}, which is not a readable file`,
-      fileErrorText(error, absolute),
+      key,
+      { path: absolute },
     )
   }
   if (info.isDirectory()) {
@@ -1633,7 +1684,7 @@ function readManifestDeclaration(absolute: string, declaration: string): string 
       declaration,
       'monitors',
       `refers to ${JSON.stringify(declaration)}, which is a directory`,
-      'EISDIR: illegal operation on a directory, read',
+      'fileNotRegularFile',
     )
   }
   if (!info.isFile()) {
@@ -1641,8 +1692,8 @@ function readManifestDeclaration(absolute: string, declaration: string): string 
       'file',
       declaration,
       'monitors',
-      `refers to ${JSON.stringify(declaration)}, which is not a regular file`,
-      `not a regular file: ${JSON.stringify(absolute)}`,
+      `refers to ${JSON.stringify(declaration)}, which is not a declaration file`,
+      'fileNotRegularFile',
     )
   }
   return readDeclarationText(absolute, declaration)
@@ -1663,7 +1714,7 @@ function readMonitorRows(root: string, manifest: Record<string, unknown>): IrUnm
           '.claude-plugin/plugin.json',
           'monitors',
           `the manifest path form must start with "./", not ${JSON.stringify(declaration)}`,
-          'Invalid string: must start with "./"',
+          'manifestPathPrefix',
         )
       }
       source = declaration
@@ -1675,7 +1726,7 @@ function readMonitorRows(root: string, manifest: Record<string, unknown>): IrUnm
         '.claude-plugin/plugin.json',
         'monitors',
         `must be an array of monitor declarations or a "./"-relative path, not ${monitorsShape(declaration)}`,
-        'Invalid input',
+        'manifestGeneric',
       )
     }
     const kind = source === '.claude-plugin/plugin.json' ? 'manifest' : 'file'

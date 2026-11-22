@@ -44,12 +44,20 @@ const claude = resolveClaudeBinary()
  * stale silently.
  */
 
+/**
+ * Fixtures that are evidence, not plugins: the client's captured monitor error
+ * lines. They have no manifest and no inventory for the oracle to re-probe; the
+ * dialect tests own them.
+ */
+const EVIDENCE_ONLY_FIXTURES = new Set(['claude-monitors-errors'])
+
 async function fixtureDirs() {
   const entries = await readdir(fixturesDir)
   const dirs = []
   for (const entry of entries.sort()) {
     if (!entry.startsWith('claude-')) continue
     if (HAND_AUTHORED_FIXTURES.has(entry)) continue
+    if (EVIDENCE_ONLY_FIXTURES.has(entry)) continue
     const dir = join(fixturesDir, entry)
     if ((await stat(dir)).isDirectory()) dirs.push({ name: entry, dir })
   }

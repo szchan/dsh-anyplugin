@@ -1,0 +1,1 @@
+❯ inline[0]: ✘ Failed to load plugin: Plugin manifest-duplicate has an invalid manifest file at <plugin>/.claude-plugin/plugin.json. Validation errors: monitors: Monitor names must be unique within a plugin

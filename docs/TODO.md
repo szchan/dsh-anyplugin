@@ -69,8 +69,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
       target. The declaration half is now implemented (#159): the dialect reads
       the manifest array, the manifest path string and `monitors/monitors.json`,
       splits the client's two verdicts: a manifest-shaped violation is fatal,
-      while a file-shaped one is carried as one `unsupported` row with the
-      client's own error text and does not fail the plugin, because the
+      while a file-shaped one is carried as one `unsupported` row quoting the
+      client's captured error text (`fixtures/claude-monitors-errors`) and does
+      not fail the plugin, because the
       directory client reports it as `loaded with errors` and still serves the
       other components. A valid declaration stays one `planned` row. What
       remains is a product decision about the runtime channel, not a fidelity

@@ -99,7 +99,8 @@ surface for. These stay **typed refusals** (a recorded reason, never a silent
 ### Repository evidence (unchanged by this release)
 
 - against DSH `0.2.2-rc.5` and Claude Code `2.1.329`: 27 declared · 26 matched ·
-  0 missing · 1 refused (the refused row is the command-name seam named above);
+  0 missing · 1 refused (the refused row is `claude-mcp-budget`, an MCP server
+  name the DSH seam refuses);
 - Codex is a second dialect on the same IR (v0.3) — the one surface still
   unreleased.
 

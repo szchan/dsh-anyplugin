@@ -1,0 +1,1 @@
+Error: monitors load failed from <plugin>/monitors/monitors.json: [ { ”code”: ”custom”, ”path”: [ 0, ”when” ], ”message”: ”on-skill-invoke: must specify a skill name” } ]

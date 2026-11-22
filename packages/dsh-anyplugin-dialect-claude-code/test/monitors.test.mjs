@@ -24,9 +24,24 @@ import { fileURLToPath } from 'node:url'
 
 import { validateIr } from '../../dsh-anyplugin-ir/src/index.ts'
 import { readClaudePlugin } from '../src/index.ts'
+import { monitorClientText } from '../src/monitor-client-text.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const fixture = (name) => join(repoRoot, 'fixtures', name)
+const OBSERVED = join(repoRoot, 'fixtures', 'claude-monitors-errors', 'observed')
+
+/**
+ * The client message inside one captured line. File-shaped lines are a JSON
+ * error list (message field) or a plain `…: <message>` tail; a truncated line
+ * yields undefined, so those shapes keep the containment-only check.
+ */
+function capturedClientMessage(observed) {
+  const message = /\u201dmessage\u201d: \u201d(.*?)\u201d \}/.exec(observed)
+  if (message) return message[1]
+  const tail = /^Error: monitors load failed .*?: (.*)$/.exec(observed)
+  if (tail && !tail[1].startsWith('[')) return tail[1]
+  return undefined
+}
 
 const VALID = {
   name: 'beat',
@@ -71,30 +86,49 @@ function assertOnePlannedRow(ir, sourcePath) {
   assert.deepEqual(validateIr(ir), [])
 }
 
-function assertOneUnsupportedRow(ir, { sourcePath, detail, client }) {
+function assertOneUnsupportedRow(ir, { sourcePath, detail, clientKey, clientParams, observed, dir }) {
   const rows = monitorRefusals(ir)
   assert.equal(rows.length, 1, 'a file-shaped rejection produces exactly one unsupported row')
   assert.equal(rows[0].name, 'monitors')
   assert.equal(rows[0].sourcePath, sourcePath)
   assert.equal(rows[0].annotation.fidelity, 'unsupported')
   assert.match(rows[0].annotation.reason, detail)
-  assert.match(rows[0].annotation.reason, client)
+  // The reason must quote the captured client line verbatim, not a string this
+  // code happened to emit: the table is the source of truth.
+  const client = monitorClientText(clientKey, clientParams ?? {})
+  if (observed) {
+    // The row must quote the captured message exactly, not a prefix of it:
+    // this is what makes a truncated table entry redden this test.
+    const captured = capturedClientMessage(
+      readFileSync(join(OBSERVED, `${observed}.txt`), 'utf8').trim(),
+    )
+    // Captured lines scrub the throwaway plugin path to <plugin>; the row
+    // quotes the live path, so put the live root back before comparing.
+    const expected = dir && captured ? captured.replaceAll('<plugin>', dir) : captured
+    assert.equal(client, expected, `${observed}: table entry matches the captured client message exactly`)
+  }
+  assert.ok(rows[0].annotation.reason.includes(client), `reason quotes the captured client text: ${client}`)
+  // Our filesystem vocabulary must not leak into the quoted reason.
+  assert.doesNotMatch(rows[0].annotation.reason, /EISDIR|ENOTDIR/)
+  assert.doesNotMatch(rows[0].annotation.reason, /line \d+ column|position \d+/)
   assert.match(rows[0].annotation.reason, /loaded with errors/)
   assert.match(rows[0].annotation.reason, /claude-code@2\.1\.329/)
   assert.match(rows[0].annotation.reason, /directory form/)
-  assert.match(rows[0].annotation.reason, /`rig install <dir>`/)
+  assert.match(rows[0].annotation.reason, /\`rig install <dir>\`/)
   assert.match(rows[0].annotation.reason, /D37/)
   assert.deepEqual(monitorRows(ir), [])
   assert.deepEqual(validateIr(ir), [])
 }
 
-function assertManifestRefusal(fn, { detail, client }) {
+function assertManifestRefusal(fn, { detail, clientKey, clientParams }) {
+  const client = monitorClientText(clientKey, clientParams ?? {})
   assert.throws(fn, (error) => {
     assert.equal(error.name, 'MonitorsRefusal')
     assert.equal(error.kind, 'manifest')
     assert.match(error.message, /invalid monitors declaration/)
     assert.match(error.message, detail)
-    assert.match(error.message, client)
+    assert.ok(error.message.includes(client), `message quotes the captured client text: ${client}`)
+    if (clientKey === 'manifestGeneric') assert.match(error.message, /generic validation line/)
     assert.match(error.message, /refuses the manifest/)
     assert.match(error.message, /claude-code@2\.1\.329/)
     return true
@@ -214,56 +248,127 @@ test('monitor names are case-sensitive in the file form', () => {
 const FILE_REFUSALS = [
   {
     name: 'unknown key in the directory file',
+    observed: 'file-unknown-key',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([{ ...VALID, trigger: 'always' }]))
     },
     sourcePath: 'monitors/monitors.json',
-    detail: /monitors\/monitors\.json monitors\[0\]: unrecognized key "trigger" \(the accepted keys are name, command, description, when\)/,
-    client: /Unrecognized key: "trigger"/,
+    detail: /monitors\[0\]: unrecognized key "trigger" \(the accepted keys are name, command, description, when\)/,
+    clientKey: 'fileUnknownKey',
+    clientParams: { key: 'trigger' },
   },
   {
     name: 'when enum in the directory file',
+    observed: 'file-when-enum',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([{ ...VALID, when: 'sometimes' }]))
     },
     sourcePath: 'monitors/monitors.json',
     detail: /monitors\[0\]\.when: must be "always" or "on-skill-invoke:<skill-name>", not "sometimes"/,
-    client: /Invalid string: must start with "on-skill-invoke:"/,
+    clientKey: 'fileWhenFormat',
+    observed: 'file-when-enum',
   },
   {
     name: 'on-skill-invoke without a skill in the directory file',
+    observed: 'file-when-short',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([{ ...VALID, when: 'on-skill-invoke:' }]))
     },
     sourcePath: 'monitors/monitors.json',
     detail: /monitors\[0\]\.when: "on-skill-invoke:" must name a skill after the colon/,
-    client: /on-skill-invoke: must specify a skill name/,
+    clientKey: 'fileWhenShort',
+    observed: 'file-when-short',
+  },
+  {
+    name: 'when is a number in the directory file',
+    observed: 'file-when-number',
+    setup: (dir) => {
+      mkdirSync(join(dir, 'monitors'))
+      writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([{ ...VALID, when: 3 }]))
+    },
+    sourcePath: 'monitors/monitors.json',
+    detail: /monitors\[0\]\.when: must be "always" or "on-skill-invoke:<skill-name>", not a number/,
+    clientKey: 'fileWhenUnion',
   },
   {
     name: 'top level is an object in the directory file',
+    observed: 'file-top-object',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(join(dir, 'monitors', 'monitors.json'), '{}')
     },
     sourcePath: 'monitors/monitors.json',
-    detail: /monitors\/monitors\.json monitors: must be an array of monitor declarations, not an object/,
-    client: /expected array, received object/,
+    detail: /monitors: must be an array of monitor declarations, not an object/,
+    clientKey: 'fileNotArray',
+    clientParams: { shape: 'object' },
+  },
+  {
+    name: 'top level is null in the directory file',
+    observed: 'file-top-null',
+    setup: (dir) => {
+      mkdirSync(join(dir, 'monitors'))
+      writeFileSync(join(dir, 'monitors', 'monitors.json'), 'null')
+    },
+    sourcePath: 'monitors/monitors.json',
+    detail: /monitors: must be an array of monitor declarations, not null/,
+    clientKey: 'fileNotArray',
+    clientParams: { shape: 'null' },
+  },
+  {
+    name: 'an entry is null in the directory file',
+    observed: 'file-null-entry',
+    setup: (dir) => {
+      mkdirSync(join(dir, 'monitors'))
+      writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([null]))
+    },
+    sourcePath: 'monitors/monitors.json',
+    detail: /monitors\[0\]: must be an object, not null/,
+    clientKey: 'fileNotObject',
+    clientParams: { shape: 'null' },
+  },
+  {
+    name: 'description is missing in the directory file',
+    observed: 'file-missing-description',
+    setup: (dir) => {
+      mkdirSync(join(dir, 'monitors'))
+      writeFileSync(
+        join(dir, 'monitors', 'monitors.json'),
+        JSON.stringify([{ name: 'beat', command: 'node monitor.mjs' }]),
+      )
+    },
+    sourcePath: 'monitors/monitors.json',
+    detail: /monitors\[0\]\.description: is required and must be a non-empty string/,
+    clientKey: 'fileNotString',
+    clientParams: { shape: 'undefined' },
+  },
+  {
+    name: 'name is empty in the directory file',
+    observed: 'file-empty-name',
+    setup: (dir) => {
+      mkdirSync(join(dir, 'monitors'))
+      writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([{ ...VALID, name: '' }]))
+    },
+    sourcePath: 'monitors/monitors.json',
+    detail: /monitors\[0\]\.name: must be at least 1 character/,
+    clientKey: 'fileTooSmall',
   },
   {
     name: 'invalid JSON in the directory file',
+    observed: 'file-invalid-json',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(join(dir, 'monitors', 'monitors.json'), '[{')
     },
     sourcePath: 'monitors/monitors.json',
-    detail: /monitors: not valid JSON/,
-    client: /JSON Parse error:/,
+    detail: /monitors: is not valid JSON/,
+    clientKey: 'fileInvalidJson',
   },
   {
     name: 'duplicate names in the directory file',
+    observed: 'file-duplicate',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(
@@ -273,19 +378,21 @@ const FILE_REFUSALS = [
     },
     sourcePath: 'monitors/monitors.json',
     detail: /monitors\[1\]\.name: duplicate monitor name "beat"/,
-    client: /Monitor names must be unique within a plugin/,
+    clientKey: 'fileDuplicateName',
   },
   {
     name: 'the directory file is a directory',
+    observed: 'file-is-directory',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors', 'monitors.json'), { recursive: true })
     },
     sourcePath: 'monitors/monitors.json',
     detail: /is a directory, not a declaration file/,
-    client: /EISDIR: illegal operation on a directory, read/,
+    clientKey: 'fileNotRegularFile',
   },
   {
     name: 'the directory file cannot be read',
+    observed: 'file-unreadable',
     setup: (dir) => {
       mkdirSync(join(dir, 'monitors'))
       writeFileSync(join(dir, 'monitors', 'monitors.json'), JSON.stringify([VALID]))
@@ -293,29 +400,34 @@ const FILE_REFUSALS = [
     },
     sourcePath: 'monitors/monitors.json',
     detail: /cannot read /,
-    client: /EACCES: permission denied, open /,
+    clientKey: 'fileUnreadable',
+    clientParams: (dir) => ({ path: join(dir, 'monitors', 'monitors.json') }),
   },
   {
     name: 'manifest path is missing',
+    observed: 'path-missing',
     setup: (dir) => {
       writePlugin(dir, { monitors: './monitors/gone.json' })
     },
     sourcePath: './monitors/gone.json',
     detail: /refers to "\.\/monitors\/gone\.json", which is not a readable file/,
-    client: /ENOENT: no such file or directory, lstat/,
+    clientKey: 'fileMissing',
+    clientParams: (dir) => ({ path: join(dir, 'monitors', 'gone.json') }),
   },
   {
     name: 'manifest path target is a directory',
+    observed: 'path-is-directory',
     setup: (dir) => {
       writePlugin(dir, { monitors: './monitors/target.json' })
       mkdirSync(join(dir, 'monitors', 'target.json'), { recursive: true })
     },
     sourcePath: './monitors/target.json',
     detail: /refers to "\.\/monitors\/target\.json", which is a directory/,
-    client: /EISDIR: illegal operation on a directory, read/,
+    clientKey: 'fileNotRegularFile',
   },
   {
     name: 'manifest path target is unreadable',
+    observed: 'path-unreadable',
     setup: (dir) => {
       writePlugin(dir, { monitors: './monitors/locked.json' })
       mkdirSync(join(dir, 'monitors'))
@@ -324,10 +436,12 @@ const FILE_REFUSALS = [
     },
     sourcePath: './monitors/locked.json',
     detail: /cannot read /,
-    client: /EACCES: permission denied, open /,
+    clientKey: 'fileUnreadable',
+    clientParams: (dir) => ({ path: join(dir, 'monitors', 'locked.json') }),
   },
   {
     name: 'bad manifest path file content',
+    observed: 'path-bad-content',
     setup: (dir) => {
       writePlugin(dir, { monitors: './monitors/custom.json' })
       mkdirSync(join(dir, 'monitors'))
@@ -335,10 +449,12 @@ const FILE_REFUSALS = [
     },
     sourcePath: './monitors/custom.json',
     detail: /unrecognized key "trigger"/,
-    client: /Unrecognized key: "trigger"/,
+    clientKey: 'fileUnknownKey',
+    clientParams: { key: 'trigger' },
   },
   {
     name: 'duplicate names in a manifest path file',
+    observed: 'path-duplicate',
     setup: (dir) => {
       writePlugin(dir, { monitors: './monitors/custom.json' })
       mkdirSync(join(dir, 'monitors'))
@@ -349,7 +465,7 @@ const FILE_REFUSALS = [
     },
     sourcePath: './monitors/custom.json',
     detail: /monitors\[1\]\.name: duplicate monitor name "beat"/,
-    client: /Monitor names must be unique within a plugin/,
+    clientKey: 'fileDuplicateName',
   },
 ]
 
@@ -358,7 +474,12 @@ for (const refusal of FILE_REFUSALS) {
     withPlugin((dir) => {
       writePlugin(dir)
       refusal.setup(dir)
-      assertOneUnsupportedRow(readClaudePlugin(dir), refusal)
+      assertOneUnsupportedRow(readClaudePlugin(dir), {
+        ...refusal,
+        dir,
+        clientParams:
+          typeof refusal.clientParams === 'function' ? refusal.clientParams(dir) : refusal.clientParams,
+      })
     })
   })
 }
@@ -373,7 +494,8 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [{ ...VALID, interval: 5 }] })
     },
     detail: /monitors\[0\]: unrecognized key "interval"/,
-    client: /Unrecognized key: "interval"/,
+    clientKey: 'manifestUnknownKey',
+    clientParams: { key: 'interval' },
   },
   {
     name: 'when enum inline',
@@ -381,7 +503,15 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [{ ...VALID, when: 'sometimes' }] })
     },
     detail: /monitors\[0\]\.when: must be "always" or "on-skill-invoke:<skill-name>", not "sometimes"/,
-    client: /Invalid string: must start with "on-skill-invoke:"/,
+    clientKey: 'manifestWhenFormat',
+  },
+  {
+    name: 'when is a number inline',
+    setup: (dir) => {
+      writePlugin(dir, { monitors: [{ ...VALID, when: 3 }] })
+    },
+    detail: /monitors\[0\]\.when: must be "always" or "on-skill-invoke:<skill-name>", not a number/,
+    clientKey: 'manifestGeneric',
   },
   {
     name: 'missing description inline',
@@ -390,7 +520,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [entry] })
     },
     detail: /monitors\[0\]\.description: is required and must be a non-empty string/,
-    client: /expected string, received undefined/,
+    clientKey: 'manifestGeneric',
   },
   {
     name: 'non-string name inline',
@@ -398,7 +528,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [{ ...VALID, name: 7 }] })
     },
     detail: /monitors\[0\]\.name: must be a string, not a number/,
-    client: /expected string, received number/,
+    clientKey: 'manifestGeneric',
   },
   {
     name: 'empty command inline',
@@ -406,7 +536,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [{ ...VALID, command: '' }] })
     },
     detail: /monitors\[0\]\.command: must be at least 1 character/,
-    client: /Too small: expected string to have >=1 characters/,
+    clientKey: 'manifestTooSmall',
   },
   {
     name: 'inline entry is null',
@@ -414,7 +544,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [null] })
     },
     detail: /monitors\[0\]: must be an object, not null/,
-    client: /expected object, received null/,
+    clientKey: 'manifestGeneric',
   },
   {
     name: 'duplicate names inline',
@@ -422,7 +552,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: [VALID, { ...VALID, description: 'second' }] })
     },
     detail: /monitors\[1\]\.name: duplicate monitor name "beat"/,
-    client: /Monitor names must be unique within a plugin/,
+    clientKey: 'manifestDuplicateName',
   },
   {
     name: 'manifest path does not start with "./"',
@@ -430,7 +560,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: 'monitors/monitors.json' })
     },
     detail: /monitors: the manifest path form must start with "\.\/", not "monitors\/monitors\.json"/,
-    client: /Invalid string: must start with "\.\/"/,
+    clientKey: 'manifestPathPrefix',
   },
   {
     name: 'manifest value is neither array nor path string',
@@ -438,7 +568,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: 3 })
     },
     detail: /monitors: must be an array of monitor declarations or a "\.\/"-relative path, not a number/,
-    client: /Invalid input/,
+    clientKey: 'manifestGeneric',
   },
   {
     name: 'manifest value is null',
@@ -446,7 +576,7 @@ const MANIFEST_REFUSALS = [
       writePlugin(dir, { monitors: null })
     },
     detail: /monitors: must be an array of monitor declarations or a "\.\/"-relative path, not null/,
-    client: /Invalid input/,
+    clientKey: 'manifestGeneric',
   },
 ]
 
@@ -465,20 +595,69 @@ test('the S22 file-shaped fixtures become unsupported rows with the client text'
   assertOneUnsupportedRow(badKey, {
     sourcePath: 'monitors/monitors.json',
     detail: /monitors\[0\]: unrecognized key "trigger"/,
-    client: /Unrecognized key: "trigger"/,
+    clientKey: 'fileUnknownKey',
+    clientParams: { key: 'trigger' },
+    observed: 'file-unknown-key',
   })
   // The sibling skill is still served: the client loads it despite the error.
   assert.deepEqual(badKey.skills.map((skill) => skill.name), ['innocent'])
   assertOneUnsupportedRow(readClaudePlugin(fixture('claude-monitors-bad-when-enum')), {
     sourcePath: 'monitors/monitors.json',
     detail: /monitors\[0\]\.when: must be "always" or "on-skill-invoke:<skill-name>", not "sometimes"/,
-    client: /Invalid string: must start with "on-skill-invoke:"/,
+    clientKey: 'fileWhenFormat',
   })
   assertOneUnsupportedRow(readClaudePlugin(fixture('claude-monitors-bad-when-short')), {
     sourcePath: 'monitors/monitors.json',
     detail: /monitors\[0\]\.when: "on-skill-invoke:" must name a skill after the colon/,
-    client: /on-skill-invoke: must specify a skill name/,
+    clientKey: 'fileWhenShort',
   })
+})
+
+
+// The table is not allowed to drift from the capture: every rendered entry
+// must be a substring of the line the pinned client printed for that shape.
+const CAPTURED_CLIENT_TEXT = [
+  ['file-unknown-key', 'fileUnknownKey', { key: 'trigger' }],
+  ['file-when-enum', 'fileWhenFormat', {}],
+  ['file-when-short', 'fileWhenShort', {}],
+  ['file-when-number', 'fileWhenUnion', {}],
+  ['file-top-object', 'fileNotArray', { shape: 'object' }],
+  ['file-top-null', 'fileNotArray', { shape: 'null' }],
+  ['file-null-entry', 'fileNotObject', { shape: 'null' }],
+  ['file-missing-description', 'fileNotString', { shape: 'undefined' }],
+  ['file-empty-name', 'fileTooSmall', {}],
+  ['file-duplicate', 'fileDuplicateName', {}],
+  ['file-invalid-json', 'fileInvalidJson', {}],
+  ['file-is-directory', 'fileNotRegularFile', {}],
+  ['file-unreadable', 'fileUnreadable', null],
+  ['path-missing', 'fileMissing', null],
+  ['path-is-directory', 'fileNotRegularFile', {}],
+  ['path-unreadable', 'fileUnreadable', null],
+  ['path-bad-content', 'fileUnknownKey', { key: 'trigger' }],
+  ['path-duplicate', 'fileDuplicateName', {}],
+  ['manifest-unknown-key', 'manifestUnknownKey', { key: 'trigger' }],
+  ['manifest-when-enum', 'manifestWhenFormat', {}],
+  ['manifest-missing-description', 'manifestGeneric', {}],
+  ['manifest-nonstring-name', 'manifestGeneric', {}],
+  ['manifest-when-number', 'manifestGeneric', {}],
+  ['manifest-empty-command', 'manifestTooSmall', {}],
+  ['manifest-null-entry', 'manifestGeneric', {}],
+  ['manifest-duplicate', 'manifestDuplicateName', {}],
+  ['manifest-path-not-relative', 'manifestPathPrefix', {}],
+  ['manifest-value-number', 'manifestGeneric', {}],
+  ['manifest-value-null', 'manifestGeneric', {}],
+]
+
+test('MONITOR_CLIENT_TEXT is the text captured from the pinned client', () => {
+  for (const [shape, key, params] of CAPTURED_CLIENT_TEXT) {
+    const observed = readFileSync(join(OBSERVED, `${shape}.txt`), 'utf8')
+    // The path-shaped entries interpolate the client's own path (scrubbed to
+    // <plugin> in the capture); take it from the captured line.
+    const path = params === null ? /\u2019([^\u2019]+)\u2019/.exec(observed)?.[1] : undefined
+    assert.ok(params !== null || path, `${shape} captured the client's path`)
+    const rendered = monitorClientText(key, params ?? { path })
+    assert.ok(observed.includes(rendered), `${shape} contains ${key}: ${rendered}`)
+  }
 })
 
 test('the valid fixture golden contains no monitors component (D37)', () => {

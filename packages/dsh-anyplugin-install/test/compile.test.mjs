@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { monitorClientText } from '../../dsh-anyplugin-dialect-claude-code/src/monitor-client-text.ts'
 import { AGENT_PLUGINS_PIN, readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { emitPlugin, GROUP_PLUGIN, mangleId } from '../../dsh-anyplugin-emit/src/index.ts'
 import { compileEntries, compileReport } from '../src/index.ts'
@@ -253,7 +254,10 @@ test('a refused monitors declaration is unsupported while its sibling skill is e
   const refusals = ir.unsupported.filter((entry) => entry.surface === 'monitors')
   assert.equal(refusals.length, 1)
   assert.equal(refusals[0].annotation.fidelity, 'unsupported')
-  assert.match(refusals[0].annotation.reason, /Unrecognized key: "trigger"/)
+  assert.ok(
+    refusals[0].annotation.reason.includes(monitorClientText('fileUnknownKey', { key: 'trigger' })),
+    'the unsupported reason quotes the captured file-shaped client line',
+  )
   assert.match(refusals[0].annotation.reason, /loaded with errors/)
   assert.deepEqual(ir.skills.map((skill) => skill.name), ['innocent'])
 
