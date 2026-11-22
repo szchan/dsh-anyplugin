@@ -2750,3 +2750,64 @@ own 65 s chain, so a stop listener may take ~130 s end to end. A mod that pauses
 disposal, so a start that never settles retains its entry; that was chosen over
 changing the shutdown path, and it is written in the Risk section rather than
 papered over.
+
+## D59 — The packaged artifact has its own budget
+
+**Decided** 2026-11-21, with `#148`.
+
+D46's 128 KiB ceiling bounds the mods kernel bytes inside the bundle. The npm
+tarball is a different object and needed its own number: before this decision it
+had no gate at all, and the same PR that shipped the installer CLI grew it from
+136.6 KiB to 223.4 KiB by bundling conformance-gate code that no command needs.
+
+**Decided.** `check:pack` asserts the compressed tarball is at most 180 KiB and
+prints `tarball: N KiB / ceiling 180 KiB`. It also asserts that the shipped
+`lib/` carries none of `resolveClaudeBinary`, `claude --version`, `diffTraces`
+or `INVENTORY_SCHEMA`; that `SourceTextModule` appears only in
+`lib/materialize/hook.js`; and that `lib/cli.js` keeps one literal
+`import("./<module>")` per conformance-gate module, so a module that stops being
+lazy fails twice. The gate list lives in `scripts/shipped-gates.mjs`, and
+`scripts/build.mjs` derives its externals from the same list — one source for
+both sides.
+
+**Numbers, as measured.** The tarball is 178,608 B compressed (174.4 KiB, ~3 %
+under the ceiling) and 719,364 B unpacked; the kernel stays at 115,532 B across
+7 files. A build that bundles a gate module fails with
+`lib/chunk-*.js carries conformance-gate code: INVENTORY_SCHEMA`, not with a
+size warning.
+
+**Consequences.** The installer is a thin front door, not a second copy of the
+rig: the published bin refuses `capture`/`verify`/`diff`/`trace` by name and
+tells the reader to run the same command from a checkout. Raising either ceiling
+— this one or D46's kernel ceiling — requires a new decision entry, and a size
+number in prose must say which of the two it is measuring.
+
+## D60 — The generated mod type surface is internal; shipping types is a separate decision
+
+**Decided** 2026-11-21, with `#150`. Extends D55 and D57.
+
+`#144` made `packages/dsh-anyplugin-mod-host/types/mod.d.ts` a generated served
+subset of `$`: the 9 served namespaces and their 26 members, with the pin's own
+signature text (so `$.session.cwd` is `() => Promise<string>`, D57), and the 7
+refused members folded into one closed `ERR_MOD_HOST_*` union. It names no absent
+member and refuses to guess a signature it cannot copy, including method-form
+parameters, constraints and type predicates.
+
+**Decided.** That file is internal. It is not shipped, has no package export, and
+is not an author-facing surface; it exists so the ledger and the pin cannot drift
+silently. `check:pack` asserts the tarball contains no `types/` path, and shipping
+the real surface is a separate decision.
+
+**Why not ship it.** Shipping means putting Anthropic's generated
+`claude-code.d.ts` (895,875 B, © Anthropic PBC) into the published tarball. D14
+says the pin is a specification to read, not an artifact to vendor, and the
+licence grants no redistribution right. The alternative — an inlined helper
+subset — is a real option but a different claim: those shapes are our
+re-derivation, so they are `equivalent`/`derived`, not the verbatim copy D57
+requires. Author-facing mod types are therefore `planned`, and `docs/TODO.md`
+names the blockers (D14, D57, this entry, `#144`) instead of implying they ship.
+
+**Consequences.** The generator and its tests stay, because they are what turns
+pin drift into a red test. Any future "mod authors get types" work starts here:
+either negotiate redistribution, or publish a derived subset under a new decision
+that says so — never by quietly adding `types/` to `files`.
