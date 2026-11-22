@@ -3,7 +3,9 @@ name: verify
 on:
   pull_request:
   push:
-    branches: [main]
+    # Any branch, not just main: an agent pushes and CI is the verifier
+    # (D67/#175). A PR then only adds review, not a second verification.
+    branches: ["**"]
 
 concurrency:
   group: verify-${{ github.ref }}
