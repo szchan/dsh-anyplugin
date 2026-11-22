@@ -48,9 +48,10 @@ window since the last report and says so in `## Evidence` (the digest prints
 the window; the auditor passes `--days N` and records `N`). The schedule lives
 outside the repository (`~/.dsh/storages/schedule.json`); the digest prints its
 rrule, target and last delivery. A fresh checkout recreates it with
-`schedule_create` (daily 09:00 `America/Los_Angeles`, `new_once`, a prompt that
-starts by fetching `origin/main` and creating `audit-daily`), then confirms the
-task appears in the next digest.
+`schedule_create` (daily 09:00 `America/Los_Angeles`, `new_once`, main
+checkout; the prompt carries the full step list from the audit skill §2,
+including "always write the report and open a PR" and the Monday mutation
+check), then confirms the task appears in the next digest.
 
 ## 3. Evidence
 
@@ -190,8 +191,9 @@ the highest-risk gaps. Cite file:line for every row.
 - Neither reviewer is the author. At least one has not touched the change.
 - The reviewers get the same brief; disagreement is signal, not noise.
 - A reviewer verdict is a PR comment from the bot account, with the
-  `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review, so the
-  merge rule in F12 is what pins the reviewed head.
+  `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review. Once #163
+  lands, F12's merge rule pins the reviewed head; today that is policy, not a
+  guard check.
 
 ## 7. Roles, and what "too broad" means
 
@@ -200,10 +202,10 @@ adds measurable caps:
 
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
-| master | docs, integration fixes, merges after the §6 verdicts (with a pinned head once #163 lands) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts (with a pinned head once #163 lands) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
-| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix | feature code, ticket branches, merges | an audit PR that changes a mechanism without two reviewers |
+| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix | feature code, ticket branches, `docs/DECISIONS.md`, merges; it proposes a decision and the master writes it | an audit PR that changes a mechanism without two reviewers |
 
 The caps are heuristics, not gates. The evidence script reports the eight
 largest sessions with their `cwd`; a pass that sees a root session above the
@@ -261,9 +263,12 @@ about its own shape, not that the process is fixed.
 
 Append-only history: an entry is never deleted. A mechanism that is replaced
 gets `status: "retired"` and a new entry; a finding that is no longer true is
-retired with the reason in `rationale`, not removed. `dormant` means the
-mechanism is implemented and tested but not active on this machine (F1); it is
-not a synonym for `enforced`. The `updated` date moves on every edit.
+retired with the reason in `rationale`, not removed. `reviewed` means a
+recorded check exists; a mechanism change needs two independent verdicts, while
+a schedule that only reports status is reviewed by the daily pass. `documented`
+means prose only. `dormant` means the mechanism is implemented and tested but
+not active on this machine (F1); it is not a synonym for `enforced`. The
+`updated` date moves on every edit.
 
 <!-- audit-ledger:start -->
 ```json
@@ -291,9 +296,9 @@ not a synonym for `enforced`. The `updated` date moves on every edit.
       "mechanism": "schedule",
       "status": "reviewed",
       "artifact": "scripts/audit-evidence.mjs",
-      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 22 worktrees were stale. A daily digest reports guard status so dormancy is visible the next morning; installing it remains an operator action, so this is reviewed, not enforced.",
+      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. A daily digest reports guard status so dormancy is visible the next morning; installing it remains an operator action, so this is reviewed, not enforced.",
       "evidence": [
-        "2026-11-22 evidence: guard not-installed, pre-push missing, 22 worktrees",
+        "2026-11-22 evidence: guard not-installed, pre-push missing, 23 worktrees",
         "docs/audits/2026-11-22.md"
       ],
       "proof": ".dsh/skills/dsh-anyplugin-audit/SKILL.md"
@@ -488,10 +493,11 @@ not a synonym for `enforced`. The `updated` date moves on every edit.
       "mechanism": "reviewer",
       "status": "reviewed",
       "artifact": "docs/AUDIT.md#independent-reviewers",
-      "rationale": "One agent writing the audit, the mechanism, and the verdict is the same self-review failure the workflow forbids for feature code. Mechanism changes get two read-only reviewers with an adversarial brief; at least one has not touched the change.",
+      "rationale": "One agent writing the audit, the mechanism, and the verdict is the same self-review failure the workflow forbids for feature code. Mechanism changes get two independent reviewers with an adversarial brief; at least one has not touched the change. The sandboxed `readonly` preset was unavailable in this instance, so the two reviews were read-only by brief, not by sandbox; F17 records that weaker form.",
       "evidence": [
-        "docs/WORKFLOW.md reviewer role",
-        "2026-11-22 audit PR review"
+        "2026-11-22 review threads: audit-reviewer-a and audit-reviewer-b",
+        "docs/audits/2026-11-22.md F17",
+        "AUDIT.md #independent-reviewers"
       ]
     },
     {

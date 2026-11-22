@@ -21,8 +21,9 @@ pins the reviewed head.
 The auditor is a separate role on purpose. It reads the queue and the
 transcripts, writes findings, and pushes mechanism fixes; it does not implement a
 ticket or merge. A mechanism PR gets two independent verdicts (F17) and the
-master merges it; an unresolved `weaker`/`not proven` verdict blocks the merge.
-`docs/AUDIT.md` §7 has the caps and the alarm thresholds.
+master merges it; an unresolved `weaker`/`not proven` verdict is a merge veto
+for the master. That veto is policy, not a guard check: no gate reads PR
+comments yet. `docs/AUDIT.md` §7 has the caps and the alarm thresholds.
 
 ### Identity
 

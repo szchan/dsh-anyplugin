@@ -114,6 +114,19 @@ test('duplicate ids fail', () => {
   assert.match(result.stderr, /duplicate id/)
 })
 
+test('## Open may not list a reviewed finding', () => {
+  const text = report.replace('nothing open', 'F1 is still here')
+  const result = run(makeRoot([baseEntry({ status: 'reviewed' })], { reports: { '2026-11-22.md': text } }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /F1 is in ## Open but its ledger status is reviewed/u)
+})
+
+test('## Open must list every open finding', () => {
+  const result = run(makeRoot([baseEntry({ status: 'open', proof: undefined, tracking: '#1' })]))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /F1 is open but missing from ## Open/u)
+})
+
 test('a section inside a fence is not a section', () => {
   const text = report.replace('## Evidence\n\nevidence body', '```md\n## Evidence\n```\n\nfenced, not a section')
   const result = run(makeRoot([baseEntry()], { reports: { '2026-11-22.md': text } }))

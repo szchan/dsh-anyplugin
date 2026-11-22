@@ -71,6 +71,7 @@ if (!Array.isArray(ledger.entries) || ledger.entries.length === 0) fail('ledger 
 
 const ids = new Set()
 const known = new Set()
+const statusById = new Map()
 for (const entry of ledger.entries ?? []) {
   const where = `ledger ${entry.id ?? '(no id)'}`
   for (const field of REQUIRED) {
@@ -82,6 +83,7 @@ for (const entry of ledger.entries ?? []) {
   if (ids.has(entry.id)) fail(`${where}: duplicate id`)
   ids.add(entry.id)
   known.add(entry.id)
+  statusById.set(entry.id, entry.status)
   if (!MECHANISMS.has(entry.mechanism)) fail(`${where}: unknown mechanism ${String(entry.mechanism)}`)
   if (!STATUSES.has(entry.status)) fail(`${where}: unknown status ${String(entry.status)}`)
   if (!Array.isArray(entry.evidence) || entry.evidence.length === 0) fail(`${where}: evidence must be a non-empty array`)
@@ -161,6 +163,32 @@ if (!existsSync(reportsDir)) {
     // that no future audit will see. `F-1` is not a synonym for `F1`.
     for (const match of text.matchAll(/\bF-?\d+\b/gu)) {
       if (!known.has(match[0])) fail(`docs/audits/${report}: ${match[0]} is not in the ledger`)
+    }
+    // ## Open is the next pass's checklist. A reviewed or documented finding in
+    // that list sends the next pass after work that is not open, and an
+    // open/dormant finding missing from it is never picked up.
+    const openStart = sections.get('## Open')
+    if (openStart !== undefined) {
+      let openEnd = lines.length
+      for (let index = openStart + 1; index < lines.length; index += 1) {
+        if (lines[index].startsWith('## ')) {
+          openEnd = index
+          break
+        }
+      }
+      const openBody = lines.slice(openStart + 1, openEnd).join('\n')
+      const inOpen = new Set([...openBody.matchAll(/\bF-?\d+\b/gu)].map((match) => match[0]))
+      for (const id of inOpen) {
+        const status = statusById.get(id)
+        if (status !== undefined && status !== 'open' && status !== 'dormant') {
+          fail(`docs/audits/${report}: ${id} is in ## Open but its ledger status is ${status}`)
+        }
+      }
+      for (const entry of ledger.entries) {
+        if ((entry.status === 'open' || entry.status === 'dormant') && !inOpen.has(entry.id)) {
+          fail(`docs/audits/${report}: ${entry.id} is ${entry.status} but missing from ## Open`)
+        }
+      }
     }
   }
   const latest = reports.at(-1)

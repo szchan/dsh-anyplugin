@@ -37,9 +37,11 @@ in `## Evidence`. If GitHub is unavailable, record that and use git only.
 
 The digest prints the schedule's rrule, target and last delivery. If the daily
 task is missing, recreate it: daily 09:00 `America/Los_Angeles`, target
-`new_once`, prompt "fetch `origin/main`, create/reuse
-`.agents/worktrees/audit-daily`, run the audit skill". Confirm the task in the
-next digest.
+`new_once`, working directory the main checkout. The prompt must say: fetch
+`origin/main`, create or reset `.agents/worktrees/audit-daily` on a fresh
+branch, load this skill, always write the report and open a PR (even a
+report-only pass), run two reviewers for a mechanism change, never merge, and
+run the Monday mutation check (§8). Confirm the task in the next digest.
 
 For PR detail, the digest only counts comments. Read the bodies and comments:
 
@@ -113,9 +115,11 @@ Edit the JSON block in `docs/AUDIT.md` between the audit-ledger markers:
 - `status` ∈ `enforced`, `reviewed`, `documented`, `dormant`, `open`, `retired`;
 - `artifact`/`proof` are files that exist, and `proof` is not the artifact;
   `open` carries `tracking: "#<issue>"`;
-- `enforced` means a hook/ci/lint mechanism with a proof file; a reviewer or a
-  schedule is `reviewed`; `dormant` means implemented and tested but not
-  installed (F1);
+- `enforced` means a hook/ci/lint mechanism with a proof file; `reviewed`
+  means a recorded check exists (a mechanism change needs two independent
+  verdicts; a schedule that only reports is reviewed by the daily pass);
+  `documented` means prose only; `dormant` means implemented and tested but
+  not installed (F1);
 - move `updated` to today; never delete an entry (retire it with the reason).
 
 ```bash
@@ -141,6 +145,11 @@ report; it is a weaker independence claim, so do not describe it as sandboxed.
 
 ## 7. Ship the pass
 
+`verify` needs the pinned environment from the main checkout
+(`DSH_HARNESS_DIR`, `DSH_HARNESS_VERSION`, `CLAUDE_BIN`,
+`ANYPLUGIN_MODS_TREE`, `ANYPLUGIN_MOD_TREE`; AGENTS.md §6). Without it the
+suite skips, and a skip is a failed pass. Export them, then:
+
 ```bash
 npm run verify
 git add docs/AUDIT.md docs/audits .dsh/skills/dsh-anyplugin-audit \
@@ -161,6 +170,19 @@ does not edit feature files, push a ticket branch, or merge its own PR.
 Completion: `verify` is green, the report and ledger are in the PR, every open
 finding is tracked, and the PR names the two reviewers when it changed a
 mechanism.
+
+## 8. The Monday mutation check
+
+Prose and a green gate can both be true while the mechanism is useless. Once a
+week, pick one `enforced` entry, break its mechanism in a scratch copy (delete
+the gate call, add the violating file, empty the proof), run the gate, and
+confirm it reddens with the entry's message. Restore immediately; never commit
+the break. Record the entry, the mutation, and the observed failure in
+`## Actions`.
+
+If the gate stays green, the entry's status or proof is wrong: shrink the claim,
+fix the test, or move it to `reviewed`. A mutation that was not run is written
+as "not run", not assumed green.
 
 ## Command discipline
 
