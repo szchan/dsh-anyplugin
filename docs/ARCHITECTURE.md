@@ -1661,8 +1661,13 @@ git never registered it as a worktree. A literal `*` in a discovered path is
 refused at install rather than escaped: the block grammar reserves `*` for the
 one wildcard after a stem ending in `-`, and a literal read back as a pattern
 would confine a sibling the plan never named. Status reads a legacy exact entry
-whose path really ends in `*` as that literal path, not as a pattern, so it is
-reported as a stale path when the worktree is gone. When the discovered paths do not share a
+whose path ends in `*` as that literal path, not as a pattern — unless it ends
+in exactly `-*`, which is indistinguishable from the grammar and is promoted
+(the namespace caveat above): `ticket*` and `ticket-**` stay literal, while a
+legacy `ticket-*` is the wildcard. A literal path is reported as stale when the
+worktree is gone. A live ticket path that contains a literal `*` makes status
+report `refused` with the path and the rename remedy, because reinstalling
+cannot make the entry readable. When the discovered paths do not share a
 parent and a name stem, the block keeps the exact list; then a single
 out-of-pattern ticket worktree makes the next install drop the pattern for
 *every* future worktree until the next install. `guard:status` reuses the
@@ -1672,21 +1677,24 @@ is reported by name, because the freshly composed block would silently drop it.
 
 The installer's root is the repository's **main checkout**, not the caller's:
 when `git rev-parse --path-format=absolute --git-dir` and `--git-common-dir`
-name the same path (an ordinary checkout, a submodule, `--separate-git-dir`)
-the root is the working tree from `--show-toplevel`; when they differ the common
-dir is `<main>/.git` and its parent is the root; anything else falls back to the
-checkout the script lives in. The guard's git calls use `--path-format=absolute`
-and therefore require git ≥ 2.31. A linked worktree is disposable, so the block
-must not name it — removing the worktree after a merge would make the
-composition point at a source path that no longer exists. A real install (or
-uninstall) from a linked worktree is still refused before anything is written,
-because git shares one hooks directory with the main checkout (the message
-names the worktree, and the uninstall remedy is the main checkout, not a dry
-run). `--worktree` names an extra worktree to include, or the one to put first
-in the printed table; it does not move the root. `--dry-run` writes nothing and
-works from anywhere, and it is the check that names the main checkout from a
-review worktree. This is what keeps a review worktree from installing a hook
-into the checkout it is reviewing.
+name the same path (an ordinary checkout, a submodule, a
+`--separate-git-dir` checkout) the root is the working tree from
+`--show-toplevel`; when they differ and the common dir is `<main>/.git`, its
+parent is the root. Every linked worktree is the case where the two paths
+differ, so a real install from one is refused before anything is written —
+git shares one hooks directory with the main checkout. A linked worktree of a
+submodule or a `--separate-git-dir` repository has no main working tree git
+can name (its common dir is not `<main>/.git`), so the refusal names the
+worktree and offers the main checkout or a scratch clone; a dry run from one
+composes from the invocation checkout and writes nothing. The guard's git calls
+use `--path-format=absolute` and therefore require git ≥ 2.31. A linked
+worktree is disposable, so the block must not name it — removing the worktree
+after a merge would make the composition point at a source path that no longer
+exists. `--worktree` names an extra worktree to include, or the one to put
+first in the printed table; it does not move the root. `--dry-run` writes
+nothing, and it is the check that names the main checkout from a review
+worktree. This is what keeps a review worktree from installing a hook into the
+checkout it is reviewing.
 
 ### Why dynamic packages cannot be the reconcile substrate
 

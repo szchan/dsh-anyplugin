@@ -34,7 +34,7 @@ const MUTANTS = [
   {
     name: 'compose from the worktree the install ran in',
     file: 'scripts/guard-install.mjs',
-    find: 'const root = mainCheckout(invocationRoot) ?? invocationRoot',
+    find: 'const root = main ?? invocationRoot',
     replacement: 'const root = invocationRoot',
     test: 'a dry run from a linked worktree composes from the main checkout, not from itself',
   },
@@ -74,11 +74,18 @@ const MUTANTS = [
     test: 'a legacy exact-list entry ending in "*" stays literal and is reported stale',
   },
   {
-    name: 'treat a submodule root as a linked worktree again',
+    name: 'derive the main checkout from the common dir again',
     file: 'scripts/guard-install.mjs',
-    find: '  const root = mainCheckout(path)\n  return root !== undefined && root !== resolve(path)',
-    replacement: "  const root = mainCheckout(path)\n  return resolve(root ?? path, '..') !== resolve(path)",
+    find: '    return resolve(gitDir) !== resolve(commonDir)',
+    replacement: "    return resolve(commonDir, '..') !== resolve(path)",
     test: 'a submodule checkout installs and reports from its own root',
+  },
+  {
+    name: 'treat a linked worktree of a submodule or separate-git-dir repo as main',
+    file: 'scripts/guard-install.mjs',
+    find: '    return resolve(gitDir) !== resolve(commonDir)',
+    replacement: '    const root = mainCheckout(path)\n    return root !== undefined && root !== resolve(path)',
+    test: 'a linked worktree of a --separate-git-dir repo is refused before it can write',
   },
   {
     name: 'never report a listed worktree as gone',

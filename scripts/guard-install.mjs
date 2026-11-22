@@ -56,12 +56,24 @@ function gitToplevel(start) {
 }
 
 function isLinkedWorktree(path) {
-  // `dirname(--git-common-dir)` is not the main checkout for a submodule or a
-  // `--separate-git-dir` worktree: both point their git dir at themselves, so
-  // that comparison refused an install from the only checkout they have. The
-  // shared derivation is what tells a linked worktree from a main one.
-  const root = mainCheckout(path)
-  return root !== undefined && root !== resolve(path)
+  // A linked worktree is the one layout where git-dir and common-dir differ;
+  // in every main checkout (ordinary, submodule, --separate-git-dir) they are
+  // the same path. Deriving it from `mainCheckout` fails exactly for a linked
+  // worktree of a submodule or a --separate-git-dir repo, where the common dir
+  // is not named `.git` and no main working tree is recoverable from git.
+  try {
+    const gitDir = execFileSync('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const commonDir = execFileSync('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return resolve(gitDir) !== resolve(commonDir)
+  } catch {
+    return false
+  }
 }
 
 function usage(message) {
@@ -101,13 +113,18 @@ const patchFile = join(profileDir, PATCH_FILE)
 // available from anywhere.
 const cwdRoot = gitToplevel(process.cwd())
 const invocationRoot = resolve(cwdRoot ?? scriptRoot)
-const root = mainCheckout(invocationRoot) ?? invocationRoot
+const main = mainCheckout(invocationRoot)
+const root = main ?? invocationRoot
 if (!options.dryRun && isLinkedWorktree(invocationRoot)) {
+  // A linked worktree of a submodule or a --separate-git-dir repo has no main
+  // working tree git can name, so the remedy cannot name one either.
+  const remedy =
+    main === undefined
+      ? 'Run from the main checkout or a scratch clone'
+      : `Run from the main checkout (${main}) or a scratch clone`
   console.error(
     `guard:install: ${invocationRoot} is a linked worktree, and git shares one hooks directory with the main checkout. ` +
-      (options.uninstall
-        ? `Run the uninstall from the main checkout (${root}) or a scratch clone; --dry-run cannot uninstall anything.`
-        : 'Run from the main checkout or a scratch clone, or use --dry-run (which writes nothing).'),
+      (options.uninstall ? `${remedy}; --dry-run cannot uninstall anything.` : `${remedy}, or use --dry-run (which writes nothing).`),
   )
   process.exit(1)
 }

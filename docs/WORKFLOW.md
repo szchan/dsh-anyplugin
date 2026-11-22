@@ -75,13 +75,19 @@ is a namespace matcher, not a git-worktree attestation: any directory named
 `ticket-*` under `$root` is confinable even if git never created it as a
 worktree. The wildcard only counts after a stem ending in `-`: a block written
 before that grammar (or an exact entry for a worktree whose real name ends in
-`*`) names a path, not a pattern, and status reports it as stale once it is
-gone. Install once from the main checkout — a real install from a ticket
+`*`, except one ending in exactly `-*`, which reads as the wildcard) names a
+path, not a pattern, and status reports it as stale once it is gone. A live
+ticket path containing a literal `*` makes status report `refused` and name
+the rename remedy; reinstalling cannot make it readable. Install once from the
+main checkout — a real install from a linked
 worktree is refused, because git shares one hooks directory with the main
 checkout; a submodule or `--separate-git-dir` checkout is its own main checkout
-and is installed from there. `npm run guard:install -- --dry-run` from anywhere composes the block
-and names the main checkout; `npm run guard:status` reports `not-installed`,
-`current`, `stale` or `installed-with-stale-paths` (a literal path in the block
+and is installed from there, while a linked worktree of either has no main
+working tree git can name and is refused for a real install. `npm run guard:install -- --dry-run` from an
+ordinary checkout composes the block and names the main checkout (from a linked
+worktree of a submodule or `--separate-git-dir` repo it composes from the
+invocation checkout, writing nothing); `npm run guard:status` reports `not-installed`,
+`current`, `stale`, `refused` or `installed-with-stale-paths` (a literal path in the block
 no longer exists, and the line names it), and prints the desired and installed
 worktree lists separately. A directory whose path does not share that parent and
 stem is not covered until the next install. If any discovered ticket worktree is

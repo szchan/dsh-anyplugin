@@ -5,7 +5,7 @@
 // block). They are deliberately adversarial: every deny case has an allow case
 // one flag away, so a rule that fires on the wrong thing fails here.
 import assert from 'node:assert/strict'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -852,7 +852,8 @@ test('an install from a linked worktree is refused before it can touch the main 
       { cwd: linked, encoding: 'utf8' },
     )
     assert.equal(uninstall.status, 1, uninstall.stdout + uninstall.stderr)
-    assert.match(uninstall.stderr, new RegExp(`Run the uninstall from the main checkout \\(${main.replaceAll('/', '\\/')}\\)`, 'u'))
+    assert.match(uninstall.stderr, new RegExp(`Run from the main checkout \\(${main.replaceAll('/', '\\/')}\\)`, 'u'))
+    assert.match(uninstall.stderr, /--dry-run cannot uninstall anything/u)
     assert.ok(!uninstall.stderr.includes('--dry-run (which writes nothing)'), 'an uninstall is not offered a dry run')
   } finally {
     rmSync(profile, { recursive: true, force: true })
@@ -1362,6 +1363,74 @@ test('a --separate-git-dir checkout resolves to its working tree, not the git di
     )
     assert.equal(current.status, 0, current.stdout + current.stderr)
     assert.match(current.stdout, /guard: status {2}current/u)
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(base, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('a linked worktree of a submodule is refused instead of installed as its own checkout', () => {
+  const scratch = scratchCheckout()
+  const superRoot = mkdtempSync(join(tmpdir(), 'guard-sub-link-super-'))
+  const sub = join(superRoot, 'sub')
+  const linkedParent = mkdtempSync(join(tmpdir(), 'guard-sub-link-'))
+  const linked = join(linkedParent, 'linked')
+  const profile = mkdtempSync(join(tmpdir(), 'guard-sub-link-profile-'))
+  try {
+    execFileSync('git', ['-C', scratch, 'add', '-A'])
+    execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    execFileSync('git', ['init', '-q', '-b', 'main', superRoot])
+    execFileSync('git', ['-C', superRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', '--', scratch, 'sub'])
+    execFileSync('git', ['-C', sub, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'worktree', 'add', '-q', '-b', 'ticket/sub-linked', linked])
+
+    // mainCheckout() cannot name the submodule's main working tree from the
+    // linked git dir; the git-dir/common-dir comparison is what sees this.
+    const real = spawnSync(
+      process.execPath,
+      [join(linked, 'scripts/guard-install.mjs'), '--profile-dir', profile],
+      { cwd: linked, encoding: 'utf8' },
+    )
+    assert.equal(real.status, 1, real.stdout + real.stderr)
+    assert.match(real.stderr, /is a linked worktree/u)
+    assert.ok(real.stderr.includes('Run from the main checkout'), real.stderr)
+    assert.equal(existsSync(join(profile, 'cordis.patch.yml')), false, 'the refusal writes no profile')
+    assert.deepEqual(readdirSync(profile), [], 'the refusal writes no profile at all')
+    assert.equal(existsSync(join(superRoot, '.git', 'modules', 'sub', 'hooks', 'pre-push')), false, 'the refusal writes no hook')
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(linkedParent, { recursive: true, force: true })
+    rmSync(superRoot, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('a linked worktree of a --separate-git-dir repo is refused before it can write', () => {
+  const scratch = scratchCheckout()
+  const base = mkdtempSync(join(tmpdir(), 'guard-sep-link-'))
+  const gitDir = join(base, 'repo.git')
+  const work = join(base, 'work')
+  const linked = join(base, 'linked')
+  const profile = mkdtempSync(join(tmpdir(), 'guard-sep-link-profile-'))
+  try {
+    execFileSync('git', ['-C', scratch, 'add', '-A'])
+    execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    execFileSync('git', ['clone', '-q', '--separate-git-dir', gitDir, '--', scratch, work])
+    execFileSync('git', ['-C', work, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'worktree', 'add', '-q', '-b', 'ticket/sep-linked', linked])
+
+    // The block this used to write was rooted at the linked path and its
+    // pattern also matched the main working tree, which was not protected.
+    const real = spawnSync(
+      process.execPath,
+      [join(linked, 'scripts/guard-install.mjs'), '--profile-dir', profile],
+      { cwd: linked, encoding: 'utf8' },
+    )
+    assert.equal(real.status, 1, real.stdout + real.stderr)
+    assert.match(real.stderr, /is a linked worktree/u)
+    assert.ok(real.stderr.includes('Run from the main checkout'), real.stderr)
+    assert.equal(existsSync(join(profile, 'cordis.patch.yml')), false, 'the refusal writes no profile')
+    assert.deepEqual(readdirSync(profile), [], 'the refusal writes no profile at all')
+    assert.equal(existsSync(join(gitDir, 'hooks', 'pre-push')), false, 'the refusal writes no hook')
   } finally {
     rmSync(profile, { recursive: true, force: true })
     rmSync(base, { recursive: true, force: true })
