@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { harnessSkipReason, readHarnessVersion, resolveHarness } from '../src/harness.ts'
+import { harnessSkipReason, isCI, readHarnessVersion, resolveHarness } from '../src/harness.ts'
 
 const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-harness-'))
 process.on('exit', () => rmSync(scratch, { recursive: true, force: true }))
@@ -92,6 +92,12 @@ test('DSH_HARNESS_VERSION must match the tree on disk', () => {
     () => resolve({ DSH_HARNESS_DIR: root, DSH_HARNESS_VERSION: '0.2.2-rc.5' }),
     /DSH_HARNESS_VERSION=0\.2\.2-rc\.5 but .* contains dsh@0\.2\.2-rc\.2/,
   )
+})
+
+test('the CI predicate accepts both spellings the repository uses', () => {
+  for (const value of ['true', '1']) assert.equal(isCI({ CI: value }), true, `CI=${value} must count as CI`)
+  for (const value of ['false', '0', '', undefined]) assert.equal(isCI({ CI: value }), false, `CI=${value} must not`)
+  assert.equal(isCI({}), false)
 })
 
 test('CI with no resolved harness fails instead of skipping', () => {

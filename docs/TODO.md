@@ -15,13 +15,6 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Next
 
-- [ ] **Install closure, not just the profile path.** S17 mounts the packed
-  bundle through a real profile, but `PluginPackages` (the launcher's
-  install-closure interception) does not initialize on this machine
-  (`node-addon-require-builtin`), so the harness scope is linked as a stand-in
-  (D50). Prove the closure in CI, or record it as a declared limit in
-  `FEATURES.md` and stop letting the install row imply it.
-
 ## Upstream proposals (union-only seams, T2)
 
 Each is a small, independent change that never alters existing behavior. Listed
