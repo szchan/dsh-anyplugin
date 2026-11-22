@@ -477,19 +477,19 @@ const CLASSIC_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
   'classic.Setup':
     'S9 refuted: no dispatch; agent/created with source startup is the closest lifecycle point, but it is not setup (docs/ARCHITECTURE.md:1334-1335).',
   'classic.StopFailure':
-    'S9 unprobed: turn/end with an error reason is appended, but no failure-specific dispatch is established (docs/ARCHITECTURE.md:1311-1315).',
+    'S23: the error-shaped turn/end record and the agent/error emit mark the failure, but neither carries the last assistant message and a record cannot veto. Routing it is a payload translation with a named gap, not a decision path; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
   'classic.TaskCreated':
-    'S9 unprobed: team/task is appended, but no create-specific point was established (docs/ARCHITECTURE.md:1293-1297).',
+    'S23: team/task is a durable record (revision 1, status pending, one service call, no model turn). It has no tool name/input/call id and no team_name/teammate_name, and a record cannot veto; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
   'classic.TaskCompleted':
-    'S9 unprobed: the team/task record family exists, but the terminal record was not established or distinguished from creation (docs/ARCHITECTURE.md:1298-1301).',
+    'S23: the terminal team/task revision (status completed, ownerId, ownerName) stands for completion; same record limits as TaskCreated, and a record cannot veto; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
   'classic.TeammateIdle':
-    'S9 unprobed: team/member records exist, but no idle-transition point was established (docs/ARCHITECTURE.md:1302-1304).',
+    'S23: driving a fork teammate through activation to idle produced only agent/status (status idle, agent id) and no team/member record at 0.2.2-rc.5, so the transition and teammate_name cannot be built. Not fired at the pin — a host gap, not an unprobed point (docs/ARCHITECTURE.md §10 S23).',
   'classic.UserPromptExpansion':
     'S9 refuted: expansion happens in the command layer before the prompt; agent/pre-step sees only the expanded messages (docs/ARCHITECTURE.md:1333-1334).',
   'classic.WorktreeCreate':
-    'S9 unprobed: plugin:worktree/created is appended, but the record and its payload were not asserted (docs/ARCHITECTURE.md:1305-1308).',
+    'S23: plugin:worktree/created is a durable record carrying path, branch, baseCommit and repositoryRoot. It is a record, not an event: no veto, no tool-shaped fields; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
   'classic.WorktreeRemove':
-    'S9 unprobed: worktree/cleanup is emitted, but whether it fires per removal and what it carries was not asserted (docs/ARCHITECTURE.md:1309-1310).',
+    'S23: worktree/cleanup is emitted twice per removal (scheduled, then final) with sessionId, path and cleanup {revision, status}; notification-only and duplicated, so routing needs a dedupe key and a chosen emission — not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
 })
 
 function reasons(events: readonly string[], reason: string): Readonly<Record<string, string>> {

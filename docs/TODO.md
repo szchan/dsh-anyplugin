@@ -38,13 +38,22 @@ with the exact anchor so the proposal is reviewable without a checkout.
       exact, `invocation` equivalent); a catalog would restore Claude's
       single-tool shape and let a preset own the child system prompt, but it is
       no longer on the critical path.
-- [ ] Hook events with no host today (S9): `PreModelSwitch`, `InstructionsLoaded`,
-      `DirectoryAdded`, `Setup`, `UserPromptExpansion`, `MessageDisplay`,
-      `PostToolBatch`, `Notification`, `Elicitation`, `ElicitationResult` are
-      refuted; `TaskCreated`, `TaskCompleted`, `TeammateIdle`,
-      `WorktreeCreate`, `WorktreeRemove`, `StopFailure` are unprobed. All nine
-      listener seams and the five notification-only records are wired; what
-      remains is host support for the sixteen events above.
+- [ ] Hook events with no host today (S9, S23): `PreModelSwitch`,
+      `InstructionsLoaded`, `DirectoryAdded`, `Setup`, `UserPromptExpansion`,
+      `MessageDisplay`, `PostToolBatch`, `Notification`, `Elicitation`,
+      `ElicitationResult` are refuted; `TeammateIdle` reaches `agent/status`
+      idle but the pin records no `team/member`, so it needs host support.
+      All nine listener seams and the five notification-only records are wired;
+      what remains for the refuted and idle events is host support above.
+- [ ] Route the five S23 emitters into the classic hook mount, so a plugin's
+      `TaskCreated`, `TaskCompleted`, `WorktreeCreate`, `WorktreeRemove` and
+      `StopFailure` handlers run instead of reporting `no host event`. S23
+      located them (five notification-only: `session/event team/task` twice,
+      `plugin:worktree/created`, `worktree/cleanup` twice per removal, and the
+      error-shaped `turn/end` plus `agent/error`). Outcome: a fixture handler
+      writes a line on one real turn, `WorktreeRemove` fires once per removal
+      from its two emissions, and every absent classic field is a reported
+      gap, not an invented value (ticket TBD).
 - [ ] `dsh-shell-env` — an ordered external-PATH contribution for plugin
       `bin/`. Anchor (S19, pinned 0.2.2-rc.5 and 0.2.2-rc.2): `register()` throws
       `bash env contributor "X" declared invalid key "PATH"` at
