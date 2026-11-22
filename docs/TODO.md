@@ -70,6 +70,13 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `claude-code.d.ts` (D14 forbids vendoring the artifact, and the licence
       does not grant redistribution) or derive an inline subset whose shapes are
       no longer copied verbatim (a different claim under D57).
+      Blocked on: D14 (read the pin, do not vendor it), D57 (a served shape is
+      copied verbatim), and a decision entry for the inline-subset path (D59
+      proposed in #150; #144 generated the internal file).
+- [ ] **Count claims for served/refused/absent** — `check:features`'s R15 rule
+      only recognises `N declared`, `N tests` and `N fixtures`; the `$` bridge
+      row's served/refused/absent numbers are still human-maintained. Extend the
+      owner test to emit the counts, or narrow the row to a test-owned claim.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
@@ -89,9 +96,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
   writing; `types.test.mjs` regenerates into a temp directory, compares (never
   rewrites), and asserts the served set, the absent set and the refused union
   against the ledger. Two runs are byte-identical. The file is an internal shape
-  guard, not a shipped or author-facing surface: shipping it needs the choice in
-  Later (redistribute the pin, which D14 forbids, or derive an inline subset
-  that is a different claim under D57). Author-facing types are `planned`.
+  guard, not a shipped or author-facing surface: `check:pack` asserts the
+  tarball contains no `types/` path, and shipping the real surface needs the
+  choice in Later (redistribute the pin, which D14 forbids, or derive an inline
+  subset that is a different claim under D57). Author-facing types are
+  `planned`.
 - Mod coverage ledger (ticket #130): `scripts/mod-coverage.mjs` scans the pinned
   `mods/types/claude-code.d.ts` by declaration and classifies every declared
   symbol against the runtime `$` table as `served`, `refused` (a typed

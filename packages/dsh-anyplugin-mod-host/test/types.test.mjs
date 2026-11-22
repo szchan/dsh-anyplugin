@@ -207,6 +207,37 @@ test('generation fails on a signature with no type text', () => {
   assert.throws(() => renderModTypes({ declaration: { ...declaration, text }, verify: false }), /session\.cwd/)
 })
 
+test('generation fails on an unknown type in a method-form parameter', () => {
+  const declaration = readDeclaration()
+  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd<T>(x: Mystery): T;')
+  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
+  assert.throws(
+    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
+    /session\.cwd[\s\S]*Mystery|Mystery[\s\S]*session\.cwd/,
+  )
+})
+
+test('generation fails on an unknown type in a type predicate', () => {
+  const declaration = readDeclaration()
+  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd: (v: unknown) => asserts v is Mystery;')
+  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
+  assert.throws(
+    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
+    /session\.cwd[\s\S]*Mystery|Mystery[\s\S]*session\.cwd/,
+  )
+})
+
+test('a method-form parameter type is imported and covered by reverse closure', () => {
+  const declaration = readDeclaration()
+  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd<T>(x: EnvSetResult): T;')
+  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
+  const rendered = renderModTypes({ declaration: { ...declaration, text }, verify: false })
+  assert.ok(rendered.includes('  EnvSetResult,'), 'EnvSetResult was not imported')
+  assert.match(rendered, /cwd<T>\(x: EnvSetResult\): T;/)
+  const dropped = rendered.replace('\n  EnvSetResult,', '')
+  assert.throws(() => assertImportsCoverTypeReferences(dropped, text), /EnvSetResult/)
+})
+
 test('every type a signature references is imported (reverse closure)', () => {
   const declarationText = readDeclaration().text
   assert.doesNotThrow(() => assertImportsCoverTypeReferences(committed, declarationText))

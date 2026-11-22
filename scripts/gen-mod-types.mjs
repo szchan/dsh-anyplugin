@@ -276,8 +276,18 @@ function nextSignificant(text, from) {
  */
 export function typeReferences(source) {
   const references = new Set()
-  const colon = topLevelColon(source)
-  const from = colon === -1 ? 0 : colon + 1
+  // A member source starts with its name and then either `:` (property form)
+  // or a type-parameter list / parameter list (method form). For method form
+  // the first top-level colon is the *return type*, so scanning only after it
+  // would miss every parameter and constraint; start at the type-parameter or
+  // parameter list instead. A bare type expression (no member name) starts at 0.
+  let from = 0
+  const member = /^\s*(?:readonly\s+)?[A-Za-z_$][\w$]*\s*\??/.exec(source)
+  if (member !== null) {
+    const after = source.slice(member[0].length)
+    if (after.startsWith(':')) from = member[0].length + 1
+    else if (after.startsWith('<') || after.startsWith('(')) from = member[0].length
+  }
   let previous = ''
   for (let i = from; i < source.length; i++) {
     const c = source[i]
@@ -324,7 +334,8 @@ export function typeReferences(source) {
         previous === 'readonly' ||
         previous === '?' ||
         previous === 'as' ||
-        previous === 'satisfies'
+        previous === 'satisfies' ||
+        previous === 'is'
       if (inTypePosition && next !== ':' && next !== '?') references.add(word)
       previous = word
       i = end - 1
@@ -569,8 +580,13 @@ export function assertImportsCoverTypeReferences(text, declarationText) {
   for (const namespaceMember of parseMembers(`{${text.slice(open + 1, close)}}`)) {
     if (namespaceMember.name === undefined || typeof namespaceMember.type !== 'string') continue
     for (const entry of parseMembers(namespaceMember.type)) {
-      if (entry.name === undefined || typeof entry.type !== 'string') continue
-      const source = `${entry.name}: ${entry.type};`
+      if (entry.name === undefined) continue
+      // Method-form members have an empty `type` (their signature is only in
+      // `source`); rebuilding `name: ;` here would hide every parameter.
+      const source =
+        typeof entry.source === 'string' && entry.source.trim() !== ''
+          ? entry.source
+          : `${entry.name}: ${entry.type};`
       const locals = localTypeParameters(source)
       for (const reference of typeReferences(source)) {
         if (locals.has(reference) || BUILTIN_TYPES.has(reference) || TYPE_KEYWORDS.has(reference)) continue

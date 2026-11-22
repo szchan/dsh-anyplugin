@@ -85,6 +85,12 @@ try {
     }
     check(has(manifest.dsh?.bundle?.patch?.replace(/^\.\//, '') ?? 'cordis.patch.yml'), 'the bundle patch is not in the tarball')
 
+    // The generated mod type surface is internal (#144, D59): shipping it would
+    // redistribute Anthropic's pinned declaration, which D14 forbids. The TODO
+    // Done entry says it is not shipped; this assertion is what makes that true.
+    const typeSurface = [...files].filter((path) => path === 'types/mod.d.ts' || path.startsWith('types/') || path.includes('/types/'))
+    check(typeSurface.length === 0, `the tarball ships the internal type surface: ${typeSurface.join(', ')}`)
+
     // 1. The built entry point and every published export target.
     check(manifest.main === './lib/index.js', `main is ${JSON.stringify(manifest.main)}, expected ./lib/index.js`)
     check(has('lib/index.js'), 'the tarball has no lib/index.js — did the build run?')
