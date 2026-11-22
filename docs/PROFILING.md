@@ -26,6 +26,12 @@ workflow. CI timing on a shared runner is not comparable to a maintainer's
 machine and would turn noise into red builds. A `--check` failure is a local
 signal for the person changing a hot path, not a merge gate.
 
+For a pipe, ask npm to stay quiet: `npm` prints its own `> dsh-anyplugin@…
+perf` banner on stdout before the script starts, so `npm run perf -- --json`
+is valid JSON only after that line. Use `npm run --silent perf -- --json`, or
+call `node scripts/perf.mjs --json` directly; the program's own stdout is a
+single JSON document and `--quiet` writes nothing else.
+
 ## Environment
 
 The run requires exactly the suite's five variables, because a measurement in a
@@ -55,9 +61,14 @@ The base is measured in a detached `git worktree` at the base commit:
    Otherwise the base gets its own `npm install --offline` (still no network);
    product packages import each other relatively, so a shared dependency tree
    cannot substitute head package code for base package code;
-5. each side runs its probes in its **own child process** (`--probe core`,
-   `--probe boot`) that imports that side's sources by absolute file URL. The
-   two sides therefore do not share a V8 heap, a module graph, or a JIT state;
+5. P1, P3 and P4 import **both** trees into one child (`--probe core
+   --roots <base>\n<head>`) and measure them sample by sample, alternating
+   `[base, head]` and `[head, base]`. Each side keeps its own module graph and
+   its own `vm` contexts; because the two halves of a pair are adjacent in
+   time, a drift in the host's load cancels inside the pair instead of being
+   reported as a ratio. P2 boots the two sides in separate children (two
+   hosts in one process would fight over the DSH globals) and runs two passes
+   in opposite order, merging their samples for the same reason;
 6. the worktree and the scratch home are removed in a `finally`.
 
 Everything the runner needs for itself — worktree creation, dependency sharing,
@@ -71,8 +82,9 @@ only timed regions are the four numbered `performance.now()` spans below.
 `loadMod()` plus `await mod.evaluate()` of the pinned upstream `diff` mod
 (`$ANYPLUGIN_MODS_TREE/mods/diff/hooks/register.ts`). This is the kernel's
 slowest single unit: link, type-strip and evaluate a foreign module in a fresh
-`vm` context. Every sample creates a fresh context. One warmup run is discarded;
-the rest are medians. After the stopwatch closes, the probe asserts the pinned
+`vm` context. Every sample creates a fresh context. One warmup per side is
+discarded; the report's median is over `2 × --repeat` samples per side (the
+paired halves of the run). After the stopwatch closes, the probe asserts the pinned
 registration count from `fixtures/mods/upstream.json` (11 for `diff`) and
 disposes the mod.
 
@@ -93,7 +105,9 @@ Outside the timed region: scratch home, `installPlugin()` (writes
 `appBoot.loadProfile()`. The timed region is `mountProfile()`: the harness
 boot, the profile's plugin activation, module loading from the side's `lib/`,
 and the controller's reconcile pass. A warmup boot is discarded; each sample
-uses a fresh profile directory and disposes the context afterwards.
+uses a fresh profile directory and disposes the context afterwards. Two passes
+run in opposite order and their boots are merged, so the median is over
+`2 × --repeat` boots per pin.
 
 After the stopwatch closes, P2 asserts:
 
@@ -184,26 +198,40 @@ slower", so it is stamped `informational` in the table and the JSON, and
 
 ## Variance: what to expect, and what a ratio means
 
-The medians are medians of repeated samples after one warmup, but this machine
-is shared: other agents build and run suites concurrently. On 2026-11-22, two
-consecutive runs at the *same commit* (`74a5bf6`, so every ratio is a noise
-control) gave:
+The report's median is over `2 × --repeat` samples per side, and the base and
+head halves of a pair are measured back to back. That pairing is not cosmetic.
+Before it, the harness measured the base in one block and the head in the next.
+On identical code (that is, with every ratio a noise control) that produced
+0.93x–1.01x on P1 and 1.01x–1.08x on P3 at a quiet moment, but 1.20x/1.51x and
+then 1.74x/1.73x when the host was busy; merely alternating whole-side blocks
+still produced 1.89x on P3. The machine's load trajectory had become the
+regression.
 
-| probe | run 1 ratio | run 2 ratio | absolute medians between runs |
+With the paired measurement, on the same busy host and the same commit:
+
+| probe | run 1 ratio | run 2 ratio | base median, run 1 → run 2 |
 | --- | --- | --- | --- |
-| P1 | 0.93x | 1.01x | 281.6 → 229.3 ms (base) |
-| P2 rc.2 | 0.98x | 0.82x | 29.6 → 28.7 ms |
-| P2 rc.5 | 1.21x | 0.93x | 25.5 → 26.0 ms |
-| P3 | 1.08x | 1.01x | 8.81 → 10.57 µs |
-| P4 | 0.95x | 1.00x | 130.7 → 107.8 ms |
+| P1 | 1.02x | 1.08x | 416.1 → 247.9 ms |
+| P2 rc.2 | 1.06x | 1.05x | 50.0 → 27.0 ms |
+| P2 rc.5 | 1.01x | 1.03x | 49.6 → 25.1 ms |
+| P3 | 0.98x | 0.98x | 9.90 → 5.90 µs |
+| P4 | 1.01x | 1.01x | 186.3 → 115.8 ms |
 
-Read that as: a single sample is worth about ±20 %, the ratio of two runs is
-worth about ±10 %, and the machine drifts by up to ~25 % between runs even
-when nothing changed. Raising `--repeat` tightens the median; it cannot remove
-the drift between runs. So:
+The ratio agreed within ~6 % on P1 and exactly on P3, while the absolute
+medians still moved by ~40 % because the two runs happened at different
+moments. A third run under heavier load (P1 base median 675.9 ms, three times
+the second run) gave 1.05x and 1.12x: pairing removes the drift between the two
+halves, not every burst. That is the point: a base/head ratio survives a busy machine; a
+millisecond count does not. So:
 
 - a ratio of 0.9–1.1 is noise; do not open a ticket for it;
-- a ratio above the `--check` default of 1.5 on a quiet machine is worth a
-  look at the probe that moved;
+- a ratio above the `--check` default of 1.5 is worth a look at the probe that
+  moved, after a second run;
 - absolute medians in two different runs are not a comparison. Only the ratio
   of a base and a head measured by the same run is.
+
+P2 is the least stable probe: each sample boots a host and loads a profile, so
+a pair costs about a second and a load burst can still move its ratio by
+20–30 %. It is gated by `--check` because a real boot regression is large, but
+read a 1.1x P2 as noise. Raising `--repeat` tightens every median; it cannot
+remove the drift between separate runs.

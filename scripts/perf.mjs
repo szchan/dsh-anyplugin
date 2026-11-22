@@ -26,8 +26,11 @@
  * and `--check` never looks at it.
  *
  * How the base is measured: a detached worktree at the base commit, built
- * there, probed in its own child processes with `--root <worktree>`. The base
- * and the head therefore never share a module graph or a V8 heap. Third-party
+ * there. P1/P3/P4 import the base and the head in one child and measure them
+ * sample by sample in alternating order, so neither side shares a module graph
+ * with the other and a load drift cancels inside a pair. P2 boots the two
+ * sides in separate children, because two hosts in one process would fight
+ * over the DSH globals; its passes run in opposite order. Third-party
  * dependencies are shared only when `package-lock.json` is byte-identical;
  * otherwise the base gets its own offline `npm install`. Everything the runner
  * does for itself (worktree, build, pack) happens outside every stopwatch.
@@ -105,8 +108,8 @@ Probes (each prints base, head and ratio; a regression is a ratio):
 Options:
   --base <ref>       base revision measured in a separate worktree
                      (default: ${DEFAULT_BASE}; the ref must exist locally)
-  --repeat <n>       timed samples per side after one warmup, 1..${MAX_REPEAT}
-                     (default: ${DEFAULT_REPEAT})
+  --repeat <n>       timed samples per side per half-run, 1..${MAX_REPEAT}
+                     (default: ${DEFAULT_REPEAT}; every probe takes 2n samples per side)
   --json             print the JSON report instead of the table
   --quiet            print only the JSON report; suppress notes (failures print)
   --check            exit 1 when any ratio exceeds --threshold; never applied
@@ -211,6 +214,7 @@ export function parseArgs(argv) {
     thresholdSet: false,
     probe: null,
     root: CHECKOUT,
+    roots: null,
     pins: null,
   }
 
@@ -301,6 +305,15 @@ export function parseArgs(argv) {
         const value = takeValue(flag, inline, index)
         if (inline === undefined) index += 1
         options.root = resolve(value)
+        break
+      }
+      // Internal: the core probe measures both checkouts in one child, sample
+      // by sample, so a load drift over the run cannot become a ratio.
+      case '--roots': {
+        const value = takeValue(flag, inline, index)
+        if (inline === undefined) index += 1
+        options.roots = value.split('\n').map((entry) => resolve(entry))
+        if (options.roots.length !== 2) throw new PerfError('perf: --roots needs the base and the head checkout')
         break
       }
       case '--pins': {
@@ -417,7 +430,7 @@ export function formatTable(report) {
     `dsh-anyplugin perf — base ${report.base.commit.slice(0, 8)} (${report.base.ref}) -> head ${report.head.commit.slice(0, 8)}`,
   )
   lines.push(
-    `node ${report.node} · ${report.repeat} samples after 1 warmup · ratio = head/base (<1.00 is faster)`,
+    `node ${report.node} · ${report.repeat * 2} samples per side, interleaved · ratio = head/base (<1.00 is faster)`,
   )
   lines.push('')
 
@@ -555,8 +568,7 @@ function runProbe(kind, root, options, extraArgs = []) {
     SCRIPT_PATH,
     '--probe',
     kind,
-    '--root',
-    root,
+    ...(root === null ? [] : ['--root', root]),
     '--repeat',
     String(options.repeat),
     ...extraArgs,
@@ -685,11 +697,44 @@ async function runSuite(options) {
     buildSide(CHECKOUT)
     buildSide(baseRoot)
 
-    const headCore = runProbe('core', CHECKOUT, options)
-    const baseCore = runProbe('core', baseRoot, options)
     const bootPins = pins.filter((pin) => pin.available).map(({ version, installRoot }) => ({ version, installRoot }))
-    const headBoot = runProbe('boot', CHECKOUT, options, ['--pins', JSON.stringify(bootPins)])
-    const baseBoot = runProbe('boot', baseRoot, options, ['--pins', JSON.stringify(bootPins)])
+    const bootArgs = ['--pins', JSON.stringify(bootPins)]
+
+    // P1, P3 and P4 measure both checkouts in ONE child, alternating
+    // [base, head] and [head, base] sample by sample: a ratio taken from two
+    // separate blocks reports the host's load trajectory as if it were a code
+    // change, while a pair measured next to each other does not.
+    const core = runProbe('core', null, options, ['--roots', [baseRoot, CHECKOUT].join('\n')])
+    const headCore = core.head
+    const baseCore = core.base
+
+    // P2 cannot share a process (two hosts would fight over the DSH globals),
+    // so its two passes run in opposite order and their samples are merged; a
+    // drift over the run then biases neither side in one direction.
+    const passes = { base: [], head: [] }
+    for (const order of [
+      ['base', 'head'],
+      ['head', 'base'],
+    ]) {
+      for (const side of order) {
+        passes[side].push(runProbe('boot', side === 'base' ? baseRoot : CHECKOUT, options, bootArgs))
+      }
+    }
+    const mergeBoot = (side) => {
+      const [first] = passes[side]
+      return {
+        pins: first.pins.map((pin) => ({
+          ...pin,
+          samples: passes[side].flatMap((pass) => pass.pins.find((entry) => entry.version === pin.version).samples),
+          maxRssKiB: Math.max(
+            ...passes[side].map((pass) => pass.pins.find((entry) => entry.version === pin.version).maxRssKiB ?? 0),
+          ),
+        })),
+        maxRssKiB: Math.max(...passes[side].map((pass) => pass.maxRssKiB ?? 0)),
+      }
+    }
+    const headBoot = mergeBoot('head')
+    const baseBoot = mergeBoot('base')
 
     const coreRow = (id, unit) => {
       const base = summarize(baseCore[id].samples, unit)
@@ -738,6 +783,7 @@ async function runSuite(options) {
       head: { commit: headCommit },
       base: { ref: options.base, commit: baseCommit, sameAsHead: baseCommit === headCommit },
       repeat: options.repeat,
+      samplesPerSide: options.repeat * 2,
       probes: {
         P1: coreRow('p1', 'ms'),
         P2: p2,
@@ -813,26 +859,60 @@ function packTarball(root) {
 }
 
 // ---------------------------------------------------------------------------
-// Probes (children). Each imports from `--root`, so the head script can measure
-// the base worktree without a second copy of itself.
+// Probes (children). The boot probe imports one checkout (`--root`); the core
+// probe imports both (`--roots`) so it can alternate their samples.
 // ---------------------------------------------------------------------------
+
+// The two roots are measured in the same child, sample by sample, and the
+// order alternates: [base, head] then [head, base]. A ratio taken from two
+// separate blocks reports the host's load trajectory as if it were a code
+// change; a pair measured next to each other does not.
+const sideOrder = (sample) => (sample % 2 === 0 ? ['base', 'head'] : ['head', 'base'])
+
+async function importProduct(root) {
+  const at = (relativePath) => moduleUrlFor(root, relativePath)
+  const [modHost, intercept, dialect, emit, trust] = await Promise.all([
+    import(at('packages/dsh-anyplugin-mod-host/src/index.ts')),
+    import(at('packages/dsh-anyplugin-intercept/src/index.ts')),
+    import(at('packages/dsh-anyplugin-dialect-claude-code/src/index.ts')),
+    import(at('packages/dsh-anyplugin-emit/src/index.ts')),
+    import(at('packages/dsh-anyplugin-trust/src/index.ts')),
+  ])
+  return {
+    CONTINUE: intercept.CONTINUE,
+    GRANTS_SCHEMA: trust.GRANTS_SCHEMA,
+    classify: trust.classify,
+    defaultMaterializers: emit.defaultMaterializers,
+    emitPlugin: emit.emitPlugin,
+    gate: trust.gate,
+    loadMod: modHost.loadMod,
+    pluginIdentity: trust.pluginIdentity,
+    readClaudePlugin: dialect.readClaudePlugin,
+    runChain: intercept.runChain,
+  }
+}
 
 export async function probeCore(options) {
   const env = requirePerfEnv()
-  const root = options.root
   const repeat = options.repeat
-  const at = (relativePath) => moduleUrlFor(root, relativePath)
-
-  const { loadMod } = await import(at('packages/dsh-anyplugin-mod-host/src/index.ts'))
-  const { CONTINUE, runChain } = await import(at('packages/dsh-anyplugin-intercept/src/index.ts'))
-  const { readClaudePlugin } = await import(at('packages/dsh-anyplugin-dialect-claude-code/src/index.ts'))
-  const { defaultMaterializers, emitPlugin } = await import(at('packages/dsh-anyplugin-emit/src/index.ts'))
-  const { GRANTS_SCHEMA, classify, gate, pluginIdentity } = await import(at('packages/dsh-anyplugin-trust/src/index.ts'))
+  assert(
+    Array.isArray(options.roots) && options.roots.length === 2,
+    'the core probe needs --roots with the base and head checkouts',
+  )
+  const roots = { base: options.roots[0], head: options.roots[1] }
+  const api = {}
+  for (const side of ['base', 'head']) api[side] = await importProduct(roots[side])
 
   const modsTree = env.modsTree
-  const pinFile = JSON.parse(readFileSync(join(root, 'fixtures', 'mods', 'upstream.json'), 'utf8'))
+  const pinFile = JSON.parse(readFileSync(join(roots.head, 'fixtures', 'mods', 'upstream.json'), 'utf8'))
   const diffPin = pinFile.mods.find((mod) => mod.name === DIFF_MOD)
   assert(diffPin !== undefined, `fixtures/mods/upstream.json has no ${DIFF_MOD} mod`)
+  const basePinFile = JSON.parse(readFileSync(join(roots.base, 'fixtures', 'mods', 'upstream.json'), 'utf8'))
+  const baseDiffPin = basePinFile.mods.find((mod) => mod.name === DIFF_MOD)
+  assert(
+    baseDiffPin?.registrations?.length === diffPin.registrations.length,
+    'base and head pin different upstream diff mods; the ratio would mix pins',
+  )
 
   // P1: cold mod load. `loadMod` links and evaluates; `evaluate()` here is the
   // already-started evaluation, so the timed region is the whole cold load.
@@ -843,9 +923,9 @@ export async function probeCore(options) {
       throw new PerfError(`perf: the pinned ${DIFF_MOD} mod dereferenced $ while registering`)
     },
   }
-  const loadDiff = async () => {
+  const loadDiff = async (side) => {
     const started = performance.now()
-    const mod = await loadMod({
+    const mod = await api[side].loadMod({
       root: modRoot,
       entry: 'register.ts',
       pluginRoot,
@@ -861,12 +941,15 @@ export async function probeCore(options) {
     await mod.dispose?.()
     return elapsed
   }
-  await loadDiff() // warmup, also the assertion that the mod still registers
-  const p1 = []
-  for (let sample = 0; sample < repeat; sample += 1) p1.push(await loadDiff())
+  for (const side of ['base', 'head']) await loadDiff(side) // warmup, and the pin assertion
+  const p1 = { base: [], head: [] }
+  for (let sample = 0; sample < repeat * 2; sample += 1) {
+    for (const side of sideOrder(sample)) p1[side].push(await loadDiff(side))
+  }
 
   // P3: interception. Three handlers, one matcher hit, so every dispatch walks
-  // the skipped-matcher path twice and the run path once.
+  // the skipped-matcher path twice and the run path once. The chain is plain
+  // data, so both sides dispatch the same registrations through their own code.
   const chain = [
     {
       event: 'PreToolUse',
@@ -890,121 +973,144 @@ export async function probeCore(options) {
       run: () => {},
     },
   ]
-  const dispatch = () => runChain({ name: 'PreToolUse', data: { tool_name: 'Bash' } }, chain)
-  const assertChain = async () => {
-    const result = await dispatch()
+  const dispatch = (side) => api[side].runChain({ name: 'PreToolUse', data: { tool_name: 'Bash' } }, chain)
+  const assertChain = async (side) => {
+    const result = await dispatch(side)
     const statuses = result.trace.map((step) => step.status).join(',')
     assert(statuses === 'skipped-matcher,ran,skipped-matcher', `runChain traced ${statuses}, not the expected 3-step chain`)
-    assert(result.decision === CONTINUE, 'runChain did not continue after the matching handler')
+    assert(result.decision === api[side].CONTINUE, 'runChain did not continue after the matching handler')
   }
-  await assertChain() // warmup
-  const p3 = []
-  for (let sample = 0; sample < repeat; sample += 1) {
-    const started = performance.now()
-    for (let dispatchIndex = 0; dispatchIndex < DISPATCH_BATCH; dispatchIndex += 1) await dispatch()
-    const elapsed = performance.now() - started
-    p3.push((elapsed * 1000) / DISPATCH_BATCH) // microseconds per dispatch
+  for (const side of ['base', 'head']) await assertChain(side) // warmup
+  const p3 = { base: [], head: [] }
+  for (let sample = 0; sample < repeat * 2; sample += 1) {
+    for (const side of sideOrder(sample)) {
+      const started = performance.now()
+      for (let dispatchIndex = 0; dispatchIndex < DISPATCH_BATCH; dispatchIndex += 1) await dispatch(side)
+      p3[side].push(((performance.now() - started) * 1000) / DISPATCH_BATCH) // microseconds per dispatch
+    }
   }
-  await assertChain()
+  for (const side of ['base', 'head']) await assertChain(side)
 
   // P4: compile. The seven upstream mods come from the pin file, so a tree that
   // drifts is a named failure rather than a smaller compile. Every fixture with
-  // a plugin manifest joins them; both sets are compiled by the same code.
+  // a plugin manifest joins them; each side compiles its own tree with its own
+  // code, and the two sets are asserted to be the same set.
   const upstreamRoot = join(modsTree, 'mods')
-  const upstream = pinFile.mods.map((mod) => {
-    const pluginRoot = join(upstreamRoot, mod.name)
-    assert(
-      existsSync(join(pluginRoot, '.claude-plugin', 'plugin.json')),
-      `the pinned upstream mod ${mod.name} has no .claude-plugin/plugin.json at ${pluginRoot}`,
-    )
-    return { name: mod.name, root: pluginRoot }
-  })
-  const fixturesRoot = join(root, 'fixtures')
-  const fixtures = readdirSync(fixturesRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort()
-    .filter((name) => existsSync(join(fixturesRoot, name, '.claude-plugin', 'plugin.json')))
-    .map((name) => ({ name, root: join(fixturesRoot, name) }))
-  assert(upstream.length === 7, `the pin file lists ${upstream.length} upstream mods, expected 7`)
-  assert(fixtures.length > 0, 'no fixture carries .claude-plugin/plugin.json')
-
-  const materializers = defaultMaterializers()
-  const prepare = (plugin) => {
-    const ir = readClaudePlugin(plugin.root)
-    const rows = classify(ir)
-    const grants = {
-      schema: GRANTS_SCHEMA,
-      revokes: [],
-      grants: rows.map((row) => ({
-        plugin: pluginIdentity(ir),
-        capability: row.capability,
-        target: row.target,
-        artifactHash: row.artifactHash,
-        grantedAt: '2026-01-01T00:00:00.000Z',
-        scope: 'user',
-      })),
-    }
-    return { ...plugin, grants, rows: rows.length }
-  }
-  const compile = (plugin) => {
-    const ir = readClaudePlugin(plugin.root)
-    const gated = gate(ir, plugin.grants)
-    return emitPlugin(gated.ir, { materializers, trusted: gated.decision.allowed })
-  }
   const signature = (result) =>
     `${result.emitted.join(',')}|${result.considered.length}|${result.skipped.length}|${result.refused.length}`
+  const prepareSide = (side) => {
+    const upstream = pinFile.mods.map((mod) => {
+      const root = join(upstreamRoot, mod.name)
+      assert(
+        existsSync(join(root, '.claude-plugin', 'plugin.json')),
+        `the pinned upstream mod ${mod.name} has no .claude-plugin/plugin.json at ${root}`,
+      )
+      return { name: mod.name, root }
+    })
+    const fixturesRoot = join(roots[side], 'fixtures')
+    const fixtures = readdirSync(fixturesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .filter((name) => existsSync(join(fixturesRoot, name, '.claude-plugin', 'plugin.json')))
+      .map((name) => ({ name, root: join(fixturesRoot, name) }))
+    assert(upstream.length === 7, `the pin file lists ${upstream.length} upstream mods, expected 7`)
+    assert(fixtures.length > 0, 'no fixture carries .claude-plugin/plugin.json')
 
-  const plugins = [...upstream, ...fixtures].map(prepare)
-  const baseline = new Map()
-  const surfaces = new Set()
-  let emitted = 0
-  for (const plugin of plugins) {
-    const result = compile(plugin)
-    baseline.set(plugin.name, signature(result))
-    emitted += result.emitted.length
-    for (const surface of result.emitted) surfaces.add(surface)
-  }
-  // The fixtures include deliberately broken plugins whose artifacts the gate
-  // refuses; the compile probe still measures them. The load-bearing assertion
-  // is that the timed loop reaches both exec surfaces, hook and mod.
-  assert(surfaces.has('hooks'), 'P4: no hook surface was emitted; the probe measures nothing to place')
-  assert(surfaces.has('mods'), 'P4: no mod surface was emitted; the kernel path is not in the timed region')
-
-  const compileSample = () => {
-    const started = performance.now()
-    let sampleEmitted = 0
+    const materializers = api[side].defaultMaterializers()
+    const prepare = (plugin) => {
+      const ir = api[side].readClaudePlugin(plugin.root)
+      const rows = api[side].classify(ir)
+      const grants = {
+        schema: api[side].GRANTS_SCHEMA,
+        revokes: [],
+        grants: rows.map((row) => ({
+          plugin: api[side].pluginIdentity(ir),
+          capability: row.capability,
+          target: row.target,
+          artifactHash: row.artifactHash,
+          grantedAt: '2026-01-01T00:00:00.000Z',
+          scope: 'user',
+        })),
+      }
+      return { ...plugin, grants, rows: rows.length }
+    }
+    const compile = (plugin) => {
+      const ir = api[side].readClaudePlugin(plugin.root)
+      const gated = api[side].gate(ir, plugin.grants)
+      return api[side].emitPlugin(gated.ir, { materializers, trusted: gated.decision.allowed })
+    }
+    const plugins = [...upstream, ...fixtures].map(prepare)
+    const baseline = new Map()
+    const surfaces = new Set()
+    let emitted = 0
     for (const plugin of plugins) {
       const result = compile(plugin)
+      baseline.set(plugin.name, signature(result))
+      emitted += result.emitted.length
+      for (const surface of result.emitted) surfaces.add(surface)
+    }
+    // The fixtures include deliberately broken plugins whose artifacts the gate
+    // refuses; the compile probe still measures them. The load-bearing
+    // assertion is that the timed loop reaches both exec surfaces, hook and mod.
+    assert(surfaces.has('hooks'), 'P4: no hook surface was emitted; the probe measures nothing to place')
+    assert(surfaces.has('mods'), 'P4: no mod surface was emitted; the kernel path is not in the timed region')
+    return {
+      plugins,
+      compile,
+      baseline,
+      emitted,
+      upstream: upstream.map((plugin) => plugin.name),
+      fixtures: fixtures.map((plugin) => plugin.name),
+    }
+  }
+  const prepared = { base: prepareSide('base'), head: prepareSide('head') }
+  const compileSample = (side) => {
+    const preparedSide = prepared[side]
+    const started = performance.now()
+    let sampleEmitted = 0
+    for (const plugin of preparedSide.plugins) {
+      const result = preparedSide.compile(plugin)
       const actual = signature(result)
       assert(
-        actual === baseline.get(plugin.name),
-        `P4: ${plugin.name} compiled to ${actual} inside the sample, baseline was ${baseline.get(plugin.name)}`,
+        actual === preparedSide.baseline.get(plugin.name),
+        `P4: ${plugin.name} compiled to ${actual} inside the sample, baseline was ${preparedSide.baseline.get(plugin.name)}`,
       )
       sampleEmitted += result.emitted.length
     }
     return { ms: performance.now() - started, emitted: sampleEmitted }
   }
-  const p4 = []
-  const warm = compileSample()
-  assert(warm.emitted === emitted, `P4: warmup emitted ${warm.emitted} surfaces, baseline ${emitted}`)
-  for (let sample = 0; sample < repeat; sample += 1) {
-    const result = compileSample()
-    assert(result.emitted === emitted, `P4: sample emitted ${result.emitted} surfaces, baseline ${emitted}`)
-    p4.push(result.ms)
+  for (const side of ['base', 'head']) {
+    const warm = compileSample(side)
+    assert(
+      warm.emitted === prepared[side].emitted,
+      `P4: warmup on ${side} emitted ${warm.emitted} surfaces, baseline ${prepared[side].emitted}`,
+    )
+  }
+  const p4 = { base: [], head: [] }
+  for (let sample = 0; sample < repeat * 2; sample += 1) {
+    for (const side of sideOrder(sample)) {
+      const result = compileSample(side)
+      assert(
+        result.emitted === prepared[side].emitted,
+        `P4: sample emitted ${result.emitted} surfaces, baseline ${prepared[side].emitted}`,
+      )
+      p4[side].push(result.ms)
+    }
   }
 
-  return {
-    p1: { unit: 'ms', samples: p1 },
-    p3: { unit: 'us', samples: p3 },
+  const sideResult = (side) => ({
+    p1: { unit: 'ms', samples: p1[side] },
+    p3: { unit: 'us', samples: p3[side] },
     p4: {
       unit: 'ms',
-      samples: p4,
-      upstream: upstream.map((plugin) => plugin.name),
-      fixtures: fixtures.map((plugin) => plugin.name),
-      emitted,
+      samples: p4[side],
+      upstream: prepared[side].upstream,
+      fixtures: prepared[side].fixtures,
+      emitted: prepared[side].emitted,
     },
-  }
+  })
+  return { base: sideResult('base'), head: sideResult('head') }
 }
 
 export async function probeBoot(options) {
