@@ -2811,3 +2811,28 @@ names the blockers (D14, D57, this entry, `#144`) instead of implying they ship.
 pin drift into a red test. Any future "mod authors get types" work starts here:
 either negotiate redistribution, or publish a derived subset under a new decision
 that says so — never by quietly adding `types/` to `files`.
+
+## D61 — The published package exposes `./install` as its programmatic installer
+
+**Decided** 2026-11-21, with `#155`. Amends D43.
+
+The panel is a separately published optional package, but it must not grow a
+second install writer (D23, D49): the CLI, the panel and any future consumer all
+go through `installPlugin`. D43 closed the published surface to `.` and
+`./materialize/{skill,mcp,hook,agents,output-style}`, so the panel had nothing
+published to call.
+
+**Decided.** The root package additionally exports `./install` → `lib/install.js`,
+re-exporting `installPlugin`, `listPlugins` and `InstallCliError`. It is subject to
+the same shippability rules as every other entry: `check:pack` scans it for
+`resolveClaudeBinary`, `claude --version`, `diffTraces` and `INVENTORY_SCHEMA`
+and refuses `SourceTextModule` outside `lib/materialize/hook.js` (D59), so the
+installer cannot quietly drag the conformance rig into the tarball. It must not
+import the oracle, trace or harness modules.
+
+The rest of D43 stands: no other subpath is added, and `demonstrating` a new one
+is a new decision rather than a `package.json` edit.
+
+**Consequences.** An optional package can be published on its own and still use
+exactly one install path. A consumer that needs install semantics cites this
+subpath instead of copying `install-cli.ts`, which is what D49 exists to prevent.
