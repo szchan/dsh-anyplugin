@@ -23,3 +23,8 @@ fixtures/**/captured/
 
 # daily audit evidence (machine-local transcripts, PR scan); the reports are committed
 .audit/
+
+# `.agents/` is deliberately NOT ignored: it can hold content worth committing.
+# `.agents/worktrees/*` are live git worktrees (registered in .git/worktrees),
+# so git never reports them as untracked; no rule is needed for the DSH session
+# checkouts, and a blanket `.agents/` rule would hide future real content.
