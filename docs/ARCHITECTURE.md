@@ -777,21 +777,22 @@ hook's own `updatedInput` is carried by its verdict into that same rewrite.
 The mapping is data in `mod-events.ts`, one row per mod event with the host
 seam and the pinned `claude-code.d.ts` line as evidence — claude-code
 2.1.322, commit `6e1e44f6433bfa17d198e932bff53373aa229eea` (the d.ts file's own
-header still says 2.1.277; the commit is the pin). It is **16 live `classic.*` routes,
+header still says 2.1.277; the commit is the pin). It is **21 live `classic.*` routes,
 the live `session.start` loader event, and the `tool.call` and `prompt.context`
-engine routes**, 19 live routes. `tool.check` is a measured refusal: it is the
+engine routes**, 24 live routes. `tool.check` is a measured refusal: it is the
 engine's permission verdict after `PreToolUse`, with `next.origin`, `trace`,
 `settings.read`, `op`/`ceiling`/`approver` in its question, none of which the
 pre-execute gate carries (D41 proposal in the #69 PR).
 
-`on()`'s `Pattern` is first-class (d.ts:9447 at the 2.1.329 pin): `classic.*` expands to the 16
-classic routes, `*` to all 19, and a negation (`!tool.*`) to the complement.
+`on()`'s `Pattern` is first-class (d.ts:9447 at the 2.1.329 pin): `classic.*` expands to the 21
+classic routes, `*` to all 24, and a negation (`!tool.*`) to the complement.
 Selected names without a route keep their own reason (a classic event S9 leaves
 unprobed or refutes, or an engine event with no shared protocol); a pattern
 that cannot be expanded gets a pattern-shaped reason of its own.
 
-The 16 `classic.*` names map one-to-one onto their classic kernel points and S9
-seams; `classic.PreToolUse` is special-cased because the mod API hands it
+The 21 `classic.*` names map one-to-one onto their classic kernel points:
+sixteen ride the S9 seams, and the five S23 records ride the materializer's
+record translation notification-only (§10 S23). `classic.PreToolUse` is special-cased because the mod API hands it
 `ToolCallEnvelope` (d.ts:17689 at the 2.1.329 pin), not the classic stdin payload, so the
 adapter rebuilds the envelope and carries a rewrite back.
 `classic.PermissionRequest` and `classic.PermissionDenied` record their partial
@@ -1479,7 +1480,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps the artifact re-hash, the spawn, the D20 verdict translation and the per-child SubagentStart→SubagentStop pair gate (one materializer load; a reload while a start chain is in flight is not covered). S23 probed the six S9-unprobed events: five have a host emitter — `TaskCreated` and `TaskCompleted` are `team/task` durable records (one full-task revision each; the completed revision carries `ownerName`), `WorktreeCreate` is a `plugin:worktree/created` durable record, `WorktreeRemove` is the `worktree/cleanup` emit (scheduled then final), and `StopFailure` is the error-shaped `turn/end` record plus the `agent/error` emit; all five are notification-only (a record or emit cannot veto). `TeammateIdle` has no emitter at rc.5: driving a fork teammate through activation to idle produced only `agent/status {status, agent}` and no `team/member` record or emit, so it is **not fired**, not unprobed (§10 S23). Ten classic events remain refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps the artifact re-hash, the spawn, the D20 verdict translation and the per-child SubagentStart→SubagentStop pair gate (one materializer load; a reload while a start chain is in flight is not covered). S23 probed the six S9-unprobed events: five have a host emitter and are now routed by this mount, notification-only — `TaskCreated` and `TaskCompleted` translate the `team/task` durable record (one run per record, on revision 1 and on status `completed`; `team_name` is a reported gap because `teamId` is the root-session Team identity, and TaskCreated reports `teammate_name` because a new task is unowned, while TaskCompleted takes it from `ownerName`), `WorktreeCreate` translates the `plugin:worktree/created` durable record (`branch` → `name`), `WorktreeRemove` fires once per removal on the settled `worktree/cleanup` record (`cleanup.status === 'removed'`, keyed session/path/revision; the scheduled record is an intent, and retained/failed are not removals), and `StopFailure` fires once per root session and turn on whichever of the error-shaped `turn/end` record and the `agent/error` emit arrives first (key session/turn); it reports `error` as a gap because the host failure code has no ratified mapping to Claude's class enum, and `last_assistant_message` because the failed turn commits no assistant message. Every one is proved by a line its handler wrote on one real headless run (`claude-hooks-seams`, §10 S23 oracle). `TeammateIdle` has no emitter at rc.5: driving a fork teammate through activation to idle produced only `agent/status {status, agent}` and no `team/member` record or emit, so it is **not fired**, not unprobed (§10 S23). Ten classic events remain refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
@@ -3332,16 +3333,35 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   no `teammate_name` or `team_name`. A wiring ticket cannot create this seam
   from a listener; the member lifecycle would have to be added upstream.
 
-  Five of the six now have a listener seam, but **none is wired here**: the six
-  stay on the adapter's `unmapped` list until a wiring ticket routes them
-  (§7), and `packages/dsh-anyplugin-intercept/src/mod-events.ts` is
-  unchanged. No coverage row moved, and none of the six is claimable as a hook
-  event yet. Fired is not the same as fully derivable: neither task record
-  carries a team display name (`teamId` is a root session id), `TaskCreated`
-  has no `teammate_name`, and `StopFailure` has no `last_assistant_message`.
-  None of the payloads is tool-call-shaped: no one carries a tool name, tool
-  input, or call id, so a tool-name matcher cannot be populated from the event
-  alone.
+  Five of the six are now routed by the classic hook mount
+  (`packages/dsh-anyplugin-materialize-hook/src/index.ts`) as
+  notification-only occurrences; `TeammateIdle` stays on the adapter's
+  `unmapped` list, because no listener can create the missing record (§7).
+  The routing rules, in the mount:
+
+  - `TaskCreated` on a `team/task` record with `task.revision === 1`,
+    `TaskCompleted` on one with `task.status === 'completed'`; one handler
+    run per record. The mount reports `team_name` as a gap for both and
+    `teammate_name` for `TaskCreated`; `TaskCompleted` takes
+    `teammate_name` from `ownerName`.
+  - `WorktreeCreate` on the `plugin:worktree/created` record, `name` from
+    `branch`.
+  - `WorktreeRemove` once per removal on the settled `worktree/cleanup`
+    record (`cleanup.status === 'removed'`), dedupe key session/path/
+    `cleanup.revision`; the `scheduled` record is an intent and
+    `retained`/`failed` are not removals.
+  - `StopFailure` once per root session and turn, dedupe key session/`turn`,
+    whichever of the error-shaped `turn/end` record and the `agent/error`
+    emit arrives first; child sessions are excluded (SubagentStop owns those).
+    The mount reports `error` and `last_assistant_message` as gaps;
+    `error_details` is the host failure message.
+
+  A `deny`/`block` from any of these handlers is a typed
+  unsupported/ignored warning, never a veto. `claude-hooks-seams` proves one
+  line per routed event on one real headless run, and the payload-key
+  assertions are in
+  `packages/dsh-anyplugin-conformance/test/lifecycle.test.mjs`; the coverage
+  rows moved with this change (`declared` 32, `matched` 31).
 
   Two probe-only seams were required and are worth recording for the wiring
   ticket: JSONL persistence (`{root: out/sessions, compression:'none'}`) is

@@ -291,3 +291,108 @@ test('a matcher on a subjectless lifecycle event warns instead of running', asyn
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('WorktreeRemove runs once per removal, not once per cleanup record', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeRemove', `printf x >> ${out}`)] })
+    const settled = { sessionId: 'session-1', path: '/work/.agents/worktrees/a', cleanup: { revision: 1, status: 'removed' } }
+    await fire(listeners, 'worktree/cleanup', { ...settled, cleanup: { revision: 1, status: 'scheduled' } })
+    assert.equal(existsSync(out), false, 'the scheduled record is an intent, not a removal')
+    await fire(listeners, 'worktree/cleanup', settled)
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+    await fire(listeners, 'worktree/cleanup', settled)
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('StopFailure runs once for the turn, whichever failure record arrives first', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('StopFailure', `printf x >> ${out}`)] })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    const error = { message: 'model failed', code: 'FAIL' }
+    await fire(listeners, 'agent/error', {
+      turn: 1,
+      step: 1,
+      error,
+      agent: { session },
+    })
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error } } })
+    }
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a deny from a notification-only record is a warning, not a veto', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeRemove', `printf '{"decision":"block","reason":"no"}'`)] })
+    const settled = { sessionId: 'session-1', path: '/work/.agents/worktrees/a', cleanup: { revision: 1, status: 'removed' } }
+    await fire(listeners, 'worktree/cleanup', settled)
+    assert.ok(
+      warnings.some((line) => line.includes('cannot be enforced through worktree/cleanup; reported, not obeyed')),
+      `expected the unsupported warning, saw ${JSON.stringify(warnings)}`,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the task records fire on their own revisions, and absent classic fields are reported gaps', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const created = join(dir, 'created.json')
+    const completed = join(dir, 'completed.json')
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, {
+      hooks: [pinned('TaskCreated', `cat > ${created}`), pinned('TaskCompleted', `cat > ${completed}`)],
+    })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    const task = { id: 'task-1', revision: 1, subject: 'subject', description: 'description', status: 'pending' }
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, { type: 'team/task', data: { version: 2, teamId: 'session-1', task } })
+    }
+    assert.deepEqual(JSON.parse(readFileSync(created, 'utf8')), {
+      hook_event_name: 'TaskCreated',
+      cwd: '/work',
+      session_id: 'session-1',
+      task_id: 'task-1',
+      task_subject: 'subject',
+      task_description: 'description',
+    })
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, {
+        type: 'team/task',
+        data: { version: 2, teamId: 'session-1', task: { ...task, revision: 3, status: 'completed', ownerName: 'lead' } },
+      })
+    }
+    assert.deepEqual(JSON.parse(readFileSync(completed, 'utf8')), {
+      hook_event_name: 'TaskCompleted',
+      cwd: '/work',
+      session_id: 'session-1',
+      task_id: 'task-1',
+      task_subject: 'subject',
+      task_description: 'description',
+      teammate_name: 'lead',
+    })
+    assert.ok(warnings.some((line) => line.includes('anyplugin TaskCreated: unsupported team_name')), 'team_name is a gap')
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin TaskCreated: unsupported teammate_name')),
+      'an unowned TaskCreated has no teammate_name',
+    )
+    assert.ok(warnings.some((line) => line.includes('anyplugin TaskCompleted: unsupported team_name')), 'team_name is a gap')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

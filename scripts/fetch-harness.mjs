@@ -80,15 +80,15 @@ export const HARNESS_PACKAGES = {
   'dsh-user-approval': 'S9: approval/request probe (also a peer of dsh-tool-fs)',
   'dsh-settings': 'S9: settings/document-updated probe',
   'dsh-token-meter': 'S9 and S11: token meter used by compaction',
-  // The six below have no literal importer in the S9 source today. They are
-  // kept because S9's install block carried them for its unprobed event rows
-  // (TaskCreated/Completed, WorktreeCreate/Remove, InstructionsLoaded and the
-  // fs search tools); dropping them would silently narrow the pin the spike
-  // has been run against.
-  'dsh-agent-team': 'S9: team service for the unprobed TaskCreated/Completed rows',
+  // The six below have no literal importer in the S9 source. The conformance
+  // seams probe now mounts the team and worktree services for the routed S23
+  // rows; the rest stay because S9's install block carried them for its
+  // unprobed rows (InstructionsLoaded, Elicitation, the fs search tools), and
+  // dropping them would silently narrow the pin the probe runs against.
+  'dsh-agent-team': 'S9/S23: team service for the routed TaskCreated/Completed rows',
   'dsh-fs-observation-policy': 'S9: fs observation policy behind the FileChanged row',
   'dsh-user-questions': 'S9: question service for the unprobed Elicitation rows',
-  'dsh-experimental-worktree': 'S9: worktree service for the unprobed WorktreeCreate/Remove rows',
+  'dsh-experimental-worktree': 'S9/S23: worktree service for the routed WorktreeCreate/Remove rows',
   'dsh-agent-instructions': 'S9: instructions service for the InstructionsLoaded row',
   'dsh-tool-fs-search': 'S9: fs search tools for the unprobed tool-event rows',
 

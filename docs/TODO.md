@@ -43,17 +43,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `MessageDisplay`, `PostToolBatch`, `Notification`, `Elicitation`,
       `ElicitationResult` are refuted; `TeammateIdle` reaches `agent/status`
       idle but the pin records no `team/member`, so it needs host support.
-      All nine listener seams and the five notification-only records are wired;
-      what remains for the refuted and idle events is host support above.
-- [ ] Route the five S23 emitters into the classic hook mount, so a plugin's
-      `TaskCreated`, `TaskCompleted`, `WorktreeCreate`, `WorktreeRemove` and
-      `StopFailure` handlers run instead of reporting `no host event`. S23
-      located them (five notification-only: `session/event team/task` twice,
-      `plugin:worktree/created`, `worktree/cleanup` twice per removal, and the
-      error-shaped `turn/end` plus `agent/error`). Outcome: a fixture handler
-      writes a line on one real turn, `WorktreeRemove` fires once per removal
-      from its two emissions, and every absent classic field is a reported
-      gap, not an invented value (#197).
+      The nine listener seams are wired; the five S23 records are routed
+      notification-only by the classic hook mount (D70), so they are no longer
+      in this list. What remains for the refuted and idle events is host
+      support above.
 - [ ] `dsh-shell-env` — an ordered external-PATH contribution for plugin
       `bin/`. Anchor (S19, pinned 0.2.2-rc.5 and 0.2.2-rc.2): `register()` throws
       `bash env contributor "X" declared invalid key "PATH"` at
@@ -239,8 +232,8 @@ own work while `next`/`$` still pause.
 - Kernel bridge (ticket #36): `modRegistrationsToKernel` turns a loaded mod's
   `register(on)` registrations into kernel registrations (`mode: 'wrap'`,
   caller-supplied seating, source order preserved) so mods and classic hooks
-  share one chain. `mod-events.ts` pins the mapping as data (19 live routes:
-  16 classic, `session.start`, `tool.call` and `prompt.context`; 148 unmapped names with reasons and
+  share one chain. `mod-events.ts` pins the mapping as data (24 live routes:
+  21 classic, `session.start`, `tool.call` and `prompt.context`; 143 unmapped names with reasons and
   categories (`missing bridge` / `no host event` / `not in spec`; the table
   also enumerates `EngineEventOf`, `ClassicEventOf`, and `OpEventOf`)
   from S9), `on()` patterns (`classic.*`, `*`, negations) expand instead of
