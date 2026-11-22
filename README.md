@@ -66,9 +66,9 @@ so a regression fails in the same place.
 ## ✅ What 0.2.0 does
 
 This table describes the **0.2.0 artifact**, not the repository: every row is
-what installing `dsh-anyplugin@0.2.0` gives you in this release. `0.1.0` is the
-published release on npm. `npm run verify` boots the packed tarball to check
-every row.
+what installing `dsh-anyplugin@0.2.0` gives you in this release. It is the
+published release on npm, with a signed SLSA provenance statement. `npm run
+verify` boots the packed tarball to check every row.
 
 | surface | in 0.2.0 |
 | --- | --- |
@@ -111,7 +111,7 @@ classic hook firing in the same turn, and observes a mod deny at
 
 ## 📦 Install it
 
-`dsh-anyplugin@0.2.0` (this release; `0.1.0` is the published release on npm)
+`dsh-anyplugin@0.2.0` (published; installed from the registry)
 ships as **one bundle** for a DSH profile:
 
 ```bash
