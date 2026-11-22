@@ -8,8 +8,10 @@
  * published tarball, runs *its* bin on a checkout fixture, and judges the
  * report: every row the fixture declares is \`exact\` or \`equivalent\` and
  * carried, no row the fixture does not declare appears (and none twice), every
- * row carries a reason, the totals agree with the rows, and the pin is the pin
- * this checkout claims.
+ * row carries a reason, `totals.declared` is the row count and `emitted` the
+ * carried count, and the pin is the pin this checkout claims. The row checks
+ * only run when the fixture enumerates rows: for a fixture of nested commands,
+ * hooks or MCP servers the list is empty and a dropped row is not detected.
  *
  * Scope, stated narrowly: this runs the packed CLI's `report` path. It does
  * not execute the packed materializers. `report.ok` is `validateIr` (the IR is
@@ -113,8 +115,13 @@ export function judgeReport(report, { name, pin, expected }) {
       failures.push(`the report's totals say ${report.totals.emitted} component(s) emitted, but ${carried} row(s) are carried`)
     }
     if (Number.isInteger(report.totals.declared) === false) failures.push(`the report's totals.declared is ${JSON.stringify(report.totals.declared)}, not an integer`)
-    else if (report.totals.declared < components.length) {
+    else if (report.totals.declared !== components.length) {
       failures.push(`the report's totals declare ${report.totals.declared} component(s) for ${components.length} row(s)`)
+    }
+    for (const field of ['refused', 'skipped']) {
+      if (report.totals[field] !== undefined && Number.isInteger(report.totals[field]) === false) {
+        failures.push(`the report's totals.${field} is ${JSON.stringify(report.totals[field])}, not an integer`)
+      }
     }
   }
 
@@ -281,36 +288,44 @@ const USAGE = 'usage: node scripts/verify-release.mjs [--version <x.y.z>] [--fix
  * failed claim, 2 for a usage error) is tested rather than observed.
  */
 export async function run(argv, { verify = verifyRelease, out = process.stdout, err = process.stderr } = {}) {
-  const json = argv.includes('--json')
-  const value = (flag) => {
-    const index = argv.indexOf(flag)
-    if (index === -1) return undefined
-    const candidate = argv[index + 1]
-    if (candidate === undefined || candidate.startsWith('--')) return null
-    return candidate
-  }
-  const version = value('--version')
-  const fixture = value('--fixture')
-  for (const [flag, parsed] of [['--version', version], ['--fixture', fixture]]) {
-    if (parsed === null) {
-      err.write(`verify-release: ${flag} needs a value\n${USAGE}\n`)
-      return 2
-    }
-  }
-  const known = new Set(['--version', '--fixture', '--json'])
-  const unknown = argv.find((argument, index) => argument.startsWith('--') && !known.has(argument) && !known.has(argv[index - 1]))
-  if (unknown !== undefined) {
-    err.write(`verify-release: unknown option ${unknown}\n${USAGE}\n`)
+  const usage = (message) => {
+    err.write(`verify-release: ${message}\n${USAGE}\n`)
     return 2
+  }
+  let json = false
+  let version
+  let fixture
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (argument === '--json') {
+      json = true
+      continue
+    }
+    if (argument === '--version' || argument === '--fixture') {
+      const candidate = argv[index + 1]
+      if (candidate === undefined || candidate.startsWith('--')) return usage(`${argument} needs a value`)
+      if (argument === '--version') version = candidate
+      else fixture = candidate
+      index += 1
+      continue
+    }
+    return usage(`${argument.startsWith('--') ? 'unknown option' : 'unexpected argument'} ${argument}`)
   }
   const directory = fixture ?? DEFAULT_FIXTURE
-  if (!existsSync(join(directory, '.claude-plugin', 'plugin.json'))) {
+  const manifest = join(directory, '.claude-plugin', 'plugin.json')
+  if (!existsSync(manifest)) {
     const shown = fixture ?? (relative(process.cwd(), directory) || directory)
-    err.write(`verify-release: ${shown} is not a Claude Code plugin directory (no .claude-plugin/plugin.json)\n`)
-    return 2
+    return usage(`${shown} is not a Claude Code plugin directory (no .claude-plugin/plugin.json)`)
   }
+  let name
+  try {
+    name = JSON.parse(readFileSync(manifest, 'utf8')).name
+  } catch (error) {
+    return usage(`${directory}/.claude-plugin/plugin.json is not JSON: ${firstLine(error.message)}`)
+  }
+  if (typeof name !== 'string' || name === '') return usage(`${directory}/.claude-plugin/plugin.json does not name the plugin`)
 
-  const result = await verify({ ...(version === undefined ? {} : { version }), fixture: directory })
+  const result = await verify({ ...(version === undefined ? {} : { version }), fixture: directory, name })
   if (result.failures.length > 0) {
     if (json) out.write(`${JSON.stringify({ ok: false, version: result.version, failures: result.failures, notes: result.notes }, null, 2)}\n`)
     else {

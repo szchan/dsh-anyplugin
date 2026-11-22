@@ -83,11 +83,18 @@ consistent with `totals`, and the row set equal to the fixture's declared rows â
 a dropped, invented, or repeated row fails. The row list is derived from the
 fixture's own files: `skills/*/SKILL.md`, top-level `commands/*.md`,
 `agents/*.md` and `output-styles/*.md`; nested commands, hooks and MCP rows are
-not enumerated, so the row check is for fixtures built from those four surfaces
-(the default is).
+not enumerated.
+
+**The row checks only run when that list is non-empty.** A fixture made of
+nested commands, hooks or MCP servers enumerates nothing, so only the shape and
+totals rules apply and a dropped row is not detected; a mixed fixture's rows on
+those surfaces are treated as invented. Use the default skills fixture (or
+another built from the four surfaces) when the row claim matters.
 
 The entry point exits 0 when every claim holds, 1 with each failed claim listed,
-and 2 on a usage error (a test spawns it to keep that contract). An unpublished
+and 2 on a usage error. The 0/1 paths are tested through `run`'s return value;
+the usage path is tested by spawning the entry point, so deleting the exit
+assignment reddens. An unpublished
 version stops after the registry judgment, because nothing after it can be true.
 
 Scope, stated narrowly: this runs the packed CLI's `report` path. It does not

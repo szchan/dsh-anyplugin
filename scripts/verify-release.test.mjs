@@ -290,7 +290,17 @@ test('verifyRelease: a tarball with no bin, or a bin that is not in the archive,
   assert.ok(moved.failures.some((failure) => /bin "lib\/moved-cli\.js" is not in the archive/.test(failure)))
 })
 
-test('verifyRelease: a tarball naming another version is refused before the CLI runs', async () => {
+test('judgeReport: totals.declared is the number of rows, not a lower bound', () => {
+  const under = { ...REPORT, totals: { declared: 1, emitted: 2, refused: 0, skipped: 0 } }
+  assert.match(judgeReport(under, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /declare 1 component\(s\) for 2 row\(s\)/)
+})
+
+test('judgeReport: refused and skipped totals must be integers when present', () => {
+  const broken = { ...REPORT, totals: { declared: 2, emitted: 2, refused: 'many', skipped: 0 } }
+  assert.match(judgeReport(broken, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /totals\.refused is "many", not an integer/)
+})
+
+test('verifyRelease: a tarball naming another version reports the mismatch after the CLI runs', async () => {
   let ran = 0
   const result = await verifyRelease({
     version: '0.3.0',
@@ -367,6 +377,29 @@ test('run: a failed claim exits 1 and lists each one', async () => {
   })
   assert.equal(code, 1)
   assert.match(err.text, /2 claim\(s\) do not hold for 0\.1\.0\n  - a\n  - b/)
+})
+
+test('run: an unknown flag after --json is a usage error, not "verify the checkout"', async () => {
+  for (const argv of [['--json', '--wat'], ['--json', '0.1.0'], ['--version', '0.3.0', 'extra']]) {
+    const err = capture()
+    const code = await run(argv, { verify: async () => assert.fail('must not verify'), out: capture(), err })
+    assert.equal(code, 2, argv.join(' '))
+    assert.match(err.text, /verify-release: /)
+  }
+})
+
+test('run: a malformed fixture manifest is exit 2, not a SyntaxError stack', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bad-fixture-'))
+  try {
+    mkdirSync(join(directory, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(directory, '.claude-plugin', 'plugin.json'), '{not json')
+    const err = capture()
+    const code = await run(['--version', '0.3.0', '--fixture', directory], { verify: async () => assert.fail('must not verify'), out: capture(), err })
+    assert.equal(code, 2)
+    assert.match(err.text, /not JSON/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('run: a usage typo is exit 2, not a defaulted check', async () => {
