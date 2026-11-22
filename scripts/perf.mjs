@@ -108,8 +108,9 @@ Probes (each prints base, head and ratio; a regression is a ratio):
 Options:
   --base <ref>       base revision measured in a separate worktree
                      (default: ${DEFAULT_BASE}; the ref must exist locally)
-  --repeat <n>       timed samples per side per half-run, 1..${MAX_REPEAT}
-                     (default: ${DEFAULT_REPEAT}; every probe takes 2n samples per side)
+  --repeat <n>       samples per side, 1..${MAX_REPEAT} (default: ${DEFAULT_REPEAT});
+                     P1/P3/P4 take 2n interleaved samples per side, P2 takes n
+                     paired boots per side plus one discarded warm-up pair
   --json             print the JSON report instead of the table
   --quiet            print only the JSON report; suppress notes (failures print)
   --check            exit 1 when any ratio exceeds --threshold; never applied
@@ -430,7 +431,7 @@ export function formatTable(report) {
     `dsh-anyplugin perf — base ${report.base.commit.slice(0, 8)} (${report.base.ref}) -> head ${report.head.commit.slice(0, 8)}`,
   )
   lines.push(
-    `node ${report.node} · ${report.repeat * 2} samples per side, interleaved · ratio = head/base (<1.00 is faster)`,
+    `node ${report.node} · P1/P3/P4 ${report.repeat * 2} interleaved samples/side · P2 ${report.repeat} paired boots/side · ratio = head/base (<1.00 is faster)`,
   )
   lines.push('')
 
@@ -698,7 +699,6 @@ async function runSuite(options) {
     buildSide(baseRoot)
 
     const bootPins = pins.filter((pin) => pin.available).map(({ version, installRoot }) => ({ version, installRoot }))
-    const bootArgs = ['--pins', JSON.stringify(bootPins)]
 
     // P1, P3 and P4 measure both checkouts in ONE child, alternating
     // [base, head] and [head, base] sample by sample: a ratio taken from two
@@ -708,33 +708,17 @@ async function runSuite(options) {
     const headCore = core.head
     const baseCore = core.base
 
-    // P2 cannot share a process (two hosts would fight over the DSH globals),
-    // so its two passes run in opposite order and their samples are merged; a
-    // drift over the run then biases neither side in one direction.
-    const passes = { base: [], head: [] }
-    for (const order of [
-      ['base', 'head'],
-      ['head', 'base'],
-    ]) {
-      for (const side of order) {
-        passes[side].push(runProbe('boot', side === 'base' ? baseRoot : CHECKOUT, options, bootArgs))
-      }
-    }
-    const mergeBoot = (side) => {
-      const [first] = passes[side]
-      return {
-        pins: first.pins.map((pin) => ({
-          ...pin,
-          samples: passes[side].flatMap((pass) => pass.pins.find((entry) => entry.version === pin.version).samples),
-          maxRssKiB: Math.max(
-            ...passes[side].map((pass) => pass.pins.find((entry) => entry.version === pin.version).maxRssKiB ?? 0),
-          ),
-        })),
-        maxRssKiB: Math.max(...passes[side].map((pass) => pass.maxRssKiB ?? 0)),
-      }
-    }
-    const headBoot = mergeBoot('head')
-    const baseBoot = mergeBoot('base')
+    // P2 also measures both checkouts in ONE child per pin, and alternates
+    // its boots pair by pair: base then head, then head then base, after one
+    // discarded warm-up pair on each side. Four unpaired children let the
+    // cold first child and the host's drift become the ratio, and a median of
+    // merged blocks cannot cancel that.
+    const boot = runProbe('boot', null, options, [
+      '--roots',
+      [baseRoot, CHECKOUT].join('\n'),
+      '--pins',
+      JSON.stringify(bootPins),
+    ])
 
     const coreRow = (id, unit) => {
       const base = summarize(baseCore[id].samples, unit)
@@ -750,25 +734,22 @@ async function runSuite(options) {
     }
 
     const p2 = pins.map((pin) => {
-      const base = baseBoot.pins.find((entry) => entry.version === pin.version)
-      const head = headBoot.pins.find((entry) => entry.version === pin.version)
+      const measured = boot.pins.find((entry) => entry.version === pin.version)
       if (!pin.available) {
         return { pin: pin.version, unit: 'ms', base: null, head: null, ratio: null, reason: 'pin not fetched' }
       }
-      assert(base !== undefined && head !== undefined, `P2 measured no boot for dsh ${pin.version}`)
-      const baseSummary = summarize(base.samples, 'ms')
-      const headSummary = summarize(head.samples, 'ms')
+      assert(measured !== undefined, `P2 measured no boot for dsh ${pin.version}`)
+      const baseSummary = summarize(measured.samples.base, 'ms')
+      const headSummary = summarize(measured.samples.head, 'ms')
       return {
         pin: pin.version,
         unit: 'ms',
         base: baseSummary,
         head: headSummary,
-        ratio: headOverBase(baseSummary.median, headSummary.median),
-        hostPath: { base: base.hostPath, head: head.hostPath },
-        pinnedFiles: {
-          base: base.moduleUrl,
-          head: head.moduleUrl,
-        },
+        ratio: median(measured.ratios),
+        pairs: measured.ratios.map((ratio) => Number(ratio.toFixed(4))),
+        hostPath: measured.hostPath,
+        pinnedFiles: measured.moduleUrl,
       }
     })
 
@@ -783,7 +764,8 @@ async function runSuite(options) {
       head: { commit: headCommit },
       base: { ref: options.base, commit: baseCommit, sameAsHead: baseCommit === headCommit },
       repeat: options.repeat,
-      samplesPerSide: options.repeat * 2,
+      coreSamplesPerSide: options.repeat * 2,
+      bootPairs: options.repeat,
       probes: {
         P1: coreRow('p1', 'ms'),
         P2: p2,
@@ -802,7 +784,7 @@ async function runSuite(options) {
         tarballBytes: pack.tarballBytes,
         unpackedBytes: pack.unpackedBytes,
         kernelBytes: kernel.bytes,
-        bootPeakRssKiB: Math.max(...headBoot.pins.map((entry) => entry.maxRssKiB ?? 0)),
+        bootPeakRssKiB: Math.max(...boot.pins.map((entry) => entry.maxRssKiB ?? 0)),
       },
       check: null,
       notes,
@@ -859,8 +841,8 @@ function packTarball(root) {
 }
 
 // ---------------------------------------------------------------------------
-// Probes (children). The boot probe imports one checkout (`--root`); the core
-// probe imports both (`--roots`) so it can alternate their samples.
+// Probes (children). Both import the base and the head checkout (`--roots`):
+// P1/P3/P4 alternate their samples in one child, P2 alternates its boots.
 // ---------------------------------------------------------------------------
 
 // The two roots are measured in the same child, sample by sample, and the
@@ -1113,25 +1095,81 @@ export async function probeCore(options) {
   return { base: sideResult('base'), head: sideResult('head') }
 }
 
+/**
+ * Boot sampling is paired in time: one base boot and one head boot per pair,
+ * adjacent and in alternating order, after one discarded warm-up pair. Two
+ * separated blocks would report the host's load trajectory as a code change,
+ * and a merged median cannot cancel that (the first block also pays the cold
+ * first-load penalty). `run` returns the pair's elapsed time; `pairBootLog`
+ * refuses a log that is not pairwise.
+ */
+export async function sampleBootPairs({ repeat, run }) {
+  await run({ side: 'base', pair: -1, warmup: true })
+  await run({ side: 'head', pair: -1, warmup: true })
+  const log = []
+  for (let pair = 0; pair < repeat; pair += 1) {
+    const order = sideOrder(pair)
+    for (const side of order) {
+      const elapsed = await run({ side, pair, warmup: false })
+      log.push({ pair, side, elapsed })
+    }
+  }
+  return log
+}
+
+/** Validate a paired boot log and return per-side samples and per-pair ratios. */
+export function pairBootLog(log) {
+  if (!Array.isArray(log) || log.length === 0 || log.length % 2 !== 0) {
+    throw new PerfError('perf: a paired boot log needs an even, non-zero number of samples')
+  }
+  const base = []
+  const head = []
+  const ratios = []
+  for (let index = 0; index < log.length; index += 2) {
+    const first = log[index]
+    const second = log[index + 1]
+    if (first.pair !== second.pair) {
+      throw new PerfError('perf: a boot pair was split across repeats; the two sides are not adjacent')
+    }
+    const sides = new Set([first.side, second.side])
+    if (sides.size !== 2 || !sides.has('base') || !sides.has('head')) {
+      throw new PerfError(`perf: boot pair ${first.pair} is not one base and one head sample`)
+    }
+    const baseSide = first.side === 'base' ? first : second
+    const headSide = first.side === 'head' ? first : second
+    base.push(baseSide.elapsed)
+    head.push(headSide.elapsed)
+    ratios.push(headOverBase(baseSide.elapsed, headSide.elapsed))
+  }
+  return { base, head, ratios }
+}
+
 export async function probeBoot(options) {
   requirePerfEnv()
-  const root = options.root
+  assert(
+    Array.isArray(options.roots) && options.roots.length === 2,
+    'the boot probe needs --roots with the base and head checkouts',
+  )
+  const roots = { base: options.roots[0], head: options.roots[1] }
   const repeat = options.repeat
   const pins = options.pins
   assert(Array.isArray(pins) && pins.length > 0, 'the boot probe needs at least one --pins entry')
 
-  const at = (relativePath) => moduleUrlFor(root, relativePath)
+  // The host and the profile loader are scaffolding, not the measured artifact:
+  // each side's package is selected by the profile symlink below and asserted
+  // by `assertBoot`, while `installPlugin` writes the same lock for both sides.
+  const at = (relativePath) => moduleUrlFor(roots.head, relativePath)
   const { resolveHarness } = await import(at('packages/dsh-anyplugin-conformance/src/harness.ts'))
   const { installPlugin } = await import(at('packages/dsh-anyplugin-conformance/src/install-cli.ts'))
   const { mountProfile } = await import(at('scripts/profile-boot.mjs'))
   const { registerHooks } = await import('node:module')
 
-  const fixture = join(root, 'fixtures', 'claude-skills-only')
+  const fixture = join(roots.head, 'fixtures', 'claude-skills-only')
   const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-perf-boot-'))
   const previousHome = process.env.DSH_HOME
   const measured = []
 
-  const assertBoot = async (mounted, installsFile) => {
+  const assertBoot = async (mounted, installsFile, side) => {
     assert(mounted.ctx.fiber.state === 2, 'the booted harness settled in a non-active state')
     const entries = [...mounted.ctx.loader.entries()]
     const controller = entries.find((entry) => entry.options?.id === 'dsh-anyplugin')
@@ -1145,10 +1183,10 @@ export async function probeBoot(options) {
     )
     assert(groups.length === 1, `exactly one plugin group must be mounted, found ${groups.length}`)
     assert(groups[0].fiber?.state === 2, 'the reconciled plugin group is not active')
-    const expectedModule = pathToFileURL(join(root, 'lib', 'index.js')).href
+    const expectedModule = pathToFileURL(join(roots[side], 'lib', 'index.js')).href
     assert(
       mounted.moduleUrls.includes(expectedModule),
-      `the boot loaded ${mounted.moduleUrls.join(', ')}, not this side's ${expectedModule}`,
+      `the boot loaded ${mounted.moduleUrls.join(', ')}, not the ${side} checkout's ${expectedModule}`,
     )
     const reconciled = mounted.logs.some(
       (record) =>
@@ -1166,7 +1204,7 @@ export async function probeBoot(options) {
     for (const pin of pins) {
       const located = resolveHarness({
         env: { ...process.env, DSH_HARNESS_DIR: pin.installRoot, DSH_HARNESS_VERSION: pin.version },
-        repoRoot: root,
+        repoRoot: roots.head,
       })
       assert(located !== undefined, `P2: DSH ${pin.version} did not resolve from ${pin.installRoot}`)
       const appBoot = await import(pathToFileURL(join(located.harnessDir, 'dsh-app-boot', 'lib', 'index.js')).href)
@@ -1177,14 +1215,14 @@ export async function probeBoot(options) {
       const home = join(scratch, pin.version)
       mkdirSync(home, { recursive: true })
       process.env.DSH_HOME = home
-      installPlugin({ pluginDir: fixture, home, projectDir: root })
+      installPlugin({ pluginDir: fixture, home, projectDir: roots.head })
       const installsFile = join(home, 'anyplugin', 'installs.yml')
 
-      const bootOnce = async (profileName) => {
+      const bootOnce = async (side, profileName) => {
         const profileDir = join(home, 'profiles', profileName)
         appBoot.initProfile(profileDir, ['dsh-anyplugin'])
         mkdirSync(join(profileDir, 'node_modules'), { recursive: true })
-        symlinkSync(root, join(profileDir, 'node_modules', 'dsh-anyplugin'), 'dir')
+        symlinkSync(roots[side], join(profileDir, 'node_modules', 'dsh-anyplugin'), 'dir')
         // Profile assembly is not the measurement: boot is. The profile is
         // prepared and loaded before the clock starts.
         const profile = appBoot.loadProfile('dsh', profileName, installAnchor, home)
@@ -1197,30 +1235,34 @@ export async function probeBoot(options) {
           installAnchor,
           profile,
           home,
-          cwd: root,
+          cwd: roots[side],
         })
         const elapsed = performance.now() - started
         try {
-          const observed = await assertBoot(mounted, installsFile)
+          const observed = await assertBoot(mounted, installsFile, side)
           return { elapsed, ...observed }
         } finally {
           await mounted.ctx.fiber.dispose()
         }
       }
 
-      await bootOnce('perf-warmup') // warmup: module compilation and JIT
-      const samples = []
-      let observed = null
-      for (let sample = 0; sample < repeat; sample += 1) {
-        const run = await bootOnce(`perf-sample-${sample}`)
-        samples.push(run.elapsed)
-        observed = run
-      }
+      const observed = { base: null, head: null }
+      const log = await sampleBootPairs({
+        repeat,
+        run: async ({ side, pair, warmup }) => {
+          const profileName = warmup ? `perf-${side}-warmup` : `perf-${side}-${pair}`
+          const run = await bootOnce(side, profileName)
+          observed[side] = run
+          return run.elapsed
+        },
+      })
+      const paired = pairBootLog(log)
       measured.push({
         version: pin.version,
-        hostPath: observed.hostPath,
-        moduleUrl: observed.moduleUrl,
-        samples,
+        hostPath: { base: observed.base.hostPath, head: observed.head.hostPath },
+        moduleUrl: { base: observed.base.moduleUrl, head: observed.head.moduleUrl },
+        samples: { base: paired.base, head: paired.head },
+        ratios: paired.ratios,
         maxRssKiB: process.resourceUsage().maxRSS,
       })
     }

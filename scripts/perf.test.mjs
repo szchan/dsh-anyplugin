@@ -26,8 +26,10 @@ import {
   formatTable,
   headOverBase,
   median,
+  pairBootLog,
   parseArgs,
   perfEnvProblems,
+  sampleBootPairs,
   requirePerfEnv,
 } from './perf.mjs'
 
@@ -295,4 +297,56 @@ test('formatTable prints a check verdict, including the failure list', () => {
     notes: [],
   }
   assert.match(formatTable(report), /--check: 1 above 1\.5x — P1 2\.00x/u)
+})
+
+
+test('boot samples are paired in time: one base and one head per repeat, adjacent', async () => {
+  const calls = []
+  await sampleBootPairs({
+    repeat: 3,
+    run: async ({ side, pair, warmup }) => {
+      calls.push(warmup ? `${side}:warmup` : `${side}:${pair}`)
+      return 10
+    },
+  })
+  assert.deepEqual(calls, [
+    'base:warmup',
+    'head:warmup',
+    'base:0',
+    'head:0',
+    'head:1',
+    'base:1',
+    'base:2',
+    'head:2',
+  ])
+  for (let index = 2; index < calls.length; index += 2) {
+    const [, firstPair] = calls[index].split(':')
+    const [, secondPair] = calls[index + 1].split(':')
+    assert.equal(firstPair, secondPair)
+    assert.deepEqual(new Set([calls[index].split(':')[0], calls[index + 1].split(':')[0]]), new Set(['base', 'head']))
+  }
+})
+
+test('pairBootLog refuses block-merged samples and takes the median of per-pair ratios', () => {
+  const alternating = [
+    { pair: 0, side: 'base', elapsed: 100 },
+    { pair: 0, side: 'head', elapsed: 150 },
+    { pair: 1, side: 'head', elapsed: 120 },
+    { pair: 1, side: 'base', elapsed: 100 },
+  ]
+  const paired = pairBootLog(alternating)
+  assert.deepEqual(paired.base, [100, 100])
+  assert.deepEqual(paired.head, [150, 120])
+  assert.deepEqual(paired.ratios, [1.5, 1.2])
+  assert.equal(median(paired.ratios), 1.35)
+
+  // The shape the reviewer caught: every base sample first, then every head.
+  const blockMerged = [
+    { pair: 0, side: 'base', elapsed: 100 },
+    { pair: 1, side: 'base', elapsed: 100 },
+    { pair: 0, side: 'head', elapsed: 150 },
+    { pair: 1, side: 'head', elapsed: 120 },
+  ]
+  assert.throws(() => pairBootLog(blockMerged), PerfError)
+  assert.throws(() => pairBootLog([{ pair: 0, side: 'base', elapsed: 100 }]), PerfError)
 })
