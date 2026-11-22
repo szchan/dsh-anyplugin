@@ -29,6 +29,7 @@
  * can deny the same call without either learning about the other.
  */
 import { chooseWorktree, messageText, renderBrief, textMessage } from './brief.ts'
+import { denialSubject, recordDenial } from './denials.ts'
 import { currentBranch } from './git.ts'
 import {
   judgeCall,
@@ -105,7 +106,21 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
       ...(state.worktree === undefined ? {} : { worktree: state.worktree }),
     }
     const verdict = judgeCall(call, policy, { branch: (cwd) => currentBranch(cwd ?? agentCwd(agent)) })
-    if (verdict.kind === 'deny') return { kind: 'deny', reason: verdict.reason }
+    if (verdict.kind === 'deny') {
+      // F16: the denial is evidence too. The recorder is best-effort by
+      // construction — it never throws, so the verdict below is unchanged.
+      recordDenial({
+        callId: exec?.callId,
+        role: call.agent.worker ? 'worker' : 'root',
+        rule: verdict.rule,
+        tool: call.tool,
+        cwd: call.agent.cwd ?? null,
+        worktree: state.worktree ?? null,
+        session: call.agent.id ?? null,
+        subject: denialSubject(call.tool, call.args),
+      })
+      return { kind: 'deny', reason: verdict.reason }
+    }
     return next()
   }
 
