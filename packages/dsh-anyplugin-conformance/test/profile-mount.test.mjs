@@ -18,7 +18,10 @@
 // `node_modules/dsh-anyplugin` symlinked to the checkout and requires the
 // recorder to see the checkout URL, so a vacuous "every URL is somewhere"
 // check cannot pass. The pack-gate test below runs the three ticket mutations
-// against the npm-installed tarball and requires three distinct messages.
+// against the npm-installed tarball and requires three distinct messages; its
+// real-profile guard watches a throwaway home and profile the test seeds, not
+// the ambient `$DSH_HOME`/`$DSH_PROFILE_DIR`, because a live Desktop writes
+// those while the boot runs (issue #165).
 //
 // The mount is shared with `scripts/profile-boot.mjs`, which the pack gate
 // (`scripts/check-pack.mjs`, S20, #137) runs against the npm-installed tarball
@@ -446,19 +449,63 @@ test('boundary: the URL assertion separates the profile copy from the checkout',
 // be distinguishable. `expectMutation` boots the tarball through the npm-
 // installed profile path the gate uses (`scripts/profile-boot.mjs`), not this
 // test's extraction path, so a passing mutation here is evidence about S20.
+//
+// That boot fingerprints the roots it is pointed at and requires them unchanged:
+// the gate's proof that its scratch boot never touches the install a user is
+// running. This test points the guard at a throwaway home and profile it seeds
+// into a real profile, never at the ambient `$DSH_HOME`/`$DSH_PROFILE_DIR`: the
+// Desktop host writes its own `sessions/`, `storages/` and cache under the
+// ambient roots while the boot runs, so guarding those from a test would redden
+// on the host's write, not the boot's (issue #165). The `guard:` tests below
+// write their watched roots deliberately, which is what proves the guard itself
+// reddens.
 test('pack: the three ticket mutations redden with distinct messages', options, async () => {
   const tarball = packedTarball()
-  const messages = []
-  for (const mutation of ['no-patch', 'no-bundle', 'checkout']) {
-    const result = await expectMutation({ tarball, mutation })
-    assert.equal(result.reddened, true)
-    messages.push(result.message)
+  const { appBoot } = await hostPrimitives()
+  const owned = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-mutations-'))
+  const home = join(owned, 'home')
+  const profile = join(owned, 'profiles', 'throwaway')
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, 'state.txt'), 'home state the boot must not touch\n')
+  appBoot.initProfile(profile, [])
+  mkdirSync(join(profile, 'sessions'), { recursive: true })
+  writeFileSync(join(profile, 'sessions', 'live.txt'), 'profile state the boot must not touch\n')
+  try {
+    const messages = []
+    for (const mutation of ['no-patch', 'no-bundle', 'checkout']) {
+      const result = await expectMutation({ tarball, mutation, realHome: home, realProfile: profile })
+      assert.equal(result.reddened, true)
+      messages.push(result.message)
+    }
+    assert.equal(
+      new Set(messages).size,
+      3,
+      `each mutation must fail for its own reason:\n${messages.join('\n')}`,
+    )
+    // The guard must honor the roots it is given: a write to the seeded
+    // throwaway inside the guarded window must redden and name it. That is the
+    // mechanism the loop above relies on to keep a live Desktop's writes to the
+    // ambient roots from reddening the mutations (issue #165).
+    await assert.rejects(
+      bootPackedTarball({
+        tarball,
+        realHome: home,
+        realProfile: profile,
+        afterBoot: async () => {
+          appendFileSync(join(profile, 'sessions', 'live.txt'), 'the guard must see this\n')
+        },
+      }),
+      (error) => {
+        const message = String(error.message)
+        assert.match(message, /^the real DSH_PROFILE_DIR .* changed during the boot:/)
+        assert.ok(message.includes(profile), `the named root must be the throwaway profile, got: ${message}`)
+        assert.doesNotMatch(message, /the real DSH_HOME .* changed/)
+        return true
+      },
+    )
+  } finally {
+    rmSync(owned, { recursive: true, force: true })
   }
-  assert.equal(
-    new Set(messages).size,
-    3,
-    `each mutation must fail for its own reason:\n${messages.join('\n')}`,
-  )
 })
 
 // The real-profile guard must be scoped. The Desktop host writes its own
