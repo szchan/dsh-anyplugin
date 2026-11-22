@@ -30,6 +30,7 @@ import {
   defaultProfileDir,
   formatTable,
   guardTable,
+  mainCheckout,
   readBlock,
   readGitWorktrees,
   readState,
@@ -90,15 +91,22 @@ if (options.dryRun && options.uninstall) usage('--dry-run and --uninstall are di
 const profileDir = options.profileDir ?? resolve(defaultProfileDir())
 const patchFile = join(profileDir, PATCH_FILE)
 
-// The target checkout is the caller's: `--worktree`, else the cwd's repository,
-// else the checkout this script lives in. A linked worktree shares its git
-// directory with the main checkout, so installing from one would write the
-// main checkout's hooks; refuse that instead of surprising the caller.
+// The block names the guard's source in the repository's main checkout, never
+// the worktree this command ran in. A linked worktree is disposable — the
+// master removes it after merge — so a block that named it would stop being
+// composable the moment the ticket closed. `--git-common-dir`'s parent is the
+// stable root (issue #166).
+//
+// A real install from a linked worktree is still refused: git shares one hooks
+// directory with the main checkout, and a review worktree must not install a
+// hook into the checkout it is reviewing. `--dry-run` writes nothing and stays
+// available from anywhere.
 const cwdRoot = gitToplevel(process.cwd())
-const root = resolve(options.worktrees[0]?.path ?? cwdRoot ?? scriptRoot)
-if (!options.dryRun && isLinkedWorktree(root)) {
+const invocationRoot = resolve(cwdRoot ?? scriptRoot)
+const root = mainCheckout(invocationRoot) ?? invocationRoot
+if (!options.dryRun && isLinkedWorktree(invocationRoot)) {
   console.error(
-    `guard:install: ${root} is a linked worktree, and git shares one hooks directory with the main checkout. ` +
+    `guard:install: ${invocationRoot} is a linked worktree, and git shares one hooks directory with the main checkout. ` +
       'Run from the main checkout or a scratch clone, or use --dry-run (which writes nothing).',
   )
   process.exit(1)
@@ -127,7 +135,13 @@ const known = new Set(gitWorktrees.map((entry) => resolve(entry.path)))
 const synthetic = options.worktrees.filter((entry) => !known.has(resolve(entry.path)))
 const worktrees = [...gitWorktrees, ...synthetic]
 const composition = composeGuard({ repoRoot: root, worktrees, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
-const ticketWorktrees = composition.config.worktrees ?? []
+const configured = composition.config.worktrees ?? []
+const pattern = configured.find((entry) => entry.includes('*'))
+// The table needs a real worktree path to anchor on; the policy may carry a
+// glob, which is a matcher, not a directory.
+const discovered = composition.worktrees.filter(
+  (entry) => entry.main !== true && entry.branch?.startsWith('ticket/') === true,
+)
 // Every checkout shares the repository hooks directory; install it for the
 // main checkout too, so a push from there is refused as well.
 const hooks = hookTargets(gitWorktrees.map((worktree) => worktree.path))
@@ -196,9 +210,13 @@ if (!existsSync(composition.source)) {
   process.exit(1)
 }
 const protectedRoot = composition.config.protectedRoots?.[0] ?? root
-const tableWorktree = ticketWorktrees[0] ?? resolve(root, '..', '.guard-no-ticket-worktree')
+const tableWorktree =
+  options.worktrees[0]?.path ?? discovered[0]?.path ?? resolve(root, '..', '.guard-no-ticket-worktree')
 
-console.log(`guard: worktrees ${ticketWorktrees.length} ticket worktree(s); protected root ${protectedRoot}`)
+console.log(
+  `guard: worktrees ${discovered.length} ticket worktree(s)` +
+    `${pattern === undefined ? '' : `; policy pattern ${pattern}`}; protected root ${protectedRoot}`,
+)
 if (hooksPath !== undefined) {
   console.warn(
     `guard: note core.hooksPath=${hooksPath} moves the hook outside the checkout; the hook is installed where git looks, and deleting that config orphans it`,

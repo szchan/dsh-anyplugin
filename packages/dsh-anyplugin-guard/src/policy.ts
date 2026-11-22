@@ -147,6 +147,41 @@ export function isInside(root: string, target: string): boolean {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
+/** True when a configured worktree entry is a `*` pattern instead of one path. */
+export function isWorktreeGlob(entry: string): boolean {
+  return entry.includes('*')
+}
+
+function globSegment(pattern: string, segment: string): boolean {
+  const source = pattern
+    .split('*')
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    .join('[^/]*')
+  return new RegExp(`^${source}$`, 'u').test(segment)
+}
+
+/**
+ * The worktree a configured entry places `target` in, or undefined.
+ *
+ * An exact entry keeps the target inside it. A glob entry (`/tmp/wt/ticket-*`)
+ * substitutes one directory name per `*` and returns the **concrete** root it
+ * matched, never the pattern: the brief records a path, and the confinement
+ * anchors on that path, so a glob only widens which roots a worker may own —
+ * it does not widen where a write may land once a root is recorded.
+ */
+export function matchWorktree(entry: string, target: string): string | undefined {
+  const pattern = resolve(entry)
+  const path = resolve(target)
+  if (!isWorktreeGlob(pattern)) return isInside(pattern, path) ? pattern : undefined
+  const patternSegments = pattern.split('/').filter((segment) => segment.length > 0)
+  const pathSegments = path.split('/').filter((segment) => segment.length > 0)
+  if (pathSegments.length < patternSegments.length) return undefined
+  for (let index = 0; index < patternSegments.length; index += 1) {
+    if (!globSegment(patternSegments[index], pathSegments[index])) return undefined
+  }
+  return `/${pathSegments.slice(0, patternSegments.length).join('/')}`
+}
+
 /**
  * A path inside a git directory. A worker that appends a diff driver, a
  * filter, a hook or an ssh command to `.git/config` plants a program the key

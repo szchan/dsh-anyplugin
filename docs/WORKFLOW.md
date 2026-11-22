@@ -60,10 +60,24 @@ write only inside its assigned directory, so a sibling path may be read-only.
 
 ```bash
 git fetch origin
-dir=$(mktemp -d)/ticket-<n>
+root=${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}
+mkdir -p "$root"
+dir=$root/ticket-<n>
 git worktree add "$dir" -b ticket/<n> origin/main    # the master creates it
 cd "$dir"
 ```
+
+The shared parent and the `ticket-<n>` stem matter to the guard:
+`npm run guard:install` writes one pattern (`$root/ticket-*`), not a snapshot of
+the worktrees that existed when it ran, so the next ticket worktree is admitted
+without a reinstall. Install once from the main checkout — a real install from a
+ticket worktree is refused, because git shares one hooks directory with the main
+checkout. `npm run guard:install -- --dry-run` from anywhere composes the block
+and names the main checkout; `npm run guard:status` reports `not-installed`,
+`current`, `stale` or `installed-with-stale-paths` (a literal path in the block
+no longer exists, and the line names it). A worktree whose path does not share
+that parent and stem is not covered until the next install; review and verify
+worktrees are deliberately not confinable.
 
 The master creates the worktree and hands the worker its exact path — a worker
 that picks its own path will pick one the sandbox refuses. Remove the worktree

@@ -1518,7 +1518,8 @@ outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
 "Recorded" is the operative word: the worktree comes from an explicit path in
-the spawn prompt or from a cwd that is itself a configured worktree. A branch
+the spawn prompt (an exact worktree, or a worktree a configured pattern
+matches) or from a cwd that is itself a configured worktree. A branch
 name in the prompt (the review prompt names the branch under review) never
 implies a path; with no recorded worktree a worker's writes are refused rather
 than checked against every configured worktree. The policy is a
@@ -1649,13 +1650,31 @@ same block, prints it and runs the payload→verdict table through the same judg
 writing nothing; `guard:status` re-composes and compares (ignoring the state
 line), so a stale block is visible without loading the profile.
 
-The installer's target checkout is the caller's, not the script's: `--worktree`
-if given, else the git top level of the cwd, else the checkout the script lives
-in. A linked worktree shares its hooks directory with the main checkout, so a
-real install from one is refused before anything is written (the message names
-the checkout); `--dry-run` still works because it writes nothing. This is what
-keeps a review worktree from installing a hook into the checkout it is
-reviewing.
+The block's `worktrees` entry is a **pattern derived from the discovered ticket
+worktrees** (`/tmp/anyplugin-wt/ticket-*`), not a snapshot of the paths that
+existed when the install ran: a worktree the master creates afterwards is
+admitted without reinstalling, and the pattern stays narrower than the parent
+directory, because one `*` substitutes exactly one directory name under the
+shared stem. When the discovered paths do not share a parent and a name stem,
+the block keeps the exact list and a new worktree is not admitted until the next
+install. `guard:status` reuses the installed pattern when composing, and it
+distinguishes `not-installed` from `installed-with-stale-paths`: a literal path
+in the block that no longer exists is reported by name, because the freshly
+composed block would silently drop it.
+
+The installer's root is the repository's **main checkout**, not the caller's:
+the parent of `git rev-parse --path-format=absolute --git-common-dir` for the
+cwd's repository, falling back to the checkout the script lives in when the cwd
+is not inside one. A linked worktree is disposable, so the block must not name
+it — removing the worktree after a merge would make the composition point at a
+source path that no longer exists. A real install from a linked worktree is
+still refused before anything is written, because git shares one hooks
+directory with the main checkout (the message names the worktree). `--worktree`
+names an extra worktree to include, or the one to put first in the printed
+table; it does not move the root. `--dry-run` writes nothing and works from
+anywhere, and it is the check that names the main checkout from a review
+worktree. This is what keeps a review worktree from installing a hook into the
+checkout it is reviewing.
 
 ### Why dynamic packages cannot be the reconcile substrate
 

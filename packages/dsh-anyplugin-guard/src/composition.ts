@@ -21,11 +21,13 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import {
   DEFAULT_SHELL_TOOLS,
   DEFAULT_WRITE_TOOLS,
+  isWorktreeGlob,
   judgeCall,
+  matchWorktree,
   resolvePolicy,
   type GuardConfig,
   type JudgeContext,
@@ -92,9 +94,29 @@ export function readRatchet(repoRoot: string): Ratchet {
   }
 }
 
+/**
+ * The checkout that owns the repository's `.git`, from any worktree of it.
+ *
+ * A linked worktree's `--show-toplevel` is the worktree itself, and its `.git`
+ * is a file that points at the main checkout's `worktrees/<name>`. The parent
+ * of `--git-common-dir` is the path every worktree of the repository shares
+ * and the one that survives deleting any single worktree — so it, not the
+ * caller's cwd, is what the installed block must name.
+ */
+export function mainCheckout(start: string): string | undefined {
+  try {
+    const common = execFileSync('git', ['-C', start, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return common.length === 0 ? undefined : dirname(common)
+  } catch {
+    return undefined
+  }
+}
+
 /** `git worktree list --porcelain`, with the checkout that owns `.git` marked. */
-export function readGitWorktrees(repoRoot: string): Worktree[] {
-  const output = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })
+export function readGitWorktrees(repoRoot: string): Worktree[] {  const output = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })
   const worktrees: Worktree[] = []
   for (const line of output.split('\n')) {
     if (line.startsWith('worktree ')) worktrees.push({ path: resolve(line.slice('worktree '.length).trim()) })
@@ -129,6 +151,62 @@ function emitList(lines: string[], indent: number, key: string, values: string[]
   }
   lines.push(`${pad}${key}:`)
   for (const value of values) lines.push(`${pad}  - ${quote(value)}`)
+}
+
+/**
+ * The `worktrees` entries a managed block lists, exactly as written.
+ *
+ * `guard:status` reads them back to answer a question a diff cannot: a literal
+ * path that is gone no longer appears in the freshly discovered list, so the
+ * composed block would look current while the policy still trusts it. The
+ * pattern entries are returned too; they are never stale.
+ */
+export function readWorktrees(block: string): string[] {
+  const lines = block.split('\n')
+  const start = lines.findIndex((line) => line.trim().startsWith('worktrees:'))
+  if (start < 0) return []
+  const inline = lines[start].trim().slice('worktrees:'.length).trim()
+  if (inline.length > 0) return []
+  const values: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (!line.startsWith('          - ')) break
+    try {
+      const value: unknown = JSON.parse(line.trim().slice(2))
+      if (typeof value !== 'string') break
+      values.push(value)
+    } catch {
+      break
+    }
+  }
+  return values
+}
+
+/**
+ * The `*` pattern that covers a set of ticket worktrees, or undefined.
+ *
+ * The install used to write the list it discovered: a worktree created after
+ * the install was refused until someone reinstalled, and a removed path stayed
+ * trusted. A pattern derived from the discovered names — one parent, a shared
+ * name stem cut at the last `-` — admits the next worktree without a reinstall
+ * while staying narrower than the parent: `/tmp/anyplugin-wt/ticket-*`, not
+ * `/tmp/anyplugin-wt/*`. A list with no shared stem keeps the exact entries.
+ */
+export function deriveWorktreeGlob(paths: string[]): string | undefined {
+  if (paths.length === 0) return undefined
+  const resolved = paths.map((path) => resolve(path))
+  const parent = dirname(resolved[0])
+  if (!resolved.every((path) => dirname(path) === parent)) return undefined
+  let prefix = basename(resolved[0])
+  for (const path of resolved.slice(1)) {
+    const name = basename(path)
+    while (prefix.length > 0 && !name.startsWith(prefix)) prefix = prefix.slice(0, -1)
+    if (prefix.length === 0) return undefined
+  }
+  const stem = prefix.slice(0, prefix.lastIndexOf('-') + 1)
+  if (stem.length === 0) return undefined
+  const glob = `${parent}/${stem}*`
+  // The pattern replaces the list, so it must still match every entry it replaces.
+  return resolved.every((path) => matchWorktree(glob, path) === path) ? glob : undefined
 }
 
 /**
@@ -290,6 +368,8 @@ export function composeGuard(options: {
   worktrees: Worktree[]
   /** Put this worktree first, so the printed table and the brief are deterministic. */
   preferredWorktree?: string
+  /** Reuse the pattern a managed block already lists instead of deriving one. */
+  worktreeGlob?: string
 }): Composition {
   const repoRoot = resolve(options.repoRoot)
   const source = join(repoRoot, 'packages', 'dsh-anyplugin-guard', 'src', 'index.ts')
@@ -303,10 +383,14 @@ export function composeGuard(options: {
   const ticketWorktrees = worktrees
     .filter((entry) => entry.main !== true && entry.branch?.startsWith('ticket/') === true)
     .sort((left, right) => (left.path === preferred ? -1 : right.path === preferred ? 1 : 0))
+  const ticketPaths = ticketWorktrees.map((entry) => entry.path)
+  const glob = options.worktreeGlob === undefined ? deriveWorktreeGlob(ticketPaths) : resolve(options.worktreeGlob)
+  const configured =
+    glob === undefined ? ticketPaths : [glob, ...ticketPaths.filter((path) => matchWorktree(glob, path) !== path)]
   const config: GuardConfig = {
     shellTools: [...DEFAULT_SHELL_TOOLS],
     writeTools: [...DEFAULT_WRITE_TOOLS],
-    worktrees: ticketWorktrees.map((entry) => entry.path),
+    worktrees: configured,
     protectedRoots: main === undefined ? [] : [main.path],
     brief: {
       ratchet: [ratchet.totals],
