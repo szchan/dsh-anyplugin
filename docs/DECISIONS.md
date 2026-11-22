@@ -3019,3 +3019,46 @@ is append-only — so the new number lives here.
 
 ---
 
+## D66 — A modelled merge must name the reviewed head, and the pin is what makes omission visible
+
+**Decided 2026-11-22** (#163, #171). The guard's push rules made the root's
+merge path the one action a worker could not take, but a root merge could omit
+the head entirely, leaving GitHub nothing to check.
+
+1. Every modelled `gh pr merge` must carry `--match-head-commit <40-hex>`, for
+   every role. A bare merge, `--auto` without a pin, a short (7-character) or
+   41-character sha, a non-hex 40-character value, a flag with no value, and a
+   flag hidden after `--` are refused before the tool runs. Workers remain
+   refused outright by `gh-pr-merge-worker`; `gh-pr-merge-pin` is the root-facing
+   check and sits before the unconditional root allow.
+2. **The pin prevents omission; it is not review verification.** The guard can
+   see that a merge names a head; it cannot know that head was the one a
+   reviewer read. GitHub refuses a moved head when the pin is the reviewed sha,
+   which is the value added — a merge cannot silently skip the check.
+3. A pin cannot be smuggled or swallowed. A URL fragment or query keeps the raw
+   `gh api …/pulls/<n>/merge` route live, so **any** method, query or fragment
+   on that path is refused — a raw `gh api` can never carry the pin. The value
+   flags `-b/--body`, `-F/--body-file`, `-t/--subject`, `-A/--author-email`
+   and `-R/--repo` consume their values (both the long and short sets), so a
+   pin-shaped token in value position is not a pin. `gh pr -R o/r merge` is
+   judged as a merge, and a backslash-newline cannot split `gh pr \` / `merge`
+   or `m\` / `ain`.
+4. Two false positives are explicitly exempt: `gh pr merge --help` performs no
+   merge, and for the root `--disable-auto` / `--disable-auto=true` cancels
+   auto-merge rather than merging. Their merging forms (`--disable-auto=false`,
+   `--auto=false`) still require the pin.
+5. The status of finding F12 is **dormant**: the mechanism is implemented and
+   tested, and it is enforced on the modelled merge paths wherever the guard is
+   installed, but the guard is not installed on this machine (F1). Installation
+   is a separate step, not part of this decision.
+
+**Consequences.** This amends D47's rule table (109 rows to 123) and supersedes
+D63's "the merge-head pin (#163) remains open" sentence. Named residuals, none
+closed here: `curl` and other non-gh clients, a root-run script, inline
+interpreters (`node -e`, `python3 -c`), a `gh` alias or wrapper, **a
+pre-existing git alias** (`git config alias.pm '!gh pr merge --squash'; git pm 82`
+— root-only, named rather than refused), raw GraphQL `mergePullRequest`, and
+GitHub's own deferred evaluation of `--auto` even with a valid pin.
+
+---
+
