@@ -179,7 +179,7 @@ ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
 npm run verify
 ```
 
-`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 979 个测试。它必须报告
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及完整测试套件。它必须报告
 **0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
 
 ## 📚 接下来读什么

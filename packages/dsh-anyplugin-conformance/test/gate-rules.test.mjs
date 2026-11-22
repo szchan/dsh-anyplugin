@@ -336,11 +336,14 @@ test('R15: every non-decisions doc currently owns its counts', () => {
   assert.deepEqual(failures, [])
 })
 
-test('a translated README quotes the same ratchet and the same suite count', () => {
-  // R15 reads English count claims (`32 declared`); a translation carries its
-  // numbers in its own nouns (`声明 32 · 匹配 31`), so a stale translation is
-  // invisible to it — README_cn.md said 27/26 and 969 while README.md said
-  // 32/31 and 979 (#203). This test binds both READMEs to the same owner.
+test('a translated README quotes the same ratchet as the owner', () => {
+  // R15 in scripts/check-features.mjs scans `docs/*.md` only, so neither
+  // README was ever checked, in either language — and a translation carries
+  // its numbers in its own nouns (`声明 32 · 匹配 31`), which R15's English
+  // grammar cannot see. README_cn.md said 27/26 while README.md said 32/31
+  // after the 0.3.0 rewrite (#203). This test binds both READMEs to the
+  // coverage owner. The layout it accepts is one line of four numbers
+  // separated by `·`; line breaks may fall anywhere between them.
   const root = fileURLToPath(new URL('../../../', import.meta.url))
   const read = (name) => readFileSync(join(root, name), 'utf8')
   const owner = read('packages/dsh-anyplugin-conformance/test/coverage.test.mjs')
@@ -350,19 +353,11 @@ test('a translated README quotes the same ratchet and the same suite count', () 
     [...constant[1].matchAll(/(\w+):\s*(\d+)/gu)].map((match) => [match[1], Number(match[2])]),
   )
   const ratchet = [expected.declared, expected.matched, expected.missing, expected.refused]
-
-  const en = read('README.md')
-  const cn = read('README_cn.md')
-  const english = /(\d+) declared · (\d+) matched ·\s*\n?\s*(\d+) missing · (\d+) refused/u.exec(en)
-  assert.ok(english, 'README.md states the ratchet in the canonical form')
-  assert.deepEqual(english.slice(1).map(Number), ratchet, 'README.md agrees with EXPECTED_COUNTS')
-  const chinese = /声明 (\d+) · 匹配 (\d+) ·\s*\n?\s*缺失 (\d+) · 拒绝 (\d+)/u.exec(cn)
-  assert.ok(chinese, 'README_cn.md states the ratchet in the canonical form')
-  assert.deepEqual(chinese.slice(1).map(Number), ratchet, 'README_cn.md agrees with EXPECTED_COUNTS')
-
-  const englishTests = /and (\d+) tests/u.exec(en)
-  const chineseTests = /以及 (\d+) 个测试/u.exec(cn)
-  assert.ok(englishTests, 'README.md quotes a suite count')
-  assert.ok(chineseTests, 'README_cn.md quotes a suite count')
-  assert.equal(chineseTests[1], englishTests[1], 'both READMEs quote the same suite count')
+  const claim = (text, pattern, name, label) => {
+    const match = pattern.exec(text)
+    assert.ok(match, `${name} states the ratchet as four numbers separated by \u00b7: ${label}`)
+    assert.deepEqual(match.slice(1).map(Number), ratchet, `${name} agrees with EXPECTED_COUNTS: ${match[0]}`)
+  }
+  claim(read('README.md'), /(\d+) declared \s*\u00b7\s* (\d+) matched \s*\u00b7\s* (\d+) missing \s*\u00b7\s* (\d+) refused/u, 'README.md', 'declared · matched · missing · refused')
+  claim(read('README_cn.md'), /\u58f0\u660e (\d+) \s*\u00b7\s* \u5339\u914d (\d+) \s*\u00b7\s* \u7f3a\u5931 (\d+) \s*\u00b7\s* \u62d2\u7edd (\d+)/u, 'README_cn.md', '声明 · 匹配 · 缺失 · 拒绝')
 })
