@@ -1528,7 +1528,8 @@ outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
 "Recorded" is the operative word: the worktree comes from an explicit path in
-the spawn prompt or from a cwd that is itself a configured worktree. A branch
+the spawn prompt (an exact worktree, or a worktree a configured pattern
+matches) or from a cwd that is itself a configured worktree. A branch
 name in the prompt (the review prompt names the branch under review) never
 implies a path; with no recorded worktree a worker's writes are refused rather
 than checked against every configured worktree. The policy is a
@@ -1668,13 +1669,63 @@ same block, prints it and runs the payload→verdict table through the same judg
 writing nothing; `guard:status` re-composes and compares (ignoring the state
 line), so a stale block is visible without loading the profile.
 
-The installer's target checkout is the caller's, not the script's: `--worktree`
-if given, else the git top level of the cwd, else the checkout the script lives
-in. A linked worktree shares its hooks directory with the main checkout, so a
-real install from one is refused before anything is written (the message names
-the checkout); `--dry-run` still works because it writes nothing. This is what
-keeps a review worktree from installing a hook into the checkout it is
-reviewing.
+The block's `worktrees` entry is a **pattern derived from the discovered ticket
+directories** (`/tmp/anyplugin-wt/ticket-*`), not a snapshot of the paths that
+existed when the install ran: a directory matching the pattern is admitted
+without reinstalling, and the pattern stays narrower than the parent directory,
+because one `*` substitutes exactly one directory name under the shared stem.
+The pattern is a **namespace matcher, not git-worktree attestation**: a
+directory a human or script creates under the shared stem is confinable even if
+git never registered it as a worktree. A literal `*` in a discovered path is
+refused at install rather than escaped: the block grammar reserves `*` for the
+one wildcard after a stem ending in `-`, and a literal read back as a pattern
+would confine a sibling the plan never named. Status reads a legacy exact entry
+whose path ends in `*` as that literal path, not as a pattern — unless it ends
+in exactly `-*`, which is indistinguishable from the grammar and is promoted
+(the namespace caveat above): `ticket*` and `ticket-**` stay literal, while a
+legacy `ticket-*` is the wildcard. A literal path is reported as stale when the
+worktree is gone. A live ticket path that contains a literal `*` makes status
+report `refused` with the path and the rename remedy, because reinstalling
+cannot make the entry readable. When the discovered paths do not share a
+parent and a name stem, the block keeps the exact list; then a single
+out-of-pattern ticket worktree makes the next install drop the pattern for
+*every* future worktree until the next install. `guard:status` reuses the
+installed pattern when composing, and it distinguishes `not-installed` from
+`installed-with-stale-paths`: a literal path in the block that no longer exists
+is reported by name, because the freshly composed block would silently drop it.
+
+The git directory is protected by identity, not by its name. A
+`--separate-git-dir` checkout keeps it in an arbitrary directory, a submodule
+keeps it in the superproject's `.git/modules/<name>`, and a linked worktree
+keeps it under `<common>/worktrees/<name>`; the derived pattern can match such
+a directory (a `sep-*` pattern also matches `sep-gitdir`). The install
+therefore writes the resolved common dir into `protectedRoots` when it differs
+from the main working tree, and into `gitDirectories` always. The policy
+refuses a worker write under either by the `git-dir-write` rule — a config or
+hook there runs as the next git command — while a root write is still allowed.
+The common dir contains every linked worktree's git dir, so a worktree created
+after the install stays covered without re-listing it or widening the block.
+
+The installer's root is the repository's **main checkout**, not the caller's:
+when `git rev-parse --path-format=absolute --git-dir` and `--git-common-dir`
+name the same path (an ordinary checkout, a submodule, a
+`--separate-git-dir` checkout) the root is the working tree from
+`--show-toplevel`; when they differ and the common dir is `<main>/.git`, its
+parent is the root. Every linked worktree is the case where the two paths
+differ, so a real install from one is refused before anything is written —
+git shares one hooks directory with the main checkout. A linked worktree of a
+submodule or a `--separate-git-dir` repository has no main working tree git
+can name (its common dir is not `<main>/.git`), so the refusal names the
+worktree and offers the main checkout or a scratch clone; a dry run from one
+composes from the invocation checkout and writes nothing. The guard's git calls
+use `--path-format=absolute` and therefore require git ≥ 2.31. A linked
+worktree is disposable, so the block must not name it — removing the worktree
+after a merge would make the composition point at a source path that no longer
+exists. `--worktree` names an extra worktree to include, or the one to put
+first in the printed table; it does not move the root. `--dry-run` writes
+nothing, and it is the check that names the main checkout from a review
+worktree. This is what keeps a review worktree from installing a hook into the
+checkout it is reviewing.
 
 ### Why dynamic packages cannot be the reconcile substrate
 

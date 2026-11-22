@@ -15,7 +15,7 @@
  * brief and the enforcement cannot disagree.
  */
 import { randomUUID } from 'node:crypto'
-import { isInside, type BriefConfig } from './policy.ts'
+import { matchWorktree, type BriefConfig } from './policy.ts'
 
 export interface BriefInput {
   worktree?: string
@@ -108,24 +108,49 @@ export function messageText(messages: unknown): string {
  *
  * The spawn payload carries no worktree (S9: `{runId, provider,
  * parentSessionId, id, local}`). A worktree is accepted from exactly two
- * places, never from a branch name: the prompt may name a configured worktree
- * path literally (a master delegates with "worktree `/tmp/…`"), or the
- * session cwd may already be a configured worktree root. A branch name is not
- * a path — a reviewer's prompt names the branch under review, and inferring
- * from it would hand the reviewer the author's worktree. With neither source,
- * nothing is recorded and the confinement denies every write: fail closed.
+ * places, never from a branch name: the prompt may name a path the policy
+ * covers — an exact worktree, or a worktree a configured glob matches — or the
+ * session cwd may already be under one. A branch name is not a path — a
+ * reviewer's prompt names the branch under review, and inferring from it would
+ * hand the reviewer the author's worktree. With neither source, nothing is
+ * recorded and the confinement denies every write: fail closed.
  */
 export function chooseWorktree(input: { text: string; cwd?: string; worktrees: string[] }): string | undefined {
   const worktrees = input.worktrees.map((path) => path.replace(/\/+$/u, '')).filter((path) => path.length > 0)
   if (worktrees.length === 0) return undefined
   if (input.text.length > 0) {
-    const mentioned = worktrees.filter((path) => input.text.includes(path))
-    if (mentioned.length === 1) return mentioned[0]
-    if (mentioned.length > 1) return undefined
+    const mentioned = new Set<string>()
+    for (const path of textPaths(input.text)) {
+      for (const entry of worktrees) {
+        const root = matchWorktree(entry, path)
+        if (root !== undefined) mentioned.add(root)
+      }
+    }
+    if (mentioned.size === 1) return [...mentioned][0]
+    if (mentioned.size > 1) return undefined
   }
   if (input.cwd !== undefined) {
-    const inside = worktrees.filter((path) => isInside(path, input.cwd as string))
-    if (inside.length === 1) return inside[0]
+    const inside = new Set<string>()
+    for (const entry of worktrees) {
+      const root = matchWorktree(entry, input.cwd)
+      if (root !== undefined) inside.add(root)
+    }
+    if (inside.size === 1) return [...inside][0]
   }
   return undefined
+}
+
+/**
+ * Absolute paths in spawn text. Matching entry-by-entry on a whole-text
+ * substring would let `/tmp/wt/ticket-80` claim a prompt that only names
+ * `/tmp/wt/ticket-801`; tokenising first means a glob can substitute exactly
+ * the directory the text mentions.
+ */
+function textPaths(text: string): string[] {
+  const paths: string[] = []
+  for (const match of text.matchAll(/(?:^|[\s"'`(=])(\/[^\s"'`()<>]+)/gu)) {
+    const path = match[1].replace(/[.,:;!?]+$/u, '').replace(/\/+$/u, '')
+    if (path.length > 1) paths.push(path)
+  }
+  return paths
 }

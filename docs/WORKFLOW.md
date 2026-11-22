@@ -66,10 +66,49 @@ write only inside its assigned directory, so a sibling path may be read-only.
 
 ```bash
 git fetch origin
-dir=$(mktemp -d)/ticket-<n>
+root=${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}
+mkdir -p "$root"
+dir=$root/ticket-<n>
 git worktree add "$dir" -b ticket/<n> origin/main    # the master creates it
 cd "$dir"
 ```
+
+The shared parent and the `ticket-<n>` stem matter to the guard:
+`npm run guard:install` writes one pattern (`$root/ticket-*`), not a snapshot of
+the worktrees that existed when it ran, so a directory matching it is admitted
+without a reinstall — including a worktree the master creates later. The pattern
+is a namespace matcher, not a git-worktree attestation: any directory named
+`ticket-*` under `$root` is confinable even if git never created it as a
+worktree. The wildcard only counts after a stem ending in `-`: a block written
+before that grammar (or an exact entry for a worktree whose real name ends in
+`*`, except one ending in exactly `-*`, which reads as the wildcard) names a
+path, not a pattern, and status reports it as stale once it is gone. A live
+ticket path containing a literal `*` makes status report `refused` and name
+the rename remedy; reinstalling cannot make it readable. Install once from the
+main checkout — a real install from a linked
+worktree is refused, because git shares one hooks directory with the main
+checkout; a submodule or `--separate-git-dir` checkout is its own main checkout
+and is installed from there, while a linked worktree of either has no main
+working tree git can name and is refused for a real install. `npm run guard:install -- --dry-run` from an
+ordinary checkout composes the block and names the main checkout (from a linked
+worktree of a submodule or `--separate-git-dir` repo it composes from the
+invocation checkout, writing nothing); `npm run guard:status` reports `not-installed`,
+`current`, `stale`, `refused` or `installed-with-stale-paths` (a literal path in the block
+no longer exists, and the line names it), and prints the desired and installed
+worktree lists separately. A directory whose path does not share that parent and
+stem is not covered until the next install. If any discovered ticket worktree is
+outside the shared parent and stem, the block keeps the exact list instead of a
+pattern; one out-of-pattern worktree then makes the next install drop the
+pattern for every future worktree until the next install. Review and verify
+worktrees are deliberately not confinable.
+
+The block also names the resolved git directory (`protectedRoots` when it is
+outside the main working tree, and `gitDirectories` always). That is what stops
+a pattern that happens to match a custom git dir — `sep-*` next to `sep-gitdir`
+— from letting a worker overwrite the pre-push hook the install just wrote.
+A worker write under `<gitdir>/config` or `<gitdir>/hooks/pre-push` is refused
+by `git-dir-write`; a root write there is allowed, and the common dir covers
+the per-worktree dirs of worktrees created later.
 
 The master creates the worktree and hands the worker its exact path — a worker
 that picks its own path will pick one the sandbox refuses. Remove the worktree
