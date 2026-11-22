@@ -17,7 +17,7 @@
 | **D** Control flow | allow / deny / block decisions (`exit 2`, `decision:"block"`, `continue:false`, permission results) | equivalent |
 | **E** Trust | approval prompts, grant records, scope of effect | equivalent |
 | **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `equivalent` through the agent-scoped prompt seam (S11) on top-level agents and forks, selected by the profile activation record or `force-for-plugin`; the human `/<plugin>:<name>` half stays `planned` — D10's alias, and no `plugin details` inventory at 2.1.322 |
-| **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | every declared color |
+| **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | **outside the 100 % statement**: a `themes/` directory is declared as one `planned` unmaterialized row (`readOptionalSurfaces`), there is no fixture and no materializer, and whether the client theme runtime accepts a plugin-registered palette is open (S24, #216). It re-enters the statement only with an evidenced seam, a fixture, and a materializer that carries every declared color |
 | **F3** GUI chrome | cards, overlays, charts, shadows | **derived** — not in the denominator; Claude has no such artifact to translate |
 | **F4** Assets | icons / complete SVGs | byte-identical |
 
@@ -37,9 +37,10 @@ be `planned` without a roadmap entry; a node may never silently change class.
 ### 0.3 The 100% statement
 
 > For a pinned `claude-code-plugin@<version>`, over the declared fixture set,
-> A/B/C/F1/F4 are byte-identical, D/E are equivalent, F2 is complete, and the
-> `unsupported` set is empty. F3 is declared derived. Anything else is a diff,
-> and a diff is a bug.
+> A/B/C/F1/F4 are byte-identical, D/E are equivalent, and the `unsupported` set
+> is empty. F2 is declared `planned` and sits outside this statement until an
+> evidenced palette seam and a `themes/` fixture exist (S24, #216); F3 is
+> declared derived. Anything else is a diff, and a diff is a bug.
 
 Corollary: **100% is a claim about a pinned version**, not a permanent state.
 CI pins the source-agent version and re-runs conformance on every bump.
@@ -147,8 +148,9 @@ panel"), while the report and grant surfaces remain unbuilt.
 `dsh-anyplugin-dialect-portable`
 (the shared `agent-plugins.org` reader; `dsh-anyplugin-dialect-codex` reads that
 shape itself today), and
-`dsh-anyplugin-materialize-{bin,theme,monitor,workflow}`. Themes are carried as
-`planned` IR rows with no materializer; output styles are carried the same way
+`dsh-anyplugin-materialize-{bin,theme,monitor,workflow}`. Themes are declared as
+one `planned` unmaterialized row with no materializer (the palette seam is
+itself unproven, #216); output styles are carried as IR data
 but do have one — `dsh-anyplugin-materialize-output-style` applies the selected
 body through the agent-scoped prompt seam (S11). The host-controller surface the old row
 called `dsh-anyplugin` — the `anyplugin` command family and an API for the UI —

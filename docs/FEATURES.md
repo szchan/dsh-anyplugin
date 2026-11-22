@@ -89,8 +89,13 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 
 ## 7. What is deliberately not a feature
 
-- **Terminal themes (F2).** No host surface; `planned` until a palette seam
-  exists (upstream proposal in `docs/TODO.md`).
+- **Terminal themes (F2).** No evidenced host surface: a `themes/` directory is
+  a `planned` unmaterialized row and sits outside the 100 % statement. The
+  Desktop bundle does ship `@deepseek-ai/dsh-client-ui-theme` (its client
+  bundle exposes `registerTheme`/`registerFixed`/`palettes`, and it is absent
+  from the rc.5 harness), but the client-plugin docs only tell plugins to
+  consume `--dsw-alias-*` tokens — so whether a plugin may register a palette
+  is unproven, not assumed (#216, S24).
 - **GUI chrome (F3).** The foreign side has no such artifact, so it is `derived`
   and excluded from the denominator.
 - **Model identity in `agents/*.md`** (`model: sonnet`). Cannot be reimplemented
