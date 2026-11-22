@@ -1,6 +1,6 @@
 {
   "name": "dsh-anyplugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run Claude Code plugins inside DeepSeek Harness, at declared 100% fidelity.",
   "type": "module",
   "license": "MIT",

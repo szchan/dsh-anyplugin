@@ -157,7 +157,7 @@ reconcile lives in `dsh-anyplugin-install`.
 
 ### The published package
 
-The root package is `dsh-anyplugin` (0.2.0). D61 adds the programmatic
+The root package is `dsh-anyplugin` (0.3.0). D61 adds the programmatic
 `./install` subpath the optional panel uses; D61 also names the panel a
 separately published optional artifact, so the root tarball stays the compile
 path and the panel has its own artifact and budget (see "The optional panel"

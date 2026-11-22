@@ -8,11 +8,11 @@ English | [中文](README_cn.md)
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-what-020-does)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-what-030-does)
 
 **Run Claude Code plugins on DeepSeek Harness — at the fidelity this repository
-declares for each surface, and never more.** Codex is the second dialect and ships
-in v0.3; 0.2.0 is the Claude Code compile path plus the mods kernel.
+declares for each surface, and never more.** 0.3.0 ships the Claude Code compile
+path, the mods kernel, and the Codex portable dialect; 0.2.0 was the first two.
 
 A Claude Code plugin is a bundle of files: skills, slash commands, agents, hooks,
 MCP servers, output styles, and `mods` (JavaScript that runs inside the harness).
@@ -63,14 +63,14 @@ fixture. Closing a gap edits the ratchet in the same commit that makes it true,
 so a regression fails in the same place.
 
 
-## ✅ What 0.2.0 does
+## ✅ What 0.3.0 does
 
-This table describes the **0.2.0 artifact**, not the repository: every row is
-what installing `dsh-anyplugin@0.2.0` gives you in this release. It is the
+This table describes the **0.3.0 artifact**, not the repository: every row is
+what installing `dsh-anyplugin@0.3.0` gives you in this release. It is the
 published release on npm, with a signed SLSA provenance statement. `npm run
 verify` boots the packed tarball to check every row.
 
-| surface | in 0.2.0 |
+| surface | in 0.3.0 |
 | --- | --- |
 | Skills | `exact` — content, envelope, base-directory preamble, argument substitution where the host has a channel |
 | Slash commands | shipped as **skills** (the model face, `equivalent`); the human `/…` face is `planned` and needs a host command-name seam (`D10`) |
@@ -79,10 +79,10 @@ verify` boots the packed tarball to check every row.
 | Agents | `exact` — each `agents/*.md` becomes a scoped tool named `<plugin>:<agent>` |
 | Output styles | **shipped** — the profile's activation record selects one style (`D42`); the `/<plugin>:<name>` alias still needs the command-name seam (`D10`) |
 | `mods` | **shipped** — the kernel is in the tarball (`D30`, `D31`, `D34`): authored `.js`, `.mjs` and `.ts` load as authored in one `node:vm` realm, `.tsx` only through the one classic-pragma pass; `$` serves the measured namespaces and a seat binds each agent's events. The lock (`dsh-anyplugin/installs@2`) carries a granted `mods` tree and `dsh-anyplugin install` writes it; the hook row's `mods` config is emitted from that record, and an ungranted, unrecorded or changed tree — one digest over the whole plugin tree — is refused before `loadMod` |
-| Codex plugins | **not in 0.2.0** — the second dialect ships in v0.3 |
-| Install / enable / release | `dsh-anyplugin@0.2.0` — bundle + controller + reconciler |
+| Codex plugins | `equivalent` — `plugin.json` 1.0.0 plus `skills/` and `mcp.json`; installs and runs on the same IR, with fixtures as the spec because there is no upstream oracle |
+| Install / enable / release | `dsh-anyplugin@0.3.0` — bundle + controller + reconciler |
 
-### Refused in 0.2.0
+### Refused in 0.3.0
 
 The kernel loads mods; it does not pretend to serve calls the host has no
 surface for. These stay **typed refusals** (a recorded reason, never a silent
@@ -101,8 +101,9 @@ surface for. These stay **typed refusals** (a recorded reason, never a silent
 - against DSH `0.2.2-rc.5` and Claude Code `2.1.329`: 27 declared · 26 matched ·
   0 missing · 1 refused (the refused row is `claude-mcp-budget`, an MCP server
   name the DSH seam refuses);
-- Codex is a second dialect on the same IR (v0.3) — the one surface still
-  unreleased.
+- Codex portable plugins run their own end-to-end fixture (`fixtures/codex-portable`,
+  `codex-e2e.test.mjs`) rather than the Claude ratchet: there is no Codex
+  oracle to diff against, so the fixture is the specification (D33).
 
 The kernel is shipped evidence, not a promise: `check:pack` boots the packed
 tarball, loads the pinned upstream `sec-default` (45 registrations), proves a
@@ -112,7 +113,7 @@ classic hook firing in the same turn, and observes a mod deny at
 
 ## 📦 Install it
 
-`dsh-anyplugin@0.2.0` (published; installed from the registry)
+`dsh-anyplugin@0.3.0` (published; installed from the registry)
 ships as **one bundle** for a DSH profile:
 
 ```bash
@@ -146,7 +147,7 @@ first); [INSTALL.md](INSTALL.md) §2 documents every command and flag.
   same pin is refused; the materializer re-reads the pinned files before
   `loadMod`.
 
-0.2.0 ships the **compile path** — skills (a slash command lands as a skill on
+0.3.0 ships the **compile path** — skills (a slash command lands as a skill on
 its model face), MCP servers, hooks, agents, an output style activated from the
 profile record (D42), install/reconcile, and the trust gate — and the **mods
 kernel** in `lib/materialize/hook.js`. A plugin that declares its module
@@ -155,8 +156,8 @@ entry in `hooks/hooks.json` installs as a `mods` record in
 hook row and it loads in its own `node:vm` realm.
 The kernel's only runtime dependencies are `@babel/core` and
 `@babel/plugin-transform-react-jsx` (the one classic-pragma pass, D34);
-`check:pack` asserts that exact set and prints the kernel's byte cost. The
-Codex dialect is **not** part of this release. The version claim is DSH
+`check:pack` asserts that exact set and prints the kernel's byte cost. The Codex portable dialect is part of this release:
+`plugin.json` 1.0.0, `skills/` and `mcp.json`, `equivalent` against its fixture. The version claim is DSH
 `0.2.2-rc.2 || 0.2.2-rc.5` (`engines.dsh`; exactly the two pins the suite boots,
 so any other runtime is refused until it is tested —
 `dsh plugin allow-version` grants an exact-version exemption) and Claude Code
@@ -197,7 +198,7 @@ npm run verify
 ```
 
 `verify` runs the structural rules, the capability map check, the append-only
-decision check, and 482 tests. It must report **0 skipped**: a skip means an
+decision check, and 969 tests. It must report **0 skipped**: a skip means an
 environment variable is missing, and on CI a skip is a failure by design.
 
 ## 📚 Read next
