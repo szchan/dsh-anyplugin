@@ -1,10 +1,12 @@
 name: verify
 
 on:
-  pull_request:
+  # Push only. A commit can carry at most one check named `verify`, and branch
+  # protection reads that name; a `pull_request` trigger for the same commit
+  # produced a second run under the same name and blocked the merge with one of
+  # them still pending. External PRs are read, then re-pushed onto one of our
+  # branches — that push is what produces the required check (docs/TRIAGE.md).
   push:
-    # Any branch, not just main: an agent pushes and CI is the verifier
-    # (D67/#175). A PR then only adds review, not a second verification.
     branches: ["**"]
 
 concurrency:
