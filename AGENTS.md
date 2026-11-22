@@ -84,6 +84,7 @@ docs/                  design and decisions (all prose docs live here)
   CONFORMANCE.md       the differential rig
   FEATURES.md          the capability map (checked by scripts/check-features.mjs)
   TRIAGE.md            how issues/PRs become work, and what a report may not do
+  RELEASING.md         how a tag becomes a published version, and what has failed before
 .dsh/skills/dsh-anyplugin/SKILL.md   the project skill agents load first
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
   dsh-anyplugin-conformance/  the rig: inventory, upstream oracle, diff
