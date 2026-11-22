@@ -75,7 +75,7 @@ const EXPECTED_ROWS = {
  * the live matrix produces exactly these values, so the doc and the suite move
  * together. Closing a row moves this object in the same commit.
  */
-export const EXPECTED_COUNTS = { declared: 25, matched: 24, missing: 0, refused: 1, fixtures: 11 }
+export const EXPECTED_COUNTS = { declared: 25, matched: 24, missing: 0, refused: 1, rows: 11 }
 
 /**
  * Hooks are the one surface whose presence is not readable from a registry:
@@ -320,8 +320,8 @@ test(
     }
     assert.equal(
       Object.keys(EXPECTED_ROWS).length,
-      EXPECTED_COUNTS.fixtures,
-      'the fixture count matches the docs',
+      EXPECTED_COUNTS.rows,
+      'the coverage-row count matches the docs',
     )
     // S9 turned the lifecycle row set into matches: the golden declares five
     // hook components and the fixture's handlers wrote all five lines on a real

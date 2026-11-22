@@ -23,7 +23,7 @@ codex plugin spec `1.0.0`.
 ## 1. Capability snapshot
 
 The one number the project reports: **25 declared / 24 matched / 0 missing /
-1 refused** rows across 11 fixtures in the coverage ratchet
+1 refused** across the coverage ratchet's 11 coverage rows
 (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`). It only moves
 when a row moves; see `docs/TODO.md` for the queue behind it.
 
@@ -83,7 +83,7 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 | Fidelity report (`rig report`) | `packages/dsh-anyplugin-conformance/src/report.ts` |
 | Pinned CI (two DSH pins, fetched harness + CLI + mods) | `.github/workflows/verify.yml`, D22/D24 |
 | Fixture ratchet (R14): every `fixtures/` directory is a ratchet row or a named exclusion | `scripts/fixture-ratchet.mjs`, `scripts/check-architecture.mjs` |
-| Count claims (R15): every doc count is compared with the number its owner states | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
+| Count claims (R15): every claim in the R15 vocabulary (`N declared`, `N served`, `N refused`, `N absent`, `N matched`, `N missing`, `N tests`, `N fixtures`, `N rows`) is compared with the number its owner states, keyed by the count's category noun | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
 
 ## 7. What is deliberately not a feature
 

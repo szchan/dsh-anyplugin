@@ -199,6 +199,80 @@ test('R15: a test owner must export EXPECTED_COUNTS with the claim key', () => {
   assert.match(none[0].message, /declares no `EXPECTED_COUNTS` object/u)
 })
 
+test('R15: a claim is bound by its category noun, not by the nearest citation', () => {
+  const ledger = JSON.stringify({
+    totals: {
+      renderSites: { served: 1, absent: 19 },
+      namespaces: { served: 9, refusedOnly: 2, absent: 13 },
+    },
+  })
+  const options = { ownerExists: () => true, readOwner: () => ledger }
+  const text =
+    'The host draws 1 served render site and 1 served namespace (`fixtures/mods/coverage.json` `totals.renderSites`).'
+  const violations = countOwnerViolations(text, options)
+  assert.equal(violations.length, 1, 'the render-site claim is right; the namespace claim must not reuse its 1')
+  assert.match(violations[0].claim, /1 served/u)
+  assert.match(violations[0].message, /namespace count but is certified by an owner of a different count/u)
+  assert.match(violations[0].message, /cite fixtures\/mods\/coverage\.json totals\.namespaces/u)
+})
+
+test('R15: a member claim is not certified by the coverage test', () => {
+  const text =
+    'The bridge has 1 refused member (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).'
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => 'export const EXPECTED_COUNTS = { refused: 1 }',
+  })
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /member count but is certified by an owner of a different count/u)
+  assert.match(violations[0].message, /cite fixtures\/mods\/coverage\.json totals\.methods/u)
+})
+
+test('R15: a section-less citation fails rather than borrowing a later section', () => {
+  const text =
+    'The bridge states 26 served members (`fixtures/mods/coverage.json`), and the totals live at (`fixtures/mods/coverage.json` `totals.methods`).'
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { methods: { served: 26 } } }),
+  })
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /without an object section/u)
+})
+
+test('R15: a table row cannot borrow the next row citation', () => {
+  const text = [
+    '| surface | claim |',
+    '| --- | --- |',
+    '| A | 3 served |',
+    '| B | `fixtures/mods/coverage.json` `totals.methods` |',
+  ].join('\n')
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { methods: { served: 3 } } }),
+  })
+  assert.equal(violations.length, 1)
+  assert.equal(violations[0].line, 3)
+  assert.match(violations[0].message, /names no owner file/u)
+})
+
+test('R15: a mismatch reports the claim line, not the paragraph start', () => {
+  const text = [
+    'Intro.',
+    '',
+    'This paragraph starts here',
+    'and runs for several lines',
+    'before the claim appears:',
+    'the ratchet states 25 declared rows (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
+  ].join('\n')
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => 'export const EXPECTED_COUNTS = { declared: 24, rows: 11 }',
+  })
+  assert.equal(violations.length, 1)
+  assert.equal(violations[0].line, 6)
+  assert.match(violations[0].message, /the doc says 25/u)
+})
+
 test('R15: every non-decisions doc currently owns its counts', () => {
   const failures = []
   for (const name of ['FEATURES.md', 'ARCHITECTURE.md', 'TODO.md', 'WORKFLOW.md', 'TRIAGE.md', 'CONFORMANCE.md']) {

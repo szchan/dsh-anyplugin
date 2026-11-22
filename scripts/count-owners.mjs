@@ -5,16 +5,19 @@
 // move while the other stays green — exactly the failure the ledger exists to
 // prevent. Naming the owner is not enough either: the old rule accepted any
 // `.test.mjs` path, so `24 served` could sit next to a test that said 26 and
-// the gate stayed green. This module therefore reads the owner.
+// the gate stayed green. And proximity is not enough: the ledger has several
+// `served` numbers, so a claim must be bound to the owner family its own noun
+// names, never to whichever citation happens to be closest.
 //
 // The grammar is deliberately narrow — the ledger's own vocabulary plus the
-// gate's test/fixture counts: `N declared`, `N served`, `N refused`,
+// gate's test/fixture/row counts: `N declared`, `N served`, `N refused`,
 // `N refusals`, `N refused-only`, `N absent`, `N matched`, `N missing`,
-// `N test(s)`, `N fixture(s)`. `typed` and `total` are accepted between the
-// number and the noun, so `7 typed refusals` is the same claim as `7 refused`.
+// `N test(s)`, `N fixture(s)`, `N row(s)`. `typed`, `total` and `coverage` are
+// accepted between the number and the noun. Numbers outside that vocabulary
+// (`N handler invocations`, `N sites`, `122/122`) are not claims this gate
+// compares; docs must not say otherwise.
 //
-// The owner is named in the same paragraph (tables are one paragraph: no blank
-// lines between rows) in one of two forms:
+// The owner is named in the same paragraph or table row in one of two forms:
 //
 //   packages/dsh-anyplugin-conformance/test/coverage.test.mjs
 //     the file must export `EXPECTED_COUNTS = { key: number, ... }`; the test
@@ -23,10 +26,16 @@
 //   `fixtures/mods/coverage.json` `totals.methods`
 //     the JSON path must be followed by a code span naming the object to read;
 //     the number is `totals.methods[<noun key>]`. A bare JSON path that merely
-//     mentions the file is not an owner citation.
+//     mentions the file is not an owner citation, and a claim next to one fails
+//     rather than borrowing a sectioned citation from further along.
 //
-// The nearest owner citation in the paragraph wins, so several sections can be
-// cited in one paragraph as long as each claim sits next to its own section.
+// The category noun binds the owner family: namespace(s) read
+// `totals.namespaces`, member(s)/method(s) `totals.methods`, event(s)
+// `totals.events`, element(s) `totals.elements`, render site(s)
+// `totals.renderSites`, a bridge `site` reads `mods.test.mjs` and a coverage
+// `row` reads `coverage.test.mjs`. A citation from another family is a
+// failure, not a pass. Tables are split row by row, so one row's citation
+// cannot certify the next row's claim.
 //
 // `docs/DECISIONS.md` is exempt at the call site: it is the append-only
 // historical record, hashed by `check:decisions`, and its counts are what was
@@ -38,12 +47,18 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 
+const LEDGER = 'fixtures/mods/coverage.json'
+const COVERAGE_TEST = 'packages/dsh-anyplugin-conformance/test/coverage.test.mjs'
+const MODS_TEST = 'packages/dsh-anyplugin-conformance/test/mods.test.mjs'
+
 const CLAIM =
-  /\b(\d+)\s+(?:(?:typed|total)\s+)?(declared|served|refused-only|refusals?|refused|absent|matched|missing|tests?|fixtures?)\b/giu
+  /(?<![\d./])\b(\d+)\s+(?:(?:typed|total|coverage)\s+)?(declared|served|refused-only|refusals?|refused|absent|matched|missing|tests?|fixtures?|rows?)\b/giu
 const OWNER_REF = /`((?:packages|docs|spikes|fixtures|scripts|\.github)\/[^`\s]+?\.(?:json|test\.mjs))`/gu
 const SECTION_AFTER = /^[\s,;:()]*`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/u
 const SECTION_NAME = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u
 const EXPECTED_OBJECT = /export\s+const\s+EXPECTED_COUNTS\s*=\s*\{([^}]*)\}/u
+const CODE_SPAN = /`[^`\n]*`/gu
+const CATEGORY = /\b(render[ -]sites?|namespaces?|members?|methods?|events?|elements?|sites?|rows?|fixtures?)\b/giu
 
 const KEY = {
   declared: 'declared',
@@ -59,13 +74,44 @@ const KEY = {
   tests: 'tests',
   fixture: 'fixtures',
   fixtures: 'fixtures',
+  row: 'rows',
+  rows: 'rows',
+}
+
+/** The owner family a category noun selects. */
+function categoryOf(word) {
+  const value = word.toLowerCase()
+  if (value.startsWith('render')) {
+    return { label: 'render site', path: LEDGER, section: 'totals.renderSites' }
+  }
+  if (value.startsWith('namespace')) {
+    return { label: 'namespace', path: LEDGER, section: 'totals.namespaces' }
+  }
+  if (value.startsWith('member') || value.startsWith('method')) {
+    return { label: 'member', path: LEDGER, section: 'totals.methods' }
+  }
+  if (value.startsWith('event')) {
+    return { label: 'event', path: LEDGER, section: 'totals.events' }
+  }
+  if (value.startsWith('element')) {
+    return { label: 'element', path: LEDGER, section: 'totals.elements' }
+  }
+  if (value.startsWith('site')) {
+    return { label: 'bridge site', path: MODS_TEST, section: 'EXPECTED_COUNTS' }
+  }
+  if (value.startsWith('row')) {
+    return { label: 'coverage row', path: COVERAGE_TEST, section: 'EXPECTED_COUNTS' }
+  }
+  if (value.startsWith('fixture')) {
+    return { label: 'fixture', path: COVERAGE_TEST, section: 'EXPECTED_COUNTS' }
+  }
+  return null
 }
 
 /**
- * Split on blank lines, list-item boundaries and headings, keeping the line
- * each block starts on. Consecutive bullets are separate claims even without a
- * blank line between them, so a citation in the next bullet is not treated as
- * this bullet's owner.
+ * Split on blank lines, list-item boundaries, headings and table rows, keeping
+ * the line each block starts on. A bullet or a row is its own claim context, so
+ * a citation in the next one is never treated as this one's owner.
  */
 function paragraphs(text) {
   const lines = text.split('\n')
@@ -83,7 +129,8 @@ function paragraphs(text) {
       start = index + 1
       continue
     }
-    if (/^(?:[-*+]\s|#{1,6}\s)/u.test(line) && buffer.length > 0) {
+    const startsBlock = /^(?:[-*+]\s|#{1,6}\s)/u.test(line) || /^\s*\|/u.test(line)
+    if (startsBlock && buffer.length > 0) {
       flush()
       start = index
     }
@@ -93,9 +140,16 @@ function paragraphs(text) {
   return result
 }
 
+/** Character ranges occupied by inline code, so their words are not prose. */
+function codeRanges(text) {
+  return [...text.matchAll(CODE_SPAN)].map((match) => [match.index, match.index + match[0].length])
+}
+
+const inside = (offset, ranges) => ranges.some(([start, end]) => offset >= start && offset < end)
+
 /**
- * Owner citations in a paragraph, in source order. A JSON path carries the
- * section code span that follows it; a test path carries none.
+ * Owner citations in a block, in source order. A JSON path carries the section
+ * code span that follows it; a test path carries none.
  */
 function ownerRefs(text) {
   const refs = []
@@ -113,10 +167,31 @@ function ownerRefs(text) {
   return refs
 }
 
-const nearest = (refs, offset) =>
-  refs.reduce((best, ref) => (best === null || Math.abs(ref.start - offset) < Math.abs(best.start - offset) ? ref : best), null)
+/** Category nouns in prose, with the family each one names. */
+function categories(text, ranges) {
+  const found = []
+  for (const match of text.matchAll(CATEGORY)) {
+    if (inside(match.index, ranges)) continue
+    const category = categoryOf(match[1])
+    if (category !== null) found.push({ ...category, start: match.index })
+  }
+  return found
+}
+
+const nearest = (items, offset) =>
+  items.reduce(
+    (best, item) => (best === null || Math.abs(item.start - offset) < Math.abs(best.start - offset) ? item : best),
+    null,
+  )
 
 const claimText = (match) => match[0].replace(/\s+/gu, ' ')
+
+const describeRef = (ref) => (ref.isTest ? `${ref.path} EXPECTED_COUNTS` : `${ref.path} ${ref.section ?? '(no section)'}`)
+
+const matchesCategory = (ref, category) => {
+  if (category.path.endsWith('.test.mjs')) return ref.isTest && ref.path === category.path
+  return !ref.isTest && ref.section === category.section
+}
 
 /**
  * Resolve one claim against one owner. Returns `{ expected, where }` or a
@@ -167,6 +242,48 @@ function resolve(claim, ref, { ownerExists, readOwner }) {
   return { expected: value[key], where: `${ref.path} ${ref.section}.${key}` }
 }
 
+/**
+ * Pick the citation that may certify a claim. The category noun, not distance,
+ * decides the family; a bare JSON path never licenses a neighbour's section.
+ */
+function chooseRef(claim, refs, foundCategories) {
+  const label = `"${claim.text}"`
+  const closest = nearest(refs, claim.offset)
+  if (closest !== null && !closest.isTest && closest.section === null) {
+    return {
+      problem: `${label} names ${closest.path} without an object section; write the section (e.g. totals.methods) after the path`,
+    }
+  }
+  const category = nearest(foundCategories, claim.offset)
+  if (category !== null) {
+    const matching = refs.filter((ref) => matchesCategory(ref, category))
+    if (matching.length === 0) {
+      if (refs.length === 0) {
+        return {
+          problem: `${label} states a count but the paragraph or table row names no owner file; add the .test.mjs path or a .json path and its object section next to the number`,
+        }
+      }
+      const cited = refs.map(describeRef).join(', ')
+      return {
+        problem: `${label} is a ${category.label} count but is certified by an owner of a different count: ${cited}; cite ${category.path} ${category.section}`,
+      }
+    }
+    return { ref: nearest(matching, claim.offset) }
+  }
+  const citations = refs.filter((ref) => ref.isTest || ref.section !== null)
+  if (citations.length === 0) {
+    if (refs.length > 0) {
+      return {
+        problem: `${label} names ${refs[0].path} without an object section; write the section (e.g. totals.methods) after the path`,
+      }
+    }
+    return {
+      problem: `${label} states a count but the paragraph or table row names no owner file; add the .test.mjs path or a .json path and its object section next to the number`,
+    }
+  }
+  return { ref: nearest(citations, claim.offset) }
+}
+
 function checkCounts(text, { ownerExists, readOwner } = {}) {
   const violations = []
   let verified = 0
@@ -175,34 +292,31 @@ function checkCounts(text, { ownerExists, readOwner } = {}) {
     readOwner: readOwner ?? ((relativePath) => readFileSync(join(root, relativePath), 'utf8')),
   }
   for (const paragraph of paragraphs(text)) {
-    const claims = [...paragraph.text.matchAll(CLAIM)].map((match) => ({
-      text: claimText(match),
-      value: Number(match[1]),
-      noun: match[2].toLowerCase(),
-      offset: match.index,
-    }))
+    const ranges = codeRanges(paragraph.text)
+    const claims = [...paragraph.text.matchAll(CLAIM)]
+      .filter((match) => !inside(match.index, ranges))
+      .map((match) => ({
+        text: claimText(match),
+        value: Number(match[1]),
+        noun: match[2].toLowerCase(),
+        offset: match.index,
+      }))
     if (claims.length === 0) continue
     const refs = ownerRefs(paragraph.text)
-    // A JSON path without a section, or a `.test.mjs`, only becomes the owner
-    // when no sectioned citation exists in the paragraph; the bare path then
-    // produces the "add a section" message instead of "names no owner".
-    const citations = refs.filter((ref) => ref.isTest || ref.section !== null)
+    const foundCategories = categories(paragraph.text, ranges)
     for (const claim of claims) {
-      const ref = nearest(citations.length > 0 ? citations : refs, claim.offset)
-      if (ref === null) {
-        violations.push({
-          line: paragraph.line,
-          claim: claim.text,
-          message: `"${claim.text}" states a count but the paragraph names no owner file; add the .test.mjs path or a .json path and its object section next to the number`,
-        })
+      const line = paragraph.line + (paragraph.text.slice(0, claim.offset).match(/\n/gu)?.length ?? 0)
+      const choice = chooseRef(claim, refs, foundCategories)
+      if (choice.problem !== undefined) {
+        violations.push({ line, claim: claim.text, message: choice.problem })
         continue
       }
-      const result = resolve(claim, ref, options)
+      const result = resolve(claim, choice.ref, options)
       if (result.problem !== undefined) {
-        violations.push({ line: paragraph.line, claim: claim.text, message: result.problem })
+        violations.push({ line, claim: claim.text, message: result.problem })
       } else if (result.expected !== claim.value) {
         violations.push({
-          line: paragraph.line,
+          line,
           claim: claim.text,
           message: `"${claim.text}" disagrees with its owner: the doc says ${claim.value}, ${result.where} says ${result.expected}`,
         })
@@ -223,9 +337,9 @@ export function checkCountClaims(text, options) {
 }
 
 /**
- * Count claims that a paragraph states but its owner does not confirm.
- * `line` is 1-based and points at the paragraph, not the number, so the
- * caller can report a file location a human can open.
+ * Count claims that a paragraph or table row states but its owner does not
+ * confirm. `line` is 1-based and points at the claim, so the caller can report
+ * a file location a human can open.
  */
 export function countOwnerViolations(text, options) {
   return checkCounts(text, options).violations
