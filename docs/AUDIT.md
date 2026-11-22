@@ -107,14 +107,14 @@ that contains a token, an email, or a customer path.
    finding gets an action in this pass: the fix in the PR, a tracking issue, or
    an explicit accepted risk with an owner and a review date. A finding with no
    action is a plan, not a finding; it does not become next pass's backlog.
-7. For a change to a *mechanism* (not a report), run the reviewers in §6 before
-   opening the PR.
+7. Open the PR and hand it to the master. The review path in §6 belongs to the
+   master; the auditor's part ends at the PR.
 
 The daily pass may write `docs/AUDIT.md`, `docs/audits/`, the audit skill,
 audit tooling (`scripts/audit-*`, `scripts/check-audit*`), and a gate or test
-that is the finding's fix. It does not push to a ticket branch, does not merge,
-and does not edit a feature file. A finding that needs product code gets an
-issue or a separate worker.
+that is the finding's fix. It does not push to a ticket branch, does not
+approve or merge its own PR, and does not edit a feature file. A finding that
+needs product code gets an issue or a separate worker.
 
 ## 5. The report
 
@@ -217,15 +217,16 @@ adds measurable caps:
 | master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (dormant until the guard is installed, F1) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
-| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, merge, close an issue or PR, approve its own PR; it proposes a decision and the master writes it | an audit PR that changes a mechanism without two reviewers, or one the auditor merged or closed itself |
+| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, approve, merge, close an issue or PR; it proposes a decision and the master writes it | an audit PR the auditor approved, merged, or closed itself |
 
-The auditor's "no merge, no close" rule is a convention first: the auditor opens
-the issue or PR, comments with evidence, and hands it to the review and merge
-path. It does not close the issue it filed or merge the PR it authored, even
-after the fix lands. Permission-layer enforcement (branch protection, the
-`gh-bot` allowlist, and a separate merger identity) is deliberately deferred;
-until it lands this is reviewed behavior, not a guard check, and a report must
-say so if it relied on the convention.
+The auditor's "no approve, no merge, no close" rule is a convention first: the
+auditor opens the issue or PR, comments with evidence, and hands it to the
+master's review and merge path. It does not close the issue it filed, approve
+its own PR, or merge the PR it authored, even after the fix lands.
+Permission-layer enforcement (branch protection, the `gh-bot` allowlist, and a
+separate merger identity) is deliberately deferred; until it lands this is
+conventional behavior, not a guard check, and a report must say so if it relied
+on the convention.
 
 The caps are heuristics, not gates. The evidence script reports the eight
 largest sessions with their `cwd`; a pass that sees a root session above the
