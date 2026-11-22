@@ -5,12 +5,13 @@ description: Run the daily process audit for dsh-anyplugin — collect evidence,
 
 # The dsh-anyplugin process audit
 
-The product gate is `npm run verify`. This skill runs the other gate: **is the
-process learning?** The full charter, ledger schema, and role caps are in
-`docs/AUDIT.md`; this file is the procedure.
+`npm run verify` gates the product. This skill gates the process: **is it
+learning?** The charter — what is audited, cadence, the report template, the
+ledger vocabulary, role caps, limits — is `docs/AUDIT.md`. This file is the
+procedure.
 
-An audit pass produces evidence, at most a few findings, and an action for each.
-It is not a diary and not a code sprint.
+A pass produces evidence, a few findings, and an action for each. It is not a
+diary and not a code sprint.
 
 ## 1. Open last pass
 
@@ -28,24 +29,21 @@ as blocked or explicitly accepted; it is not silently carried.
 npm run audit:evidence -- --days 1 --github
 ```
 
-The script prints a digest and writes `.audit/evidence-<date>.json`. It resolves
-the main checkout, streams session transcripts, and reads the queue through the
-bot. Read the JSON for the numbers you will quote; the digest is the summary.
+The script prints a digest and writes `.audit/evidence-<date>.json`. Read the
+JSON for the numbers you will quote; the digest is the summary.
 
 Use the window since the previous report, not a fixed day: compare today with
 the latest report filename and pass that many days (at least 1). Say the window
 in `## Evidence`. If GitHub is unavailable, record that and use git only.
 
 The digest prints the schedule's rrule, target and last delivery. If the daily
-task is missing, recreate it: daily 09:00 `America/Los_Angeles`, target
-`new_once`, working directory the main checkout. The prompt must say: fetch
-`origin/main`, create or reset `.agents/worktrees/audit-daily` on a fresh
-branch, load this skill, always write the report and open a PR (even a
-report-only pass), give every finding an action in the same pass, never approve,
-merge, or close, and run the Monday mutation check (§7). Confirm the task in the
-next digest.
+task is missing, recreate it — daily 09:00 `America/Los_Angeles`, target
+`new_once`, working directory the main checkout — with a prompt that says:
+fetch `origin/main`, reset `.agents/worktrees/audit-daily` on a fresh branch,
+load this skill, always open a PR, give every finding an action, never approve,
+merge or close, and run §7.
 
-For PR detail, the digest only counts comments. Read the bodies and comments:
+For PR detail the digest only counts comments; read the bodies:
 
 ```bash
 npm run gh-bot -- pr list --state merged --limit 20
@@ -72,15 +70,14 @@ Also check the mechanisms themselves: a gate that failed, a hook that fired, the
 guard's install status, the schedule's last run. A mechanism that is installed
 and never fires is either unnecessary or broken; say which.
 
-Then check **roles**, which is its own surface (§1.2 of the charter): take the
-eight largest sessions with their `cwd`, compare each root's **window**
-count (the column the digest prints for the window it summarized) with the
-~1,500 tool-call cap, and check the top write paths for a session writing
-outside its role. Print the lifetime count too, but do not judge on it: a lead
-that runs for a month always exceeds a lifetime cap (D73). A root over the
-window cap is a finding even when the work succeeded; name the split (a
-scheduled audit, a narrower ticket, or an integration runner that polls CI and
-updates branches but never merges — D73).
+Then check **roles**, which is its own surface (`docs/AUDIT.md` §7): take the
+eight largest sessions with their `cwd`, compare each root's **window** count
+(the column the digest prints) with the ~1,500 tool-call cap, and check the top
+write paths for a session writing outside its role. Print the lifetime count
+too, but do not judge on it: a lead that runs for a month always exceeds a
+lifetime cap (D73). A root over the window cap is a finding even when the work
+succeeded; name the split (a scheduled audit, a narrower ticket, or an
+integration runner that polls CI and updates branches but never merges, D73).
 
 Completion: each shape is either "no instance in this window" with the search you
 ran, or a finding with a path or a count; every root over the cap has a finding
@@ -88,91 +85,29 @@ or a recorded "under cap" line.
 
 ## 4. Write the report
 
-Create `docs/audits/YYYY-MM-DD.md` with exactly:
-
-```markdown
-# Audit YYYY-MM-DD
-
-## Evidence
-window; commands read; the numbers.
-
-## Findings
-F<n> — title. Observation with path/count. Why it recurs.
-
-## Actions
-finding → what changed in this pass, or the issue/PR opened in this pass.
-
-## Open
-only blocked or deferred findings, each with a tracking issue, an owner, and
-the condition that reopens it. Not a backlog.
-```
-
-Number new findings after the highest `F<n>` in the ledger. A finding that
-already exists gets its entry updated, not a second id. New ledger entries quote
-this report in `evidence`; the report quotes the JSON.
-
-Every finding must leave this pass with an action: fixed in the PR, tracked by
-an issue/PR opened in the same pass, or accepted with an owner and review date.
-"Investigate later" is not an action.
-
-Completion: every sentence in `## Findings` has a path, a count, or a quoted
-sample; no sentence relies on memory.
+`docs/audits/YYYY-MM-DD.md`, with the template and finding numbering from
+`docs/AUDIT.md` §5. Two rules this skill adds: every finding leaves with an
+action (fixed in the PR, tracked by an issue/PR opened in the same pass, or
+accepted with an owner and review date — "investigate later" is not an action),
+and every sentence in `## Findings` has a path, a count, or a quoted sample.
 
 ## 5. Update the ledger, then gate it
 
-Edit the JSON block in `docs/AUDIT.md` between the audit-ledger markers:
-
-- `mechanism` ∈ `hook`, `ci`, `lint`, `skill`, `reviewer`, `docs`, `schedule`;
-- `status` ∈ `enforced`, `reviewed`, `documented`, `dormant`, `open`, `retired`;
-- `artifact`/`proof` are files that exist, and `proof` is not the artifact;
-  `open` carries `tracking: "#<issue>"`;
-- `enforced` means a hook/ci/lint mechanism with a proof file; `reviewed`
-  means a recorded check exists (a schedule that only reports counts because
-  the daily pass checks it); `documented` means prose only; `dormant` means
-  implemented and tested but not installed (F1);
-- move `updated` to today; never delete an entry (retire it with the reason);
-- a new finding needs `node scripts/check-audit.mjs --update`, which also
-  refreshes `docs/audit.lock.json`; a locked title/mechanism/artifact cannot
-  change in place.
-
-```bash
-npm run check:audit
-```
-
-Completion: `check:audit` prints the entry/report counts and exits 0.
+The schema, the status meanings and append-only are `docs/AUDIT.md` §11. New
+entries need `node scripts/check-audit.mjs --update`, which also refreshes
+`docs/audit.lock.json`; a locked title, mechanism or artifact cannot change in
+place. Then `npm run check:audit` prints the entry/report counts and must exit 0.
 
 ## 6. Ship the pass
 
-`verify` needs the pinned environment from the main checkout
-(`DSH_HARNESS_DIR`, `DSH_HARNESS_VERSION`, `CLAUDE_BIN`,
-`ANYPLUGIN_MODS_TREE`, `ANYPLUGIN_MOD_TREE`; AGENTS.md §6). Without it the
-suite skips, and a skip is a failed pass. Export them, then:
+`verify` needs the pinned environment from `AGENTS.md` §6; without it the suite
+skips and a skip is a failed pass. Stage what you touched — a report-only PR is
+`docs/AUDIT.md`, `docs/audits/` and this skill. The PR goes to the master's
+merge path: the auditor never approves, merges, or closes it, and a finding that
+needs product code gets an issue and a separate worker.
 
-```bash
-npm run verify
-git add docs/AUDIT.md docs/audits .dsh/skills/dsh-anyplugin-audit \
-  scripts/audit-*.mjs scripts/check-audit*.mjs scripts/*-rules.test.mjs \
-  scripts/check-decisions*.mjs scripts/check-architecture.mjs \
-  package.json AGENTS.md docs/WORKFLOW.md .gitignore
-git commit -m "audit: <date> pass"
-git push -u origin <branch>
-npm run gh-bot -- pr create --title "audit: <date> pass" --body-file <body>
-```
-
-A report-only PR adds only `docs/AUDIT.md`, `docs/audits/`, and the skill. A
-mechanism fix carries the code and its test. A finding that needs product code
-gets an issue labelled `enhancement` (or `bug`) and a separate worker; the audit
-does not edit feature files, push a ticket branch, approve, merge, or close its
-own PR.
-
-The report PR is opened in the same pass; there is no separate branch or
-comment-only path for a daily report. The auditor may open issues and PRs, but
-it does not approve, merge, or close them: the PR goes to the master's merge
-path. Until the permission layer lands, this is a convention, and the report
-says so when it matters.
-
-Completion: `verify` is green, the report and ledger are in the PR, and every
-open finding is tracked.
+Completion: `verify` green, report and ledger in the PR, every open finding
+tracked.
 
 ## 7. The Monday mutation check
 
@@ -180,7 +115,7 @@ Prose and a green gate can both be true while the mechanism is useless. Once a
 week, pick one `enforced` entry, break its mechanism in a scratch copy (delete
 the gate call, add the violating file, empty the proof), run the gate, and
 confirm it reddens with the entry's message. Restore immediately; never commit
-the break. Record the entry, the mutation, and the observed failure in
+the break. Record the entry, the mutation and the observed failure in
 `## Actions`.
 
 If the gate stays green, the entry's status or proof is wrong: shrink the claim,
@@ -189,19 +124,14 @@ as "not run", not assumed green.
 
 ## Command discipline
 
-The baseline is unambiguous: 86 % of bash calls began with `cd <dir> &&`, and
-`sed`/`grep`/`cat` outnumbered the read/grep/glob tools roughly 10:1. The harness
-already carries the directory and the file tools already carry line numbers.
-
 | Instead of | Use |
 | --- | --- |
 | `cd <worktree> && npm run …` | `workdir: "<worktree>"` on the call |
 | `sed -n 1,40p file` / `cat file` | `read` with `offset`/`limit` |
 | `grep -n pattern file` | the `grep` tool (and `glob` to find files) |
-| `npm run verify` after each edit | the narrow gate first: `check:decisions`, `check:arch`, one `node --test` file; `verify` once before push |
+| `npm run verify` after each edit | the narrow gate first; `verify` once before push |
 
-`npm run verify` is the pre-push gate, not a save button. 950 runs against 325
-narrow checks in the 2026-11-22 window is the cost this table removes.
+`npm run verify` is the pre-push gate, not a save button.
 
 ## When the pass is too big
 
