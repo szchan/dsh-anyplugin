@@ -87,8 +87,9 @@ const HOOK_PROBES = {
  * these five lines. The host dispatches `subagent/start` before `subagent/end`
  * but does not await the listener; the hook materializer holds the stop chain
  * for the same child until the start chain settles, so the asserted
- * SubagentStart-before-SubagentStop order is a kernel guarantee (S9). SessionEnd
- * remains an independent emit and is compared as a set member, not an order.
+ * SubagentStart-before-SubagentStop order is a kernel guarantee within one
+ * materializer load (S9). SessionEnd remains an independent emit and is
+ * compared as a set member, not an order.
  */
 const LIFECYCLE_PROBES = {
   'claude-hooks-lifecycle': {
@@ -179,8 +180,10 @@ async function inventoryFor(fixture) {
         [...lifecycle.events].sort(),
         `${fixture}: every handler wrote exactly one line`,
       )
-      // Only the partial orders the host guarantees are asserted; the child's
-      // end and the root's disposal may interleave.
+      // Only the two partial orders S9 claims are asserted: the root chain
+      // (SessionStart/Stop/SessionEnd) and the kernel-enforced subagent pair
+      // (see the note above). The child's end and the root's disposal may
+      // interleave.
       const position = (name) => observed.events.indexOf(name)
       const before = (first, second) =>
         assert.ok(
