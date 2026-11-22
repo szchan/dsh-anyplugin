@@ -3331,13 +3331,19 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   node scripts/fetch-harness.mjs 0.2.2-rc.5
   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
     node spikes/s23-unprobed-events/run.mjs
+  # builds a partial tree (every package but the fork provider) and asserts exit 2
+  DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+    node spikes/s23-unprobed-events/check-partial-harness.mjs
   ```
 
   The spike asserts that the resolved harness version equals
   `DSH_HARNESS_VERSION`; a wrong tree — including the Desktop `0.2.2-rc.2`
   fallback when `DSH_HARNESS_DIR` is absent — exits 2 and names both versions.
-  A bare or incomplete harness also exits 2 instead of printing `0/0 passed`,
-  and a run in which zero of the six fired exits 1 even if every probe "ran".
+  A bare or **partial** tree is the same class of failure as a wrong pin: both
+  exit 2, and a 0-check run is never allowed to look like an ordinary pass or
+  red; a partial tree names every missing package (for example
+  `dsh-subagent-fork-in-process`). A run that actually boots the pin can still
+  exit 1 — for a failed probe, or when zero of the six fired.
   S23 is
   probe-only in this change and is not wired into `verify.yml` (no
   `package.json` or workflow edit); `spikes/s23-unprobed-events/out/` is

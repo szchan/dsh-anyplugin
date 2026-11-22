@@ -572,8 +572,10 @@ for (const name of order) {
 const fired = order.filter((name) => events.get(name)?.fired === true)
 
 const passed = checks.filter((entry) => entry.ok).length
-console.log(`\n${passed}/${checks.length} checks passed${skipped.length > 0 ? `, ${skipped.length} skipped` : ''}; ${fired.length}/${order.length} events fired`)
-if (checks.length === 0) console.error('s23: no checks ran; fetch the pin with scripts/fetch-harness.mjs and pass that tree')
+if (checks.length === 0) console.log(`\n0 checks ran${skipped.length > 0 ? `, ${skipped.length} skipped` : ''}; ${fired.length}/${order.length} events fired`)
+else console.log(`\n${passed}/${checks.length} checks passed${skipped.length > 0 ? `, ${skipped.length} skipped` : ''}; ${fired.length}/${order.length} events fired`)
+if (missing.length > 0) console.error(`s23: harness incomplete: missing ${missing.join(', ')}; fetch the pin with scripts/fetch-harness.mjs and pass that tree`)
+else if (checks.length === 0) console.error('s23: no checks ran; fetch the pin with scripts/fetch-harness.mjs and pass that tree')
 else if (skipped.length > 0) console.error(`s23: ${skipped.length} required probe(s) skipped; a vacuous run is a failure, not a pass`)
 else if (fired.length === 0) console.error('s23: zero of six events fired; the spike is red by definition')
 writeFileSync(join(OUT, 'report.json'), `${JSON.stringify({
@@ -587,4 +589,4 @@ writeFileSync(join(OUT, 'report.json'), `${JSON.stringify({
   results,
 }, null, 2)}\n`)
 console.log(`wrote ${join(OUT, 'report.json')}`)
-process.exit(checks.length === 0 || skipped.length > 0 || fired.length === 0 || passed !== checks.length ? 1 : 0)
+process.exit(checks.length === 0 || missing.length > 0 || skipped.length > 0 ? 2 : fired.length === 0 || passed !== checks.length ? 1 : 0)
