@@ -13,7 +13,8 @@
 //   node scripts/check-audit.mjs
 //   node scripts/check-audit.mjs --json
 //   node scripts/check-audit.mjs --root <dir>   # tests use a throwaway root
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,6 +28,7 @@ const root = rootFlag >= 0 ? resolve(argv[rootFlag + 1]) : resolve(fileURLToPath
 const auditPath = join(root, 'docs', 'AUDIT.md')
 const reportsDir = join(root, 'docs', 'audits')
 const asJson = argv.includes('--json')
+const update = argv.includes('--update')
 
 const MECHANISMS = new Set(['hook', 'ci', 'lint', 'skill', 'reviewer', 'docs', 'schedule'])
 const STATUSES = new Set(['enforced', 'reviewed', 'documented', 'dormant', 'open', 'retired'])
@@ -106,11 +108,70 @@ for (const entry of ledger.entries ?? []) {
   }
   const machineProof = entry.status === 'enforced' || entry.status === 'dormant'
   if (machineProof && entry.proof === undefined) fail(`${where}: status ${entry.status} needs a proof file`)
-  if (entry.status === 'enforced' && !MACHINE.has(entry.mechanism)) {
-    fail(`${where}: enforced needs a machine mechanism (hook/ci/lint), not ${entry.mechanism}`)
+  if (machineProof && entry.proof !== undefined && !/\.test\.mjs$/u.test(String(entry.proof).split('#')[0])) {
+    fail(`${where}: proof must be a .test.mjs file, not ${entry.proof}`)
+  }
+  if (machineProof && !MACHINE.has(entry.mechanism)) {
+    fail(`${where}: ${entry.status} needs a machine mechanism (hook/ci/lint), not ${entry.mechanism}`)
   }
   if (entry.status === 'open' && !/#\d+|https?:\/\//u.test(String(entry.tracking ?? ''))) {
     fail(`${where}: status open needs tracking (#issue or URL)`)
+  }
+}
+
+// The ledger is append-only. A deleted finding is how a recurring mistake
+// quietly leaves the process: the report that named it still exists, but the
+// next pass no longer sees it. The lock pins the identity fields of every
+// finding; status and rationale may move, but a new finding needs --update and
+// an existing one is retired, not renamed.
+const hashEntry = (entry) =>
+  createHash('sha256').update(JSON.stringify([entry.id, entry.title, entry.mechanism, entry.artifact])).digest('hex')
+const lockPath = join(root, 'docs', 'audit.lock.json')
+let lock = null
+if (existsSync(lockPath)) {
+  try {
+    lock = JSON.parse(readFileSync(lockPath, 'utf8'))
+  } catch (error) {
+    fail(`docs/audit.lock.json is not JSON: ${String(error).slice(0, 200)}`)
+  }
+}
+if (lock !== null && lock.version !== 1) fail('docs/audit.lock.json version must be 1')
+const locked = lock?.entries ?? {}
+if (update) {
+  if (problems.length > 0) {
+    for (const problem of problems) console.error(`audit: ${problem}`)
+    console.error('audit: refusing --update while the ledger has errors')
+    process.exit(1)
+  }
+  for (const [id, hash] of Object.entries(locked)) {
+    const entry = ledger.entries.find((candidate) => candidate.id === id)
+    if (entry === undefined) {
+      console.error(`audit: refusing --update: ${id} is locked but missing from the ledger`)
+      process.exit(1)
+    }
+    if (hashEntry(entry) !== hash) {
+      console.error(`audit: refusing --update: ${id} changed its title/mechanism/artifact; retire it and add a new finding`)
+      process.exit(1)
+    }
+  }
+  const entries = { ...locked }
+  for (const entry of ledger.entries) entries[entry.id] = hashEntry(entry)
+  const sorted = Object.fromEntries(Object.keys(entries).sort((a, b) => a.localeCompare(b, 'en')).map((id) => [id, entries[id]]))
+  writeFileSync(lockPath, `${JSON.stringify({ version: 1, entries: sorted }, null, 2)}\n`)
+  console.log(`audit: lock updated (${Object.keys(sorted).length} findings)`)
+} else if (lock === null) {
+  fail('docs/audit.lock.json is missing; run check-audit --update')
+} else {
+  for (const [id, hash] of Object.entries(locked)) {
+    const entry = ledger.entries.find((candidate) => candidate.id === id)
+    if (entry === undefined) {
+      fail(`${id} is locked but missing from the ledger; findings are retired, not deleted`)
+    } else if (hashEntry(entry) !== hash) {
+      fail(`${id} changed its title/mechanism/artifact; retire it and add a new finding, then --update`)
+    }
+  }
+  for (const entry of ledger.entries) {
+    if (locked[entry.id] === undefined) fail(`${entry.id} is new; run check-audit --update`)
   }
 }
 

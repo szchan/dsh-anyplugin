@@ -120,7 +120,10 @@ Edit the JSON block in `docs/AUDIT.md` between the audit-ledger markers:
   verdicts; a schedule that only reports is reviewed by the daily pass);
   `documented` means prose only; `dormant` means implemented and tested but
   not installed (F1);
-- move `updated` to today; never delete an entry (retire it with the reason).
+- move `updated` to today; never delete an entry (retire it with the reason);
+- a new finding needs `node scripts/check-audit.mjs --update`, which also
+  refreshes `docs/audit.lock.json`; a locked title/mechanism/artifact cannot
+  change in place.
 
 ```bash
 npm run check:audit

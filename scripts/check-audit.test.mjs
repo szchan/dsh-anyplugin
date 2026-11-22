@@ -1,7 +1,8 @@
 // The audit gate is what keeps the ledger from becoming a diary: a deleted
 // artifact, an unprovable `enforced`, or an unreadable report must fail. Each
 // case below is a way the first version passed something it should have refused.
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -46,7 +47,10 @@ const baseEntry = (overrides = {}) => ({
   ...overrides,
 })
 
-function makeRoot(entries, { updated = '2026-11-22', reports = { '2026-11-22.md': report } } = {}) {
+const hashEntry = (entry) =>
+  createHash('sha256').update(JSON.stringify([entry.id, entry.title, entry.mechanism, entry.artifact])).digest('hex')
+
+function makeRoot(entries, { updated = '2026-11-22', reports = { '2026-11-22.md': report }, lockEntries = entries } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'audit-gate-'))
   roots.push(root)
   mkdirSync(join(root, 'docs', 'audits'), { recursive: true })
@@ -54,6 +58,8 @@ function makeRoot(entries, { updated = '2026-11-22', reports = { '2026-11-22.md'
   writeFileSync(join(root, 'gate.test.mjs'), '// test\n')
   writeFileSync(join(root, 'other.mjs'), '// other\n')
   const ledger = { version: 1, updated, entries }
+  const lock = Object.fromEntries(lockEntries.map((entry) => [entry.id, hashEntry(entry)]))
+  writeFileSync(join(root, 'docs', 'audit.lock.json'), `${JSON.stringify({ version: 1, entries: lock }, null, 2)}\n`)
   writeFileSync(
     join(root, 'docs', 'AUDIT.md'),
     `# Audit\n\n<!-- audit-ledger:start -->\n\`\`\`json\n${JSON.stringify(ledger, null, 2)}\n\`\`\`\n<!-- audit-ledger:end -->\n`,
@@ -125,6 +131,58 @@ test('## Open must list every open finding', () => {
   const result = run(makeRoot([baseEntry({ status: 'open', proof: undefined, tracking: '#1' })]))
   assert.equal(result.status, 1)
   assert.match(result.stderr, /F1 is open but missing from ## Open/u)
+})
+
+test('a dormant mechanism still has to be a machine mechanism', () => {
+  const result = run(makeRoot([baseEntry({ status: 'dormant', mechanism: 'docs' })]))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /dormant needs a machine mechanism/u)
+})
+
+test('a proof must be a test file, not any file', () => {
+  const result = run(makeRoot([baseEntry({ proof: 'other.mjs' })]))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /proof must be a \.test\.mjs file/u)
+})
+
+test('a deleted finding is refused', () => {
+  const first = baseEntry()
+  const gone = baseEntry({ id: 'F2', title: 'a second finding' })
+  const result = run(makeRoot([first], { lockEntries: [first, gone] }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /F2 is locked but missing/u)
+})
+
+test('a new finding needs --update', () => {
+  const first = baseEntry()
+  const second = baseEntry({ id: 'F2', title: 'a second finding' })
+  const result = run(makeRoot([first, second], { lockEntries: [first] }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /F2 is new; run check-audit --update/u)
+})
+
+test('--update adds a new finding', () => {
+  const first = baseEntry()
+  const second = baseEntry({ id: 'F2', title: 'a second finding' })
+  const root = makeRoot([first, second], { lockEntries: [first] })
+  const updated = run(root, '--update')
+  assert.equal(updated.status, 0, updated.stderr)
+  const result = run(root)
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test('a finding cannot be renamed in place', () => {
+  const first = baseEntry()
+  const result = run(makeRoot([{ ...first, title: 'a different finding' }], { lockEntries: [first] }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /F1 changed its title\/mechanism\/artifact/u)
+})
+
+test('verify runs check:audit before the test suite', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const verify = pkg.scripts.verify
+  assert.match(verify, /check:audit/u)
+  assert.ok(verify.indexOf('check:audit') < verify.indexOf('npm test'), 'check:audit must run before npm test')
 })
 
 test('a section inside a fence is not a section', () => {

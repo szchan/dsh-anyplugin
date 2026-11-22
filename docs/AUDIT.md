@@ -234,10 +234,14 @@ if it changes who may merge.
 - the ledger block parses, has version 1, and every entry has the required
   fields and a known mechanism/status;
 - every `artifact`/`proof` path is a **file** (an anchored path checks the
-  file, not the anchor), and `proof` is not the artifact itself;
-- `enforced` has a proof file and a machine mechanism (hook/ci/lint);
-  `dormant` has the same proof but says it is not installed; `open` has a
-  tracking issue; ids are unique and `F<number>`; docs cannot be `enforced`;
+  file, not the anchor), `proof` is not the artifact itself, and a
+  `enforced`/`dormant` proof is a `.test.mjs` file;
+- `enforced` has a machine mechanism (hook/ci/lint); `dormant` has the same
+  proof but says it is not installed; `open` has a tracking issue; ids are
+  unique and `F<number>`; docs cannot be `enforced`;
+- the identity fields (`id`, `title`, `mechanism`, `artifact`) are pinned in
+  `docs/audit.lock.json`: a new finding needs `--update`, and a locked finding
+  cannot be deleted or renamed in place (retire it and add a new one);
 - at least one report exists (`YYYY-MM-DD.md` or `rig-YYYY-MM-DD.md`), each
   required heading is a real heading with a body (not inside a fence), every
   finding id in a report is in the ledger, no report is dated in the future, and
@@ -352,7 +356,7 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "artifact": "docs/AUDIT.md#reviewer-brief-claims",
       "rationale": "The recurring shapes are 'refuses before apply' where the code falls through, and accepted fields (updatedInput, toolResults, matcher, next(e)) that are not forwarded. Both are cheap to see in review and expensive to find in production, so the brief names them explicitly.",
       "evidence": [
-        "PR #70 mods next(e)",
+        "2026-11-22 evidence: 36 tool errors across 121 sessions",
         "PR #120 mods install",
         "2026-11-22 evidence: 33 tool errors across 118 sessions"
       ]
@@ -374,11 +378,11 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
     },
     {
       "id": "F8",
-      "title": "A fixture is deleted or weakened to make a test pass",
+      "title": "A fixture row or fixture directory disappears from the ratchet",
       "mechanism": "ci",
       "status": "enforced",
       "artifact": "scripts/check-architecture.mjs",
-      "rationale": "R14 is a fixture ratchet: the set of fixtures and their counts may grow, not shrink. Without it a failing diff can be silenced by removing the case instead of fixing the behavior.",
+      "rationale": "R14 rejects an orphan fixture directory and a fixture row whose directory is missing. It does not count fixtures, so deleting a fixture and its row together would pass; F8 covers the orphan/missing-row half and does not claim a full count ratchet.",
       "evidence": [
         "check-architecture R14",
         "fixture-ratchet.mjs counter-examples",
@@ -388,11 +392,11 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
     },
     {
       "id": "F9",
-      "title": "A fidelity claim cites a pin no one can resolve",
+      "title": "A fidelity claim does not name a pin",
       "mechanism": "ci",
       "status": "enforced",
       "artifact": "scripts/check-architecture.mjs",
-      "rationale": "R12 requires a resolvable claude-code.d.ts:<line> citation; '100 %' against an unnamed pin is not a claim. The gate keeps every citation honest against the fetched type surface.",
+      "rationale": "R12 requires the literal claude-code.d.ts:<line> (pin <version>) label on the cited line. It checks that the pin is named, not that the line resolves or that the fetched type surface contains it, so an invented line with a real pin still passes; F9 records the naming half.",
       "evidence": [
         "check-architecture R12",
         "architecture-pin-labels.test.mjs pin cases"
@@ -446,7 +450,7 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "skill",
       "status": "documented",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "86 % of 25,417 bash calls in the baseline prefix cd <dir> && although the harness has workdir. The skill tells the daily pass and workers to pass workdir instead; this is documentation because a hook cannot see the intent behind a cd.",
+      "rationale": "86 % of 25,772 bash calls in the baseline prefix cd <dir> && although the harness has workdir. The skill tells the daily pass and workers to pass workdir instead; this is documentation because a hook cannot see the intent behind a cd.",
       "evidence": [
         "2026-11-22 evidence: 22,111/25,772 cd prefixes; 1,272 workdir"
       ]
@@ -457,7 +461,7 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "skill",
       "status": "documented",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "937 npm run verify vs 313 narrow check runs in the window. The skill gives the narrow-first order (check:decisions, check:arch, a single test file) and keeps verify for the pre-push gate; a script cannot know whether the edit touched a gate.",
+      "rationale": "950 npm run verify vs 325 narrow check runs in the window. The skill gives the narrow-first order (check:decisions, check:arch, a single test file) and keeps verify for the pre-push gate; a script cannot know whether the edit touched a gate.",
       "evidence": [
         "2026-11-22 evidence: 950 verify, 325 check:*",
         "AGENTS.md §5 verify is the gate"
@@ -469,9 +473,9 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "skill",
       "status": "documented",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "sed 5,870 and grep 4,878 calls against read 1,103. The shell forms evade the file-access sandbox and the read tool's line discipline, and they cost more tokens for the same context. The skill states the tool mapping.",
+      "rationale": "sed 5,966 and grep 4,951 calls against read 1,148. The shell forms evade the file-access sandbox and the read tool line discipline, and they cost more tokens for the same context. The skill states the tool mapping.",
       "evidence": [
-        "2026-11-22 evidence: sed 5,962, grep 4,950, read 1,148"
+        "2026-11-22 evidence: sed 5,966, grep 4,951, read 1,148"
       ]
     },
     {
@@ -506,9 +510,9 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "reviewer",
       "status": "reviewed",
       "artifact": "docs/AUDIT.md",
-      "rationale": "The largest root session in the 14-day window ran 2,469 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss.",
+      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss.",
       "evidence": [
-        "2026-11-22 evidence: root session-522222a9 2,469 tools, next child 1,073",
+        "2026-11-22 evidence: root session-522222a9 2,470 tools, next child 1,073",
         "docs/AUDIT.md §7 role caps"
       ]
     }
