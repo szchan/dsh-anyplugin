@@ -53,7 +53,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
       error-shaped `turn/end` plus `agent/error`). Outcome: a fixture handler
       writes a line on one real turn, `WorktreeRemove` fires once per removal
       from its two emissions, and every absent classic field is a reported
-      gap, not an invented value (ticket TBD).
+      gap, not an invented value (#197).
 - [ ] `dsh-shell-env` — an ordered external-PATH contribution for plugin
       `bin/`. Anchor (S19, pinned 0.2.2-rc.5 and 0.2.2-rc.2): `register()` throws
       `bash env contributor "X" declared invalid key "PATH"` at
