@@ -63,8 +63,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
 ## Later
 
 - [ ] **Mod host** (D3, ARCHITECTURE §7), in dependency order: static scanner →
-      chain engine → element runtime → the remaining namespace bridges → type
-      generation from the pinned `claude-code.d.ts`.
+      chain engine → element runtime → the remaining namespace bridges.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
@@ -72,6 +71,19 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- Mod type surface (ticket #144): `scripts/gen-mod-types.mjs` reads the pinned
+  `mods/types/claude-code.d.ts` and `fixtures/mods/coverage.json` (D55) and
+  writes `packages/dsh-anyplugin-mod-host/types/mod.d.ts` — the 9 served
+  namespaces and their 26 members with the pin's own signature text (so
+  `$.session.cwd` is `() => Promise<string>`, #138), and the 7 refused members
+  as one closed `ERR_MOD_HOST_*` union. It imports the named helper types from
+  the pin instead of vendoring them, names no absent member, and fails naming
+  the member when a signature cannot be copied rather than guessing one. The
+  generator verifies the ledger's pin and the declaration's sha256 before
+  writing; `types.test.mjs` regenerates into a temp directory, compares (never
+  rewrites), and asserts the served set, the absent set and the refused union
+  against the ledger. Two runs are byte-identical. The file is the served
+  subset of `$`, not a promise about the pin's whole surface.
 - Mod coverage ledger (ticket #130): `scripts/mod-coverage.mjs` scans the pinned
   `mods/types/claude-code.d.ts` by declaration and classifies every declared
   symbol against the runtime `$` table as `served`, `refused` (a typed
@@ -88,7 +100,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `bridge.ts` reddens it. Render sites are 1 served / 19 planned (`Pane` on
   terminal only). The ledger is a denominator, not a fidelity claim. The rest of
   the **Mod host** line (static scanner, chain engine, element runtime, remaining
-  bridges, type generation) is still Later.
+  bridges) is still Later.
 - Codex install end to end (ticket #101): `compile.ts` resolves a lock row's
   `dialect` through a two-entry registry (`claude-code` → `readClaudePlugin` +
   `claude-code@2.1.329`; `codex` → `readCodexPlugin` +

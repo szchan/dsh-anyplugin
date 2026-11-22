@@ -193,7 +193,7 @@ class Scanner {
 const closerOf = (open) => (open === '(' ? ')' : open === '[' ? ']' : open === '{' ? '}' : undefined)
 
 /** The index of the bracket that closes `start`, or -1. Comments/strings skipped. */
-function matchingIndex(text, start) {
+export function matchingIndex(text, start) {
   const open = text[start]
   const close = closerOf(open)
   if (close === undefined) return -1
@@ -447,7 +447,7 @@ function declaredType(name) {
   return `{${declarationText.slice(declaration.bodyStart, declaration.bodyEnd)}}`
 }
 
-function parseMembers(typeText) {
+export function parseMembers(typeText) {
   const text = typeText.trim()
   if (!text.startsWith('{')) return []
   const scanner = new Scanner(text)
@@ -476,6 +476,7 @@ function parseMembers(typeText) {
 
     let readonly = false
     const save = scanner.pos
+    const memberStart = save
     const modifier = scanner.readIdentifier()
     if (modifier === 'readonly') {
       readonly = true
@@ -512,7 +513,9 @@ function parseMembers(typeText) {
       // Method signature `name<T>(...): R` with no property colon.
       if (scanner.peek() === '(' || scanner.peek() === '<') {
         scanner.readTypeText()
-        members.push({ name, kind: 'method', type: '', callable: true, readonly, optional })
+        const end = scanner.peek() === ';' ? scanner.pos + 1 : scanner.pos
+        const source = text.slice(memberStart, end).trim()
+        members.push({ name, kind: 'method', type: '', source, callable: true, readonly, optional })
         if (scanner.peek() === ';') scanner.advance()
         continue
       }
@@ -522,7 +525,9 @@ function parseMembers(typeText) {
     }
     scanner.advance() // :
     const type = scanner.readTypeText()
-    members.push({ name, kind: 'property', type, callable: undefined, readonly, optional })
+    const end = scanner.peek() === ';' ? scanner.pos + 1 : scanner.pos
+    const source = text.slice(memberStart, end).trim()
+    members.push({ name, kind: 'property', type, source, callable: undefined, readonly, optional })
     if (scanner.peek() === ';') scanner.advance()
   }
 
@@ -1309,6 +1314,26 @@ export function diffLedger(committed, live) {
     }
   }
   return changes
+}
+
+/**
+ * Index `text` as the pinned declaration and return the accessors the ledger
+ * uses. `gen-mod-types.mjs` calls this so the signatures it copies come from
+ * the same scanner that classifies the ledger — the generator must not grow a
+ * second parser that can disagree with the coverage math.
+ */
+export function parseDeclaration(text) {
+  declarationText = text
+  declarations = indexDeclarations(text)
+  return {
+    text,
+    declaration: (name) => declarations.get(name),
+    declaredType,
+    parseMembers,
+    memberType,
+    resolveIndexedAccess,
+    isCallable,
+  }
 }
 
 export function readDeclaration() {
