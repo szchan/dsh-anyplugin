@@ -13,10 +13,18 @@
 // That the profile copy is what runs is asserted, not assumed: a
 // `module.registerHooks` recorder captures the resolution of the bare entry
 // name, and the captured URL must be the extracted tarball under the scratch
-// profile, never this checkout. The last test below is the control for that
-// assertion: it boots the same profile with `node_modules/dsh-anyplugin`
-// symlinked to the checkout and requires the recorder to see the checkout URL,
-// so a vacuous "every URL is somewhere" check cannot pass.
+// profile, never this checkout. The boundary-control test below is the control
+// for that assertion: it boots the same profile with
+// `node_modules/dsh-anyplugin` symlinked to the checkout and requires the
+// recorder to see the checkout URL, so a vacuous "every URL is somewhere"
+// check cannot pass. The pack-gate test below runs the three ticket mutations
+// against the npm-installed tarball and requires three distinct messages.
+//
+// The mount is shared with `scripts/profile-boot.mjs`, which the pack gate
+// (`scripts/check-pack.mjs`, S20, #137) runs against the npm-installed tarball
+// in a scratch profile. `initProfile` → profile manifest → `loadProfile` →
+// `readProfilePatches` → `boot` is implemented once, there, so this test and
+// the pack gate cannot drift into two different boots.
 //
 // Two host seams are named here rather than assumed:
 //
@@ -44,19 +52,19 @@
 //
 // Node floor: `module.registerHooks` landed in 22.15. The published engine
 // floor stays 22.14 (it describes the package, not this test); here the API is
-// imported dynamically and the five tests below skip with a reason naming the
+// imported dynamically and the six tests below skip with a reason naming the
 // version when it is absent, so an older Node reports skips instead of a
 // link-time failure.
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test, { after } from 'node:test'
 
+import { expectMutation, mountProfile } from '../../../scripts/profile-boot.mjs'
 import { harnessSkipReason, isCI, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -189,14 +197,7 @@ async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false
 
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
-  const logs = []
-  const moduleUrls = []
-  const groupUrls = []
   let ctx
-  let hook
-  let hostPath = 'Unsupported'
-  let pluginPackagesCapable = false
-  let scopeLink = null
 
   try {
     const packageDir = join(profileDir, 'node_modules', 'dsh-anyplugin')
@@ -213,102 +214,29 @@ async function bootProfile(appBoot, SkillRegistry, mode, { symlinkToRepo = false
 
     const installAnchor = join(harness.installRoot, 'package.json')
     const profile = appBoot.loadProfile('dsh', PROFILE_NAME, installAnchor, home)
-    // The launcher writes the profile root config before boot: the include
-    // reads this file, and the bundle rows reach it through `patches`.
-    const rootConfig = join(profile.dir, 'cordis.yml')
-    writeFileSync(rootConfig, '# dsh profile root — an empty entry list.\n[]\n')
-
-    const resolution = await appBoot.createRuntimeResolution({ installAnchor, profile, home })
-
-    // Whether the addon can initialize is measured, not inferred from the
-    // version. If it can, the boot below must use it and the positive test
-    // asserts the effect; if it cannot, the fallback is allowed locally and
-    // is a failure in CI.
-    const requireFromInstall = createRequire(installAnchor)
-    try {
-      const addon = requireFromInstall('node-addon-require-builtin')
-      for (const id of [
-        'internal/modules/esm/loader',
-        'internal/modules/cjs/loader',
-        'internal/modules/helpers',
-        'internal/modules/esm/utils',
-        'internal/modules/esm/resolve',
-      ]) {
-        addon.requireBuiltin(id)
-      }
-      pluginPackagesCapable = true
-    } catch {
-      // The known Node loader patch failure; the fallback below has to stand
-      // in and the assertions decide whether that is allowed here.
-    }
-    const profileContext = {
-      name: PROFILE_NAME,
-      dir: profile.dir,
-      patchPath: join(profile.dir, 'cordis.patch.yml'),
+    // The mount is shared with the pack gate's npm-installed profile boot
+    // (`scripts/profile-boot.mjs`), so S17 and #137 prove the same boot.
+    const mounted = await mountProfile({
+      appBoot,
+      registerHooks,
+      SkillRegistry,
+      harnessDir: harness.harnessDir,
       installAnchor,
-      startedBundles: profile.layers.map((layer) => layer.packageName),
-      cwd: repoRoot,
+      profile,
       home,
-      overlays: [],
-      telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED ?? '',
-    }
-    const patches = appBoot.readProfilePatches('dsh', profileContext, profile)
-
-    hook = registerHooks({
-      resolve(specifier, context, nextResolve) {
-        const result = nextResolve(specifier, context)
-        if (specifier === 'dsh-anyplugin') moduleUrls.push(result.url)
-        if (specifier === '@deepseek-ai/cordis-plugin-group') groupUrls.push(result.url)
-        return result
-      },
+      cwd: repoRoot,
     })
-
-    ctx = await appBoot.boot('dsh', rootConfig, patches, async (hostCtx) => {
-      hostCtx.provide('profileContext', profileContext)
-      hostCtx.logger.exporter({
-        levels: { default: 4 },
-        export: ({ type, name, args }) => logs.push({ type, name, args: args.map(String) }),
-      })
-      try {
-        // The host's installation-path interception: resolves the bundle's
-        // `@deepseek-ai/*` imports from the installation instead of the profile.
-        await hostCtx.plugin(appBoot.PluginPackages, { resolution })
-        hostPath = 'PluginPackages'
-      } catch (error) {
-        assert.match(
-          String(error?.message ?? error),
-          /node-addon-require-builtin unsupported/,
-          `PluginPackages failed for a reason other than the known Node loader surface: ${error}`,
-        )
-        hostPath = 'scope-link (PluginPackages unsupported)'
-        const link = join(profileDir, 'node_modules', '@deepseek-ai')
-        try {
-          symlinkSync(join(harness.harnessDir), link, 'dir')
-        } catch (linkError) {
-          if (linkError?.code !== 'EEXIST') throw linkError
-        }
-        scopeLink = link
-      }
-      await hostCtx.plugin(SkillRegistry, {})
-    })
-    hook.deregister()
-    hook = undefined
+    ctx = mounted.ctx
     return {
-      ctx,
-      logs,
-      moduleUrls,
-      groupUrls,
+      ...mounted,
       profileDir,
       packageDir,
       installsPath,
       home,
       scratch,
-      hostPath,
-      pluginPackagesCapable,
-      scopeLink,
+      profile,
     }
   } catch (error) {
-    if (hook !== undefined) hook.deregister()
     if (previousHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousHome
     if (ctx !== undefined) {
@@ -514,6 +442,26 @@ test('boundary: the URL assertion separates the profile copy from the checkout',
       }
     },
     { symlinkToRepo: true },
+  )
+})
+
+// The pack gate's subject is the artifact, so the ticket's three mutations are
+// kept as tests: each must redden for its own reason, and the three reasons must
+// be distinguishable. `expectMutation` boots the tarball through the npm-
+// installed profile path the gate uses (`scripts/profile-boot.mjs`), not this
+// test's extraction path, so a passing mutation here is evidence about S20.
+test('pack: the three ticket mutations redden with distinct messages', options, async () => {
+  const tarball = packedTarball()
+  const messages = []
+  for (const mutation of ['no-patch', 'no-bundle', 'checkout']) {
+    const result = await expectMutation({ tarball, mutation })
+    assert.equal(result.reddened, true)
+    messages.push(result.message)
+  }
+  assert.equal(
+    new Set(messages).size,
+    3,
+    `each mutation must fail for its own reason:\n${messages.join('\n')}`,
   )
 })
 
