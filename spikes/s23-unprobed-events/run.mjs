@@ -1,0 +1,509 @@
+// S23: do the six events S9 left "unprobed" fire as host events a listener can
+// open, and what payload does each carry?
+//
+// S9 recorded TaskCreated, TaskCompleted, TeammateIdle, WorktreeCreate,
+// WorktreeRemove and StopFailure as plausible-but-unprobed. A source line is not
+// evidence (D19/D20): a row is "fired" only when a listener registered from this
+// spike received the payload in this run. Everything else is "not-fired", with
+// what was tried and the cheapest next attempt written down.
+//
+// The boot graph is S9's (see spikes/s9-host-events/run.mjs), plus the services
+// the six events live behind: the JSONL persistence provider (TeamJournal's
+// flush check), the subagent registry (Team task ownership), Agent Teams, and
+// the worktree stack. `dsh-sandbox` is mounted for real; `workspaceRegistry`
+// and `sessionQuery` are one-method doubles because dsh-workspace and
+// dsh-session-query are not in the fetched harness union (scripts/fetch-harness.mjs).
+// The reclamation side only reads `archivedSessionIds` and `listSessions`.
+//
+// Run:
+//   node scripts/fetch-harness.mjs 0.2.2-rc.5
+//   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+//     node spikes/s23-unprobed-events/run.mjs
+//
+// `out/` is gitignored. A bare or incomplete harness is a failure, not a green
+// 0/0 run; zero of six fired also exits non-zero even if every probe "ran".
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const REPO = resolve(HERE, '..', '..')
+const VERSION = process.env.DSH_HARNESS_VERSION?.trim() || '0.2.2-rc.5'
+const OUT = join(HERE, 'out')
+
+// S9's minimal turn graph.
+const REQUIRED = ['cordis', 'dsh-session', 'dsh-tools', 'dsh-system-prompt', 'dsh-agent', 'dsh-llm']
+const FULL_TURN = [...REQUIRED, 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-session-projection']
+// Services the unprobed events live behind. All are in the fetched union.
+const S23_PACKAGES = [
+  'dsh-session-persistence-jsonl',
+  'dsh-subagent',
+  'dsh-agent-team',
+  'dsh-fs-local',
+  'dsh-subprocess-local',
+  'dsh-sandbox',
+  'dsh-sandbox-policy',
+  'dsh-working-directory',
+  'dsh-experimental-worktree',
+]
+
+const checks = []
+const skipped = []
+const check = (name, ok, detail) => {
+  checks.push({ name, ok, detail })
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail === undefined ? '' : ` — ${detail}`}`)
+}
+const skip = (name, why) => {
+  skipped.push({ name, why, required: true })
+  console.log(`SKIP  ${name} — ${why}`)
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const until = async (fn, timeoutMs = 3000, label = 'condition') => {
+  const start = Date.now()
+  for (;;) {
+    const value = fn()
+    if (value) return value
+    if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${label}`)
+    await sleep(10)
+  }
+}
+const keyList = (value) => (value === undefined || value === null ? [] : Object.keys(value))
+
+/** Locate the @deepseek-ai package directory, mirroring harness.ts's shapes. */
+function locateHarness() {
+  const named = process.env.DSH_HARNESS_DIR?.trim()
+  const installed = process.env.DSH_INSTALL_DIR?.trim()
+  const roots = []
+  if (named) roots.push([resolve(named), 'DSH_HARNESS_DIR'])
+  if (installed) roots.push([resolve(installed), 'DSH_INSTALL_DIR'])
+  if (named === undefined && installed === undefined) roots.push([join(REPO, '.harness', VERSION), '.harness'])
+  for (const [root, source] of roots) {
+    const candidates = [join(root, 'node_modules', '@deepseek-ai'), join(root, '@deepseek-ai'), root, dirname(root)]
+    for (const candidate of candidates) if (REQUIRED.every((name) => existsSync(join(candidate, name, 'package.json')))) return { dir: candidate, source }
+  }
+  console.error(`no usable harness: ${roots.map(([r, s]) => `${s}=${r}`).join(', ')}`)
+  process.exit(2)
+}
+
+const { dir: HARNESS, source: HARNESS_SOURCE } = locateHarness()
+const version = () => {
+  try {
+    return JSON.parse(readFileSync(join(HARNESS, 'dsh-skill', 'package.json'), 'utf8')).version
+  } catch {
+    return 'unknown'
+  }
+}
+const load = (name) => import(pathToFileURL(name.endsWith('.js') ? join(HARNESS, name) : join(HARNESS, name, 'lib', 'index.js')).href)
+const has = (name) => existsSync(join(HARNESS, name, 'package.json'))
+
+console.log(`harness: ${HARNESS} (${HARNESS_SOURCE}, ${version()})`)
+
+// ---------------------------------------------------------------------------
+// Fixture repo for the worktree probes
+// ---------------------------------------------------------------------------
+
+function makeRepo(root) {
+  const repo = join(root, 'repo')
+  rmSync(repo, { recursive: true, force: true })
+  mkdirSync(repo, { recursive: true })
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+    if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed (${result.status}): ${result.stderr}`)
+    return result.stdout.trim()
+  }
+  git('init', '-q')
+  git('config', 'user.email', 's23@example.invalid')
+  git('config', 'user.name', 'S23 probe')
+  writeFileSync(join(repo, 'README.md'), '# S23 probe repository\n')
+  git('add', 'README.md')
+  git('commit', '-qm', 's23 probe base')
+  return { repo, git }
+}
+
+// ---------------------------------------------------------------------------
+// Boot: S9's turn graph plus the team/worktree stack
+// ---------------------------------------------------------------------------
+
+function fakeAdapterClass(LlmAdapter) {
+  return class FakeAdapter extends LlmAdapter {
+    constructor(script) {
+      super()
+      this.script = script
+      this.calls = []
+    }
+    async resolveModel(provider, model) {
+      return { provider, id: model, name: model, context: { contextWindow: 8192 }, defaultMaxTokens: 1024 }
+    }
+    async *stream(options) {
+      this.calls.push({
+        messages: options.messages.map((message) => ({ role: message.role, content: message.content })),
+        tools: (options.tools ?? []).map((tool) => tool.name),
+        purpose: options.purpose,
+      })
+      for (const chunk of this.script(this.calls.length, options)) yield chunk
+    }
+  }
+}
+
+const textChunks = (text) => [
+  { type: 'block-start', index: 0, blockType: 'text' },
+  { type: 'text-delta', index: 0, text },
+  { type: 'block-end', index: 0, block: { type: 'text', text } },
+  { type: 'finish', reason: { kind: 'stop' } },
+]
+
+// `dsh-agent-loop` reads `finish.kind` (lib/index.js:936); a bare string reason
+// is not an error at this pin. The failure object is what `LlmError.fromFailure`
+// consumes, so it must carry a non-empty message and code.
+const failingChunks = (text) => [
+  { type: 'block-start', index: 0, blockType: 'text' },
+  { type: 'text-delta', index: 0, text },
+  { type: 'block-end', index: 0, block: { type: 'text', text } },
+  { type: 'finish', reason: { kind: 'error', failure: { code: 'PROBE_FAILURE', message: text } } },
+]
+
+async function boot({ repo, sessionsRoot, fakeScript }) {
+  const { Context } = await load('cordis/lib/index.js')
+  const SessionStore = (await load('dsh-session/lib/index.js')).default
+  const SessionProjections = (await load('dsh-session-projection/lib/index.js')).default
+  const SystemPrompt = (await load('dsh-system-prompt/lib/index.js')).default
+  const ToolsService = (await load('dsh-tools/lib/index.js')).default
+  const AgentRegistry = (await load('dsh-agent/lib/index.js')).default
+  const { default: LlmRuntime, LlmAdapter, createUserMessage } = await load('dsh-llm/lib/index.js')
+  const AgentLoop = (await load('dsh-agent-loop/lib/index.js')).default
+  const nativeExecutor = await load('dsh-tool-executor-native/lib/index.js')
+  const Jsonl = await load('dsh-session-persistence-jsonl/lib/index.js')
+  const Subagents = (await load('dsh-subagent/lib/index.js')).default
+  const Teams = (await load('dsh-agent-team/lib/index.js')).default
+  const FsLocal = (await load('dsh-fs-local/lib/index.js')).default
+  const SubprocessLocal = (await load('dsh-subprocess-local/lib/index.js')).default
+  const Sandbox = (await load('dsh-sandbox/lib/index.js')).default
+  const SandboxPolicy = (await load('dsh-sandbox-policy/lib/index.js')).default
+  const WorkingDirectory = (await load('dsh-working-directory/lib/index.js')).default
+  const Worktrees = (await load('dsh-experimental-worktree/lib/index.js')).default
+
+  const ctx = new Context()
+  const fibers = []
+  const mount = (plugin, config = {}) => fibers.push(ctx.plugin(plugin, config))
+
+  // One-method doubles for the two services reclamation reads. Both names are
+  // resolved through `ctx.get` in WorktreeReclamation; the values are only used
+  // by the archive path, which this spike drives directly.
+  ctx.provide('workspaceRegistry', { archivedSessionIds: new Set() })
+  ctx.provide('sessionQuery', {
+    async listSessions() {
+      return []
+    },
+  })
+
+  mount(SessionStore)
+  mount(SessionProjections)
+  mount(SystemPrompt)
+  mount(ToolsService)
+  mount(AgentRegistry)
+  mount(nativeExecutor)
+  mount({ name: Jsonl.name, apply: Jsonl.apply, Config: Jsonl.Config }, { root: sessionsRoot, compression: 'none' })
+  mount(FsLocal, { cwd: repo })
+  mount(SubprocessLocal)
+  mount(Sandbox)
+  mount(SandboxPolicy, { mode: 'danger-full-access', workspaceRoot: repo })
+  mount(WorkingDirectory, { defaultDirectory: repo })
+  mount(Subagents)
+  mount(Teams, { defaultEnabled: false })
+  // The service rejects absolute or dot-segment directories; `createCheckout`
+  // resolves this relative pool against the repository root it discovers from
+  // the agent's working directory.
+  mount(Worktrees, { directory: '.agents/worktrees', retainOnArchive: false })
+  mount(LlmRuntime)
+  mount(AgentLoop)
+
+  for (const name of ['sessions', 'sessionProjections', 'systemPrompt', 'tools', 'agents']) await until(() => ctx.get(name), 5000, name)
+  const adapter = new (fakeAdapterClass(LlmAdapter))(fakeScript ?? (() => textChunks('ok')))
+  ctx.llm.registerAdapter(['fake'], adapter)
+  await until(() => ctx.get('llm'), 5000, 'llm')
+  await until(() => ctx.get('agentLoop'), 5000, 'agentLoop')
+  for (const name of ['sessionPersistence', 'fs', 'subprocess', 'sandbox', 'sandboxPolicy', 'workingDirectory', 'subagents', 'agentTeams', 'worktrees']) {
+    await until(() => ctx.get(name), 5000, name)
+  }
+  return { ctx, adapter, createUserMessage, workspaceRegistry: ctx.get('workspaceRegistry') }
+}
+
+// ---------------------------------------------------------------------------
+// Probes
+// ---------------------------------------------------------------------------
+
+const observations = { team: [], worktreeRecords: [], cleanups: [], agentErrors: [], statuses: [], sessionTypes: [] }
+const events = new Map()
+function recordEvent(event, fired, emitter, payloadKeys, detail) {
+  events.set(event, { event, fired, emitter, payloadKeys, detail })
+}
+function emitterList(keys) {
+  return [...new Set(keys)].join(',')
+}
+
+async function probeAll() {
+  const { repo, git } = makeRepo(OUT)
+  const sessionsRoot = join(OUT, 'sessions')
+  mkdirSync(sessionsRoot, { recursive: true })
+  const branch = `s23-probe-${Date.now().toString(36)}`
+  let breakdown = {}
+
+  const { ctx, adapter, createUserMessage, workspaceRegistry } = await boot({
+    repo,
+    sessionsRoot,
+    fakeScript: (call) => (call === 1 ? failingChunks('s23 model failure') : textChunks('unexpected second call')),
+  })
+
+  const offs = [
+    ctx.on('session/event', (_session, event) => {
+      observations.sessionTypes.push(event.type)
+      if (event.type === 'team/task') observations.team.push(event)
+      if (event.type === 'plugin:worktree/created') observations.worktreeRecords.push(event)
+    }),
+    ctx.on('worktree/cleanup', (payload) => observations.cleanups.push(payload)),
+    ctx.on('agent/error', (payload) => observations.agentErrors.push(payload)),
+    ctx.on('agent/status', (payload) => observations.statuses.push(payload)),
+  ]
+
+  // -- Team: TaskCreated / TaskCompleted / TeammateIdle ----------------------
+  console.log('\n[probe] team/task records')
+  const lead = await ctx.agentLoop.create('s23-team-lead', { provider: 'fake', model: 'fake-1' })
+  await ctx.agentTeams.setEnabled(lead, true)
+  const createdView = await ctx.agentTeams.createTask(lead, { subject: 'S23 task', description: 'probe task' })
+  const claimedView = await ctx.agentTeams.updateTask(lead, { taskId: createdView.id, expectedRevision: 1, action: 'claim' })
+  const completedView = await ctx.agentTeams.updateTask(lead, { taskId: createdView.id, expectedRevision: 2, action: 'complete' })
+  await sleep(20)
+
+  const taskRecords = observations.team
+  const createRecord = taskRecords.find((event) => event.data?.task?.revision === 1)
+  const completeRecord = taskRecords.find((event) => event.data?.task?.status === 'completed')
+  const createKeys = keyList(createRecord?.data)
+  const createTaskKeys = keyList(createRecord?.data?.task)
+  const completeTaskKeys = keyList(completeRecord?.data?.task)
+
+  check('TaskCreated: a listener received team/task revision 1', createRecord !== undefined, `records=${taskRecords.length}`)
+  check('TaskCreated: record data carries version/teamId/task', ['version', 'teamId', 'task'].every((key) => createKeys.includes(key)) && createTaskKeys.includes('id') && createTaskKeys.includes('subject') && createTaskKeys.includes('description'), `data=${createKeys.join(',')} task=${createTaskKeys.join(',')}`)
+  check('TaskCompleted: a listener received a completed team/task revision', completeRecord !== undefined && completeRecord.data.task.revision === 3 && completeRecord.data.task.status === 'completed', `status=${completeRecord?.data?.task?.status}`)
+  check('the board recorded the claim between create and complete', claimedView.status === 'in_progress' && claimedView.ownerId === lead.id, `status=${claimedView.status} ownerId=${claimedView.ownerId}`)
+  check('no team/member record exists to carry TeammateIdle', taskRecords.every((event) => event.type !== 'team/member') && !observations.sessionTypes.includes('team/member'), `types=${emitterList(observations.sessionTypes)}`)
+  check('the only team record types observed are team/mode and team/task', [...new Set(observations.sessionTypes.filter((type) => type.startsWith('team/')))].sort().join(',') === 'team/mode,team/task', `types=${[...new Set(observations.sessionTypes.filter((type) => type.startsWith('team/')))]}`)
+
+  recordEvent('TaskCreated', createRecord !== undefined, 'session/event team/task @ dsh-agent-team/lib/index.js:93', createKeys, {
+    mechanism: 'service call: agentTeams.createTask (no model turn)',
+    taskPayloadKeys: createTaskKeys,
+    task: createRecord?.data?.task,
+    classicFields: ['task_id', 'task_subject', 'task_description'],
+    missingClassicFields: ['team_name', 'teammate_name'],
+    toolCallShaped: false,
+    toolCallNote: 'service record; it carries no tool name, tool input, or call id',
+    note: 'teamId is the root session id branded as a Team identity, not a display name, so team_name has no source; the revision-one task is unowned, so teammate_name has no source either',
+  })
+  recordEvent('TaskCompleted', completeRecord !== undefined, 'session/event team/task @ dsh-agent-team/lib/index.js:93', keyList(completeRecord?.data), {
+    mechanism: 'service call: agentTeams.updateTask { action: "complete" } (no model turn)',
+    taskPayloadKeys: completeTaskKeys,
+    task: completeRecord?.data?.task,
+    classicFields: ['task_id', 'task_subject', 'task_description', 'teammate_name'],
+    missingClassicFields: ['team_name'],
+    toolCallShaped: false,
+    toolCallNote: 'service record; no tool name or call id, though a completed task carries ownerName',
+    note: 'ownerName (observed as "lead") is the source for teammate_name; teamId is a session id, not a team display name; completion requires claim first',
+  })
+  recordEvent('TeammateIdle', false, 'none: no team/member record in 0.2.2-rc.5', [], {
+    mechanism: 'no listener received a teammate-idle payload; create/claim/complete produced team/task only',
+    tried: 'enabled Agent Teams, created, claimed and completed a task on the Team Lead',
+    nearest: 'agent/status {status, agent} (generic agent status, not per-teammate idle)',
+    toolCallShaped: false,
+    toolCallNote: 'no event fired at all; agent/status is a generic status payload',
+    nextAttempt: 'probe a subagent teammate reaching idle and look for a per-member record or an agent/status payload carrying a member identity; at this pin no member catalog record exists',
+  })
+
+  // -- Worktree: WorktreeCreate / WorktreeRemove ------------------------------
+  console.log('\n[probe] worktree records and cleanup')
+  const wtAgent = await ctx.agentLoop.create('s23-worktree', { provider: 'fake', model: 'fake-1' })
+  await ctx.workingDirectory.set(wtAgent, repo)
+  const created = await ctx.worktrees.create(wtAgent, { name: branch })
+  await sleep(20)
+  const createWtRecord = observations.worktreeRecords.find((event) => event.data?.branch === branch)
+  const createWtKeys = keyList(createWtRecord?.data)
+  const createdPathExists = existsSync(created.path)
+
+  check('WorktreeCreate: a listener received plugin:worktree/created', createWtRecord !== undefined, `records=${observations.worktreeRecords.length}`)
+  check('WorktreeCreate: record data keys are path/branch/baseCommit/repositoryRoot', ['path', 'branch', 'baseCommit', 'repositoryRoot'].every((key) => createWtKeys.includes(key)) && createWtKeys.length === 4, `keys=${createWtKeys.join(',')}`)
+  check('WorktreeCreate: the service returned a live checkout', createdPathExists, created.path)
+
+  workspaceRegistry.archivedSessionIds.add(wtAgent.session.id)
+  ctx.emit('workspace/session-archived', { sessionId: wtAgent.session.id })
+  let cleanupError
+  let viaArchive = false
+  try {
+    await until(() => observations.cleanups.filter((payload) => payload.cleanup?.status === 'removed').length > 0, 20_000, 'worktree/cleanup removed')
+    viaArchive = true
+  } catch (error) {
+    cleanupError = error
+    // Fallback: the reclamation is reachable directly; record that the event
+    // path did not reach it, but still prove the emitter's payload.
+    try {
+      await ctx.worktrees.reclamation?.schedule(wtAgent.session.id)
+      await until(() => observations.cleanups.filter((payload) => payload.cleanup?.status === 'removed').length > 0, 10_000, 'worktree/cleanup removed (direct schedule)')
+    } catch (fallbackError) {
+      cleanupError = new AggregateError([error, fallbackError], 'worktree cleanup did not run')
+    }
+  }
+  const firstCleanup = observations.cleanups[0]
+  const finalCleanup = [...observations.cleanups].reverse().find((payload) => payload.cleanup?.status === 'removed')
+  const removedFromDisk = !existsSync(created.path)
+  const cleanupStatuses = observations.cleanups.map((payload) => payload.cleanup?.status)
+  check('WorktreeRemove: the archive emit reached the reclamation listener', viaArchive, `viaArchive=${viaArchive} statuses=${cleanupStatuses.join(',')}`)
+  check('WorktreeRemove: cleanup emits scheduled then removed', cleanupStatuses.includes('scheduled') && cleanupStatuses.includes('removed'), `statuses=${cleanupStatuses.join(',')}`)
+  check('WorktreeRemove: payload carries sessionId/path/cleanup', firstCleanup !== undefined && ['sessionId', 'path', 'cleanup'].every((key) => keyList(firstCleanup).includes(key)) && ['revision', 'status'].every((key) => keyList(firstCleanup.cleanup).includes(key)), `keys=${keyList(firstCleanup).join(',')} cleanup=${keyList(firstCleanup?.cleanup).join(',')}`)
+  check('WorktreeRemove: the checkout left the disk', removedFromDisk, created.path)
+  check('WorktreeRemove: cleanupOf reports the final status', (await ctx.worktrees.cleanupOf(wtAgent.session, null))?.status === 'removed', JSON.stringify(await ctx.worktrees.cleanupOf(wtAgent.session, null)))
+
+  recordEvent('WorktreeCreate', createWtRecord !== undefined, 'session/event plugin:worktree/created @ dsh-experimental-worktree/lib/index.js:898', createWtKeys, {
+    mechanism: 'service call: worktrees.create (no model turn)',
+    payload: createWtRecord?.data,
+    classicFields: ['name'],
+    toolCallShaped: false,
+    toolCallNote: 'service record; no tool name, tool input, or call id',
+    note: 'branch is the source for the classic name field',
+  })
+  recordEvent('WorktreeRemove', observations.cleanups.length > 0, 'worktree/cleanup @ dsh-experimental-worktree/lib/index.js:112,:127', keyList(firstCleanup), {
+    mechanism: 'ctx.emit on workspace/session-archived; reclamation emits scheduled then removed (no model turn)',
+    viaArchive,
+    statuses: cleanupStatuses,
+    cleanupKeys: keyList(firstCleanup?.cleanup),
+    payload: finalCleanup ?? firstCleanup,
+    classicFields: ['worktree_path'],
+    toolCallShaped: false,
+    toolCallNote: 'emit; no tool name, tool input, or call id',
+    note: 'path maps to worktree_path; no tool name or call id is present',
+    error: cleanupError === undefined ? undefined : String(cleanupError?.message ?? cleanupError),
+  })
+
+  // -- StopFailure: turn/end with an error reason -----------------------------
+  console.log('\n[probe] error turn')
+  const sfAgent = await ctx.agentLoop.create('s23-stop-failure', { provider: 'fake', model: 'fake-1' })
+  const ended = await (async () => {
+    const done = new Promise((resolveEnd, rejectEnd) => {
+      const timer = setTimeout(() => rejectEnd(new Error('turn 1 did not end')), 10_000)
+      const off = ctx.on('session/event', (_session, event) => {
+        if (event.type === 'turn/end' && event.data?.turn === 1) {
+          clearTimeout(timer)
+          off()
+          resolveEnd(event)
+        }
+      })
+    })
+    sfAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'trigger the failure' }], source: { kind: 'user' } }))
+    return done
+  })()
+  await sleep(20)
+
+  const errorPayload = observations.agentErrors.at(-1)
+  const reason = ended.data?.reason
+  const reasonKeys = keyList(reason)
+  const failureKeys = keyList(reason?.error)
+  check('StopFailure: turn/end carried an error reason', reason?.kind === 'error', `kind=${reason?.kind}`)
+  check('StopFailure: reason.error carries message and code', failureKeys.includes('message') && failureKeys.includes('code'), `keys=${failureKeys.join(',')}`)
+  check('StopFailure: agent/error reached a listener with turn/step/error', errorPayload !== undefined && ['turn', 'step', 'error'].every((key) => keyList(errorPayload).includes(key)), `keys=${keyList(errorPayload).join(',')}`)
+  check('StopFailure: the model failure is the one the probe injected', errorPayload?.error?.failure?.code === 'PROBE_FAILURE' && errorPayload?.error?.message === 's23 model failure', `code=${errorPayload?.error?.failure?.code}`)
+  check('StopFailure: the error turn produced no assistant/message', !observations.sessionTypes.includes('assistant/message'))
+
+  recordEvent('StopFailure', reason?.kind === 'error', 'session/event turn/end @ dsh-agent-loop/lib/index.js:832 (+ agent/error @ :657)', keyList(ended.data), {
+    mechanism: 'model turn: the fake adapter returns a finish error; the loop throws LlmError and appends turn/end',
+    turn: ended.data?.turn,
+    agentErrorKeys: keyList(errorPayload),
+    reasonKeys,
+    failureKeys,
+    classicFields: ['error', 'error_details'],
+    missingClassicFields: ['last_assistant_message'],
+    toolCallShaped: false,
+    toolCallNote: 'a model/stream failure, not a tool call; no tool name or call id',
+    note: 'error is the failure code class; error_details is the failure message; the streamed text is in assistant/attempt, not in the turn/end payload',
+  })
+
+  for (const off of offs) off()
+  await sleep(20)
+
+  breakdown = {
+    team: {
+      enable: 'ok',
+      create: createdView,
+      claim: claimedView,
+      complete: completedView,
+      records: taskRecords.map((event) => ({ type: event.type, dataKeys: keyList(event.data), task: event.data?.task })),
+    },
+    worktree: {
+      branch,
+      created,
+      createRecordKeys: createWtKeys,
+      cleanups: observations.cleanups,
+      cleanupStatuses,
+      viaArchive,
+      removedFromDisk,
+      cleanupOf: await ctx.worktrees.cleanupOf(wtAgent.session, null),
+      cleanupError: cleanupError === undefined ? undefined : String(cleanupError?.message ?? cleanupError),
+    },
+    stopFailure: {
+      turnEndKeys: keyList(ended.data),
+      reason,
+      agentErrors: observations.agentErrors.map((payload) => ({ keys: keyList(payload), turn: payload.turn, step: payload.step, errorName: payload.error?.name, errorCode: payload.error?.code, failureKeys: keyList(payload.error?.failure) })),
+      statuses: observations.statuses.map((payload) => ({ keys: keyList(payload), status: payload.status })),
+    },
+    adapterCalls: adapter.calls.length,
+    sessionTypes: [...new Set(observations.sessionTypes)],
+  }
+
+  // Remove the probe branch; `removeCheckout` deliberately leaves it behind.
+  const branchDelete = spawnSync('git', ['branch', '-D', branch], { cwd: repo, encoding: 'utf8' })
+  check('WorktreeRemove: the probe branch can be deleted after removal', branchDelete.status === 0, branchDelete.stderr.trim())
+  return breakdown
+}
+
+// ---------------------------------------------------------------------------
+// Main + report
+// ---------------------------------------------------------------------------
+
+rmSync(OUT, { recursive: true, force: true })
+mkdirSync(OUT, { recursive: true })
+
+const missing = [...FULL_TURN, ...S23_PACKAGES].filter((name) => !has(name))
+let results = {}
+if (missing.length > 0) {
+  skip('S23 six-event probe', `missing harness package(s): ${missing.join(', ')}`)
+} else {
+  try {
+    results = await probeAll()
+  } catch (error) {
+    results = { error: String(error?.stack ?? error) }
+    check('probeAll completed', false, String(error?.message ?? error))
+  }
+}
+
+const order = ['TaskCreated', 'TaskCompleted', 'TeammateIdle', 'WorktreeCreate', 'WorktreeRemove', 'StopFailure']
+console.log('\nS23 events')
+for (const name of order) {
+  const row = events.get(name) ?? { fired: false, emitter: 'probe did not run', payloadKeys: [] }
+  const keys = row.payloadKeys.filter((key) => typeof key === 'string' && key.length > 0)
+  console.log(`${name} -> ${row.fired ? 'fired' : 'not-fired'}  emitter=${row.emitter}  payload=${keys.length > 0 ? keys.join(',') : 'none'}`)
+}
+const fired = order.filter((name) => events.get(name)?.fired === true)
+
+const passed = checks.filter((entry) => entry.ok).length
+console.log(`\n${passed}/${checks.length} checks passed${skipped.length > 0 ? `, ${skipped.length} skipped` : ''}; ${fired.length}/${order.length} events fired`)
+if (checks.length === 0) console.error('s23: no checks ran; fetch the pin with scripts/fetch-harness.mjs and pass that tree')
+else if (skipped.length > 0) console.error(`s23: ${skipped.length} required probe(s) skipped; a vacuous run is a failure, not a pass`)
+else if (fired.length === 0) console.error('s23: zero of six events fired; the spike is red by definition')
+writeFileSync(join(OUT, 'report.json'), `${JSON.stringify({
+  spike: 'S23',
+  pin: version(),
+  harness: { dir: HARNESS, source: HARNESS_SOURCE },
+  checks,
+  skipped,
+  events: order.map((name) => events.get(name) ?? { event: name, fired: false, emitter: 'probe did not run', payloadKeys: [] }),
+  fired: fired.length,
+  results,
+}, null, 2)}\n`)
+console.log(`wrote ${join(OUT, 'report.json')}`)
+process.exit(checks.length === 0 || skipped.length > 0 || fired.length === 0 || passed !== checks.length ? 1 : 0)
