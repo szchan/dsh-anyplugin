@@ -8,8 +8,10 @@
  * published tarball, runs *its* bin on a checkout fixture, and judges the
  * report: every row the fixture declares is \`exact\` or \`equivalent\` and
  * carried, no row the fixture does not declare appears (and none twice), every
- * row carries a reason, `totals.declared` is the row count and `emitted` the
- * carried count, and the pin is the pin this checkout claims. The row checks
+ * row carries a reason, the totals are the derivation `report.ts` performs
+ * (`declared` = rows, `emitted` = carried, `refused` = rows with a refusal,
+ * `skipped` = rows - emitted - refused), and the pin is the pin this checkout
+ * claims. The row checks
  * only run when the fixture enumerates rows: for a fixture of nested commands,
  * hooks or MCP servers the list is empty and a dropped row is not detected.
  *
@@ -123,6 +125,21 @@ export function judgeReport(report, { name, pin, expected }) {
         failures.push(`the report's totals.${field} is ${JSON.stringify(report.totals[field])}, not an integer`)
       }
     }
+    // report.ts derives these from the rows (refused = rows that carry a
+    // refusal, skipped = rows - emitted - refused), so a report that disagrees
+    // is not a placement decision, it is a report the code cannot have written.
+    const refusedRows = components.filter((component) => component?.refused !== undefined).length
+    if (Number.isInteger(report.totals.refused) && report.totals.refused !== refusedRows) {
+      failures.push(`the report's totals refuse ${report.totals.refused} component(s), but ${refusedRows} row(s) carry a refusal`)
+    }
+    if (
+      Number.isInteger(report.totals.skipped) &&
+      Number.isInteger(report.totals.emitted) &&
+      Number.isInteger(report.totals.refused) &&
+      report.totals.skipped !== components.length - report.totals.emitted - report.totals.refused
+    ) {
+      failures.push(`the report's totals skip ${report.totals.skipped} row(s), but ${components.length} row(s) minus ${report.totals.emitted} emitted and ${report.totals.refused} refused cannot skip that many`)
+    }
   }
 
   if (expected.length > 0) {
@@ -216,7 +233,7 @@ export function defaultRunCli(cli, fixture) {
 export async function verifyRelease({
   version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version,
   fixture = DEFAULT_FIXTURE,
-  name = fixtureName(fixture),
+  name,
   expected = expectedComponents(fixture),
   pin = repoPin(),
   registry = {
@@ -230,6 +247,14 @@ export async function verifyRelease({
 } = {}) {
   const failures = []
   const notes = []
+  let pluginName = name
+  if (pluginName === undefined) {
+    try {
+      pluginName = fixtureName(fixture)
+    } catch (error) {
+      return { ok: false, version, failures: [`the fixture's manifest could not be read: ${firstLine(error.message)}`], notes }
+    }
+  }
   let versions = []
   try {
     versions = await registry.versions()
@@ -263,7 +288,7 @@ export async function verifyRelease({
       failures.push(`the packed artifact did not run: the tarball's bin ${JSON.stringify(bin ?? null)} is not in the archive`)
     } else {
       const report = runCli(cli, fixture)
-      failures.push(...judgeReport(report, { name, pin, expected }))
+      failures.push(...judgeReport(report, { name: pluginName, pin, expected }))
       notes.push(
         tarball.slice(scratch.length + 1),
         `plugin ${report.plugin}`,

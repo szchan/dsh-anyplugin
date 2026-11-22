@@ -78,8 +78,10 @@ the packed CLI. For the last one it runs `npm pack`, unpacks the tarball, runs
 *that* bin's `report` on `fixtures/claude-skills-only`, and judges the report:
 `ok`, a `problems` array that is empty, the fixture's name, the pin exactly as
 `CLAUDE_CODE_PIN` declares it, every row `exact` or `equivalent` and carried (a
-row the report downgrades to `planned` is not proven placed), `carried`
-consistent with `totals`, and the row set equal to the fixture's declared rows —
+row the report downgrades to `planned` is not proven placed), the totals that
+`report.ts` derives from the rows (`declared` = rows, `emitted` = carried,
+`refused` = rows with a refusal, `skipped` = rows − emitted − refused), and the
+row set equal to the fixture's declared rows —
 a dropped, invented, or repeated row fails. The row list is derived from the
 fixture's own files: `skills/*/SKILL.md`, top-level `commands/*.md`,
 `agents/*.md` and `output-styles/*.md`; nested commands, hooks and MCP rows are

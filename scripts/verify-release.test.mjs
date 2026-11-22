@@ -290,6 +290,18 @@ test('verifyRelease: a tarball with no bin, or a bin that is not in the archive,
   assert.ok(moved.failures.some((failure) => /bin "lib\/moved-cli\.js" is not in the archive/.test(failure)))
 })
 
+test('judgeReport: a non-integer skipped total is refused, like refused', () => {
+  const broken = { ...REPORT, totals: { declared: 2, emitted: 2, refused: 0, skipped: 'many' } }
+  assert.match(judgeReport(broken, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /totals\.skipped is "many", not an integer/)
+})
+
+test('judgeReport: totals that contradict the rows are refused', () => {
+  const noRefusals = { ...REPORT, totals: { declared: 2, emitted: 2, refused: 99, skipped: 0 } }
+  assert.match(judgeReport(noRefusals, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /refuse 99 component\(s\), but 0 row\(s\) carry a refusal/)
+  const tooManySkips = { ...REPORT, totals: { declared: 2, emitted: 2, refused: 0, skipped: 99 } }
+  assert.match(judgeReport(tooManySkips, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /totals skip 99 row\(s\)/)
+})
+
 test('judgeReport: totals.declared is the number of rows, not a lower bound', () => {
   const under = { ...REPORT, totals: { declared: 1, emitted: 2, refused: 0, skipped: 0 } }
   assert.match(judgeReport(under, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /declare 1 component\(s\) for 2 row\(s\)/)
@@ -326,6 +338,19 @@ test('verifyRelease: a packed artifact that will not run is a failure, not a sta
     },
   })
   assert.deepEqual(result.failures, ['the packed artifact did not run: Error: Cannot find module cli.js'])
+})
+
+test('verifyRelease: a fixture that cannot be read is a failure, not a throw', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'broken-fixture-'))
+  try {
+    mkdirSync(join(directory, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(directory, '.claude-plugin', 'plugin.json'), '{not json')
+    const result = await verifyRelease({ fixture: directory, registry: { versions: async () => ['0.3.0'], document: async () => ({}) } })
+    assert.equal(result.ok, false)
+    assert.match(result.failures.join('\n'), /manifest could not be read/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('verifyRelease: scratch is cleaned even when the packer throws', async () => {
@@ -385,6 +410,39 @@ test('run: an unknown flag after --json is a usage error, not "verify the checko
     const code = await run(argv, { verify: async () => assert.fail('must not verify'), out: capture(), err })
     assert.equal(code, 2, argv.join(' '))
     assert.match(err.text, /verify-release: /)
+  }
+})
+
+test('run: a flag is not a value for another flag', async () => {
+  for (const argv of [['--version', '--json'], ['--fixture', '--wat']]) {
+    const err = capture()
+    const code = await run(argv, { verify: async () => assert.fail('must not verify'), out: capture(), err })
+    assert.equal(code, 2, argv.join(' '))
+    assert.match(err.text, /needs a value/)
+  }
+  const out = capture()
+  const code = await run(['--json', '--version', '0.3.0'], {
+    verify: async (options) => ({ ok: true, version: options.version, failures: [], notes: ['stub'] }),
+    out,
+    err: capture(),
+  })
+  assert.equal(code, 0)
+  assert.match(out.text, /"version": "0.3.0"/)
+})
+
+test('run: a fixture manifest without a usable name is a usage error', async () => {
+  for (const body of ['{"name":""}', '{"name":42}']) {
+    const directory = mkdtempSync(join(tmpdir(), 'nameless-fixture-'))
+    try {
+      mkdirSync(join(directory, '.claude-plugin'), { recursive: true })
+      writeFileSync(join(directory, '.claude-plugin', 'plugin.json'), body)
+      const err = capture()
+      const code = await run(['--version', '0.3.0', '--fixture', directory], { verify: async () => assert.fail('must not verify'), out: capture(), err })
+      assert.equal(code, 2, body)
+      assert.match(err.text, /does not name the plugin/)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   }
 })
 
