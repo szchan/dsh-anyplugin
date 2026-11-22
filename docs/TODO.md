@@ -15,10 +15,11 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Next
 
-- [ ] Publish `dsh-anyplugin-ui`, the optional panel (D61). `npm run pack:ui`
-      produces the tarball and `npm run check:ui` holds its 64 KiB ceiling, but
-      the first npm publish needs a one-time 2FA approval from a maintainer;
-      until then the release workflow publishes only the root package.
+- [ ] Publish `dsh-anyplugin-ui`, the optional panel (D61, #170). `npm run
+      pack:ui` produces the tarball and `npm run check:ui` holds its 64 KiB
+      ceiling; the first npm publish needs a one-time 2FA approval from a
+      maintainer, and until then the release workflow publishes only the root
+      package.
 
 ## Upstream proposals (union-only seams, T2)
 
@@ -66,16 +67,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
       S22 answered the observation half: the pinned client (2.1.329) validates a
       plugin `monitors` declaration and never spawns it headless — 0 spawns and
       0 monitor bytes in the model traffic — so there is no observable parity
-      target. The declaration half is now implemented (#159): the dialect reads
-      the manifest array, the manifest path string and `monitors/monitors.json`,
-      splits the client's two verdicts: a manifest-shaped violation is fatal,
-      while a file-shaped one is carried as one `unsupported` row quoting the
-      client's captured error text (`fixtures/claude-monitors-errors`) and does
-      not fail the plugin, because the
-      directory client reports it as `loaded with errors` and still serves the
-      other components. A valid declaration stays one `planned` row. What
-      remains is a product decision about the runtime channel, not a fidelity
-      gap.
+      target. The declaration half closed with D64 (#159): a manifest-shaped
+      violation is fatal, a file-shaped one is carried as one `unsupported` row
+      quoting the client's captured text, and a valid declaration stays
+      `planned`. What remains is a product decision about the runtime channel,
+      not a fidelity gap.
 - [ ] Terminal ANSI palette (F2).
 
 ## Later
