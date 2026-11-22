@@ -291,3 +291,261 @@ test('a matcher on a subjectless lifecycle event warns instead of running', asyn
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('WorktreeRemove runs once per removal, not once per cleanup record', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeRemove', `printf x >> ${out}`)] })
+    const settled = { sessionId: 'session-1', path: '/work/.agents/worktrees/a', cleanup: { revision: 1, status: 'removed' } }
+    await fire(listeners, 'worktree/cleanup', { ...settled, cleanup: { revision: 1, status: 'scheduled' } })
+    assert.equal(existsSync(out), false, 'the scheduled record is an intent, not a removal')
+    await fire(listeners, 'worktree/cleanup', settled)
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+    await fire(listeners, 'worktree/cleanup', settled)
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('StopFailure runs once for the turn, whichever failure record arrives first', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('StopFailure', `printf x >> ${out}`)] })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    const error = { message: 'model failed', code: 'FAIL' }
+    await fire(listeners, 'agent/error', {
+      turn: 1,
+      step: 1,
+      error,
+      agent: { session },
+    })
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error } } })
+    }
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('WorktreeRemove reports the host cwd as a gap, never the removed path', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const payloadPath = join(dir, 'payload.json')
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeRemove', `cat > ${payloadPath}`)] })
+    const settled = { sessionId: 'session-1', path: '/work/.agents/worktrees/a', cleanup: { revision: 1, status: 'removed' } }
+    await fire(listeners, 'worktree/cleanup', settled)
+    const payload = JSON.parse(readFileSync(payloadPath, 'utf8'))
+    assert.equal(payload.worktree_path, settled.path)
+    assert.equal(payload.cwd, process.cwd())
+    assert.notEqual(payload.cwd, payload.worktree_path, 'cwd is the session directory, not the removed checkout')
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin WorktreeRemove: unsupported cwd')),
+      `expected the cwd gap warning, saw ${JSON.stringify(warnings)}`,
+    )
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin WorktreeRemove: unsupported transcript_path')),
+      'the classic transcript_path is a reported gap',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('StopFailure ignores a child session on both failure records', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('StopFailure', `printf x >> ${out}`)] })
+    const session = { header: { id: 'child-1', parentSession: 'session-1' } }
+    const error = { failure: { code: 'FAIL', message: 'child failed' }, message: 'child failed' }
+    await fire(listeners, 'agent/error', { turn: 1, step: 1, error, agent: { session } })
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error } } })
+    }
+    assert.equal(existsSync(out), false, 'a child failure belongs to SubagentStop, not StopFailure')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('StopFailure keys each failure by session and turn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('StopFailure', `printf x >> ${out}`)] })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    const error = { failure: { code: 'FAIL', message: 'model failed' }, message: 'model failed' }
+    const fail = async (turn) => {
+      await fire(listeners, 'agent/error', { turn, step: 1, error, agent: { session } })
+      for (const listener of listeners.get('session/event') ?? []) {
+        await listener(session, { type: 'turn/end', data: { turn, reason: { kind: 'error', error } } })
+      }
+    }
+    await fail(1)
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+    await fail(2)
+    assert.equal(readFileSync(out, 'utf8'), 'xx', 'a second failing turn is a second occurrence')
+    await fail(1)
+    assert.equal(readFileSync(out, 'utf8'), 'xx', 'replaying turn 1 is not a new occurrence')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('WorktreeRemove keys each removal by cleanup revision', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const out = join(dir, 'runs')
+    const { ctx, listeners } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeRemove', `printf x >> ${out}`)] })
+    const settled = (revision) => ({
+      sessionId: 'session-1',
+      path: '/work/.agents/worktrees/a',
+      cleanup: { revision, status: 'removed' },
+    })
+    await fire(listeners, 'worktree/cleanup', settled(1))
+    assert.equal(readFileSync(out, 'utf8'), 'x')
+    await fire(listeners, 'worktree/cleanup', settled(2))
+    assert.equal(readFileSync(out, 'utf8'), 'xx', 'a later attempt on the same path is a new removal')
+    await fire(listeners, 'worktree/cleanup', settled(1))
+    assert.equal(readFileSync(out, 'utf8'), 'xx', 'replaying revision 1 is not a new occurrence')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('StopFailure reports every classic field the record cannot supply', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, { hooks: [pinned('StopFailure', 'true')] })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    await fire(listeners, 'agent/error', {
+      turn: 1,
+      step: 1,
+      error: { failure: { code: 'FAIL' } },
+      agent: { session },
+    })
+    for (const field of ['error', 'last_assistant_message', 'error_details', 'transcript_path']) {
+      assert.ok(
+        warnings.some((line) => line.includes(`anyplugin StopFailure: unsupported ${field}`)),
+        `expected the ${field} gap, saw ${JSON.stringify(warnings)}`,
+      )
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('WorktreeCreate maps the branch and reports the absent transcript path', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const payloadPath = join(dir, 'payload.json')
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeCreate', `cat > ${payloadPath}`)] })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, {
+        type: 'plugin:worktree/created',
+        data: { path: '/work/.agents/worktrees/a', branch: 'seams-a', baseCommit: 'abc', repositoryRoot: '/work' },
+      })
+    }
+    assert.deepEqual(JSON.parse(readFileSync(payloadPath, 'utf8')), {
+      hook_event_name: 'WorktreeCreate',
+      cwd: '/work',
+      session_id: 'session-1',
+      name: 'seams-a',
+    })
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin WorktreeCreate: unsupported transcript_path')),
+      'the classic transcript_path is a reported gap',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a deny from a notification-only record is a warning, not a veto', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, { hooks: [pinned('WorktreeRemove', `printf '{"decision":"block","reason":"no"}'`)] })
+    const settled = { sessionId: 'session-1', path: '/work/.agents/worktrees/a', cleanup: { revision: 1, status: 'removed' } }
+    await fire(listeners, 'worktree/cleanup', settled)
+    assert.ok(
+      warnings.some((line) => line.includes('cannot be enforced through worktree/cleanup; reported, not obeyed')),
+      `expected the unsupported warning, saw ${JSON.stringify(warnings)}`,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the task records fire on their own revisions, and absent classic fields are reported gaps', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  try {
+    const created = join(dir, 'created.json')
+    const completed = join(dir, 'completed.json')
+    const { ctx, listeners, warnings } = harness()
+    apply(ctx, {
+      hooks: [pinned('TaskCreated', `cat > ${created}`), pinned('TaskCompleted', `cat > ${completed}`)],
+    })
+    const session = { header: { id: 'session-1', cwd: '/work' } }
+    const task = { id: 'task-1', revision: 1, subject: 'subject', description: 'description', status: 'pending' }
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, { type: 'team/task', data: { version: 2, teamId: 'session-1', task } })
+    }
+    assert.deepEqual(JSON.parse(readFileSync(created, 'utf8')), {
+      hook_event_name: 'TaskCreated',
+      cwd: '/work',
+      session_id: 'session-1',
+      task_id: 'task-1',
+      task_subject: 'subject',
+      task_description: 'description',
+    })
+    for (const listener of listeners.get('session/event') ?? []) {
+      await listener(session, {
+        type: 'team/task',
+        data: { version: 2, teamId: 'session-1', task: { ...task, revision: 3, status: 'completed', ownerName: 'lead' } },
+      })
+    }
+    assert.deepEqual(JSON.parse(readFileSync(completed, 'utf8')), {
+      hook_event_name: 'TaskCompleted',
+      cwd: '/work',
+      session_id: 'session-1',
+      task_id: 'task-1',
+      task_subject: 'subject',
+      task_description: 'description',
+      teammate_name: 'lead',
+    })
+    assert.ok(warnings.some((line) => line.includes('anyplugin TaskCreated: unsupported team_name')), 'team_name is a gap')
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin TaskCreated: unsupported teammate_name')),
+      'an unowned TaskCreated has no teammate_name',
+    )
+    assert.ok(warnings.some((line) => line.includes('anyplugin TaskCompleted: unsupported team_name')), 'team_name is a gap')
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin TaskCreated: unsupported transcript_path')),
+      'the classic transcript_path is a gap on TaskCreated',
+    )
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin TaskCompleted: unsupported transcript_path')),
+      'the classic transcript_path is a gap on TaskCompleted',
+    )
+    assert.ok(
+      warnings.some((line) => line.includes('anyplugin TaskCompleted: unsupported permission_mode')),
+      'permission_mode is a reported gap on TaskCompleted',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -1,8 +1,8 @@
 /**
  * Hook materializer — mounts a plugin's command hooks on this host's tool
  * waterfalls, on the host events that carry the five lifecycle hooks, and on
- * the four listener seams and five notification records S9 confirmed, and
- * seats an authored mod's registrations on the same agent channels.
+ * the four listener seams and five notification records S9 confirmed, on the
+ * five S23 records, and seats an authored mod's registrations on the same agent channels.
  *
  * Mount points are the ones S8/S9 proved: `tools/pre-execute` can deny (the
  * model reads `Error: <reason>`), `tools/post-execute` can attach
@@ -1093,10 +1093,23 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   }, !modsMode, 'stop')
 
   // The nine S9-confirmed seams no earlier ticket mounted: four listener
-  // seams and five notification records. Each is registered through the same
-  // builder as the lifecycle five; the mounts below are the only dispatch.
+  // seams and five notification records. S23 located five more records; they
+  // are notification-only too, so they join the same builder and mount. Each
+  // is registered through the same builder as the lifecycle five; the mounts
+  // below are the only dispatch.
   const SEAM_EVENTS = ['UserPromptSubmit', 'PermissionRequest', 'PostToolUseFailure', 'FileChanged'] as const
-  const NOTIFICATION_EVENTS = ['PreCompact', 'PostCompact', 'PermissionDenied', 'CwdChanged', 'ConfigChange'] as const
+  const NOTIFICATION_EVENTS = [
+    'PreCompact',
+    'PostCompact',
+    'PermissionDenied',
+    'CwdChanged',
+    'ConfigChange',
+    'TaskCreated',
+    'TaskCompleted',
+    'WorktreeCreate',
+    'WorktreeRemove',
+    'StopFailure',
+  ] as const
   const seamHost: Record<(typeof SEAM_EVENTS)[number], string> = {
     UserPromptSubmit: 'agent/pre-step',
     PermissionRequest: 'approval/request',
@@ -1109,6 +1122,11 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     PermissionDenied: 'approval/decided',
     CwdChanged: 'working-directory/change',
     ConfigChange: 'settings/document-updated',
+    TaskCreated: 'session/event team/task',
+    TaskCompleted: 'session/event team/task',
+    WorktreeCreate: 'session/event plugin:worktree/created',
+    WorktreeRemove: 'worktree/cleanup',
+    StopFailure: 'session/event turn/end + agent/error',
   }
   for (const event of SEAM_EVENTS) registerLifecycle(event, seamHost[event])
   for (const event of NOTIFICATION_EVENTS) registerLifecycle(event, notificationHost[event])
@@ -1236,6 +1254,73 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     chains: (event: string) => HandlerRegistration[],
   ): void => {
     const approvalCalls = new Map<string, { toolName?: string; callId?: string }>()
+    // Occurrence keys for the two S23 seams that are observed twice. A
+    // handler runs once per real occurrence (one failed turn, one removal),
+    // not once per record the host happens to emit.
+    const stopFailures = new Set<string>()
+    const removedWorktrees = new Set<string>()
+    const isRootSession = (session: unknown): boolean =>
+      (session as { header?: { parentSession?: unknown } } | undefined)?.header?.parentSession === undefined
+    /**
+     * StopFailure is the same failure twice: `agent/error` is emitted when the
+     * loop throws, then `turn/end` commits the error-shaped reason in the
+     * finally block. Whoever arrives first wins; the other observer sees the
+     * key and stays silent. Root sessions only — a child's failed turn belongs
+     * to SubagentStop, not Stop.
+     */
+    const runStopFailure = async (session: unknown, data: any): Promise<void> => {
+      if (!isRootSession(session)) return
+      const fields = sessionFields(session)
+      if (typeof fields.session_id !== 'string' || data?.turn === undefined || data?.turn === null) return
+      const key = `${fields.session_id}:${String(data.turn)}`
+      if (stopFailures.has(key)) return
+      stopFailures.add(key)
+      const error = (data.error ?? data.reason?.error ?? {}) as Record<string, unknown>
+      const failure = (error.failure ?? {}) as Record<string, unknown>
+      const message =
+        typeof failure.message === 'string'
+          ? failure.message
+          : typeof error.message === 'string'
+            ? error.message
+            : undefined
+      const payload = {
+        hook_event_name: 'StopFailure',
+        cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+        ...fields,
+        ...(message === undefined ? {} : { error_details: message }),
+      }
+      reportGap('StopFailure', 'error', "agent/error and turn/end carry a host failure code (LlmError.failure.code), not Claude's error class enum; no ratified mapping exists at the pin")
+      reportGap('StopFailure', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
+      reportGap('StopFailure', 'last_assistant_message', 'the error turn commits no assistant/message record at the 0.2.2-rc.5 pin; the streamed text is only in assistant/attempt, which this mount does not read')
+      if (message === undefined) reportGap('StopFailure', 'error_details', 'the host failure carries no message')
+      await runKernel(chainEventFor('StopFailure', 'session/event turn/end + agent/error', payload), chains('StopFailure'))
+    }
+    /**
+     * WorktreeRemove is one removal, observed as a `scheduled` intent and then
+     * a settled `removed`/`retained`/`failed` record. Only `removed` is a
+     * removal; the key includes the attempt revision, so the pair collapses
+     * and a later attempt on the same path is still a new occurrence.
+     */
+    const runWorktreeRemove = async (data: any): Promise<void> => {
+      if (data?.cleanup?.status !== 'removed') return
+      if (typeof data.sessionId !== 'string' || typeof data.path !== 'string') return
+      const key = `${data.sessionId}\u0000${data.path}\u0000${String(data.cleanup.revision ?? '')}`
+      if (removedWorktrees.has(key)) return
+      removedWorktrees.add(key)
+      const payload = {
+        hook_event_name: 'WorktreeRemove',
+        // The cleanup record names the removed checkout, not the session cwd.
+        // Emitting the path as cwd would make two different classic fields the
+        // same value, so the mount reports the host process directory and the
+        // gap instead.
+        cwd: process.cwd(),
+        session_id: data.sessionId,
+        worktree_path: data.path,
+      }
+      reportGap('WorktreeRemove', 'cwd', 'the worktree/cleanup emit carries sessionId, path and cleanup only; it has no session header or cwd, so the host process directory is reported rather than the removed path')
+      reportGap('WorktreeRemove', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
+      await runKernel(chainEventFor('WorktreeRemove', 'worktree/cleanup', payload), chains('WorktreeRemove'))
+    }
     // session/event and settings/document-updated are emit, not waterfall:
     // the host does not await the listener. A plugin's hooks still run one
     // operation at a time, so each record is queued behind the previous one
@@ -1246,11 +1331,72 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       tail = next.catch(() => undefined)
       return next
     }
-    if (['PreCompact', 'PostCompact', 'PermissionDenied', 'CwdChanged'].some((event) => chains(event).length > 0)) {
+    if (
+      ['PreCompact', 'PostCompact', 'PermissionDenied', 'CwdChanged', 'TaskCreated', 'TaskCompleted', 'WorktreeCreate', 'StopFailure'].some(
+        (event) => chains(event).length > 0,
+      )
+    ) {
       const onSessionEvent = async (session: unknown, event: any) => {
           const type = event?.type
           const data = (event?.data ?? {}) as Record<string, unknown>
           const fields = sessionFields(session)
+          if (type === 'team/task') {
+            const task = (data.task ?? {}) as Record<string, unknown>
+            if (typeof task.id !== 'string') return
+            if (task.revision === 1 && chains('TaskCreated').length > 0) {
+              const payload = {
+                hook_event_name: 'TaskCreated',
+                cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+                ...fields,
+                task_id: task.id,
+                ...(typeof task.subject === 'string' ? { task_subject: task.subject } : {}),
+                ...(typeof task.description === 'string' ? { task_description: task.description } : {}),
+              }
+              reportGap('TaskCreated', 'team_name', 'team/task carries teamId, the Team identity at this pin (the root session id), not a team display name')
+              reportGap('TaskCreated', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
+              reportGap('TaskCreated', 'teammate_name', 'a revision-one team/task is unowned; creation carries no owner, so there is no teammate name')
+              if (typeof task.subject !== 'string') reportGap('TaskCreated', 'task_subject', 'the team/task record carries no subject')
+              if (typeof task.description !== 'string') reportGap('TaskCreated', 'task_description', 'the team/task record carries no description')
+              await runKernel(chainEventFor('TaskCreated', 'session/event team/task', payload), chains('TaskCreated'))
+            }
+            if (task.status === 'completed' && chains('TaskCompleted').length > 0) {
+              const payload = {
+                hook_event_name: 'TaskCompleted',
+                cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+                ...fields,
+                task_id: task.id,
+                ...(typeof task.subject === 'string' ? { task_subject: task.subject } : {}),
+                ...(typeof task.description === 'string' ? { task_description: task.description } : {}),
+                ...(typeof task.ownerName === 'string' ? { teammate_name: task.ownerName } : {}),
+              }
+              reportGap('TaskCompleted', 'team_name', 'team/task carries teamId, the Team identity at this pin (the root session id), not a team display name')
+              reportGap('TaskCompleted', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
+              reportGap('TaskCompleted', 'permission_mode', 'permission_mode is session-level at the pin, and the team/task record does not carry it')
+              if (typeof task.ownerName !== 'string') reportGap('TaskCompleted', 'teammate_name', 'the completed team/task revision carries no ownerName')
+              await runKernel(chainEventFor('TaskCompleted', 'session/event team/task', payload), chains('TaskCompleted'))
+            }
+            return
+          }
+          if (type === 'plugin:worktree/created') {
+            if (chains('WorktreeCreate').length === 0) return
+            const payload = {
+              hook_event_name: 'WorktreeCreate',
+              cwd: typeof fields.cwd === 'string' ? fields.cwd : process.cwd(),
+              ...fields,
+              ...(typeof data.branch === 'string' ? { name: data.branch } : {}),
+            }
+            if (typeof data.branch !== 'string') {
+              reportGap('WorktreeCreate', 'name', 'the classic name is the branch, and this plugin:worktree/created record carries none')
+            }
+            reportGap('WorktreeCreate', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
+            await runKernel(chainEventFor('WorktreeCreate', 'session/event plugin:worktree/created', payload), chains('WorktreeCreate'))
+            return
+          }
+          if (type === 'turn/end') {
+            const reason = data.reason as { kind?: unknown } | undefined
+            if (reason?.kind === 'error' && chains('StopFailure').length > 0) await runStopFailure(session, data)
+            return
+          }
           if (type === 'approval/asked') {
             if (data.id === undefined) return
             approvalCalls.set(String(data.id), {
@@ -1315,6 +1461,20 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       mount(() =>
         target.on('session/event', (session: unknown, event: any) =>
           serialize(() => onSessionEvent(session, event)),
+        ),
+      )
+    }
+
+    if (chains('WorktreeRemove').length > 0) {
+      mount(() =>
+        target.on('worktree/cleanup', (data: any) => serialize(() => runWorktreeRemove(data))),
+      )
+    }
+
+    if (chains('StopFailure').length > 0) {
+      mount(() =>
+        target.on('agent/error', (payload: any) =>
+          serialize(() => runStopFailure(payload?.agent?.session, payload)),
         ),
       )
     }

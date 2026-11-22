@@ -95,8 +95,8 @@ const ENGINE_AT_2_1_329 = [
 test('every pinned mod event is routed or unmapped with a reason', () => {
   assert.equal(MOD_CLASSIC_EVENTS.length, 33)
   assert.deepEqual(MOD_ENGINE_EVENTS, ENGINE_AT_2_1_329)
-  assert.equal(MOD_EVENT_ROUTES.length, 19)
-  assert.equal(Object.keys(MOD_UNMAPPED_REASONS).length, 148)
+  assert.equal(MOD_EVENT_ROUTES.length, 24)
+  assert.equal(Object.keys(MOD_UNMAPPED_REASONS).length, 143)
 
   const routed = new Set(MOD_EVENT_ROUTES.map((route) => route.modEvent))
   for (const event of MOD_CLASSIC_EVENTS) {
@@ -117,8 +117,8 @@ test('every pinned mod event is routed or unmapped with a reason', () => {
       assert.ok(CLASSIC_HOOK_EVENTS.includes(route.kernelEvent), `${route.modEvent} has no shared classic point`)
     }
   }
-  // 16 live classic routes plus session.start, tool.call and prompt.context.
-  assert.equal(MOD_EVENT_ROUTES.filter((route) => route.status === 'live').length, 19)
+  // 21 live classic routes plus session.start, tool.call and prompt.context.
+  assert.equal(MOD_EVENT_ROUTES.filter((route) => route.status === 'live').length, 24)
   const start = MOD_EVENT_ROUTES.find((route) => route.modEvent === 'session.start')
   assert.equal(start.kernelEvent, 'session.start')
   assert.equal(start.hostSeam, 'mod-host/load')
@@ -189,7 +189,7 @@ test('the 19 engine events added at 2.1.329 carry an explicit category', () => {
   for (const event of Object.keys(MOD_UNMAPPED_REASONS)) {
     assert.notEqual(modUnmappedCategory(event), 'not in spec', event)
   }
-  assert.equal(Object.keys(MOD_UNMAPPED_CATEGORIES).length, 148)
+  assert.equal(Object.keys(MOD_UNMAPPED_CATEGORIES).length, 143)
   assert.equal(modUnmappedCategory('made.up'), 'not in spec')
   assert.equal(modUnmappedCategory('post.tool.use'), 'not in spec')
 })
@@ -479,11 +479,11 @@ test('prompt.context hands the mod { blocks, instructionFiles } and carries an a
   ])
 })
 
-test('a classic.* pattern expands to the 16 live classic routes and reports the other 17', () => {
+test('a classic.* pattern expands to the 21 live classic routes and reports the other 12', () => {
   const { registrations, routes, unmapped } = adapt([mod('classic.*', () => undefined)])
-  assert.equal(registrations.length, 16)
-  assert.equal(routes.length, 16)
-  assert.equal(unmapped.length, 17)
+  assert.equal(registrations.length, 21)
+  assert.equal(routes.length, 21)
+  assert.equal(unmapped.length, 12)
   assert.ok(registrations.every((registration) => CLASSIC_HOOK_EVENTS.includes(registration.event)))
   assert.ok(unmapped.every((entry) => entry.event.startsWith('classic.')))
   assert.match(unmapped.find((entry) => entry.event === 'classic.Notification').reason, /S9 refuted/)
@@ -492,10 +492,10 @@ test('a classic.* pattern expands to the 16 live classic routes and reports the 
   assert.ok(!registrations.some((registration) => registration.event === 'session.start'))
 })
 
-test('a * pattern expands to every routed name and reports the 148 without a route', () => {
+test('a * pattern expands to every routed name and reports the 143 without a route', () => {
   const { registrations, unmapped } = adapt([mod('*', () => undefined)])
-  assert.equal(registrations.length, 19)
-  assert.equal(unmapped.length, 148)
+  assert.equal(registrations.length, 24)
+  assert.equal(unmapped.length, 143)
   assert.ok(registrations.some((registration) => registration.event === 'session.start'))
   assert.ok(unmapped.some((entry) => entry.event === 'ui.render'))
 })
@@ -518,8 +518,8 @@ test('tool.* reaches the routed tool.call and reports the seven other tool event
 
 test('a negation selects the complement: !tool.* excludes every tool route', () => {
   const { registrations, unmapped } = adapt([mod('!tool.*', () => undefined)])
-  assert.equal(registrations.length, 18)
-  assert.equal(unmapped.length, 141)
+  assert.equal(registrations.length, 23)
+  assert.equal(unmapped.length, 136)
   assert.ok(registrations.every((registration) => !registration.event.startsWith('tool.')))
   assert.ok(!unmapped.some((entry) => entry.event.startsWith('tool.')))
   const engineOnly = adapt([mod('!classic.*', () => undefined)])

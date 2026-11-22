@@ -93,7 +93,7 @@ test('the five lifecycle hooks are carried on the five host events', () => {
   }
 })
 
-test('the four listener seams and the five notification records ride the S9 host events', () => {
+test('the four listener seams and the ten notification records ride the S9 and S23 host events', () => {
   const ir = readClaudePlugin(seamsFixture)
   const hosts = {
     UserPromptSubmit: /agent\/pre-step/,
@@ -105,15 +105,21 @@ test('the four listener seams and the five notification records ride the S9 host
     PermissionDenied: /approval\/decided/,
     CwdChanged: /working-directory\/change/,
     ConfigChange: /settings\/document-updated/,
+    TaskCreated: /team\/task/,
+    TaskCompleted: /team\/task/,
+    WorktreeCreate: /plugin:worktree\/created/,
+    WorktreeRemove: /worktree\/cleanup/,
+    StopFailure: /turn\/end/,
   }
+  const s23 = new Set(['TaskCreated', 'TaskCompleted', 'WorktreeCreate', 'WorktreeRemove', 'StopFailure'])
   assert.deepEqual(
     ir.hooks.map((hook) => hook.event),
     Object.keys(hosts),
-    'the fixture declares the nine events, in order',
+    'the fixture declares the fourteen events, in order',
   )
   for (const hook of ir.hooks) {
     assert.equal(hook.annotation.fidelity, 'equivalent', `${hook.event} is annotated at the source`)
-    assert.match(hook.annotation.reason, /S9/, `${hook.event} names the observation that proves the seam`)
+    assert.match(hook.annotation.reason, s23.has(hook.event) ? /S23/ : /S9/, `${hook.event} names the observation that proves the seam`)
     assert.match(hook.annotation.reason, hosts[hook.event], `${hook.event} names the host event it rides`)
   }
 
@@ -132,7 +138,7 @@ test('the four listener seams and the five notification records ride the S9 host
     assert.deepEqual(
       child.config.hooks.map((hook) => hook.event),
       Object.keys(hosts),
-      'all nine handlers reach the one kernel',
+      'all fourteen handlers reach the one kernel',
     )
     assert.deepEqual(skipped, [])
     assert.deepEqual(refused, [])

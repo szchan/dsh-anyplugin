@@ -796,8 +796,8 @@ function readAgents(
 }
 
 /**
- * The four listener seams and the five notification records ride host events S9
- * observed on a real headless turn; the five lifecycle events do the same in
+ * The four listener seams and the ten notification records ride host events S9
+ * and S23 observed on a real headless turn; the five lifecycle events do the same in
  * `LIFECYCLE_HOOKS`. None can be byte-identical: the host event carries less
  * than Claude's payload (and some of it in a different shape), and only
  * Stop/SubagentStop have a decision channel upstream, which this host does not
@@ -850,6 +850,33 @@ const SEAM_HOOKS: Record<string, string> = {
     'Rides the settings/document-updated emit (S9), which also fires on the first read (revision 0) and only again when the document changes. ' +
     'The payload carries hook_event_name, cwd (the process directory), namespace and revision; ' +
     'it omits source, file_path and session_id, which the emit does not carry. Notification only: no decision channel.',
+  TaskCreated:
+    'Rides the session/event team/task record (S23), filtered to revision 1 (status pending). ' +
+    'The payload carries hook_event_name, cwd, session_id, task_id, task_subject and task_description; ' +
+    'it omits team_name and teammate_name, which the record does not carry: teamId is the Team identity (the root session id at this pin), not a display name, and a revision-one task is unowned. ' +
+    'It also omits transcript_path: the host keeps no transcript path and the mount does not read the session log. ' +
+    'Notification only: the record cannot veto, so a decision is reported with a warning.',
+  TaskCompleted:
+    'Rides the session/event team/task record (S23), filtered to the terminal revision with status completed. ' +
+    'The payload carries hook_event_name, cwd, session_id, task_id, task_subject, task_description and teammate_name (task.ownerName); ' +
+    'it omits team_name, because teamId is a session identity rather than a display name; it also omits transcript_path (the host keeps no transcript path) and permission_mode (session-level at the pin, absent from the team/task record). ' +
+    'A handler runs once per completed revision. Notification only: no decision channel.',
+  WorktreeCreate:
+    'Rides the session/event plugin:worktree/created record (S23). ' +
+    'The payload carries hook_event_name, cwd, session_id and name (the branch); ' +
+    'the record also carries path, baseCommit and repositoryRoot, which upstream has no field for; it omits transcript_path, which the host does not keep. ' +
+    'Notification only: no decision channel.',
+  WorktreeRemove:
+    'Rides the worktree/cleanup emit (S23), filtered to the settled removed record: the scheduled record is an intent, and retained or failed is not a removal. ' +
+    'The pair is deduped by sessionId/path/cleanup.revision, so one removal runs one handler. ' +
+    'The payload carries hook_event_name, cwd (the host process directory, because the record names no session cwd: this is a reported gap), session_id and worktree_path. ' +
+    'It also omits transcript_path, which the host does not keep. ' +
+    'Notification only: no decision channel.',
+  StopFailure:
+    'Rides the error-shaped session/event turn/end record and the agent/error emit (S23), whichever arrives first; one run per root session and turn. ' +
+    'The payload carries hook_event_name, cwd, session_id and error_details (the host failure message); ' +
+    'it omits error (the host carries a failure code with no ratified mapping to Claude\'s error class enum), last_assistant_message (the failed turn commits no assistant/message record) and transcript_path (the host keeps no transcript path), so a matcher on any of them is skipped with a warning. ' +
+    'Notification only: no decision channel.',
 }
 
 const LIFECYCLE_HOOKS: Record<string, string> = {
@@ -880,11 +907,11 @@ const LIFECYCLE_HOOKS: Record<string, string> = {
 }
 
 /**
- * Sixteen events have a host: the two tool-scoped ones ride
+ * Twenty-one events have a host: the two tool-scoped ones ride
  * `tools/pre-execute` and `tools/post-execute` (S8, D19), the lifecycle five
- * ride the host events named in `LIFECYCLE_HOOKS` below (S9), and the four
- * listener seams plus the five notification records ride the events named in
- * `SEAM_HOOKS` (S9). Even there the payload is not byte-identical — the
+ * ride the host events named in `LIFECYCLE_HOOKS` below (S9), and the nine
+ * listener seams plus the five S23 notification records ride the events named
+ * in `SEAM_HOOKS` (S9, S23). Even there the payload is not byte-identical — the
  * host has no transcript path or permission mode, and the root lifecycle ids
  * and cwd come from the session header rather than from Claude's payload (a
  * subagent's id comes from the emit, and its cwd is the harness process

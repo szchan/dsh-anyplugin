@@ -60,7 +60,12 @@ const EXPECTED_ROWS = {
     'hooks:PostCompact:match',
     'hooks:PostToolUseFailure:match',
     'hooks:PreCompact:match',
+    'hooks:StopFailure:match',
+    'hooks:TaskCompleted:match',
+    'hooks:TaskCreated:match',
     'hooks:UserPromptSubmit:match',
+    'hooks:WorktreeCreate:match',
+    'hooks:WorktreeRemove:match',
   ],
   'claude-mcp-budget': ['mcpServers:a-server-name-that-is-long-enough:refused'],
   'claude-mcp-http': ['mcpServers:http-probe:match'],
@@ -84,7 +89,7 @@ const EXPECTED_ROWS = {
  * the live matrix produces exactly these values, so the doc and the suite move
  * together. Closing a row moves this object in the same commit.
  */
-export const EXPECTED_COUNTS = { declared: 27, matched: 26, missing: 0, refused: 1, rows: 13 }
+export const EXPECTED_COUNTS = { declared: 32, matched: 31, missing: 0, refused: 1, rows: 13 }
 
 /**
  * Hooks are the one surface whose presence is not readable from a registry:
@@ -133,6 +138,11 @@ const SEAMS_PROBES = {
       'PermissionDenied',
       'CwdChanged',
       'ConfigChange',
+      'TaskCreated',
+      'TaskCompleted',
+      'WorktreeCreate',
+      'WorktreeRemove',
+      'StopFailure',
     ],
   },
 }
@@ -264,8 +274,13 @@ async function inventoryFor(fixture) {
         assert.equal(compactions[index + 1], 'PostCompact', 'and closes with end')
       }
       assert.equal(observed.count('PermissionDenied'), 1, 'the allowed demand is not a denial')
-      assert.equal(observed.count('CwdChanged'), 1, 'one working-directory change, one record')
+      assert.equal(observed.count('CwdChanged'), 5, 'each working-directory set is one record')
       assert.equal(observed.count('ConfigChange'), 2, 'first read (0) and one change (1)')
+      assert.equal(observed.count('TaskCreated'), 1, 'one creation record, one run')
+      assert.equal(observed.count('TaskCompleted'), 1, 'one completed revision, one run')
+      assert.equal(observed.count('WorktreeCreate'), 1, 'one created record, one run')
+      assert.equal(observed.count('WorktreeRemove'), 1, 'scheduled and removed collapse to one run')
+      assert.equal(observed.count('StopFailure'), 1, 'agent/error and turn/end collapse to one run')
       assert.equal(observed.payload('ConfigChange').revision, 1, 'the read-before-change order held')
 
       const inventory = emptyInventory({ name: ir.plugin.name, source: `dsh:${harness.version}` })

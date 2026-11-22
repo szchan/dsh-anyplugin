@@ -22,7 +22,7 @@ codex plugin spec `1.0.0`.
 
 ## 1. Capability snapshot
 
-The one number the project reports: **27 declared / 26 matched / 0 missing /
+The one number the project reports: **32 declared / 31 matched / 0 missing /
 1 refused** across the coverage ratchet's 13 coverage rows
 (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`). It only moves
 when a row moves; see `docs/TODO.md` for the queue behind it.
@@ -50,7 +50,7 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 | Authored mod load | strip, three resolver rules, one classic-pragma JSX transform | `exact` registration / `equivalent` bytes for `.tsx` | `packages/dsh-anyplugin-mod-host/src/index.ts`, `packages/dsh-anyplugin-mod-host/src/resolve.ts`, `packages/dsh-anyplugin-mod-host/src/jsx.ts`, D30/D31/D34/D39 |
 | Static capability scan | lexical, literal call sites only | `equivalent` | `packages/dsh-anyplugin-mod-scan/src/index.ts`, D21 |
 | `register(on, options)` | options from the manifest, `Registration.catch` | `exact` | `packages/dsh-anyplugin-mod-host/src/options.ts`, D36 |
-| Event routing | 19 served of 167 declared events, 148 absent (`fixtures/mods/coverage.json` `totals.events`) | `equivalent` | `packages/dsh-anyplugin-intercept/src/mod-events.ts`, D40 |
+| Event routing | 24 served of 167 declared events, 143 absent (`fixtures/mods/coverage.json` `totals.events`) | `equivalent` | `packages/dsh-anyplugin-intercept/src/mod-events.ts`, D40 |
 | `next` surface | `to`, `signal`, `budget`, `trace`, eager trips | `exact` since D38 | `packages/dsh-anyplugin-intercept/src/index.ts`, D38 |
 | `$` bridge | 26 served, 7 typed refusals, 67 absent members (`fixtures/mods/coverage.json` `totals.methods`; pin 2.1.329) | `equivalent` | `packages/dsh-anyplugin-mod-host/src/bridge.ts`, `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`, `docs/ARCHITECTURE.md` §10.5 S15 |
 | Element runtime | `$.ui.*` refusals are typed; sink is ticket #75 | `unsupported` | `docs/TODO.md` |

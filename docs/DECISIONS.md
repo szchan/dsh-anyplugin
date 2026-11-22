@@ -3192,3 +3192,117 @@ against a base tree and reports `head / base`.
 matrix M1–M8. Acceptance pins the pair-median report and the gated-only
 wording. No gate in `verify` reads perf numbers, so a red perf run can block a
 release decision but never a merge.
+
+---
+
+## D70 — The five S23 classic events ride records and emits, once per real occurrence
+
+**Decided 2026-11-22** (#197, S23). `TaskCreated`, `TaskCompleted`,
+`WorktreeCreate`, `WorktreeRemove` and `StopFailure` were the five S9-unprobed
+classic events with a host emitter at the `0.2.2-rc.5` pin. They are now
+routes in `packages/dsh-anyplugin-intercept/src/mod-events.ts` and payloads
+in the classic hook mount
+(`packages/dsh-anyplugin-materialize-hook/src/index.ts`), notification-only.
+The classic names and payload shapes do not move (D32).
+
+1. **A durable record or an emit is the occurrence, not a turn.** The task and
+   worktree events are service calls; `StopFailure` is a failed model turn.
+   No route waits for a model step that may not happen.
+2. **One handler invocation per real occurrence.** `TaskCreated` fires on
+   `task.revision === 1`; `TaskCompleted` on `task.status === 'completed'`.
+   `WorktreeRemove` fires only on the settled `worktree/cleanup` record with
+   `cleanup.status === 'removed'`, keyed by session, path and
+   `cleanup.revision`; the `scheduled` record is an intent, and `retained` /
+   `failed` are not removals. `StopFailure` fires once per root session and
+   turn (key session/`turn`), whichever of the error-shaped `turn/end` record
+   and the `agent/error` emit arrives first; child sessions are excluded
+   because `SubagentStop` owns them. The host emits twice in two of the five
+   cases, so dedupe is part of the route, not an optimisation.
+3. **Missing fields are reported gaps, never invented values.** The mount
+   reports `team_name` for both task events (`teamId` is the root session id
+   branded as a Team identity, not a display name), `teammate_name` for
+   `TaskCreated` (a revision-one task is unowned), and `error` plus
+   `last_assistant_message` for `StopFailure` (the host failure code has no
+   ratified mapping to Claude's class enum, and a failed turn commits no
+   `assistant/message`). `TaskCompleted` takes `teammate_name` from
+   `ownerName`; `StopFailure` takes `error_details` from the host message.
+   No DSH field is renamed into a Claude name.
+4. **Notification-only means no veto.** A `deny` or `block` from one of these
+   handlers is a typed unsupported/ignored warning, as for
+   `PreCompact`/`CwdChanged`; it cannot stop a turn, a removal or a task.
+5. **Counts move with the route.** 24 live routes (21 classic, plus
+   `session.start`, `tool.call` and `prompt.context`) and 143 unmapped names
+   supersede D51's 19/148. `TeammateIdle` stays unmapped with its S23
+   host-gap reason: the pin records no `team/member`, and a listener cannot
+   create that seam.
+
+**Consequences.** `fixtures/claude-hooks-seams` drives a real headless run and
+asserts one log line per routed event, the payload key sets, and the two
+dedupe cases; the coverage ratchet moves to 32 declared / 31 matched, and
+`fixtures/mods/coverage.json` is regenerated in the same commit.
+
+---
+
+## D71 — The registry tarball ceiling moves to 188 KiB
+
+**Decided 2026-11-22** (#197). Routing the five S23 events adds the record
+translation to the shipped classic hook mount, so `npm pack` measures the
+registry tarball at **190257 bytes (185.8 KiB)**, above D65's 188416-byte
+(184 KiB) ceiling. The ceiling moves to **188 KiB (192512 bytes)**, leaving
+2.2 KiB of headroom; D46's separate 128 KiB kernel ceiling is unchanged.
+
+1. **The tarball is the shipped surface, not the source tree.** The five
+   routes live in `packages/dsh-anyplugin-materialize-hook/src/index.ts`, which
+   ships; trimming comments or moving the translation to another module would
+   hide the code without shrinking the payload materially.
+2. **A budget raise is a decision, not a silent drift.** The next raise cites
+   the measured byte count and the feature that caused it, as D65 and this
+   entry do.
+3. **The kernel ceiling stays the fidelity budget.** D46's 128 KiB limit was
+   not touched; this entry only bounds the registry tarball the CLI serves.
+
+**Consequences.** `scripts/check-pack.mjs` carries the new constant and points
+at this entry. The measured size is from the same build CI runs; no dependency,
+pin, workflow or kernel limit moved.
+
+---
+
+## D72 — D70's field sentence is superseded: the gaps are named and the translations are separated
+
+**Decided 2026-11-22** (#197, review of PR #201). D70 rule 3 ends "No DSH
+field is renamed into a Claude name" three lines after naming
+`ownerName → teammate_name`, and while `WorktreeCreate` maps `branch → name`
+and `StopFailure` maps the host failure message into `error_details`. The
+claim is false as written, and the gap list omits `transcript_path`,
+`permission_mode` and `WorktreeRemove.cwd`. This entry supersedes that
+sentence and that list; D70's routing, dedupe and notification-only rules
+stand unchanged.
+
+1. **Gaps stay named.** The mount reports `transcript_path` for all five
+   events (the host keeps no transcript path, and this mount does not read the
+   session log), `permission_mode` for `TaskCompleted` (session-level at the
+   pin and absent from `team/task`), `team_name` for both task events,
+   `teammate_name` for `TaskCreated`, and `error` plus `last_assistant_message`
+   for `StopFailure`.
+2. **`WorktreeRemove.cwd` is the host process directory.** The
+   `worktree/cleanup` record carries `sessionId`, `path` and `cleanup` only; it
+   has no session header. The mount emits `process.cwd()` and reports the
+   `cwd` gap, so `cwd` and `worktree_path` remain two distinct classic fields.
+   It does not read the removed checkout into `cwd`.
+3. **Three translations are one value each.** `TaskCompleted` takes
+   `teammate_name` from `task.ownerName`; `WorktreeCreate` takes `name` from
+   `branch`; `StopFailure` takes `error_details` from the host failure
+   message. No value is synthesized from a different concept.
+4. **The double emitters are named.** `WorktreeRemove` emits a `scheduled`
+   intent and a settled `removed` record; `StopFailure` emits an error-shaped
+   `turn/end` record and an `agent/error` emit. Those are the two cases D70
+   rule 2 dedupes.
+5. **Evidence.** `spikes/s23-unprobed-events/run.mjs` located the emitters and
+   their fields at the pin. `packages/dsh-anyplugin-conformance/test/lifecycle.test.mjs`
+   drives real team, worktree and failing-turn paths (root and child) on
+   `fixtures/claude-hooks-seams` and asserts one line per event, the exact
+   payload key sets, and `cwd !== worktree_path`. The materializer's
+   `packages/dsh-anyplugin-materialize-hook/test/lifecycle.test.mjs` pins the
+   dedupe keys and gap warnings; its mutation set (drop `turn`, drop
+   `cleanup.revision`, force `isRootSession`, drop the gap calls, set `cwd` to
+   the removed path) turns a named test red.

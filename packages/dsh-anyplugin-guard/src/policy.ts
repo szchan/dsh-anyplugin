@@ -53,7 +53,7 @@ import { baseCommand, expansionHazard, leadingAssignments, parseSegments, shellS
 
 /** The brief the guard injects into a spawned worker (see `brief.ts`). */
 export interface BriefConfig {
-  /** Ratchet totals, verbatim, e.g. `27 declared / 26 matched / 0 missing / 1 refused`. */
+  /** Ratchet totals, verbatim, e.g. `32 declared / 31 matched / 0 missing / 1 refused`. */
   ratchet: string[]
   /** Fixture count sentence, e.g. `13 fixtures`: the directories the ratchet owns. */
   fixtures?: string
