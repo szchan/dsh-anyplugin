@@ -198,7 +198,7 @@ npm run verify
 ```
 
 `verify` runs the structural rules, the capability map check, the append-only
-decision check, and 979 tests. It must report **0 skipped**: a skip means an
+decision check, and the full test suite. It must report **0 skipped**: a skip means an
 environment variable is missing, and on CI a skip is a failure by design.
 
 ## 📚 Read next
