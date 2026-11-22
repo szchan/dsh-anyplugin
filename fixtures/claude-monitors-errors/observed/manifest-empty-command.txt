@@ -1,0 +1,1 @@
+❯ inline[0]: ✘ Failed to load plugin: Plugin manifest-empty-command has an invalid manifest file at <plugin>/.claude-plugin/plugin.json. Validation errors: monitors.0.command: Too small: expected string to have >=1 characters

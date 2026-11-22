@@ -1,0 +1,1 @@
+❯ inline[0]: ✘ Failed to load plugin: Plugin manifest-value-number has an invalid manifest file at <plugin>/.claude-plugin/plugin.json. Validation errors: monitors: Invalid input

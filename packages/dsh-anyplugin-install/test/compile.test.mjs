@@ -2,13 +2,14 @@
 // Its two invariants: children come from `emitPlugin` (never a second emitter),
 // and ids are the install layer's dialect-qualified, profile-global form.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
+import { monitorClientText } from '../../dsh-anyplugin-dialect-claude-code/src/monitor-client-text.ts'
 import { AGENT_PLUGINS_PIN, readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { emitPlugin, GROUP_PLUGIN, mangleId } from '../../dsh-anyplugin-emit/src/index.ts'
 import { compileEntries, compileReport } from '../src/index.ts'
@@ -240,6 +241,103 @@ test('compileEntries fails closed instead of dropping a per-record problem', () 
       new RegExp(`compileEntries: .*unsupported dialect "${dialect}"`),
     )
   }
+})
+
+test('a refused monitors declaration is unsupported while its sibling skill is emitted', () => {
+  // The pinned client does not refuse the plugin: `plugin list` reports it as
+  // loaded with errors, and `plugin details` still serves the skill. Refusing
+  // the whole plugin here would drop a component the host keeps, so the bad
+  // declaration becomes an `unsupported` row and the skill still compiles.
+  const id = 'claude-code:monitors-bad-key'
+  const installs = lock(record('monitors-bad-key', 'claude-monitors-bad-key'))
+  const ir = readClaudePlugin(fixture('claude-monitors-bad-key'))
+  const refusals = ir.unsupported.filter((entry) => entry.surface === 'monitors')
+  assert.equal(refusals.length, 1)
+  assert.equal(refusals[0].annotation.fidelity, 'unsupported')
+  assert.ok(
+    refusals[0].annotation.reason.includes(monitorClientText('fileUnknownKey', { key: 'trigger' })),
+    'the unsupported reason quotes the captured file-shaped client line',
+  )
+  assert.ok(
+    refusals[0].annotation.reason.includes(monitorClientText('fileStatus')),
+    'the unsupported reason quotes the captured status line',
+  )
+  assert.deepEqual(ir.skills.map((skill) => skill.name), ['innocent'])
+
+  const report = compileReport(installs, { materializers, enablements: enabled(id) })
+  assert.deepEqual(report.problems, [])
+  assert.equal(report.entries.length, 1)
+  assert.deepEqual(
+    report.entries[0].config.map((child) => child.id),
+    [`anyplugin.${scopeOf(id)}#skill`],
+  )
+  const entries = compileEntries(installs, { materializers, enablements: enabled(id) })
+  assert.equal(entries.length, 1)
+})
+
+test('no refused monitors fixture becomes a compile problem', () => {
+  // The other two fixtures carry no sibling component; the plugin still
+  // compiles to nothing instead of being reported as a problem or throwing.
+  for (const [name, directory] of [
+    ['monitors-bad-when-enum', 'claude-monitors-bad-when-enum'],
+    ['monitors-bad-when-short', 'claude-monitors-bad-when-short'],
+  ]) {
+    const id = `claude-code:${name}`
+    const installs = lock(record(name, directory))
+    const report = compileReport(installs, { materializers, enablements: enabled(id) })
+    assert.deepEqual(report.problems, [], `${directory}: not a compile problem`)
+    assert.deepEqual(report.entries, [], `${directory}: no carried surface emits no group`)
+    assert.deepEqual(
+      compileEntries(installs, { materializers, enablements: enabled(id) }),
+      [],
+    )
+  }
+})
+
+test('an invalid inline monitors manifest is fatal through CompileReport', () => {
+  // The client refuses a manifest whose own `monitors` value is invalid: the
+  // plugin never loads and `plugin details` lists nothing. That is the one
+  // monitors shape that stays fatal, through the same path a broken manifest
+  // takes, and it must emit nothing.
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-monitors-inline-'))
+  try {
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true })
+    writeFileSync(
+      join(dir, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'monitors-inline',
+        version: '0.0.1',
+        monitors: [{ name: 'beat', command: 'node monitor.mjs', description: 'x', trigger: 'always' }],
+      }),
+    )
+    const id = 'claude-code:monitors-inline'
+    const installs = lock(record('monitors-inline', 'monitors-inline', { root: dir }))
+    const report = compileReport(installs, { materializers, enablements: enabled(id) })
+    assert.deepEqual(report.entries, [])
+    assert.equal(report.problems.length, 1)
+    assert.match(report.problems[0].reason, /invalid monitors declaration/)
+    assert.match(report.problems[0].reason, /Unrecognized key: "trigger"/)
+    assert.match(report.problems[0].reason, /refuses the manifest/)
+    assert.throws(
+      () => compileEntries(installs, { materializers, enablements: enabled(id) }),
+      /compileEntries: invalid monitors declaration/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a valid monitors declaration emits the sibling skill and no monitor row', () => {
+  const id = 'claude-code:monitors-valid'
+  const entries = compileEntries(lock(record('monitors-valid', 'claude-monitors-valid')), {
+    materializers,
+    enablements: enabled(id),
+  })
+  assert.equal(entries.length, 1)
+  assert.deepEqual(
+    entries[0].config.map((child) => child.id),
+    [`anyplugin.${scopeOf(id)}#skill`],
+  )
 })
 
 test('projectDir reads the three scope files when enablements is omitted', () => {

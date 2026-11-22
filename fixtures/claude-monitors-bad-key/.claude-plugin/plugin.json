@@ -1,0 +1,5 @@
+{
+  "name": "monitors-bad-key",
+  "description": "Conformance fixture: a monitor declaration with an unknown key, next to a valid skill",
+  "version": "0.0.1"
+}

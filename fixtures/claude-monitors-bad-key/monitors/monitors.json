@@ -1,0 +1,8 @@
+[
+  {
+    "name": "bad",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" bad",
+    "description": "S22 unknown-key monitor",
+    "trigger": "always"
+  }
+]

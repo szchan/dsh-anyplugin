@@ -65,6 +65,15 @@ const EXPECTED_ROWS = {
   'claude-mcp-budget': ['mcpServers:a-server-name-that-is-long-enough:refused'],
   'claude-mcp-http': ['mcpServers:http-probe:match'],
   'claude-mcp-tool-budget': ['mcpServers:probe:match'],
+  // A monitors declaration never contributes a monitor row: the pinned client
+  // prints no Monitors line (S22/D37). A valid declaration contributes nothing
+  // on its own; a file-shaped rejection is carried as an 'unsupported' IR row
+  // and still loads the plugin, so the row measured here is the sibling
+  // component the directory client serves. The two fixtures without a sibling
+  // expose no component at all and are listed in FIXTURE_EXCLUSIONS instead of
+  // owning an empty row.
+  'claude-monitors-valid': ['skills:greet:match'],
+  'claude-monitors-bad-key': ['skills:innocent:match'],
   'claude-root-skill': ['skills:rooty:match'],
   'claude-skills-only': ['skills:greet:match', 'skills:hello:match'],
 }
@@ -75,7 +84,7 @@ const EXPECTED_ROWS = {
  * the live matrix produces exactly these values, so the doc and the suite move
  * together. Closing a row moves this object in the same commit.
  */
-export const EXPECTED_COUNTS = { declared: 25, matched: 24, missing: 0, refused: 1, rows: 11 }
+export const EXPECTED_COUNTS = { declared: 27, matched: 26, missing: 0, refused: 1, rows: 13 }
 
 /**
  * Hooks are the one surface whose presence is not readable from a registry:

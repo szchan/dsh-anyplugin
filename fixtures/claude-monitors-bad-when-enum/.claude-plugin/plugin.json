@@ -1,0 +1,5 @@
+{
+  "name": "monitors-bad-when-enum",
+  "description": "Conformance fixture: a monitor whose when field is neither always nor on-skill-invoke:<skill>",
+  "version": "0.0.1"
+}
