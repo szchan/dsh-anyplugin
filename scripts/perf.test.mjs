@@ -22,6 +22,7 @@ import {
   PerfError,
   REPORT_SCHEMA,
   checkFailures,
+  coreReportRow,
   exceedsThreshold,
   formatTable,
   headOverBase,
@@ -30,6 +31,7 @@ import {
   pairRatios,
   parseArgs,
   perfEnvProblems,
+  pinReportRow,
   sampleBootPairs,
   requirePerfEnv,
 } from './perf.mjs'
@@ -352,6 +354,55 @@ test('pairBootLog refuses block-merged samples and takes the median of per-pair 
   assert.throws(() => pairBootLog([{ pair: 0, side: 'base', elapsed: 100 }]), PerfError)
 })
 
+
+test('the reported ratio is the pair median, not the ratio of the two side medians', () => {
+  // Pairs are (100, 250) and (300, 150): ratios [2.5, 0.5] -> median 1.5.
+  // The side medians are both 200, so a row that regressed to
+  // headOverBase(base.median, head.median) would print 1.0 instead.
+  const baseSamples = [100, 300]
+  const headSamples = [250, 150]
+  assert.equal(median(pairRatios(baseSamples, headSamples)), 1.5)
+  assert.equal(headOverBase(median(baseSamples), median(headSamples)), 1)
+
+  const core = coreReportRow({ unit: 'ms', baseSamples, headSamples })
+  assert.equal(core.ratio, 1.5)
+  assert.equal(core.base.median, 200)
+  assert.equal(core.head.median, 200)
+
+  const pin = pinReportRow({
+    pin: '0.2.2-rc.5',
+    samples: { base: baseSamples, head: headSamples },
+    hostPath: 'scope-link',
+    moduleUrl: 'file:///tmp/base/lib/index.js',
+  })
+  assert.equal(pin.ratio, 1.5)
+  assert.deepEqual(pin.pairs, [2.5, 0.5])
+  assert.equal(pin.base.median, 200)
+  assert.equal(pin.head.median, 200)
+})
+
+test('a P2 far outside the threshold stays outside --check, and the verdict says so', () => {
+  const report = {
+    base: { commit: 'a'.repeat(40), ref: 'HEAD~1' },
+    head: { commit: 'b'.repeat(40) },
+    node: 'v24.22.2',
+    repeat: 5,
+    probes: {
+      P1: { unit: 'ms', base: { median: 100 }, head: { median: 101 }, ratio: 1.01 },
+      P2: [{ pin: '0.2.2-rc.5', unit: 'ms', base: { median: 10 }, head: { median: 189 }, ratio: 18.9 }],
+      P3: { unit: 'us', base: { median: 10 }, head: { median: 10 }, ratio: 1 },
+      P4: { unit: 'ms', base: { median: 100 }, head: { median: 100 }, ratio: 1, comparable: true, plugins: { base: 21, head: 21 } },
+    },
+    p5: {},
+    check: { threshold: 1.2, failures: [] },
+    notes: [],
+  }
+  // No failure means the CLI exits 0; P2's 18.9x is printed but never read.
+  assert.deepEqual(checkFailures(report, 1.2), [])
+  const table = formatTable(report)
+  assert.match(table, /18\.90x/u)
+  assert.match(table, /--check: all gated ratios within 1\.2x — P2 is informational and was not checked/u)
+})
 
 test('pairRatios pairs sample i with sample i and refuses different counts', () => {
   assert.deepEqual(pairRatios([100, 50], [120, 40]), [1.2, 0.8])

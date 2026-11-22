@@ -502,7 +502,7 @@ export function formatTable(report) {
     lines.push('')
     lines.push(
       report.check.failures.length === 0
-        ? `--check: all ratios within ${report.check.threshold}x`
+        ? `--check: all gated ratios within ${report.check.threshold}x — P2 is informational and was not checked`
         : `--check: ${report.check.failures.length} above ${report.check.threshold}x — ${report.check.failures.join(', ')}`,
     )
   }
@@ -673,6 +673,36 @@ function summarize(samples, unit) {
   return { median: median(samples), samples: samples.map((sample) => Number(sample.toFixed(4))) }
 }
 
+/**
+ * One core-probe row. The ratio is the median of the per-pair head/base
+ * values: base and head were measured next to each other, so the pair is the
+ * comparison. headOverBase(base.median, head.median) would turn drift between
+ * the two halves into a ratio, which is the bug the pairing exists to avoid.
+ */
+export function coreReportRow({ unit, baseSamples, headSamples }) {
+  return {
+    unit,
+    base: summarize(baseSamples, unit),
+    head: summarize(headSamples, unit),
+    ratio: median(pairRatios(baseSamples, headSamples)),
+  }
+}
+
+/** The P2 row: the same pair-median contract, for one pin's paired boots. */
+export function pinReportRow({ pin, samples, hostPath, moduleUrl }) {
+  const ratios = pairRatios(samples.base, samples.head)
+  return {
+    pin,
+    unit: 'ms',
+    base: summarize(samples.base, 'ms'),
+    head: summarize(samples.head, 'ms'),
+    ratio: median(ratios),
+    pairs: ratios.map((ratio) => Number(ratio.toFixed(4))),
+    hostPath,
+    pinnedFiles: moduleUrl,
+  }
+}
+
 async function runSuite(options) {
   const env = requirePerfEnv()
   const notes = []
@@ -732,11 +762,8 @@ async function runSuite(options) {
       JSON.stringify(bootPins),
     ])
 
-    const coreRow = (id, unit) => {
-      const base = summarize(baseCore[id].samples, unit)
-      const head = summarize(headCore[id].samples, unit)
-      return { unit, base, head, ratio: median(pairRatios(baseCore[id].samples, headCore[id].samples)) }
-    }
+    const coreRow = (id, unit) =>
+      coreReportRow({ unit, baseSamples: baseCore[id].samples, headSamples: headCore[id].samples })
 
     const headPluginNames = [...headCore.p4.upstream, ...headCore.p4.fixtures].sort()
     const basePluginNames = [...baseCore.p4.upstream, ...baseCore.p4.fixtures].sort()
@@ -751,18 +778,12 @@ async function runSuite(options) {
         return { pin: pin.version, unit: 'ms', base: null, head: null, ratio: null, reason: 'pin not fetched' }
       }
       assert(measured !== undefined, `P2 measured no boot for dsh ${pin.version}`)
-      const baseSummary = summarize(measured.samples.base, 'ms')
-      const headSummary = summarize(measured.samples.head, 'ms')
-      return {
+      return pinReportRow({
         pin: pin.version,
-        unit: 'ms',
-        base: baseSummary,
-        head: headSummary,
-        ratio: median(measured.ratios),
-        pairs: measured.ratios.map((ratio) => Number(ratio.toFixed(4))),
+        samples: measured.samples,
         hostPath: measured.hostPath,
-        pinnedFiles: measured.moduleUrl,
-      }
+        moduleUrl: measured.moduleUrl,
+      })
     })
 
     const pack = packTarball(CHECKOUT)
@@ -1329,7 +1350,7 @@ async function main() {
   }
   if (report.check !== null) {
     if (report.check.failures.length === 0) {
-      if (!options.quiet) process.stderr.write(`perf --check: all ratios within ${report.check.threshold}x\n`)
+      if (!options.quiet) process.stderr.write(`perf --check: all gated ratios within ${report.check.threshold}x — P2 is informational and was not checked\n`)
     } else {
       for (const failure of report.check.failures) {
         process.stderr.write(`perf --check: ${failure} (threshold ${report.check.threshold}x)\n`)
