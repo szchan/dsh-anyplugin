@@ -552,6 +552,8 @@ type MergeInvocation = {
   /** The value flag that ate a pin-shaped token, if one did. */
   consumedBy: string | undefined
   help: boolean
+  /** `--disable-auto` (or its true forms) performs no merge. */
+  disableAuto: boolean
 }
 
 function pinToken(token: string): boolean {
@@ -566,7 +568,7 @@ function pinToken(token: string): boolean {
 function mergeInvocation(tokens: string[]): MergeInvocation {
   const head = stripPrefix(tokens)
   const merge = mergeSubcommandAt(head)
-  const result: MergeInvocation = { pin: undefined, pinFlag: false, consumedBy: undefined, help: false }
+  const result: MergeInvocation = { pin: undefined, pinFlag: false, consumedBy: undefined, help: false, disableAuto: false }
   if (merge < 0) return result
 
   const consumeValue = (flag: string, value: string | undefined): void => {
@@ -593,6 +595,14 @@ function mergeInvocation(tokens: string[]): MergeInvocation {
     }
     if (token.startsWith('--help=')) {
       if (TRUE_FLAG_VALUE.test(token.slice('--help='.length))) result.help = true
+      continue
+    }
+    if (token === '--disable-auto') {
+      result.disableAuto = true
+      continue
+    }
+    if (token.startsWith('--disable-auto=')) {
+      if (TRUE_FLAG_VALUE.test(token.slice('--disable-auto='.length))) result.disableAuto = true
       continue
     }
     const equals = token.startsWith('--') ? token.indexOf('=') : -1
@@ -1476,7 +1486,9 @@ function judgeCommand(
     const merge = ghMergePath(segment.tokens)
     if (merge === undefined || agent.worker) continue
     // `gh pr merge --help` prints help and exits; it performs no merge.
-    if (mergeInvocation(segment.tokens).help) continue
+    // `--disable-auto` (true form) cancels an auto-merge; it performs no merge either.
+    const invocation = mergeInvocation(segment.tokens)
+    if (invocation.help || (merge === 'pr' && invocation.disableAuto)) continue
     const problem =
       merge === 'api'
         ? `a raw \`gh api\` merge cannot carry ${MERGE_PIN_FLAG}`

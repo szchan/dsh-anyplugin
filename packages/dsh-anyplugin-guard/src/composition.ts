@@ -366,6 +366,8 @@ export function guardTable(options: { worktree: string; protectedRoot: string })
     { tool: 'bash', payload: 'gh pr merge 82 --match-head-commit 0123456', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'a short sha is not a pin' },
     { tool: 'bash', payload: `gh pr merge 82 --body --match-head-commit=${REVIEWED_HEAD}`, role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'body text is not the pin' },
     { tool: 'bash', payload: 'gh pr merge 82 --help', role: 'root', expect: 'allow', rule: 'allow', note: 'help does not merge' },
+    { tool: 'bash', payload: 'gh pr merge 82 --disable-auto', role: 'root', expect: 'allow', rule: 'allow', note: 'disabling auto-merge performs no merge' },
+    { tool: 'bash', payload: 'gh pr merge 82 --disable-auto=false', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'false does not disable; it merges' },
     { tool: 'bash', payload: 'gh pr list --search pr merge', role: 'root', expect: 'allow', rule: 'allow', note: 'only the command position counts' },
     { tool: 'bash', payload: 'gh pr -R szchan/dsh-anyplugin merge 82', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'the repo flag does not hide the merge' },
     { tool: 'bash', payload: `gh pr merge 82 --squash --match-head-commit ${REVIEWED_HEAD}`, role: 'root', expect: 'allow', rule: 'allow', note: 'master merge with the reviewed head' },

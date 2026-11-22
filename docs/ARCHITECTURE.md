@@ -1513,11 +1513,14 @@ a push is accepted only as `git push [-u|--force-with-lease] origin <one
 refspec that is not main>`, so a destination of `main`/`master`, **every bare
 `git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
 refused (`remote.<name>.push` and `push.default` can retarget a bare push after
-it was read); every modelled `gh pr merge` must carry `--match-head-commit <40-hex>`
+it was read); every modelled `gh pr merge` that performs a merge must carry `--match-head-commit <40-hex>`
 (the root is the merge path; a worker may not merge at all), including when
 `-R`/`--repo` sits between `pr` and `merge` or a backslash-newline joins the
 words; a `gh api` request whose path is the live `…/pulls/<n>/merge` route is
-refused whatever the method, because it has no pin flag; a help request is not a
+refused whatever the method, because it has no pin flag; `gh pr merge
+--disable-auto` (its true form) cancels an auto-merge and is allowed, while
+`--auto=false` and `--disable-auto=false` do not cancel it and still need the
+pin; a help request is not a
 merge (the rule is tested at the installed mount; it is dormant wherever
 `guard:status` reports not-installed, F1); writes
 outside the worker's recorded worktree, with the main checkout always
@@ -1628,7 +1631,10 @@ outside the guard (the guard models the tool call, not the filesystem),
 command-position skipper does not model, any git feature outside the
 modelled subcommands, a merge through a client the guard does not model
 (`curl`, a script, inline interpreters such as `node -e` and `python3 -c`, a
-`gh` alias or wrapper, or a raw GraphQL `mergePullRequest`), and `--auto` with
+`gh` alias or wrapper, a pre-existing git/client-side alias for a merge
+(`git config alias.pm '!gh pr merge --squash'; git pm 82`) — root-only, because
+the guard does not refuse unknown git subcommands for root, so this is named
+rather than closed — or a raw GraphQL `mergePullRequest`), and `--auto` with
 a valid pin (gh forwards the pin as `expectedHeadOid`; when GitHub evaluates it
 for a deferred merge is GitHub's behaviour, not the guard's). The merge rule is
 omission prevention, not review verification: the guard can see that a merge
@@ -2957,10 +2963,11 @@ kernel would have to be rewritten — and would make mods structurally impossibl
     replaced (`tools/post-execute cannot replace the value of a failed
     result`), and a standalone `ctx.tools.execute` call carries no `agent`, so
     the payload's agent-derived fields are absent rather than invented.
-  - One guard rule rides this seam: a modelled `gh pr merge` (including
-    `-R`/`--repo` between `pr` and `merge`, a value flag that could swallow the
-    pin, and a backslash-newline continuation) is refused unless it carries
-    `--match-head-commit <40-hex>`. That is omission prevention, not review
+  - One guard rule rides this seam: a modelled `gh pr merge` that performs a
+    merge (including `-R`/`--repo` between `pr` and `merge`, a value flag that
+    could swallow the pin, and a backslash-newline continuation) is refused
+    unless it carries `--match-head-commit <40-hex>`; `--help` and
+    `--disable-auto` perform no merge. That is omission prevention, not review
     verification — the guard can see that a merge names a head, not that the
     head was the one the reviewer read. The installed block is loaded in
     `guard.test.mjs` and denied/allowed through its `tools/pre-execute`

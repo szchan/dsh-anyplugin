@@ -223,6 +223,19 @@ test('a help request is not a merge', () => {
   assert.equal(shell(`gh pr merge 82 --body --help --match-head-commit ${reviewedHead}`, root).kind, 'allow')
 })
 
+test('disabling auto-merge is not a merge', () => {
+  for (const flag of ['--disable-auto', '--disable-auto=true']) {
+    assert.equal(shell(`gh pr merge 82 ${flag}`, root).kind, 'allow', flag)
+  }
+  // A false disable/auto flag does not cancel the merge; it merges immediately.
+  for (const flag of ['--disable-auto=false', '--auto=false']) {
+    const immediate = shell(`gh pr merge 82 ${flag}`, root)
+    assert.equal(immediate.kind, 'deny', flag)
+    assert.equal(immediate.rule, 'gh-pr-merge-pin', flag)
+    assert.equal(shell(`gh pr merge 82 ${flag} --match-head-commit ${reviewedHead}`, root).kind, 'allow', flag)
+  }
+})
+
 test('a merge is judged at the gh command position', () => {
   for (const agent of [root, worker]) {
     assert.equal(shell('gh pr list --search pr merge', agent).kind, 'allow')
@@ -358,6 +371,15 @@ test('an alias, a git config write and an unknown subcommand cannot hide a push'
   assert.equal(unknown.kind, 'deny')
   assert.equal(unknown.rule, 'git-unknown-subcommand')
   assert.match(unknown.reason, /alias/u)
+})
+
+test('a pre-existing git alias is a documented root residual', () => {
+  // Root may run an unknown git subcommand, so an alias already in config is
+  // outside the tool layer's model; the worker still gets `git-unknown-subcommand`.
+  assert.equal(shell('git pm 82', root).kind, 'allow')
+  const workerView = shell('git pm 82')
+  assert.equal(workerView.kind, 'deny')
+  assert.equal(workerView.rule, 'git-unknown-subcommand')
 })
 
 test('ordinary work survives: non-exec -c keys, local history verbs, reads and lease pushes', () => {
