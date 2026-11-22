@@ -19,7 +19,8 @@ Read `docs/audits/` (latest report) and the `open` entries in the
 it moved. Last pass's actions are this pass's first question.
 
 Completion: every prior `open` entry is either still open with a note, or closed
-with a link to the commit/PR that did it.
+with a link to the commit/PR that did it. An item that was not worked is named
+as blocked or explicitly accepted; it is not silently carried.
 
 ## 2. Collect the window
 
@@ -40,8 +41,9 @@ task is missing, recreate it: daily 09:00 `America/Los_Angeles`, target
 `new_once`, working directory the main checkout. The prompt must say: fetch
 `origin/main`, create or reset `.agents/worktrees/audit-daily` on a fresh
 branch, load this skill, always write the report and open a PR (even a
-report-only pass), run two reviewers for a mechanism change, never merge, and
-run the Monday mutation check (§8). Confirm the task in the next digest.
+report-only pass), give every finding an action in the same pass, never approve,
+merge, or close, and run the Monday mutation check (§7). Confirm the task in the
+next digest.
 
 For PR detail, the digest only counts comments. Read the bodies and comments:
 
@@ -94,15 +96,20 @@ window; commands read; the numbers.
 F<n> — title. Observation with path/count. Why it recurs.
 
 ## Actions
-finding → what changed, or the issue/PR that tracks it.
+finding → what changed in this pass, or the issue/PR opened in this pass.
 
 ## Open
-each still-open finding and its tracking issue.
+only blocked or deferred findings, each with a tracking issue, an owner, and
+the condition that reopens it. Not a backlog.
 ```
 
 Number new findings after the highest `F<n>` in the ledger. A finding that
 already exists gets its entry updated, not a second id. New ledger entries quote
 this report in `evidence`; the report quotes the JSON.
+
+Every finding must leave this pass with an action: fixed in the PR, tracked by
+an issue/PR opened in the same pass, or accepted with an owner and review date.
+"Investigate later" is not an action.
 
 Completion: every sentence in `## Findings` has a path, a count, or a quoted
 sample; no sentence relies on memory.
@@ -116,10 +123,9 @@ Edit the JSON block in `docs/AUDIT.md` between the audit-ledger markers:
 - `artifact`/`proof` are files that exist, and `proof` is not the artifact;
   `open` carries `tracking: "#<issue>"`;
 - `enforced` means a hook/ci/lint mechanism with a proof file; `reviewed`
-  means a recorded check exists (a mechanism change needs two independent
-  verdicts; a schedule that only reports is reviewed by the daily pass);
-  `documented` means prose only; `dormant` means implemented and tested but
-  not installed (F1);
+  means a recorded check exists (a schedule that only reports counts because
+  the daily pass checks it); `documented` means prose only; `dormant` means
+  implemented and tested but not installed (F1);
 - move `updated` to today; never delete an entry (retire it with the reason);
 - a new finding needs `node scripts/check-audit.mjs --update`, which also
   refreshes `docs/audit.lock.json`; a locked title/mechanism/artifact cannot
@@ -131,22 +137,7 @@ npm run check:audit
 
 Completion: `check:audit` prints the entry/report counts and exits 0.
 
-## 6. Review a mechanism change
-
-A report-only PR needs no reviewer beyond the normal PR. A change to a hook,
-gate, skill that changes behavior, or the ledger schema needs **two** read-only
-reviewers before the PR: one who did not touch the change, both with the
-adversarial brief in `docs/AUDIT.md` §6. The brief asks for
-`Claim | Proof | Verdict` with `file:line`; "looks good" is not a review.
-Address every `weaker`/`not proven` by improving the proof or shrinking the
-claim.
-
-Use `agent_preset: "readonly"` when the tool accepts it. If it rejects the
-preset ("selection is disabled for this tool instance"), run two plain
-subagents whose prompt says **read-only** and record that fallback in the
-report; it is a weaker independence claim, so do not describe it as sandboxed.
-
-## 7. Ship the pass
+## 6. Ship the pass
 
 `verify` needs the pinned environment from the main checkout
 (`DSH_HARNESS_DIR`, `DSH_HARNESS_VERSION`, `CLAUDE_BIN`,
@@ -162,19 +153,24 @@ git add docs/AUDIT.md docs/audits .dsh/skills/dsh-anyplugin-audit \
 git commit -m "audit: <date> pass"
 git push -u origin <branch>
 npm run gh-bot -- pr create --title "audit: <date> pass" --body-file <body>
-npm run gh-bot -- pr comment <n> --body-file <reviewer-verdicts>
 ```
 
 A report-only PR adds only `docs/AUDIT.md`, `docs/audits/`, and the skill. A
 mechanism fix carries the code and its test. A finding that needs product code
 gets an issue labelled `enhancement` (or `bug`) and a separate worker; the audit
-does not edit feature files, push a ticket branch, or merge its own PR.
+does not edit feature files, push a ticket branch, approve, merge, or close its
+own PR.
 
-Completion: `verify` is green, the report and ledger are in the PR, every open
-finding is tracked, and the PR names the two reviewers when it changed a
-mechanism.
+The report PR is opened in the same pass; there is no separate branch or
+comment-only path for a daily report. The auditor may open issues and PRs, but
+it does not approve, merge, or close them: the PR goes to the master's merge
+path. Until the permission layer lands, this is a convention, and the report
+says so when it matters.
 
-## 8. The Monday mutation check
+Completion: `verify` is green, the report and ledger are in the PR, and every
+open finding is tracked.
+
+## 7. The Monday mutation check
 
 Prose and a green gate can both be true while the mechanism is useless. Once a
 week, pick one `enforced` entry, break its mechanism in a scratch copy (delete

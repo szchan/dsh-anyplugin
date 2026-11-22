@@ -38,7 +38,7 @@ Five surfaces, in this order of value:
 
 | When | What | Where |
 | --- | --- | --- |
-| daily, 09:00 America/Los_Angeles | the full pass in §4, one report | `docs/audits/YYYY-MM-DD.md` |
+| daily, 09:00 America/Los_Angeles | the full pass in §4, one report and its PR | `docs/audits/YYYY-MM-DD.md` |
 | weekly (the Monday pass) | mechanism effectiveness: mutate one enforced rule and confirm the gate fails | same report, `## Actions` |
 | on demand | after an incident (a bad merge, a regression, a review that found a pattern), or when a human asks | same |
 | monthly | retire/refresh ledger entries; split the schedule if §8 says so | `docs/AUDIT.md` |
@@ -52,6 +52,12 @@ rrule, target and last delivery. A fresh checkout recreates it with
 checkout; the prompt carries the full step list from the audit skill §2,
 including "always write the report and open a PR" and the Monday mutation
 check), then confirms the task appears in the next digest.
+
+Every pass publishes its report as a pull request. There is no side branch or
+comment-only channel for a daily report: the PR is what the review and merge
+process sees, and a finding that is not in that PR did not enter the process.
+The report-only PR goes through the same review and merge path as any other
+change; "report-only" changes what the PR contains, not whether it is reviewed.
 
 ## 3. Evidence
 
@@ -96,16 +102,19 @@ that contains a token, an email, or a customer path.
    the ~1,500 cap and name the split (a scheduled audit, an integrator, a
    narrower ticket). F18 is the recorded miss.
 6. Write the report (§5), add or update ledger entries, run `npm run
-   check:audit`, and open a PR. A report-only PR is docs; a PR that changes a
-   mechanism also carries the code and its test.
-7. For a change to a *mechanism* (not a report), run the reviewers in §6 before
-   opening the PR.
+   check:audit`, and open the PR in the same pass. A report-only PR is docs; a
+   PR that changes a mechanism also carries the code and its test. Every
+   finding gets an action in this pass: the fix in the PR, a tracking issue, or
+   an explicit accepted risk with an owner and a review date. A finding with no
+   action is a plan, not a finding; it does not become next pass's backlog.
+7. Open the PR and hand it to the master. The review path in §6 belongs to the
+   master; the auditor's part ends at the PR.
 
 The daily pass may write `docs/AUDIT.md`, `docs/audits/`, the audit skill,
 audit tooling (`scripts/audit-*`, `scripts/check-audit*`), and a gate or test
-that is the finding's fix. It does not push to a ticket branch, does not merge,
-and does not edit a feature file. A finding that needs product code gets an
-issue or a separate worker.
+that is the finding's fix. It does not push to a ticket branch, does not
+approve or merge its own PR, and does not edit a feature file. A finding that
+needs product code gets an issue or a separate worker.
 
 ## 5. The report
 
@@ -121,10 +130,12 @@ window, commands run, what was read; numbers from the evidence JSON.
 F<n> — one line, then what was observed, with a path or a count.
 
 ## Actions
-what changed (or the issue/PR that tracks it), with the finding id.
+what changed in this pass, with the finding id. An issue or PR opened in the
+same pass is an action; "investigate later" is not.
 
 ## Open
-findings still open, each with its tracking issue.
+only findings that are genuinely blocked or deferred, each with a tracking
+issue, an owner, and the condition that reopens it. `Open` is not a backlog.
 ```
 
 A report is not a diary. If nothing new was found, the report says which
@@ -206,7 +217,16 @@ adds measurable caps:
 | master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (dormant until the guard is installed, F1) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
-| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix | feature code, ticket branches, `docs/DECISIONS.md`, merges; it proposes a decision and the master writes it | an audit PR that changes a mechanism without two reviewers |
+| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, approve, merge, close an issue or PR; it proposes a decision and the master writes it | an audit PR the auditor approved, merged, or closed itself |
+
+The auditor's "no approve, no merge, no close" rule is a convention first: the
+auditor opens the issue or PR, comments with evidence, and hands it to the
+master's review and merge path. It does not close the issue it filed, approve
+its own PR, or merge the PR it authored, even after the fix lands.
+Permission-layer enforcement (branch protection, the `gh-bot` allowlist, and a
+separate merger identity) is deliberately deferred; until it lands this is
+conventional behavior, not a guard check, and a report must say so if it relied
+on the convention.
 
 The caps are heuristics, not gates. The evidence script reports the eight
 largest sessions with their `cwd`; a pass that sees a root session above the
@@ -485,13 +505,15 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F16",
       "title": "Guard denials are not observable",
       "mechanism": "hook",
-      "status": "open",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
+      "proof": "packages/dsh-anyplugin-guard/test/denials.test.mjs",
       "tracking": "#164",
-      "rationale": "Denials exist only as DENY text in a tool result, mostly indistinguishable from the guard's own test matrix and from agents reading policy.ts. The audit labels the count 'self-tests included' and cannot measure effectiveness. A structured JSONL log is proposed in the tracking issue.",
+      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68).",
       "evidence": [
         "2026-11-22 evidence: DENY lines 33 unknown / 21 shell-unmodelled, self-tests included",
-        "audit-evidence.mjs digest note"
+        "2026-11-22 D68: structured log merged in #181; digest counts total/by-rule/by-role and last five",
+        "denials.test.mjs: one record per denial, dedupe by session+callId, four checkout layouts"
       ]
     },
     {

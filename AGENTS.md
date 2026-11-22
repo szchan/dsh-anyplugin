@@ -130,6 +130,13 @@ on CI a skip is a failure by design (D22/D24). Do not run it, `npm test`,
 checks (`check:arch`, `check:features`, `check:decisions`) are the only local
 gate, because they spawn nothing.
 
+If you must run a suite locally anyway (reproducing a flake the reviewer reported),
+`npm test` now takes a machine-wide slot (`scripts/gate-slot.mjs`) and runs with
+`--test-concurrency=2`: one run at a time, two workers, so three agents cannot
+saturate the host. A slot held by a live process is waited on; a dead holder or a
+lock older than an hour is reclaimed with a printed reason. `npm run perf` is the
+other CPU-heavy command — run it once, not in a loop, and never alongside a suite.
+
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.
 

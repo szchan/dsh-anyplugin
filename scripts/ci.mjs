@@ -6,7 +6,7 @@
 // gets wrong by hand are (a) reading a run from the *previous* head, and (b)
 // `gh run view --log-failed` failing on a root-owned cache directory.
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,7 +34,12 @@ function gh(args, extraEnv) {
   if (!env.GH_TOKEN && existsSync(tokenFile)) env.GH_TOKEN = readFileSync(tokenFile, 'utf8').trim()
   // `gh` keeps its own cache under XDG_CACHE_HOME; on this machine the default
   // is root-owned and unusable, and a failed cache write masks the run output.
-  env.XDG_CACHE_HOME ??= join('/tmp', 'dsh-anyplugin-gh-cache')
+  // `gh run view --log-failed` writes an HTTP cache here; the default cache on
+  // this machine is root-owned, and a cache failure masks the log we asked for.
+  if (!env.XDG_CACHE_HOME) {
+    env.XDG_CACHE_HOME = join('/tmp', 'dsh-anyplugin-gh-cache')
+    mkdirSync(env.XDG_CACHE_HOME, { recursive: true })
+  }
   return execFileSync('gh', args, { env, encoding: 'utf8' })
 }
 
@@ -89,7 +94,12 @@ function main(argv) {
   let run
   while (true) {
     const runs = runsFor(head)
-    run = runs.find((candidate) => candidate.headSha === head) ?? runs[0]
+    // One commit can carry two runs: the push run (the required `verify`) and,
+    // for a same-repo PR, a skipped pull_request run. The push run is the one
+    // whose conclusion means anything; a skipped/superseded run is not an answer.
+    run = runs.find((candidate) => candidate.headSha === head && candidate.event === 'push' && candidate.status === 'completed' && candidate.conclusion !== 'skipped')
+      ?? runs.find((candidate) => candidate.headSha === head && candidate.event === 'push')
+      ?? runs.find((candidate) => candidate.headSha === head && candidate.conclusion !== 'skipped')
     if (run) break
     if (Date.now() > appearDeadline) {
       console.error(`ci: no ${WORKFLOW} run appeared for ${head.slice(0, 8)} on ${branch} within ${DEFAULT_APPEAR_TIMEOUT_S}s`)

@@ -187,6 +187,16 @@ queue is for the four things only a human holds: credentials, billing, rights,
 and irreversibility. "I am not sure" is not one of them — research it, test it,
 and write down what you chose.
 
+**Chat is not a channel.** A question asked in a session message is a question
+asked into a room nobody is watching. If an agent believes a call is the
+maintainer's — permissions, policy, a shape that forecloses other work — it
+files this issue and proceeds on the stated default; it does not ask in prose
+and wait. If the agent can settle it by a check, it settles it and records the
+choice in the PR or a decision.
+
+A maintainer's own issue is not an escalation: their text is the priority
+signal, and the answer belongs in that thread.
+
 **No silent blocking.** If the work can proceed on a declared default, it
 proceeds and records the default in the issue; only a decision that would bend §3
 waits indefinitely.
