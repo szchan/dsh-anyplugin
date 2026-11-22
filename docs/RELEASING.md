@@ -67,8 +67,8 @@ Verify from the registry, not from the log, and **run what the registry
 serves**:
 
 ```bash
-node scripts/verify-release.mjs --version <version>          # human output
-node scripts/verify-release.mjs --version <version> --json   # for a release note
+npm run -s verify:release -- --version <version>          # human output
+npm run -s verify:release -- --version <version> --json   # for a release note
 ```
 
 It judges three things: the registry (the version is in `versions`, and

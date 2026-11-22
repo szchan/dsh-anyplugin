@@ -115,9 +115,14 @@ npm run check:decisions           # D1–D73 append-only (--update accepts new e
 npm run perf                      # our hot paths as base/head ratios (docs/PROFILING.md)
 npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
 npm run check:audit               # the audit ledger/report gate (part of verify)
+npm run verify:release -- --version <v>   # post-publish probe: registry + packed bin + its report
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
 npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```
+
+`verify:release` is the post-publish probe from `docs/RELEASING.md` — a
+maintainer step, not a gate: it needs the network and a version the registry
+already serves, so it is never part of `verify`.
 
 An agent never posts as `szchan`. Comments, reviews, labels and PRs go through
 `npm run gh-bot -- <gh args…>`, because the login is what stays readable after the
