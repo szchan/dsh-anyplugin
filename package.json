@@ -74,7 +74,8 @@
     "check:audit": "node scripts/check-audit.mjs",
     "audit:evidence": "node scripts/audit-evidence.mjs",
     "pack:ui": "node scripts/pack-ui.mjs",
-    "check:ui": "node scripts/check-ui-pack.mjs"
+    "check:ui": "node scripts/check-ui-pack.mjs",
+    "ci": "node scripts/ci.mjs"
   },
   "dependencies": {
     "@babel/core": "7.29.13",
