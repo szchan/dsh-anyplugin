@@ -78,7 +78,7 @@ verify` boots the packed tarball to check every row.
 | Hooks | `equivalent` for the tool and lifecycle events DSH fires; other events are `planned` with the missing host event named |
 | Agents | `exact` — each `agents/*.md` becomes a scoped tool named `<plugin>:<agent>` |
 | Output styles | **shipped** — the profile's activation record selects one style (`D42`); the `/<plugin>:<name>` alias still needs the command-name seam (`D10`) |
-| `mods` | **shipped** — the kernel is in the tarball (`D30`, `D31`, `D34`): authored `.js`, `.mjs` and `.ts` load as authored in one `node:vm` realm, `.tsx` only through the one classic-pragma pass; `$` serves the measured namespaces and a seat binds each agent's events. The lock (`dsh-anyplugin/installs@2`) carries a granted `mods` tree and `rig install` writes it; the hook row's `mods` config is emitted from that record, and an ungranted, unrecorded or changed tree — one digest over the whole plugin tree — is refused before `loadMod` |
+| `mods` | **shipped** — the kernel is in the tarball (`D30`, `D31`, `D34`): authored `.js`, `.mjs` and `.ts` load as authored in one `node:vm` realm, `.tsx` only through the one classic-pragma pass; `$` serves the measured namespaces and a seat binds each agent's events. The lock (`dsh-anyplugin/installs@2`) carries a granted `mods` tree and `dsh-anyplugin install` writes it; the hook row's `mods` config is emitted from that record, and an ungranted, unrecorded or changed tree — one digest over the whole plugin tree — is refused before `loadMod` |
 | Codex plugins | **not in 0.2.0** — the second dialect ships in v0.3 |
 | Install / enable / release | `dsh-anyplugin@0.2.0` — bundle + controller + reconciler |
 
@@ -124,6 +124,10 @@ bundle's `cordis.patch.yml` inserts a single controller row; the controller
 reads `$DSH_HOME/anyplugin/installs.yml` and reconciles the installed plugins
 into the loader. Nothing is written to your profile config, and no code is
 generated.
+
+Installing a plugin into that lock uses the CLI shipped in the same package:
+`npx dsh-anyplugin install <plugin-dir>` (add `--dry-run` to see the plan
+first); [INSTALL.md](INSTALL.md) §2 documents every command and flag.
 
 ### Requirements
 

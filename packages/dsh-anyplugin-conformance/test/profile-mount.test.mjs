@@ -112,14 +112,10 @@ async function hostPrimitives() {
   return host
 }
 
-/** Build and pack exactly the way `npm run check:pack` does. */
+/** Pack the tree `pretest`/`check:pack` already built, the way the gate does. */
 function packedTarball() {
   if (tarball !== undefined) return tarball
   packDir = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-pack-'))
-  execFileSync(process.execPath, [join(repoRoot, 'scripts', 'build.mjs')], {
-    cwd: repoRoot,
-    stdio: 'pipe',
-  })
   const [entry] = JSON.parse(
     execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', packDir], {
       cwd: repoRoot,
