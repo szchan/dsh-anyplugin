@@ -4,7 +4,7 @@
 // wrong version is a rubber stamp. Each case below is a way the first draft
 // did exactly that; the mutation table in the PR says which case catches which
 // deletion.
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -125,7 +125,7 @@ test('judgeReport: an exact or equivalent row that was not carried is a failed c
   assert.match(judgeReport(bad, { name: 'skills-only', pin: PIN, expected: EXPECTED })[0], /is equivalent but was not carried/)
 })
 
-test('judgeReport: a placed nothing report and a lying total are refused', () => {
+test('judgeReport: a dropped row and a lying total are refused', () => {
   const nothing = { ...REPORT, components: [component('skills', 'greet', { carried: false, class: 'planned' })], totals: { declared: 2, emitted: 0, refused: 0, skipped: 1 } }
   const failures = judgeReport(nothing, { name: 'skills-only', pin: PIN, expected: EXPECTED })
   assert.ok(failures.some((failure) => /missing skills\/hello/.test(failure)))
@@ -141,20 +141,80 @@ test('judgeReport: a report that placed nothing is refused even when every row i
   }
   assert.match(
     judgeReport(downgraded, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'),
-    /no component is exact or equivalent/,
+    /a row the fixture declares must be exact or equivalent/,
   )
 })
 
 test('judgeReport: the fixture decides the rows — invented and dropped rows both fail', () => {
   const invented = { ...REPORT, components: [...REPORT.components, component('skills', 'junk', { class: 'planned', carried: false })], totals: { declared: 3, emitted: 2, refused: 0, skipped: 1 } }
-  assert.match(judgeReport(invented, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /invented skills\/junk/)
+  assert.match(judgeReport(invented, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /invented or repeated skills\/junk/)
   const dropped = { ...REPORT, components: [REPORT.components[0]], totals: { declared: 1, emitted: 1, refused: 0, skipped: 0 } }
   assert.match(judgeReport(dropped, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /missing skills\/hello/)
+})
+
+test('judgeReport: a repeated row is a failure, not a larger set', () => {
+  const duplicated = {
+    ...REPORT,
+    components: [component('skills', 'greet'), component('skills', 'greet'), component('skills', 'hello')],
+    totals: { declared: 3, emitted: 3, refused: 0, skipped: 0 },
+  }
+  assert.match(judgeReport(duplicated, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /repeats skills\/greet/)
+})
+
+test('judgeReport: a row on a surface the fixture does not declare is invented', () => {
+  const rogue = {
+    ...REPORT,
+    components: [...REPORT.components, component('agents', 'rogue', { class: 'equivalent' })],
+    totals: { declared: 3, emitted: 3, refused: 0, skipped: 0 },
+  }
+  assert.match(judgeReport(rogue, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /invented or repeated agents\/rogue/)
+})
+
+test('judgeReport: a missing problems array is not "no problems"', () => {
+  const { problems, ...rest } = REPORT
+  void problems
+  assert.match(judgeReport(rest, { name: 'skills-only', pin: PIN, expected: EXPECTED })[0], /no problems array/)
+})
+
+test('judgeReport: a missing totals object is a failure', () => {
+  const { totals, ...rest } = REPORT
+  void totals
+  assert.match(judgeReport(rest, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /no totals object/)
+})
+
+test('repoPin: the version comes from the file it is given', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pin-source-'))
+  try {
+    const file = join(directory, 'pin.ts')
+    writeFileSync(file, "export const CLAUDE_CODE_PIN = { tool: 'claude-code', version: '9.9.9' } as const\n")
+    assert.deepEqual(repoPin(file), { tool: 'claude-code', version: '9.9.9' })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the entry point exits 2 on a usage error, not 0', () => {
+  const result = spawnSync(process.execPath, [new URL('./verify-release.mjs', import.meta.url).pathname, '--wat'], { encoding: 'utf8' })
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /unknown option --wat/)
 })
 
 test('expectedComponents: the fixture is the list (skills, commands, agents, output styles)', () => {
   assert.deepEqual(expectedComponents(join(process.cwd(), 'fixtures', 'claude-skills-only')), ['skills/greet', 'skills/hello'])
   assert.deepEqual(expectedComponents(join(process.cwd(), 'fixtures', 'claude-commands-flat')), ['commands/migrate', 'commands/review'])
+})
+
+test('expectedComponents: agents and output styles are enumerated too', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'fixture-surfaces-'))
+  try {
+    for (const [surface, name] of [['agents', 'reviewer'], ['output-styles', 'quiet']]) {
+      mkdirSync(join(directory, surface), { recursive: true })
+      writeFileSync(join(directory, surface, `${name}.md`), '')
+    }
+    assert.deepEqual(expectedComponents(directory), ['agents/reviewer', 'output-styles/quiet'])
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('repoPin: the verifier reads the pin from its single source', () => {

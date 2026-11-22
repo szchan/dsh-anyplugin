@@ -5,9 +5,11 @@
  * provenance) and that the bin answered `--help`. Neither runs the compiler: a
  * tarball can carry the right manifest, the right provenance and a working
  * `--help` while its dialect or report path is broken. This script unpacks the
- * published tarball, runs *its* bin on a checkout fixture, and asserts the
- * report's facts — the fixture's rows are present, carried, annotated with a
- * real class and a reason, and the pin is the pin this checkout claims.
+ * published tarball, runs *its* bin on a checkout fixture, and judges the
+ * report: every row the fixture declares is \`exact\` or \`equivalent\` and
+ * carried, no row the fixture does not declare appears (and none twice), every
+ * row carries a reason, the totals agree with the rows, and the pin is the pin
+ * this checkout claims.
  *
  * Scope, stated narrowly: this runs the packed CLI's `report` path. It does
  * not execute the packed materializers. `report.ok` is `validateIr` (the IR is
@@ -65,14 +67,19 @@ export function judgePackage(manifest, expected) {
 /**
  * What the packed compiler printed, compared with the fixture and this
  * checkout's pin. `expected` is a sorted list of `${surface}/${name}` for the
- * surfaces this verifier can enumerate; rows for other surfaces are held to
- * the shape rules but not to the list.
+ * surfaces this verifier enumerates (skills, top-level commands, agents and
+ * output styles); every row the fixture declares must be exact or equivalent
+ * and carried, and the report may not carry a row the fixture does not
+ * declare. Nested commands, hooks and MCP rows are not enumerated: for those
+ * fixtures the row list is empty and only the shape rules apply.
  */
 export function judgeReport(report, { name, pin, expected }) {
   const failures = []
   if (report.ok !== true) failures.push(`the packed compiler's report is not ok (ok=${JSON.stringify(report.ok)})`)
-  const problems = Array.isArray(report.problems) ? report.problems : []
-  if (problems.length > 0) failures.push(`the packed compiler reported ${problems.length} problem(s): ${String(problems[0]).slice(0, 160)}`)
+  if (!Array.isArray(report.problems)) failures.push('the report has no problems array, so "no problems" is not proven')
+  else if (report.problems.length > 0) {
+    failures.push(`the packed compiler reported ${report.problems.length} problem(s): ${String(report.problems[0]).slice(0, 160)}`)
+  }
   if (report.plugin !== name) failures.push(`the report names plugin ${JSON.stringify(report.plugin)}, not ${JSON.stringify(name)}`)
   if (report.pin?.tool !== pin.tool) failures.push(`the report's pin tool is ${JSON.stringify(report.pin?.tool)}, not ${JSON.stringify(pin.tool)}`)
   if (report.pin?.version !== pin.version) {
@@ -80,36 +87,48 @@ export function judgeReport(report, { name, pin, expected }) {
   }
 
   const components = Array.isArray(report.components) ? report.components : []
+  const declared = new Set(expected.map((row) => row.split('/')[0]))
   if (components.length === 0) failures.push('the report carries no components')
-  else if (!components.some((component) => component.class === 'exact' || component.class === 'equivalent')) {
-    failures.push('no component is exact or equivalent: every row is planned or unsupported, so nothing was planted')
-  }
   for (const [index, component] of components.entries()) {
-    const where = `component[${index}]`
+    const row = `${component?.surface}/${component?.name}`
+    const where = `component[${index}] (${row})`
     if (typeof component?.surface !== 'string' || component.surface === '') failures.push(`${where} has no surface`)
     if (typeof component?.name !== 'string' || component.name === '') failures.push(`${where} has no name`)
-    if (!CLASSES.has(component?.class)) failures.push(`${where} (${component?.surface}/${component?.name}) has class ${JSON.stringify(component?.class)}, not one of the five`)
-    if (typeof component?.reason !== 'string' || component.reason.trim() === '') failures.push(`${where} (${component?.surface}/${component?.name}) carries no reason`)
-    if (typeof component?.carried !== 'boolean') failures.push(`${where} (${component?.surface}/${component?.name}) does not say whether it was carried`)
-    else if ((component.class === 'exact' || component.class === 'equivalent') && component.carried !== true) {
-      failures.push(`${where} (${component?.surface}/${component?.name}) is ${component.class} but was not carried`)
+    if (!CLASSES.has(component?.class)) failures.push(`${where} has class ${JSON.stringify(component?.class)}, not one of the five`)
+    if (typeof component?.reason !== 'string' || component.reason.trim() === '') failures.push(`${where} carries no reason`)
+    if (typeof component?.carried !== 'boolean') failures.push(`${where} does not say whether it was carried`)
+    if (declared.has(component?.surface)) {
+      if (component.class !== 'exact' && component.class !== 'equivalent') {
+        failures.push(`${where} is ${component.class}: a row the fixture declares must be exact or equivalent`)
+      }
+      if (component.carried !== true) failures.push(`${where} is ${component.class} but was not carried`)
     }
   }
 
-  const carried = components.filter((component) => component?.carried === true).length
-  if (report.totals?.emitted !== carried) {
-    failures.push(`the report's totals say ${JSON.stringify(report.totals?.emitted)} component(s) emitted, but ${carried} row(s) are carried`)
-  }
-  if (report.totals?.declared !== undefined && report.totals.declared < components.length) {
-    failures.push(`the report's totals declare ${report.totals.declared} component(s) for ${components.length} row(s)`)
+  if (report.totals === null || typeof report.totals !== 'object') failures.push('the report has no totals object')
+  else {
+    const carried = components.filter((component) => component?.carried === true).length
+    if (Number.isInteger(report.totals.emitted) === false) failures.push(`the report's totals.emitted is ${JSON.stringify(report.totals.emitted)}, not an integer`)
+    else if (report.totals.emitted !== carried) {
+      failures.push(`the report's totals say ${report.totals.emitted} component(s) emitted, but ${carried} row(s) are carried`)
+    }
+    if (Number.isInteger(report.totals.declared) === false) failures.push(`the report's totals.declared is ${JSON.stringify(report.totals.declared)}, not an integer`)
+    else if (report.totals.declared < components.length) {
+      failures.push(`the report's totals declare ${report.totals.declared} component(s) for ${components.length} row(s)`)
+    }
   }
 
   if (expected.length > 0) {
-    const rows = components.map((component) => `${component?.surface}/${component?.name}`).filter((row) => expected.some((want) => want.split('/')[0] === row.split('/')[0]))
-    const missing = expected.filter((want) => !rows.includes(want))
-    const extra = rows.filter((row) => !expected.includes(row))
+    const rows = components.map((component) => `${component?.surface}/${component?.name}`)
+    const count = (list) => list.reduce((map, row) => map.set(row, (map.get(row) ?? 0) + 1), new Map())
+    const wanted = count(expected)
+    const got = count(rows)
+    const missing = [...wanted].filter(([row, n]) => (got.get(row) ?? 0) < n).map(([row]) => row)
+    const duplicated = [...wanted].filter(([row, n]) => (got.get(row) ?? 0) > n).map(([row]) => row)
+    const invented = [...got].filter(([row]) => !wanted.has(row)).map(([row]) => row)
     if (missing.length > 0) failures.push(`the report is missing ${missing.join(', ')}`)
-    if (extra.length > 0) failures.push(`the report invented ${extra.join(', ')}`)
+    if (invented.length > 0) failures.push(`the report invented or repeated ${invented.join(', ')}`)
+    if (duplicated.length > 0) failures.push(`the report repeats ${duplicated.join(', ')}`)
   }
   return failures
 }
@@ -137,9 +156,9 @@ function firstLine(text) {
 }
 
 /** The pin this checkout claims, read from its single source (a literal, D39). */
-export function repoPin() {
-  const source = readFileSync(join(root, 'packages', 'dsh-anyplugin-conformance', 'src', 'pin.ts'), 'utf8')
-  const match = /tool:\s*'([^']+)',\s*version:\s*'([^']+)'/u.exec(source)
+export function repoPin(source = join(root, 'packages', 'dsh-anyplugin-conformance', 'src', 'pin.ts')) {
+  const text = readFileSync(source, 'utf8')
+  const match = /tool:\s*'([^']+)',\s*version:\s*'([^']+)'/u.exec(text)
   if (match === null) throw new Error('packages/dsh-anyplugin-conformance/src/pin.ts does not name a tool and version')
   return { tool: match[1], version: match[2] }
 }

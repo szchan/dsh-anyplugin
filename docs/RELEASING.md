@@ -76,15 +76,19 @@ It judges three things: the registry (the version is in `versions`, and
 the packed manifest (the tarball's `version`, and the `bin` it declares), and
 the packed CLI. For the last one it runs `npm pack`, unpacks the tarball, runs
 *that* bin's `report` on `fixtures/claude-skills-only`, and judges the report:
-`ok`, no `problems`, the fixture's name, the pin exactly as `CLAUDE_CODE_PIN`
-declares it, every component's class in the five-class vocabulary with a reason,
-`carried` consistent with `totals`, at least one row `exact` or `equivalent` (all
-`planned` means nothing was planted), and the row set equal to the fixture's
-files — a dropped row and an invented row both fail.
+`ok`, a `problems` array that is empty, the fixture's name, the pin exactly as
+`CLAUDE_CODE_PIN` declares it, every row `exact` or `equivalent` and carried (a
+row the report downgrades to `planned` is not proven placed), `carried`
+consistent with `totals`, and the row set equal to the fixture's declared rows —
+a dropped, invented, or repeated row fails. The row list is derived from the
+fixture's own files: `skills/*/SKILL.md`, top-level `commands/*.md`,
+`agents/*.md` and `output-styles/*.md`; nested commands, hooks and MCP rows are
+not enumerated, so the row check is for fixtures built from those four surfaces
+(the default is).
 
-Exit 1 lists each claim that did not hold; exit 2 is a usage error. An
-unpublished version stops after the registry judgment, because nothing after it
-can be true.
+The entry point exits 0 when every claim holds, 1 with each failed claim listed,
+and 2 on a usage error (a test spawns it to keep that contract). An unpublished
+version stops after the registry judgment, because nothing after it can be true.
 
 Scope, stated narrowly: this runs the packed CLI's `report` path. It does not
 execute the packed materializers — `report.ok` is IR validation, and a tarball
