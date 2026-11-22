@@ -2625,6 +2625,65 @@ adding `identity` to the `session.id` table reddens that test even when the doc
 check stays green.
 
 
+### S21 — a third-party client bundle mounts without a harness rebuild
+
+**Question.** Can a third-party package register a client module through
+`window.__ModuleLoader__.load({ id, factory })` and be mounted by the Desktop
+UI and by `dsh web`, with the bundle served by the host's `/plugins` route from
+an enabled Loader entry, without rebuilding the harness? (issue #147)
+
+**Method.** `spikes/s21-client-panel` boots the host halves from the pinned
+tree — a real `Context`, the real `Loader`, and
+`@deepseek-ai/dsh-client-modules` — against
+`fixtures/node_modules/anyplugin-s21-panel`, a package that declares
+`dsh.client { platform: 'web' }` and exports a prebuilt `./client` classic
+script. The spike provides a probe `webServer` service, creates the Loader
+entry, boots the registry and checks the composed `window.__DSH_BOOT__` row,
+`clientPath` and the bundle route: the advertised combo URL, `GET` bytes,
+`HEAD`, 404 for a stale revision and 405 for `POST`. It then executes the
+harness's own browser half (`dsh-client-modules/lib/client.js`) in a `vm`
+sandbox whose `loadBundle` fetches through the same route, imports the fixture
+by id, calls its `apply(ctx)` with a slot probe, renders the registered
+component, and removes the Loader entry to confirm the row disappears.
+Four mutations must redden their own check: the package does not declare
+`dsh.client`, `platform` is `node`, the package declares `dsh.client` but
+exports no `./client`, and the served bundle registers a different id.
+
+**Mutations.**
+
+| mutation | observed |
+| --- | --- |
+| no `dsh.client` | `entries=0`: the entry is not composed |
+| `dsh.client.platform = 'node'` | `entries=0`: not a web row |
+| `dsh.client` without `exports["./client"]` | `client-modules: 1 client package failed to compose: … declares dsh.client but exports no "./client" bundle` |
+| bundle registers another id | `client-modules: could not load "anyplugin-s21-panel": …: loaded without registering "anyplugin-s21-panel" via __ModuleLoader__.load` |
+
+**Answer.** **Yes**, at pins `0.2.2-rc.5` and `0.2.2-rc.2`: the composed graph
+carries a revisioned row (`plugins/??anyplugin-s21-panel/client.js&rev=<12 hex>`),
+`clientPath` names the package's built bundle, and the route answers
+`200 text/javascript; charset=utf-8` with
+`cache-control: public, max-age=31536000, immutable`; `HEAD` is 200 with no
+body, an unknown revision is 404 and `POST` is 405. The browser half
+materializes the served bytes into a cordis plugin, `apply` registers
+`settings.section`, and the component renders with only the platform `react`
+seed. Removing the Loader entry drops the row. The spike passes 18/18 checks on
+both pins without writing to the harness tree; the report is
+`spikes/s21-client-panel/out/report.json` (gitignored; regenerate with
+`npm run spike:s21` and the pin's `DSH_HARNESS_DIR`).
+
+**What this does not prove.** The host serves *built* bytes only, so the
+`./client` file must exist after the package's build and before the entry
+starts; publishing a source file and compiling at install time is not a path
+this spike measured. On a Node where the `node-addon-require-builtin` addon is
+unavailable — the local Nix Node 24.22.2 — `locatePkgJson` falls back to
+`require('<name>/package.json')`, so the package must export `./package.json`
+for the fallback; the fixture exports it and the spike passes on both paths.
+The browser half ran in a `vm` sandbox with a stub `__ModuleLoader__` queue and
+a stub `document`, not in Electron: pixel rendering, the Desktop forwarder and
+the `dsh web` shell are not exercised. The spike does not prove that a bundle
+may `require` a package outside the platform seed table and its declared
+`dsh.client.external`; it proves the module table refuses anything else.
+
 ### S22 — a plugin `monitors` declaration is validated and never spawned headless
 
 **Question.** A plugin may declare background monitors (`monitors/monitors.json`,
@@ -2686,7 +2745,6 @@ sessions belongs to the client. Per D37 this licenses carrying the declaration
 (bytes, hash, and a premise test that the pin still validates these keys) and
 nothing else: no materializer, no golden, and no fidelity class better than
 `planned` until a PTY run shows a monitor actually running.
-
 
 ## 11. Non-goals
 

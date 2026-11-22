@@ -107,6 +107,11 @@ export const HARNESS_PACKAGES = {
   'dsh-bash-local': 'S19: local shell executor — the child env assembly point',
   'dsh-subprocess': 'S19: scrubbedParentEnv — the base the child env starts from; PATH survives it',
   'dsh-subprocess-local': 'S19: subprocess runtime; its spawn spec carries the env into the child',
+
+  // The S21 client-panel probe: the dual-face module registry that scans active
+  // Loader entries for `dsh.client`, composes `__DSH_BOOT__`, and serves
+  // /plugins/<package>/client.js (ticket #147).
+  'dsh-client-modules': 'S21: composes and serves a third-party dsh.client bundle (issue #147)',
 }
 
 /** Versions that are not the harness under test. Pinned, never `latest`. */
