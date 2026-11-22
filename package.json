@@ -75,6 +75,7 @@
     "audit:evidence": "node scripts/audit-evidence.mjs",
     "pack:ui": "node scripts/pack-ui.mjs",
     "check:ui": "node scripts/check-ui-pack.mjs",
+    "perf": "node scripts/perf.mjs",
     "ci": "node scripts/ci.mjs"
   },
   "dependencies": {
