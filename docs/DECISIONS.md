@@ -3112,3 +3112,43 @@ refused (with a message naming it) until `guard:refresh` or a reinstall —
 recorded rather than hidden. This does not change D47's rule table or the
 dormant status of F12; it changes where the block gets its paths and what the
 guard can claim about them.
+
+---
+
+## D68 — The guard's denial log is an observability record, not an enforcement boundary
+
+**Decided 2026-11-22** (#164, #181). F16 found that guard refusals existed only
+as `DENY` prose in a tool result, so the audit could not count them except by
+matching transcripts where the guard's own test matrix also matches.
+
+1. **One JSON object per denial.** Every `tools/pre-execute` denial appends a
+   record with `ts`, `role` (`root`/`worker`), `rule`, `tool`, `cwd`, `worktree`,
+   `session` and `subject`. `cwd`/`worktree`/`session` are `null` when the call
+   does not expose them; `subject` is the judged command or path capped at 300
+   characters. The arguments blob is never written.
+2. **Redaction is a trade-off, not a guarantee.** Credential shapes (`ghp_`,
+   `github_pat_`, `sk-`/`xsk-`, `Bearer`/`Basic`, both `--token` spellings) and
+   long hex/base64/base64url runs become `[redacted]`. A 40-hex git sha is
+   likewise redacted because it is indistinguishable from a short key at this
+   length; that is documented in `denials.ts`.
+3. **The default path follows the repository, not the module.** The log is
+   `<checkout>/.audit/guard-denials.jsonl`, where the checkout is the one owning
+   the `.git` common dir (`mainCheckout`, D66); `DSH_ANYPLUGIN_AUDIT_DIR`
+   overrides. The reader (`scripts/audit-checkout.mjs`) mirrors that derivation so
+   linked worktrees, `--separate-git-dir` and submodules read what the guard
+   wrote; a test asserts the two agree in all four layouts.
+4. **Best-effort, never load-bearing.** One `O_APPEND` on
+   `O_NOFOLLOW|O_NONBLOCK`, a non-regular file is refused, a failure prints once
+   per process and never changes the verdict. In-process dedupe on
+   `session + callId` (last 512) keeps two app-level plugin loads from double
+   counting one call; two sessions sharing an id remain two refusals.
+5. **Nothing fails on the log's absence.** `audit:evidence` aggregates totals, by
+   rule, by role and the last five records, and reports "no structured log" or
+   "log unreadable" — but no gate may fail because the file is missing. The log
+   observes the guard; branch protection, the DSH sandbox and CI remain the
+   boundary.
+
+**Consequences.** F16 moves to `enforced`. The guard's test matrix is hermetic
+(every test sets its own `mkdtemp` directory), so a `verify` run writes zero
+lines to an external audit directory; one real denial under the override writes
+one line, asserted against a byte-identical checkout log.

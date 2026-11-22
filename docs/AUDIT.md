@@ -505,13 +505,15 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F16",
       "title": "Guard denials are not observable",
       "mechanism": "hook",
-      "status": "open",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
+      "proof": "packages/dsh-anyplugin-guard/test/denials.test.mjs",
       "tracking": "#164",
-      "rationale": "Denials exist only as DENY text in a tool result, mostly indistinguishable from the guard's own test matrix and from agents reading policy.ts. The audit labels the count 'self-tests included' and cannot measure effectiveness. A structured JSONL log is proposed in the tracking issue.",
+      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68).",
       "evidence": [
         "2026-11-22 evidence: DENY lines 33 unknown / 21 shell-unmodelled, self-tests included",
-        "audit-evidence.mjs digest note"
+        "2026-11-22 D68: structured log merged in #181; digest counts total/by-rule/by-role and last five",
+        "denials.test.mjs: one record per denial, dedupe by session+callId, four checkout layouts"
       ]
     },
     {
