@@ -306,6 +306,7 @@ export function renderBlock(source: string, config: GuardConfig, state?: Install
   emitList(lines, 8, 'writeTools', config.writeTools ?? DEFAULT_WRITE_TOOLS)
   emitList(lines, 8, 'worktrees', config.worktrees ?? [])
   emitList(lines, 8, 'protectedRoots', config.protectedRoots ?? [])
+  emitList(lines, 8, 'gitDirectories', config.gitDirectories ?? [])
   const brief = config.brief === undefined || config.brief === false ? undefined : config.brief
   if (brief === undefined) {
     lines.push('        brief: false')
@@ -435,11 +436,25 @@ export function composeGuard(options: {
   const glob = options.worktreeGlob === undefined ? deriveWorktreeGlob(ticketPaths) : resolve(options.worktreeGlob)
   const configured =
     glob === undefined ? ticketPaths : [glob, ...ticketPaths.filter((path) => matchWorktree(glob, path) !== path)]
+  // The git dir is not always named `.git` (a submodule keeps it under the
+  // superproject, `--separate-git-dir` puts it anywhere), and the derived
+  // pattern can match it — `sep-*` matches `sep-gitdir` next to `sep-work`.
+  // Protect it as a root, and hand the policy the resolved path so the
+  // git-dir rule recognises it by identity rather than by name. The common
+  // dir contains every linked worktree's `<common>/worktrees/<name>` dir, so
+  // new worktrees stay covered without re-listing them.
+  const commonDir = gitValue(repoRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const gitDirectories = commonDir === undefined ? [] : [resolve(commonDir)]
+  const protectedRoots =
+    main === undefined
+      ? []
+      : [main.path, ...(commonDir !== undefined && resolve(commonDir) !== main.path ? [resolve(commonDir)] : [])]
   const config: GuardConfig = {
     shellTools: [...DEFAULT_SHELL_TOOLS],
     writeTools: [...DEFAULT_WRITE_TOOLS],
     worktrees: configured,
-    protectedRoots: main === undefined ? [] : [main.path],
+    protectedRoots,
+    gitDirectories,
     brief: {
       ratchet: [ratchet.totals],
       ...(ratchet.fixtures === undefined ? {} : { fixtures: ratchet.fixtures }),

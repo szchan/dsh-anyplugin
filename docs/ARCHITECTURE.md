@@ -1694,6 +1694,18 @@ installed pattern when composing, and it distinguishes `not-installed` from
 `installed-with-stale-paths`: a literal path in the block that no longer exists
 is reported by name, because the freshly composed block would silently drop it.
 
+The git directory is protected by identity, not by its name. A
+`--separate-git-dir` checkout keeps it in an arbitrary directory, a submodule
+keeps it in the superproject's `.git/modules/<name>`, and a linked worktree
+keeps it under `<common>/worktrees/<name>`; the derived pattern can match such
+a directory (a `sep-*` pattern also matches `sep-gitdir`). The install
+therefore writes the resolved common dir into `protectedRoots` when it differs
+from the main working tree, and into `gitDirectories` always. The policy
+refuses a worker write under either by the `git-dir-write` rule — a config or
+hook there runs as the next git command — while a root write is still allowed.
+The common dir contains every linked worktree's git dir, so a worktree created
+after the install stays covered without re-listing it or widening the block.
+
 The installer's root is the repository's **main checkout**, not the caller's:
 when `git rev-parse --path-format=absolute --git-dir` and `--git-common-dir`
 name the same path (an ordinary checkout, a submodule, a

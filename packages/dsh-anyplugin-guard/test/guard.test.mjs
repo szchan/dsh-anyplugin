@@ -22,6 +22,7 @@ import {
   formatTable,
   guardTable,
   readBlock,
+  readGitWorktrees,
   readState,
   readWorktrees,
   renderBlock,
@@ -30,7 +31,7 @@ import {
 } from '../src/composition.ts'
 import { currentBranch, isMainRef } from '../src/git.ts'
 import { chooseWorktree, messageText, renderBrief } from '../src/brief.ts'
-import { isWorktreeGlob, judgeCall, matchWorktree, resolvePolicy } from '../src/policy.ts'
+import { insideGitDirectory, isWorktreeGlob, judgeCall, matchWorktree, resolvePolicy } from '../src/policy.ts'
 import {
   hooksDirectory,
   installPrePushHook,
@@ -1511,6 +1512,11 @@ test('a submodule checkout installs and reports from its own root', () => {
     execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
     execFileSync('git', ['init', '-q', '-b', 'main', superRoot])
     execFileSync('git', ['-C', superRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', '--', scratch, 'sub'])
+    // A ticket worktree makes the glob path run. The submodule's git dir is
+    // the superproject's `.git/modules/sub`, which the pattern does not match;
+    // the git-dir rule is what protects it.
+    const ticket = join(superRoot, 'sub-wt')
+    execFileSync('git', ['-C', sub, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'worktree', 'add', '-q', '-b', 'ticket/sub', ticket])
 
     // A submodule's git dir is its common dir, so the old
     // `dirname(--git-common-dir)` resolved to `<super>/.git/modules` and the
@@ -1522,7 +1528,29 @@ test('a submodule checkout installs and reports from its own root', () => {
     )
     assert.equal(install.status, 0, install.stdout + install.stderr)
     assert.ok(install.stdout.includes(`guard: root ${sub}`), install.stdout.split('\n').slice(0, 3).join('\n'))
+    assert.ok(install.stdout.includes(`guard: worktrees 1 ticket worktree(s); policy pattern ${join(superRoot, 'sub-*')}`), install.stdout.split('\n')[3])
     assert.ok(install.stdout.includes(`name: "${join(sub, 'packages/dsh-anyplugin-guard/src/index.ts')}"`))
+    const modules = join(superRoot, '.git', 'modules', 'sub')
+    assert.ok(install.stdout.includes(`        protectedRoots:\n          - "${sub}"\n          - "${modules}"`), install.stdout)
+    assert.ok(install.stdout.includes(`        gitDirectories:\n          - "${modules}"`), install.stdout)
+
+    const composition = composeGuard({ repoRoot: sub, worktrees: readGitWorktrees(sub) })
+    const policy = resolvePolicy(composition.config)
+    for (const target of [join(modules, 'hooks', 'pre-push'), join(modules, 'config')]) {
+      const worker = judgeCall(
+        { tool: 'write', args: { file_path: target }, agent: { id: 'worker-sub', cwd: sub, worker: true }, worktree: ticket },
+        policy,
+        { branch: () => 'ticket/sub' },
+      )
+      assert.equal(worker.kind, 'deny', target)
+      assert.equal(worker.rule, 'git-dir-write', target)
+      const root = judgeCall(
+        { tool: 'write', args: { file_path: target }, agent: { id: 'root-sub', cwd: sub, worker: false } },
+        policy,
+        { branch: () => 'main' },
+      )
+      assert.equal(root.kind, 'allow', `${target} is a root write`)
+    }
 
     const status = spawnSync(
       process.execPath,
@@ -1557,16 +1585,18 @@ test('a submodule checkout installs and reports from its own root', () => {
   }
 })
 
-test('a --separate-git-dir checkout resolves to its working tree, not the git dir parent', () => {
+test('a --separate-git-dir checkout installs a ticket pattern and refuses worker writes to the git dir', () => {
   const scratch = scratchCheckout()
   const base = mkdtempSync(join(tmpdir(), 'guard-separate-'))
   const gitDir = join(base, 'repo.git')
   const work = join(base, 'work')
+  const ticket = join(base, 'sep-wt')
   const profile = mkdtempSync(join(tmpdir(), 'guard-separate-profile-'))
   try {
     execFileSync('git', ['-C', scratch, 'add', '-A'])
     execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
     execFileSync('git', ['clone', '-q', '--separate-git-dir', gitDir, '--', scratch, work])
+    execFileSync('git', ['-C', work, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'worktree', 'add', '-q', '-b', 'ticket/12', ticket])
 
     const install = spawnSync(
       process.execPath,
@@ -1575,7 +1605,37 @@ test('a --separate-git-dir checkout resolves to its working tree, not the git di
     )
     assert.equal(install.status, 0, install.stdout + install.stderr)
     assert.ok(install.stdout.includes(`guard: root ${work}`), install.stdout.split('\n').slice(0, 3).join('\n'))
+    assert.ok(
+      install.stdout.includes(`guard: worktrees 1 ticket worktree(s); policy pattern ${join(base, 'sep-*')}`),
+      install.stdout.split('\n')[3],
+    )
     assert.ok(install.stdout.includes(`name: "${join(work, 'packages/dsh-anyplugin-guard/src/index.ts')}"`))
+    // `sep-*` also matches `sep-gitdir`; the plan never named that directory.
+    assert.ok(install.stdout.includes(`        worktrees:\n          - "${join(base, 'sep-*')}"`), install.stdout)
+    assert.ok(
+      install.stdout.includes(`        protectedRoots:\n          - "${work}"\n          - "${gitDir}"`),
+      install.stdout,
+    )
+    assert.ok(install.stdout.includes(`        gitDirectories:\n          - "${gitDir}"`), install.stdout)
+
+    const composition = composeGuard({ repoRoot: work, worktrees: readGitWorktrees(work) })
+    const policy = resolvePolicy(composition.config)
+    for (const target of [join(gitDir, 'hooks', 'pre-push'), join(gitDir, 'config')]) {
+      const worker = judgeCall(
+        { tool: 'write', args: { file_path: target }, agent: { id: 'worker-sep', cwd: work, worker: true }, worktree: ticket },
+        policy,
+        { branch: () => 'ticket/12' },
+      )
+      assert.equal(worker.kind, 'deny', target)
+      assert.equal(worker.rule, 'git-dir-write', target)
+      const root = judgeCall(
+        { tool: 'write', args: { file_path: target }, agent: { id: 'root-sep', cwd: work, worker: false } },
+        policy,
+        { branch: () => 'main' },
+      )
+      assert.equal(root.kind, 'allow', `${target} is a root write`)
+    }
+    assert.equal(insideGitDirectory(join(gitDir, 'hooks', 'pre-push'), policy), true)
 
     const status = spawnSync(
       process.execPath,
@@ -1586,8 +1646,8 @@ test('a --separate-git-dir checkout resolves to its working tree, not the git di
     assert.match(status.stdout, /guard: status {2}not-installed/u)
     assert.doesNotMatch(status.stderr, /ENOENT/u)
 
-    // The git dir lives elsewhere, but this is still the main worktree, so a
-    // real install is allowed here and writes the block against the worktree.
+    // This is still the main worktree, so a real install is allowed here and
+    // writes the pattern plus the git-dir protection.
     const real = spawnSync(
       process.execPath,
       [join(work, 'scripts/guard-install.mjs'), '--profile-dir', profile],
@@ -1606,6 +1666,42 @@ test('a --separate-git-dir checkout resolves to its working tree, not the git di
   } finally {
     rmSync(profile, { recursive: true, force: true })
     rmSync(base, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('a sibling directory that matches the derived pattern is admitted, and the test names it', () => {
+  const scratch = scratchCheckout()
+  const parent = mkdtempSync(join(tmpdir(), 'guard-sibling-'))
+  const ticket = join(parent, 'ticket-1')
+  const sibling = join(parent, 'ticket-notes')
+  try {
+    execFileSync('git', ['-C', scratch, 'add', '-A'])
+    execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'worktree', 'add', '-q', '-b', 'ticket/1', ticket])
+    mkdirSync(sibling)
+
+    // The pattern is a namespace matcher, not a git-worktree attestation: a
+    // sibling directory that happens to share the prefix is confinable. The
+    // install cannot distinguish it (the block stores no worktree identity),
+    // so D67 names the consequence instead of pretending otherwise.
+    const composition = composeGuard({ repoRoot: scratch, worktrees: readGitWorktrees(scratch) })
+    assert.deepEqual(composition.config.worktrees, [join(parent, 'ticket-*')])
+    const policy = resolvePolicy(composition.config)
+    assert.equal(chooseWorktree({ text: `work in ${sibling}`, worktrees: policy.worktrees }), sibling)
+    const verdict = judgeCall(
+      {
+        tool: 'write',
+        args: { file_path: join(sibling, 'notes.md') },
+        agent: { id: 'worker-sibling', cwd: parent, worker: true },
+        worktree: sibling,
+      },
+      policy,
+      { branch: () => 'ticket/1' },
+    )
+    assert.equal(verdict.kind, 'allow', 'the namespace caveat is the documented behaviour')
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
     rmSync(scratch, { recursive: true, force: true })
   }
 })

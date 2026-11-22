@@ -88,6 +88,20 @@ const MUTANTS = [
     test: 'a linked worktree of a --separate-git-dir repo is refused before it can write',
   },
   {
+    name: 'protect only the main checkout, not the git dir',
+    file: 'packages/dsh-anyplugin-guard/src/composition.ts',
+    find: '      : [main.path, ...(commonDir !== undefined && resolve(commonDir) !== main.path ? [resolve(commonDir)] : [])]',
+    replacement: '      : [main.path]',
+    test: 'a --separate-git-dir checkout installs a ticket pattern and refuses worker writes to the git dir',
+  },
+  {
+    name: 'recognise a git directory only by the name ".git"',
+    file: 'packages/dsh-anyplugin-guard/src/policy.ts',
+    find: '  return policy.gitDirectories.some((directory) => isInside(realTarget(directory), real))',
+    replacement: '  return false',
+    test: 'a --separate-git-dir checkout installs a ticket pattern and refuses worker writes to the git dir',
+  },
+  {
     name: 'never report a listed worktree as gone',
     file: 'scripts/guard-status.mjs',
     find: 'const stalePaths = listedWorktrees.filter((entry) => !isWorktreeGlob(entry) && !existsSync(entry))',

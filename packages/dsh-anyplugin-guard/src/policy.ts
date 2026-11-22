@@ -67,8 +67,10 @@ export interface GuardConfig {
   writeTools?: string[]
   /** Absolute worktree paths workers may write under. */
   worktrees?: string[]
-  /** Absolute roots no worker may write under (the main checkout). */
+  /** Absolute roots no worker may write under (the main checkout, and the git dir when it is outside it). */
   protectedRoots?: string[]
+  /** Absolute git directories (the common dir, plus any linked worktree's own git dir) a worker never writes in. */
+  gitDirectories?: string[]
   /** Paths (relative to a repository root or absolute) that only `--update` may write. */
   decisions?: string[]
   brief?: BriefConfig | false
@@ -80,6 +82,7 @@ export interface ResolvedPolicy {
   writeTools: Set<string>
   worktrees: string[]
   protectedRoots: string[]
+  gitDirectories: string[]
   decisions: string[]
   brief: BriefConfig | false
 }
@@ -121,6 +124,7 @@ export function resolvePolicy(config: GuardConfig = {}): ResolvedPolicy {
     writeTools: new Set(config.writeTools ?? DEFAULT_WRITE_TOOLS),
     worktrees: (config.worktrees ?? []).map((path) => resolve(path)),
     protectedRoots: (config.protectedRoots ?? []).map((path) => resolve(path)),
+    gitDirectories: (config.gitDirectories ?? []).map((path) => resolve(path)),
     decisions: config.decisions ?? DEFAULT_DECISIONS,
     brief: config.brief ?? false,
   }
@@ -190,12 +194,20 @@ export function matchWorktree(entry: string, target: string): string | undefined
 
 /**
  * A path inside a git directory. A worker that appends a diff driver, a
- * filter, a hook or an ssh command to `.git/config` plants a program the key
+ * filter, a hook or an ssh command to `config` plants a program the key
  * allowlist on the command line cannot see; the guard refuses the write
  * instead of trying to read what the file will mean later.
+ *
+ * The `.git` name alone is not the git directory: a `--separate-git-dir`
+ * checkout keeps it in an arbitrary directory, a submodule keeps it in the
+ * superproject's `.git/modules/<name>`, and a linked worktree keeps it under
+ * `<common>/worktrees/<name>`. The install writes the resolved common dir
+ * (which contains every linked worktree's git dir) into the policy.
  */
-export function insideGitDirectory(target: string): boolean {
-  return normalized(realTarget(target)).split('/').includes('.git')
+export function insideGitDirectory(target: string, policy: ResolvedPolicy): boolean {
+  const real = realTarget(target)
+  if (normalized(real).split('/').includes('.git')) return true
+  return policy.gitDirectories.some((directory) => isInside(realTarget(directory), real))
 }
 
 /**
@@ -313,10 +325,10 @@ function judgeWrite(call: GuardCall, policy: ResolvedPolicy): Verdict {
         `refusing to write ${raw}: the session has no cwd, so a relative path cannot be resolved; use an absolute path under your worktree`,
       )
     }
-    if (insideGitDirectory(target)) {
+    if (insideGitDirectory(target, policy)) {
       return deny(
         'git-dir-write',
-        `refusing to write ${target}: a worker does not write inside .git; a config or hook planted there runs as the next git command`,
+        `refusing to write ${target}: a worker does not write inside a git directory; a config or hook planted there runs as the next git command`,
       )
     }
     const violation = confinement(target, effectiveWorktree(call, policy), policy)
@@ -1592,10 +1604,10 @@ function judgeCommand(
         `refusing to write ${write.raw}: the running directory is unknown, so the path cannot be confined; use an absolute path under your worktree`,
       )
     }
-    if (insideGitDirectory(target)) {
+    if (insideGitDirectory(target, policy)) {
       return deny(
         'git-dir-write',
-        `refusing to write ${target}: a worker does not write inside .git; a config or hook planted there runs as the next git command`,
+        `refusing to write ${target}: a worker does not write inside a git directory; a config or hook planted there runs as the next git command`,
       )
     }
     const violation = confinement(target, worktree, policy)

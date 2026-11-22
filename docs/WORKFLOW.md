@@ -102,6 +102,14 @@ pattern; one out-of-pattern worktree then makes the next install drop the
 pattern for every future worktree until the next install. Review and verify
 worktrees are deliberately not confinable.
 
+The block also names the resolved git directory (`protectedRoots` when it is
+outside the main working tree, and `gitDirectories` always). That is what stops
+a pattern that happens to match a custom git dir — `sep-*` next to `sep-gitdir`
+— from letting a worker overwrite the pre-push hook the install just wrote.
+A worker write under `<gitdir>/config` or `<gitdir>/hooks/pre-push` is refused
+by `git-dir-write`; a root write there is allowed, and the common dir covers
+the per-worktree dirs of worktrees created later.
+
 The master creates the worktree and hands the worker its exact path — a worker
 that picks its own path will pick one the sandbox refuses. Remove the worktree
 after the merge (`git worktree remove <dir>`); the worker usually exits first,
