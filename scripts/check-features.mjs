@@ -6,11 +6,17 @@
 // row whose class is not one of the declared five, or when a table has no
 // evidence column. Those are the three ways a capability map becomes fiction.
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkCountClaims } from './count-owners.mjs'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
+const args = process.argv.slice(2)
+const rootFlag = args.indexOf('--root')
+if (rootFlag !== -1 && args[rootFlag + 1] === undefined) {
+  console.error('features: --root needs a directory')
+  process.exit(1)
+}
+const root = rootFlag === -1 ? fileURLToPath(new URL('..', import.meta.url)) : resolve(args[rootFlag + 1])
 const file = join(root, 'docs', 'FEATURES.md')
 const text = readFileSync(file, 'utf8')
 

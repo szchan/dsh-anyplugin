@@ -12,13 +12,19 @@
 //   node scripts/check-decisions.mjs --update   # accept new entries only
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
+const argv = process.argv.slice(2)
+const rootFlag = argv.indexOf('--root')
+if (rootFlag >= 0 && argv[rootFlag + 1] === undefined) {
+  console.error('decisions: --root needs a directory')
+  process.exit(1)
+}
+const root = rootFlag >= 0 ? resolve(argv[rootFlag + 1]) : fileURLToPath(new URL('..', import.meta.url))
 const decisionsPath = join(root, 'docs', 'DECISIONS.md')
 const lockPath = join(root, 'docs', 'decisions.lock.json')
-const update = process.argv.includes('--update')
+const update = argv.includes('--update')
 
 const text = readFileSync(decisionsPath, 'utf8')
 const heading = /^## (D\d+) — (.+)$/gmu
@@ -50,6 +56,22 @@ for (const entry of entries) trimTail(entry)
 
 if (entries.length === 0) {
   console.error('decisions: no entries found')
+  process.exit(1)
+}
+
+// The hash lock cannot see this one: two workers can pick the same next number
+// and both edit in a way the lock accepts (each entry is new and well formed).
+// A duplicate id makes every later citation ambiguous, so it is a hard failure
+// rather than a review note. Audit finding F4.
+const seen = new Set()
+const duplicates = new Set()
+for (const entry of entries) {
+  if (seen.has(entry.id)) duplicates.add(entry.id)
+  seen.add(entry.id)
+}
+if (duplicates.size > 0) {
+  console.error(`decisions: duplicate ids: ${[...duplicates].join(', ')}`)
+  console.error('decisions: give the later entry the next free number; ids are cited from code and docs. If this came from a merge, renumber before running --update: the lock has no entry for the new id')
   process.exit(1)
 }
 

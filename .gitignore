@@ -20,3 +20,6 @@ fixtures/**/captured/
 
 # pinned upstream mod tree fetched by scripts/fetch-mod.mjs (D14: never vendored)
 .mods/
+
+# daily audit evidence (machine-local transcripts, PR scan); the reports are committed
+.audit/
