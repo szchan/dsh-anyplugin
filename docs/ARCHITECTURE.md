@@ -3364,7 +3364,16 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   line per routed event on one real headless run, and the payload-key
   assertions are in
   `packages/dsh-anyplugin-conformance/test/lifecycle.test.mjs`; the coverage
-  rows moved with this change (`declared` 32, `matched` 31).
+  rows moved with this change (`declared` 32, `matched` 31). The dedupe
+  promises are pinned in
+  `packages/dsh-anyplugin-materialize-hook/test/lifecycle.test.mjs`, one named
+  test per mutation: dropping `turn` fails `StopFailure keys each failure by
+  session and turn`; dropping `cleanup.revision` fails `WorktreeRemove keys
+  each removal by cleanup revision`; forcing `isRootSession` fails
+  `StopFailure ignores a child session on both failure records`; deleting the
+  gap calls fails `StopFailure reports every classic field the record cannot
+  supply`; and setting `cwd` to the removed path fails `WorktreeRemove reports
+  the host cwd as a gap, never the removed path`.
 
   Two probe-only seams were required and are worth recording for the wiring
   ticket: JSONL persistence (`{root: out/sessions, compression:'none'}`) is
