@@ -456,6 +456,29 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
     await stopped
     await untilLine('StopFailure')
 
+    // A real child session that fails: StopFailure is root-only (SubagentStop
+    // owns children), so this must not add a second line.
+    const childAgent = await ctx.agentLoop.create(
+      'anyplugin-seams-child',
+      { provider: 'fake', model: 'fake-1' },
+      { parentSession: root.session.id, cwd: workDir },
+    )
+    const childEnded = new Promise((resolveChild, rejectChild) => {
+      const timer = setTimeout(() => rejectChild(new Error('the child failing turn did not end')), timeoutMs)
+      const dispose = ctx.on('session/event', (session, event) => {
+        if (event?.type !== 'turn/end') return
+        if (session?.header?.id !== childAgent.session.id) return
+        if (event?.data?.turn !== 1) return
+        clearTimeout(timer)
+        if (typeof dispose === 'function') dispose()
+        resolveChild()
+      })
+    })
+    queue.push(failingChunks('seams child model failure'))
+    childAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'fail as a child' }], source: { kind: 'user' } }))
+    await childEnded
+    await untilLine('StopFailure')
+
     // A final, deterministic directory set: the CwdChanged payload the script
     // keeps must be the new directory, so the seam's meaning is asserted on the
     // record this probe itself produced last.
@@ -600,13 +623,20 @@ if (isEntry) {
 
         assert.equal(count('ConfigChange'), 2, 'first read (0) and one change (1), not the unchanged read')
 
-        // The five S23 records. Two are observed twice by the host; one
-        // handler line each is the dedupe evidence, on a real run.
+        // The five S23 records. WorktreeRemove and StopFailure are emitted
+        // twice by the host; one line each on a real run shows the mount ran
+        // once. The paired/replayed records are pinned in the materializer's
+        // lifecycle tests, which is where a dropped key goes red.
         assert.equal(count('TaskCreated'), 1)
         assert.equal(count('TaskCompleted'), 1)
         assert.equal(count('WorktreeCreate'), 1)
         assert.equal(count('WorktreeRemove'), 1, 'scheduled and removed collapsed to one handler run')
         assert.equal(count('StopFailure'), 1, 'agent/error and turn/end collapsed to one handler run')
+        assert.equal(
+          payload('StopFailure').session_id,
+          observed.stopFailureSessionId,
+          'the failing child turn did not add a StopFailure line',
+        )
         assert.equal(observed.worktreeCleanup, 'removed', 'the reclamation settled before the line was read')
         assert.equal(payload('TaskCreated').task_id, observed.taskId)
         assert.equal(payload('TaskCreated').task_subject, observed.taskSubject)
@@ -638,6 +668,8 @@ if (isEntry) {
         assert.equal(payload('WorktreeCreate').session_id, observed.worktreeSessionId)
         assert.deepEqual(Object.keys(payload('WorktreeCreate')).sort(), ['cwd', 'hook_event_name', 'name', 'session_id'])
         assert.equal(payload('WorktreeRemove').worktree_path, observed.worktreePath)
+        assert.equal(payload('WorktreeRemove').cwd, process.cwd(), 'cwd is the host process directory, not the removed checkout')
+        assert.notEqual(payload('WorktreeRemove').cwd, observed.worktreePath, 'classic cwd and worktree_path stay distinct')
         assert.equal(payload('WorktreeRemove').hook_event_name, 'WorktreeRemove')
         assert.equal(payload('WorktreeRemove').session_id, observed.worktreeSessionId)
         assert.deepEqual(Object.keys(payload('WorktreeRemove')).sort(), [

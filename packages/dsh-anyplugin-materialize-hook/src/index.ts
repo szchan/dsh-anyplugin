@@ -1290,6 +1290,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         ...(message === undefined ? {} : { error_details: message }),
       }
       reportGap('StopFailure', 'error', "agent/error and turn/end carry a host failure code (LlmError.failure.code), not Claude's error class enum; no ratified mapping exists at the pin")
+      reportGap('StopFailure', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
       reportGap('StopFailure', 'last_assistant_message', 'the error turn commits no assistant/message record at the 0.2.2-rc.5 pin; the streamed text is only in assistant/attempt, which this mount does not read')
       if (message === undefined) reportGap('StopFailure', 'error_details', 'the host failure carries no message')
       await runKernel(chainEventFor('StopFailure', 'session/event turn/end + agent/error', payload), chains('StopFailure'))
@@ -1308,13 +1309,16 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       removedWorktrees.add(key)
       const payload = {
         hook_event_name: 'WorktreeRemove',
-        // The cleanup emit names the checkout, and that checkout was the
-        // session's working directory; no session header is on this emit, so
-        // the path is the only directory the record itself names.
-        cwd: data.path,
+        // The cleanup record names the removed checkout, not the session cwd.
+        // Emitting the path as cwd would make two different classic fields the
+        // same value, so the mount reports the host process directory and the
+        // gap instead.
+        cwd: process.cwd(),
         session_id: data.sessionId,
         worktree_path: data.path,
       }
+      reportGap('WorktreeRemove', 'cwd', 'the worktree/cleanup emit carries sessionId, path and cleanup only; it has no session header or cwd, so the host process directory is reported rather than the removed path')
+      reportGap('WorktreeRemove', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
       await runKernel(chainEventFor('WorktreeRemove', 'worktree/cleanup', payload), chains('WorktreeRemove'))
     }
     // session/event and settings/document-updated are emit, not waterfall:
@@ -1349,6 +1353,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
                 ...(typeof task.description === 'string' ? { task_description: task.description } : {}),
               }
               reportGap('TaskCreated', 'team_name', 'team/task carries teamId, the Team identity at this pin (the root session id), not a team display name')
+              reportGap('TaskCreated', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
               reportGap('TaskCreated', 'teammate_name', 'a revision-one team/task is unowned; creation carries no owner, so there is no teammate name')
               if (typeof task.subject !== 'string') reportGap('TaskCreated', 'task_subject', 'the team/task record carries no subject')
               if (typeof task.description !== 'string') reportGap('TaskCreated', 'task_description', 'the team/task record carries no description')
@@ -1365,6 +1370,8 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
                 ...(typeof task.ownerName === 'string' ? { teammate_name: task.ownerName } : {}),
               }
               reportGap('TaskCompleted', 'team_name', 'team/task carries teamId, the Team identity at this pin (the root session id), not a team display name')
+              reportGap('TaskCompleted', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
+              reportGap('TaskCompleted', 'permission_mode', 'permission_mode is session-level at the pin, and the team/task record does not carry it')
               if (typeof task.ownerName !== 'string') reportGap('TaskCompleted', 'teammate_name', 'the completed team/task revision carries no ownerName')
               await runKernel(chainEventFor('TaskCompleted', 'session/event team/task', payload), chains('TaskCompleted'))
             }
@@ -1381,6 +1388,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             if (typeof data.branch !== 'string') {
               reportGap('WorktreeCreate', 'name', 'the classic name is the branch, and this plugin:worktree/created record carries none')
             }
+            reportGap('WorktreeCreate', 'transcript_path', 'the host record carries no transcript path and this mount does not read the session log')
             await runKernel(chainEventFor('WorktreeCreate', 'session/event plugin:worktree/created', payload), chains('WorktreeCreate'))
             return
           }

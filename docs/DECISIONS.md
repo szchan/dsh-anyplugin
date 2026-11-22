@@ -3264,3 +3264,45 @@ registry tarball at **190257 bytes (185.8 KiB)**, above D65's 188416-byte
 **Consequences.** `scripts/check-pack.mjs` carries the new constant and points
 at this entry. The measured size is from the same build CI runs; no dependency,
 pin, workflow or kernel limit moved.
+
+---
+
+## D72 — D70's field sentence is superseded: the gaps are named and the translations are separated
+
+**Decided 2026-11-22** (#197, review of PR #201). D70 rule 3 ends "No DSH
+field is renamed into a Claude name" three lines after naming
+`ownerName → teammate_name`, and while `WorktreeCreate` maps `branch → name`
+and `StopFailure` maps the host failure message into `error_details`. The
+claim is false as written, and the gap list omits `transcript_path`,
+`permission_mode` and `WorktreeRemove.cwd`. This entry supersedes that
+sentence and that list; D70's routing, dedupe and notification-only rules
+stand unchanged.
+
+1. **Gaps stay named.** The mount reports `transcript_path` for all five
+   events (the host keeps no transcript path, and this mount does not read the
+   session log), `permission_mode` for `TaskCompleted` (session-level at the
+   pin and absent from `team/task`), `team_name` for both task events,
+   `teammate_name` for `TaskCreated`, and `error` plus `last_assistant_message`
+   for `StopFailure`.
+2. **`WorktreeRemove.cwd` is the host process directory.** The
+   `worktree/cleanup` record carries `sessionId`, `path` and `cleanup` only; it
+   has no session header. The mount emits `process.cwd()` and reports the
+   `cwd` gap, so `cwd` and `worktree_path` remain two distinct classic fields.
+   It does not read the removed checkout into `cwd`.
+3. **Three translations are one value each.** `TaskCompleted` takes
+   `teammate_name` from `task.ownerName`; `WorktreeCreate` takes `name` from
+   `branch`; `StopFailure` takes `error_details` from the host failure
+   message. No value is synthesized from a different concept.
+4. **The double emitters are named.** `WorktreeRemove` emits a `scheduled`
+   intent and a settled `removed` record; `StopFailure` emits an error-shaped
+   `turn/end` record and an `agent/error` emit. Those are the two cases D70
+   rule 2 dedupes.
+5. **Evidence.** `spikes/s23-unprobed-events/run.mjs` located the emitters and
+   their fields at the pin. `packages/dsh-anyplugin-conformance/test/lifecycle.test.mjs`
+   drives real team, worktree and failing-turn paths (root and child) on
+   `fixtures/claude-hooks-seams` and asserts one line per event, the exact
+   payload key sets, and `cwd !== worktree_path`. The materializer's
+   `packages/dsh-anyplugin-materialize-hook/test/lifecycle.test.mjs` pins the
+   dedupe keys and gap warnings; its mutation set (drop `turn`, drop
+   `cleanup.revision`, force `isRootSession`, drop the gap calls, set `cwd` to
+   the removed path) turns a named test red.
