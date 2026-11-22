@@ -80,18 +80,33 @@ const until = async (fn, timeoutMs = 3000, label = 'condition') => {
 const keyList = (value) => (value === undefined || value === null ? [] : Object.keys(value))
 
 /** Locate the @deepseek-ai package directory, mirroring harness.ts's shapes. */
+function packageDirFor(root) {
+  const nested = join(root, 'node_modules', '@deepseek-ai')
+  if (existsSync(nested)) return nested
+  const scoped = join(root, '@deepseek-ai')
+  if (existsSync(scoped)) return scoped
+  if (existsSync(join(root, 'cordis', 'package.json'))) return root
+  const parent = dirname(root)
+  if (existsSync(join(parent, 'cordis', 'package.json'))) return parent
+  return nested
+}
+
 function locateHarness() {
   const named = process.env.DSH_HARNESS_DIR?.trim()
   const installed = process.env.DSH_INSTALL_DIR?.trim()
-  const roots = []
-  if (named) roots.push([resolve(named), 'DSH_HARNESS_DIR'])
-  if (installed) roots.push([resolve(installed), 'DSH_INSTALL_DIR'])
-  if (named === undefined && installed === undefined) roots.push([join(REPO, '.harness', VERSION), '.harness'])
-  for (const [root, source] of roots) {
-    const candidates = [join(root, 'node_modules', '@deepseek-ai'), join(root, '@deepseek-ai'), root, dirname(root)]
-    for (const candidate of candidates) if (REQUIRED.every((name) => existsSync(join(candidate, name, 'package.json')))) return { dir: candidate, source }
-  }
-  console.error(`no usable harness: ${roots.map(([r, s]) => `${s}=${r}`).join(', ')}`)
+  // D24: a path that was explicitly set is an error, never a fall-through.
+  // Falling back from a bad DSH_HARNESS_DIR to a good DSH_INSTALL_DIR would
+  // report green against a tree the operator did not name.
+  const [base, source] = named
+    ? [resolve(named), 'DSH_HARNESS_DIR']
+    : installed
+      ? [resolve(installed), 'DSH_INSTALL_DIR']
+      : [join(REPO, '.harness', VERSION), '.harness']
+  const dir = packageDirFor(base)
+  const missing = REQUIRED.filter((name) => !existsSync(join(dir, name, 'package.json')))
+  if (missing.length === 0) return { dir, source }
+  console.error(`no usable harness: ${source}=${base} is unusable; missing ${missing.join(', ')}`)
+  if (named) console.error('s23: DSH_HARNESS_DIR was set explicitly; it is validated alone and never replaced by DSH_INSTALL_DIR')
   process.exit(2)
 }
 

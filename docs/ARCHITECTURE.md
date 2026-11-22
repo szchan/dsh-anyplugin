@@ -3339,11 +3339,16 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   The spike asserts that the resolved harness version equals
   `DSH_HARNESS_VERSION`; a wrong tree — including the Desktop `0.2.2-rc.2`
   fallback when `DSH_HARNESS_DIR` is absent — exits 2 and names both versions.
-  A bare or **partial** tree is the same class of failure as a wrong pin: both
-  exit 2, and a 0-check run is never allowed to look like an ordinary pass or
-  red; a partial tree names every missing package (for example
-  `dsh-subagent-fork-in-process`). A run that actually boots the pin can still
-  exit 1 — for a failed probe, or when zero of the six fired.
+  An explicitly set `DSH_HARNESS_DIR` is validated as the only tree: a root
+  missing any required package exits 2 and lists **every** missing package; it
+  is never replaced by `DSH_INSTALL_DIR`. Fallback happens only when the
+  variable is unset — then `DSH_INSTALL_DIR`, then the fetched pin, each
+  validated the same way, and an unusable root is its own exit-2 error. A tree
+  that resolves but lacks a probe package (for example
+  `dsh-subagent-fork-in-process`) also exits 2 and names every missing extra.
+  A 0-check run reports `0 checks ran` and exits 2, never an ordinary pass or
+  red; a run that boots the pin can still exit 1 for a failed probe or zero
+  fired.
   S23 is
   probe-only in this change and is not wired into `verify.yml` (no
   `package.json` or workflow edit); `spikes/s23-unprobed-events/out/` is
