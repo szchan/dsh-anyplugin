@@ -2881,3 +2881,43 @@ package). Adding a host to `allowedHosts` is a configuration change with the sam
 threat model as binding off loopback. The mutation audit lives in
 `packages/dsh-anyplugin-ui/test/mutations.mjs`: eleven single-property breaks,
 each required to redden a named test, so the guards cannot be deleted quietly.
+
+## D63 — The process audit is a separate, gated role
+
+**Status:** ratified 2026-11-22 (audit baseline).
+
+Agent throughput was never the bottleneck; repeated mistakes were. The same
+review comments recur across PRs — a claim stronger than its proof, a doc that
+promises more than the code, a field that is silently dropped — and the fix
+lives in the process, not in the ticket that happened to expose it.
+
+**Decided.**
+
+1. **A separate role, on a schedule.** The auditor runs daily, reads the
+   transcripts, the queue and the gates, and writes `docs/audits/<date>.md`. It
+   is not a worker and does not implement tickets; its write scope is audit
+   tooling, process docs, the audit skill, and a gate/test that is the finding's
+   own fix.
+2. **Findings are a ledger, not prose.** `docs/AUDIT.md` carries one entry per
+   recurring mistake with the mechanism that prevents it (`hook`, `ci`, `lint`,
+   `skill`, `reviewer`, `docs`, `schedule`) and an honest status. `enforced`
+   requires a machine mechanism and a proof file; `dormant` says the mechanism
+   is tested but not installed. A finding that cannot be machine-prevented is
+   `reviewed` by two independent reviewers, or documented with the reason.
+3. **The ledger is gated.** `npm run check:audit` runs inside `verify` and fails
+   on a missing artifact/proof, a weak `enforced`, a report without the four
+   headings, or a ledger older than its latest report. A list that cannot redden
+   a PR is a diary.
+4. **Role breadth is audited.** The evidence digest reports the largest
+   sessions, their working directory and their write paths. A root session over
+   roughly 1,500 tool calls is a finding with a proposed split, not a badge.
+5. **A mechanism change gets two reviewers, and the master merges it.** The
+   auditor never merges. A reviewer verdict is `Claim | Proof | Verdict` with
+   `file:line`; `weaker` and `not proven` block the merge until the proof grows
+   or the claim shrinks.
+
+**Consequences.** `verify` now includes `check:audit`; a daily schedule exists
+outside the repository and a fresh checkout recreates it. The guard's push rule
+is `dormant` until the pre-push hook is installed (F1/F2), and the merge-head pin
+(#163) and structured denial log (#164) remain open. The first baseline is
+`docs/audits/2026-11-22.md`.

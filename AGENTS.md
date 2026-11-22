@@ -22,8 +22,9 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D62. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D63. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
+| `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
 | `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
@@ -84,6 +85,8 @@ docs/                  design and decisions (all prose docs live here)
   CONFORMANCE.md       the differential rig
   FEATURES.md          the capability map (checked by scripts/check-features.mjs)
   TRIAGE.md            how issues/PRs become work, and what a report may not do
+  AUDIT.md             the daily process audit: ledger, role caps, reviewer briefs
+  audits/              one report per audit pass (checked by scripts/check-audit.mjs)
   RELEASING.md         how a tag becomes a published version, and what has failed before
 .dsh/skills/dsh-anyplugin/SKILL.md   the project skill agents load first
 packages/              publishable packages (see ARCHITECTURE §2 for the map)
@@ -104,10 +107,12 @@ npm install                       # workspace deps (uses the repo-local .npmrc c
 node spikes/s1-loader/run.mjs     # run a spike
 npm run rig -- verify --plugin <dir> --golden <file>   # conformance rig
 npm run capture:fixtures          # re-capture goldens after a pin bump; review the diff
-npm run verify                    # check:arch + check:features + check:decisions + tests
-npm run check:arch                # structural rules R1–R13
-npm run check:features            # the capability map still points at real files
-npm run check:decisions           # D1–D62 append-only (--update accepts new entries only)
+npm run verify                    # check:arch + check:features + check:decisions + check:audit + pack/ui + tests
+npm run check:arch                # structural rules R1–R14
+npm run check:features            # the capability map points at real files; owns R15
+npm run check:decisions           # D1–D63 append-only (--update accepts new entries only)
+npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
+npm run check:audit               # the audit ledger/report gate (part of verify)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
 npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```

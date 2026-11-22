@@ -10,7 +10,7 @@
 // Exit 0 when the tree matches the declared shape, 1 otherwise.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pinLabelViolations } from './architecture-pin-labels.mjs'
 import {
@@ -23,8 +23,17 @@ import {
   topLevelFixtures,
 } from './fixture-ratchet.mjs'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
-const json = process.argv.includes('--json')
+const argv = process.argv.slice(2)
+const rootFlag = argv.indexOf('--root')
+if (rootFlag >= 0 && argv[rootFlag + 1] === undefined) {
+  console.error('architecture: --root needs a directory')
+  process.exit(1)
+}
+const root = rootFlag >= 0 ? resolve(argv[rootFlag + 1]) : fileURLToPath(new URL('..', import.meta.url))
+const json = argv.includes('--json')
+// Test hook: run the package-source rules (R1-R13) and stop before the
+// repo-wide rules that need the full tree. Used by scripts/architecture-rules.test.mjs.
+const sourcesOnly = argv.includes('--sources-only')
 const violations = []
 
 function fail(rule, file, message, line = 0) {
@@ -257,6 +266,8 @@ for (const pkg of packages) {
   }
 }
 
+if (sourcesOnly) report()
+
 // R14. A fixture directory is a claim, and every claim has an owner. The
 // coverage ratchet names its fixtures in EXPECTED_ROWS; the ones that answer a
 // different question are listed in FIXTURE_EXCLUSIONS with the test that reads
@@ -279,21 +290,25 @@ if (!existsSync(coverageTest)) {
   }
 }
 
-const summary = {
-  ok: violations.length === 0,
-  packages: packages.length,
-  files: packages.reduce((n, pkg) => n + walk(join(root, 'packages', pkg, 'src')).length, 0),
-  violations,
+function report() {
+  const summary = {
+    ok: violations.length === 0,
+    packages: packages.length,
+    files: packages.reduce((n, pkg) => n + walk(join(root, 'packages', pkg, 'src')).length, 0),
+    violations,
+  }
+
+  if (json) {
+    process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
+  } else if (summary.ok) {
+    process.stdout.write(`architecture: ${summary.packages} packages / ${summary.files} files, no violations\n`)
+  } else {
+    for (const v of violations) {
+      process.stdout.write(`${v.file}${v.line ? ':' + v.line : ''}  ${v.rule}  ${v.message}\n`)
+    }
+    process.stdout.write(`\narchitecture: ${violations.length} violation(s) in ${summary.packages} packages\n`)
+  }
+  process.exit(summary.ok ? 0 : 1)
 }
 
-if (json) {
-  process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
-} else if (summary.ok) {
-  process.stdout.write(`architecture: ${summary.packages} packages / ${summary.files} files, no violations\n`)
-} else {
-  for (const v of violations) {
-    process.stdout.write(`${v.file}${v.line ? ':' + v.line : ''}  ${v.rule}  ${v.message}\n`)
-  }
-  process.stdout.write(`\narchitecture: ${violations.length} violation(s) in ${summary.packages} packages\n`)
-}
-process.exit(summary.ok ? 0 : 1)
+report()
