@@ -21,9 +21,10 @@
  * commands that genuinely need the upstream oracle fail through the rig's own
  * named error, not through a module-not-found.
  */
+import { PROGRAM } from './program.ts'
 import { USAGE, runCli } from './rig.ts'
 
-const HEADER = `dsh-anyplugin — install foreign agent plugins into DeepSeek Harness.
+const HEADER = `${PROGRAM} — install foreign agent plugins into DeepSeek Harness.
 
 Every command and flag below is the same surface the conformance rig runs in a
 checkout (\`npm run rig -- <command>\`); the program names shown are the ones

@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -67,6 +67,31 @@ function packExtracted(work) {
   return { packed, tree, bin: join(tree, 'lib', 'cli.js') }
 }
 
+/**
+ * Newest mtime among the sources the bundle is built from. A packed test that
+ * passes against a stale `lib/` is worse than no test: the reviewer put a
+ * marker in `cli.ts`, skipped the build, and the old artifact stayed green.
+ */
+function newestSourceMtime() {
+  let newest = 0
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (/\.(ts|tsx)$/.test(entry.name)) newest = Math.max(newest, statSync(path).mtimeMs)
+    }
+  }
+  for (const entry of readdirSync(join(repoRoot, 'packages'), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const src = join(repoRoot, 'packages', entry.name, 'src')
+    if (existsSync(src)) walk(src)
+  }
+  for (const path of ['scripts/build.mjs', 'scripts/shipped-gates.mjs']) {
+    newest = Math.max(newest, statSync(join(repoRoot, path)).mtimeMs)
+  }
+  return newest
+}
+
 /** Run the extracted bin with no DSH, oracle or plugin environment. */
 function runExtracted(bin, tree, home, args, extraEnv = {}) {
   return spawnSync(process.execPath, [bin, ...args], {
@@ -75,6 +100,17 @@ function runExtracted(bin, tree, home, args, extraEnv = {}) {
     env: { PATH: process.env.PATH, HOME: home, ...extraEnv },
   })
 }
+
+test('packed artifact: lib/ is not older than its sources', () => {
+  const built = join(repoRoot, 'lib', 'cli.js')
+  assert.ok(existsSync(built), 'lib/cli.js is missing; run `npm run build`')
+  const builtAt = statSync(built).mtimeMs
+  const newest = newestSourceMtime()
+  assert.ok(
+    builtAt >= newest,
+    `lib/cli.js is older than the newest source; run \`npm run build\` before packing`,
+  )
+})
 
 test('packed artifact: install from the extracted tarball writes one record and nothing else', () => {
   const work = mkdtempSync(join(tmpdir(), 'anyplugin-packed-cli-'))

@@ -32,6 +32,8 @@ import { fileURLToPath } from 'node:url'
 
 import { build } from 'esbuild'
 
+import { GATE_MODULES } from './shipped-gates.mjs'
+
 const root = fileURLToPath(new URL('..', import.meta.url))
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const lib = join(root, 'lib')
@@ -81,12 +83,7 @@ const externals = [
  * The packed bin resolves the relative specifier against `lib/`, catches the
  * miss, and refuses with the command and checkout named.
  */
-const repoOnly = [
-  '*/oracles/claude.ts',
-  '*/oracles/file.ts',
-  '*/inventory.ts',
-  '*/trace.ts',
-]
+const repoOnly = GATE_MODULES.map((module) => `*/${module}`)
 
 async function main() {
   rmSync(lib, { recursive: true, force: true })

@@ -21,6 +21,8 @@ import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { GATE_MODULES, lintShippedLib } from './shipped-gates.mjs'
+
 const root = fileURLToPath(new URL('..', import.meta.url))
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const failures = []
@@ -166,21 +168,22 @@ try {
 
     // 2b. The conformance gates never ship. The shipped commands install, list,
     //     enable, disable, uninstall, report, grant, revoke and the marketplace
-    //     never reach the Claude oracle, the harness probe or the trace differ;
-    //     those are lazy modules left external. Scan every shipped lib file,
-    //     chunks included, because a static import can land there instead of in
-    //     the entry. `SourceTextModule` is allowed only in the kernel entry: D30
-    //     needs the flag there and nowhere else.
-    const gateMarkers = ['resolveClaudeBinary', 'claude --version', 'diffTraces']
-    for (const path of libFiles.filter((file) => file.endsWith('.js'))) {
-      const source = readFileSync(join(tree, path), 'utf8')
-      const carried = gateMarkers.filter((marker) => source.includes(marker))
-      check(carried.length === 0, `${path} carries conformance-gate code: ${carried.join(', ')}`)
-      if (path !== 'lib/materialize/hook.js') {
-        check(!source.includes('SourceTextModule'), `${path} carries SourceTextModule; only the kernel entry may`)
-      }
+    //     never reach the Claude oracle, the golden-inventory reader or the
+    //     trace differ; those are lazy modules left external. Scan every shipped
+    //     lib file, chunks included, because a static import can land there
+    //     instead of in the entry, and require the CLI to keep one literal lazy
+    //     import per module so a bundled copy also removes a green check.
+    //     `SourceTextModule` is allowed only in the kernel entry: D30 needs the
+    //     flag there and nowhere else.
+    const shippedJs = libFiles
+      .filter((file) => file.endsWith('.js'))
+      .map((path) => ({ path, source: readFileSync(join(tree, path), 'utf8') }))
+    const gateFailures = lintShippedLib(shippedJs)
+    for (const failure of gateFailures) failures.push(failure)
+    if (gateFailures.length === 0) {
+      notes.push('shipped lib: no conformance-gate markers (oracle, inventory reader, trace differ)')
+      notes.push(`shipped lib: lazy gate modules present (${GATE_MODULES.length})`)
     }
-    notes.push('shipped lib: no conformance-gate markers (oracle, harness probe, trace differ)')
 
     // 3. Runtime imports: every bare specifier in lib must be a declared runtime
     //    dependency or peer, and the harness must never be an import.
