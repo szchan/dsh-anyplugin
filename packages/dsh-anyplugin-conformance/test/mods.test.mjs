@@ -159,6 +159,12 @@ const SYNTHETIC_LEDGER = [
   'ui.resolve:ran',
 ]
 
+/**
+ * The number `docs/ARCHITECTURE.md` repeats about this ledger. The assertion
+ * below counts the `ran` rows, so the doc cannot drift from the array.
+ */
+export const EXPECTED_COUNTS = { served: 21 }
+
 test('a mod and a classic hook share the turn; the rewrite executes per agent', { skip }, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'anyplugin-mods-'))
   const traceFile = join(dataDir, 'trace.jsonl')
@@ -595,6 +601,11 @@ test('a synthetic mod exercises all 23 $ sites, in scan order, with typed refusa
 
     const store = stored(dataDir)
     assert.deepEqual(store['bridge-ledger'], SYNTHETIC_LEDGER)
+    assert.equal(
+      SYNTHETIC_LEDGER.filter((row) => row.endsWith(':ran')).length,
+      EXPECTED_COUNTS.served,
+      'the served site count matches the docs',
+    )
 
     // D32 §4: a load-time session.start has no agent, so the view is empty and
     // the id is a typed refusal, not an invented value.

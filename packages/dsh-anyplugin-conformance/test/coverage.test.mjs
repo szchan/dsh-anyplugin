@@ -70,6 +70,14 @@ const EXPECTED_ROWS = {
 }
 
 /**
+ * The numbers `docs/FEATURES.md` repeats. `scripts/count-owners.mjs` reads this
+ * object and compares every doc claim against it; the totals test below asserts
+ * the live matrix produces exactly these values, so the doc and the suite move
+ * together. Closing a row moves this object in the same commit.
+ */
+export const EXPECTED_COUNTS = { declared: 25, matched: 24, missing: 0, refused: 1, fixtures: 11 }
+
+/**
  * Hooks are the one surface whose presence is not readable from a registry:
  * a hook that is mounted and one that is not both leave no trace. So the
  * fixture with a hook gets one real call through the pipeline, and its row is
@@ -310,11 +318,21 @@ test(
         await cleanup?.()
       }
     }
+    assert.equal(
+      Object.keys(EXPECTED_ROWS).length,
+      EXPECTED_COUNTS.fixtures,
+      'the fixture count matches the docs',
+    )
     // S9 turned the lifecycle row set into matches: the golden declares five
     // hook components and the fixture's handlers wrote all five lines on a real
     // headless turn, so declared grows by five and every new row matches. The
     // S10 comment below still applies to the pre-existing eleven.
-    assert.deepEqual(totals, { declared: 25, matched: 24, missing: 0, refused: 1 })
+    assert.deepEqual(totals, {
+      declared: EXPECTED_COUNTS.declared,
+      matched: EXPECTED_COUNTS.matched,
+      missing: EXPECTED_COUNTS.missing,
+      refused: EXPECTED_COUNTS.refused,
+    })
   },
 )
 

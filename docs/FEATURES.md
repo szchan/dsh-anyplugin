@@ -23,10 +23,9 @@ codex plugin spec `1.0.0`.
 ## 1. Capability snapshot
 
 The one number the project reports: **25 declared / 24 matched / 0 missing /
-1 refused** rows in the coverage ratchet
-(`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`), across 11
-fixtures. It only moves when a row moves; see `docs/TODO.md` for the queue behind
-it.
+1 refused** rows across 11 fixtures in the coverage ratchet
+(`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`). It only moves
+when a row moves; see `docs/TODO.md` for the queue behind it.
 
 ## 2. Compile path — foreign plugin → IR → emit → DSH
 
@@ -49,11 +48,11 @@ it.
 | Authored mod load | strip, three resolver rules, one classic-pragma JSX transform | `exact` registration / `equivalent` bytes for `.tsx` | `packages/dsh-anyplugin-mod-host/src/index.ts`, `packages/dsh-anyplugin-mod-host/src/resolve.ts`, `packages/dsh-anyplugin-mod-host/src/jsx.ts`, D30/D31/D34/D39 |
 | Static capability scan | lexical, literal call sites only | `equivalent` | `packages/dsh-anyplugin-mod-scan/src/index.ts`, D21 |
 | `register(on, options)` | options from the manifest, `Registration.catch` | `exact` | `packages/dsh-anyplugin-mod-host/src/options.ts`, D36 |
-| Event routing | 19 routed, 167 pinned, 148 categorized | `equivalent` | `packages/dsh-anyplugin-intercept/src/mod-events.ts`, D40 |
+| Event routing | 19 served of 167 declared events, 148 absent (`fixtures/mods/coverage.json` `totals.events`) | `equivalent` | `packages/dsh-anyplugin-intercept/src/mod-events.ts`, D40 |
 | `next` surface | `to`, `signal`, `budget`, `trace`, eager trips | `exact` since D38 | `packages/dsh-anyplugin-intercept/src/index.ts`, D38 |
-| `$` bridge | 26 served, 7 typed refusals, 67 absent members (ledger, 2.1.329) | `equivalent` | `packages/dsh-anyplugin-mod-host/src/bridge.ts`, `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`, `docs/ARCHITECTURE.md` §10.5 S15 |
+| `$` bridge | 26 served, 7 typed refusals, 67 absent members (`fixtures/mods/coverage.json` `totals.methods`; pin 2.1.329) | `equivalent` | `packages/dsh-anyplugin-mod-host/src/bridge.ts`, `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`, `docs/ARCHITECTURE.md` §10.5 S15 |
 | Element runtime | `$.ui.*` refusals are typed; sink is ticket #75 | `unsupported` | `docs/TODO.md` |
-| Seven pinned upstream mods | 7/7 loaded (45/10/11/4/6/8/1 registrations) | `exact` registration | `fixtures/mods/upstream.json`, D36/D39 |
+| Seven pinned upstream mods | every one loads with the registrations recorded in the pinned ledger | `exact` registration | `fixtures/mods/upstream.json`, D36/D39 |
 
 ## 4. Trust and lifecycle
 
@@ -84,7 +83,7 @@ it.
 | Fidelity report (`rig report`) | `packages/dsh-anyplugin-conformance/src/report.ts` |
 | Pinned CI (two DSH pins, fetched harness + CLI + mods) | `.github/workflows/verify.yml`, D22/D24 |
 | Fixture ratchet (R14): every `fixtures/` directory is a ratchet row or a named exclusion | `scripts/fixture-ratchet.mjs`, `scripts/check-architecture.mjs` |
-| Count owners (R15): a doc count names the `.test.mjs` that asserts it | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
+| Count claims (R15): every doc count is compared with the number its owner states | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
 
 ## 7. What is deliberately not a feature
 
