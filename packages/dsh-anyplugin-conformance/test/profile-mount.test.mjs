@@ -52,7 +52,7 @@
 //
 // Node floor: `module.registerHooks` landed in 22.15. The published engine
 // floor stays 22.14 (it describes the package, not this test); here the API is
-// imported dynamically and the seven tests below skip with a reason naming the
+// imported dynamically and the eight tests below skip with a reason naming the
 // version when it is absent, so an older Node reports skips instead of a
 // link-time failure.
 
@@ -509,6 +509,33 @@ test('guard: a profile sessions/ write reddens while the home exclusion covers i
     else process.env.DSH_PROFILE_DIR = previousProfile
     rmSync(home, { recursive: true, force: true })
     rmSync(profile, { recursive: true, force: true })
+  }
+})
+
+// A root that does not exist is a state the fingerprint can name, not a
+// present-but-unreadable tree. This is what CI sees: it has no real home or
+// profile, and the boot line must say so rather than print a digest of nothing.
+test('guard: a nonexistent real root is reported absent, not an empty tree', options, async () => {
+  const tarball = packedTarball()
+  const root = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-absent-'))
+  const home = join(root, 'home')
+  const profile = join(root, 'profile')
+  const previousHome = process.env.DSH_HOME
+  const previousProfile = process.env.DSH_PROFILE_DIR
+  process.env.DSH_HOME = home
+  process.env.DSH_PROFILE_DIR = profile
+  try {
+    const observed = await bootPackedTarball({ tarball })
+    assert.deepEqual(observed.realHome, { path: home, state: 'absent' })
+    assert.deepEqual(observed.realProfile, { path: profile, state: 'absent' })
+    assert.equal(existsSync(home), false, 'the boot must not create the real home')
+    assert.equal(existsSync(profile), false, 'the boot must not create the real profile')
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    if (previousProfile === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previousProfile
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
