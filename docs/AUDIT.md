@@ -362,9 +362,10 @@ not a synonym for `enforced`. The `updated` date moves on every edit.
       "evidence": [
         "check-features R15",
         "PR #154",
-        "gate-rules.test.mjs R15 cases"
+        "gate-rules.test.mjs R15 counter-examples",
+        "features-rules.test.mjs gate call-site"
       ],
-      "proof": "packages/dsh-anyplugin-conformance/test/gate-rules.test.mjs"
+      "proof": "scripts/features-rules.test.mjs"
     },
     {
       "id": "F8",
@@ -375,9 +376,10 @@ not a synonym for `enforced`. The `updated` date moves on every edit.
       "rationale": "R14 is a fixture ratchet: the set of fixtures and their counts may grow, not shrink. Without it a failing diff can be silenced by removing the case instead of fixing the behavior.",
       "evidence": [
         "check-architecture R14",
-        "fixture-ratchet.mjs tests in gate-rules.test.mjs"
+        "fixture-ratchet.mjs counter-examples",
+        "architecture-rules.test.mjs orphan-fixture case"
       ],
-      "proof": "packages/dsh-anyplugin-conformance/test/gate-rules.test.mjs"
+      "proof": "scripts/architecture-rules.test.mjs"
     },
     {
       "id": "F9",
