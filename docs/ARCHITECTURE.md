@@ -2540,10 +2540,15 @@ asserts the three are pairwise distinct:
 before and after — per-entry kind, mode, size and mtime, plus sha256 of every
 regular file up to 64 KiB — and fails naming the changed paths if either moved;
 the success line prints both digests. The running Desktop host writes its own
-session state under `$DSH_HOME/sessions` and `$DSH_HOME/storages` while the gate
+session state under `$DSH_HOME/sessions` and `$DSH_HOME/storages` while the boot
 runs, so those two host-owned subtrees are excluded from the home fingerprint
-and the exclusion is printed; the profile directory has no exclusion. On CI,
-where no real home exists, the boot reports both absent instead.
+only, and the exclusion is printed; the profile fingerprint has no exclusion. A
+boot that appends to both `$DSH_HOME/sessions/live.txt` and
+`$DSH_PROFILE_DIR/sessions/live.txt` passes the home comparison only because of
+that scope and fails naming the profile (`profile-mount.test.mjs`, the `guard:`
+test). A root that does not exist is reported absent, not as an unreadable
+empty tree; on CI, where neither a real home nor a real profile exists, the boot
+prints `real home: absent; real profile: absent`.
 
 **Answer.** At pins `0.2.2-rc.5` and `0.2.2-rc.2` (claude-code@2.1.329) the
 npm-installed tarball mounts: controller `dsh-anyplugin` active, patch row

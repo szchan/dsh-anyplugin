@@ -546,11 +546,14 @@ when the tarball lacks `cordis.patch.yml`, when `dsh.profile.bundles` does not
 list the bundle, or when the package resolves from this checkout — each with its
 own message, and those three mutations are tests in `profile-mount.test.mjs`.
 The real `$DSH_HOME` and `$DSH_PROFILE_DIR` are fingerprinted before and after
-(the Desktop host's own `sessions/` and `storages/` trees are excluded and the
-exclusion is printed), so a check that touched the user's profile fails. The
-install reads the repository lockfile to stay offline, so this proves npm's
-install of this tarball into a profile, not registry metadata resolution for its
-declared ranges; `docs/ARCHITECTURE.md` §10 S20 records both sides.
+(the Desktop host's own `$DSH_HOME/sessions/` and `$DSH_HOME/storages/` trees are
+excluded from the home fingerprint only, and the exclusion is printed; a write
+under `$DSH_PROFILE_DIR` is a violation), so a boot that touched the user's
+profile fails. A root that does not exist is reported absent, which is what CI
+prints for both. The install reads the repository lockfile to stay offline, so
+this proves npm's install of this tarball into a profile, not registry metadata
+resolution for its declared ranges; `docs/ARCHITECTURE.md` §10 S20 records both
+sides.
 
 See [`README.md`](README.md) for the fidelity
 contract and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.

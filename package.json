@@ -49,7 +49,7 @@
     "check:arch": "node scripts/check-architecture.mjs",
     "gh-bot": "node scripts/gh-bot.mjs",
     "build": "node scripts/build.mjs",
-    "check:pack": "node scripts/build.mjs && node scripts/check-pack.mjs",
+    "check:pack": "node scripts/check-pack.mjs",
     "prepack": "npm run build",
     "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm run check:pack && npm test",
     "spike:s9": "node spikes/s9-host-events/run.mjs",

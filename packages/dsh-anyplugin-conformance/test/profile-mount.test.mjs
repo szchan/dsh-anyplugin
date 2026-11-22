@@ -52,19 +52,19 @@
 //
 // Node floor: `module.registerHooks` landed in 22.15. The published engine
 // floor stays 22.14 (it describes the package, not this test); here the API is
-// imported dynamically and the six tests below skip with a reason naming the
+// imported dynamically and the seven tests below skip with a reason naming the
 // version when it is absent, so an older Node reports skips instead of a
 // link-time failure.
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test, { after } from 'node:test'
 
-import { expectMutation, mountProfile } from '../../../scripts/profile-boot.mjs'
+import { bootPackedTarball, expectMutation, mountProfile } from '../../../scripts/profile-boot.mjs'
 import { harnessSkipReason, isCI, resolveHarness } from '../src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -463,6 +463,53 @@ test('pack: the three ticket mutations redden with distinct messages', options, 
     3,
     `each mutation must fail for its own reason:\n${messages.join('\n')}`,
   )
+})
+
+// The real-profile guard must be scoped. The Desktop host writes its own
+// `sessions/` and `storages/` under `$DSH_HOME` while the gate runs, so those
+// two names are excluded there — but the same names under `$DSH_PROFILE_DIR`
+// are ordinary profile content, and a write to them is a violation. This boot
+// writes both inside the guarded window: the home is compared first and passes
+// only because the exclusion is scoped, and the failure must name the profile.
+test('guard: a profile sessions/ write reddens while the home exclusion covers its own', options, async () => {
+  const tarball = packedTarball()
+  const home = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-guard-home-'))
+  const profile = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-guard-profile-'))
+  mkdirSync(join(home, 'sessions'), { recursive: true })
+  mkdirSync(join(profile, 'sessions'), { recursive: true })
+  writeFileSync(join(home, 'sessions', 'live.txt'), 'home before\n')
+  writeFileSync(join(profile, 'sessions', 'live.txt'), 'profile before\n')
+  const previousHome = process.env.DSH_HOME
+  const previousProfile = process.env.DSH_PROFILE_DIR
+  process.env.DSH_HOME = home
+  process.env.DSH_PROFILE_DIR = profile
+  try {
+    await assert.rejects(
+      bootPackedTarball({
+        tarball,
+        afterBoot: async () => {
+          appendFileSync(join(home, 'sessions', 'live.txt'), 'the host wrote\n')
+          appendFileSync(join(profile, 'sessions', 'live.txt'), 'the host wrote\n')
+        },
+      }),
+      (error) => {
+        assert.match(
+          String(error.message),
+          /the real DSH_PROFILE_DIR .* changed during the boot/,
+          `the profile write must be the failure, got: ${String(error.message)}`,
+        )
+        assert.doesNotMatch(String(error.message), /the real DSH_HOME .* changed/)
+        return true
+      },
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    if (previousProfile === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previousProfile
+    rmSync(home, { recursive: true, force: true })
+    rmSync(profile, { recursive: true, force: true })
+  }
 })
 
 after(() => {

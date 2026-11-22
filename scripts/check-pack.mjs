@@ -3,10 +3,11 @@
  *
  * `npm run verify` runs this, so a package that would ship a broken `exports`
  * map, a TypeScript source, a harness import, an undeclared runtime dependency,
- * or a mods stub instead of the kernel cannot merge. It packs with
- * `--ignore-scripts` on purpose: the caller builds first, and the flag is what
- * lets the install smoke be tested against a lib-less tarball (the mutation the
- * smoke must catch).
+ * or a mods stub instead of the kernel cannot merge. It builds first and then
+ * packs with `--ignore-scripts`: building here is what makes `node
+ * scripts/check-pack.mjs` and `npm run check:pack` check the same sources, and
+ * the flag is what lets the install smoke be tested against a lib-less tarball
+ * (the mutation the smoke must catch).
  *
  * The final steps boot the packed artifact. The install smoke composes the
  * packed data in a synthetic harness; the profile boot installs the tarball
@@ -36,6 +37,14 @@ function packageName(specifier) {
 
 const packDir = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-pack-'))
 try {
+  // The tarball must be built from the sources in this checkout, not from a
+  // `lib/` left by an earlier run: a direct invocation is a gate too.
+  try {
+    execFileSync(process.execPath, [join(root, 'scripts', 'build.mjs')], { cwd: root, stdio: 'pipe' })
+  } catch (error) {
+    failures.push(`build failed: ${error.stderr?.toString().trim() || error.message}`)
+  }
+
   let packed
   try {
     packed = JSON.parse(

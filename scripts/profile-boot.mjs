@@ -28,9 +28,10 @@
  * The real `$DSH_HOME` and `$DSH_PROFILE_DIR` are fingerprinted before and
  * after; the boot must not touch them. The running Desktop host writes its own
  * session state under `$DSH_HOME/sessions` and `$DSH_HOME/storages` while the
- * gate runs, so those two host-owned subtrees are excluded and the exclusion is
- * printed rather than hidden. Every other path is compared by content (files up
- * to 64 KiB) plus size/mtime; the profile directory has no exclusion.
+ * boot runs, so those two host-owned subtrees are excluded from the home
+ * fingerprint only, and the exclusion is printed rather than hidden. Every other
+ * path is compared by content (files up to 64 KiB) plus size/mtime; the profile
+ * fingerprint has no exclusion, so `<profile>/sessions` is an ordinary path.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -63,7 +64,8 @@ const SCHEMA = 'dsh-anyplugin/installs@1'
 // a few hundred MB of session transcripts, and hashing them twice per boot
 // costs seconds without adding a path the install could write.
 const MAX_HASH_BYTES = 64 * 1024
-// The live Desktop host owns these two directories; see the header.
+// The live Desktop host owns these two directories only under `$DSH_HOME`;
+// the profile fingerprint excludes nothing (a write there is a violation).
 const HOST_LIVE_STATE = new Set(['sessions', 'storages'])
 const MUTATIONS = new Map([
   ['no-patch', /^bundle skipped: "dsh-anyplugin": .*cordis\.patch\.yml/s],
@@ -92,8 +94,13 @@ export function packTarball() {
  * it, npm installs it into the profile, and the boot records the module URL that
  * actually resolved. A mutation changes the artifact or the profile, never the
  * assertions that follow.
+ *
+ * `afterBoot` is a test seam for the real-profile guard: it runs inside the
+ * guarded window — after the scratch boot, before the snapshots are compared —
+ * so a test can prove that a write under either watched root reddens the boot.
+ * The gate never passes it.
  */
-export async function bootPackedTarball({ tarball, mutation = 'none' } = {}) {
+export async function bootPackedTarball({ tarball, mutation = 'none', afterBoot } = {}) {
   if (!['none', ...MUTATIONS.keys()].includes(mutation)) throw new Error(`unknown mutation ${JSON.stringify(mutation)}`)
   if (!existsSync(tarball)) throw new Error(`the packed tarball ${tarball} does not exist`)
   const harness = resolveHarness()
@@ -106,7 +113,7 @@ export async function bootPackedTarball({ tarball, mutation = 'none' } = {}) {
   const host = await loadHost(harness.harnessDir)
   const realHome = realHomeDir()
   const realProfile = realProfileDir(realHome)
-  const beforeHome = fingerprint(realHome)
+  const beforeHome = fingerprint(realHome, { hostLiveState: true })
   const beforeProfile = fingerprint(realProfile)
   const scratch = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-pack-profile-'))
   let failure
@@ -129,12 +136,13 @@ export async function bootPackedTarball({ tarball, mutation = 'none' } = {}) {
       host,
       registerHooks: moduleApi.registerHooks,
     })
+    if (typeof afterBoot === 'function') await afterBoot(observed)
   } catch (error) {
     failure = error
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }
-  assertUnchanged('DSH_HOME', realHome, beforeHome, fingerprint(realHome))
+  assertUnchanged('DSH_HOME', realHome, beforeHome, fingerprint(realHome, { hostLiveState: true }))
   assertUnchanged('DSH_PROFILE_DIR', realProfile, beforeProfile, fingerprint(realProfile))
   if (failure !== undefined) throw failure
   return {
@@ -561,19 +569,21 @@ function writeLock(home) {
   return join(anypluginDir, 'installs.yml')
 }
 
-/** The real Harness home the boot must not touch. */
+/** The real Harness home the boot must not touch; a missing path fingerprints absent. */
 function realHomeDir() {
   const named = process.env.DSH_HOME?.trim()
   return named === undefined || named === '' ? join(homedir(), '.dsh') : resolve(named)
 }
 
-/** The real profile directory, named or conventional; `undefined` when none exists. */
+/**
+ * The real profile directory, named or conventional. Always a path: a missing
+ * directory is a state the fingerprint reports as absent, not an unknown.
+ */
 function realProfileDir(home) {
   const named = process.env.DSH_PROFILE_DIR?.trim()
   if (named !== undefined && named !== '') return resolve(named)
   const name = process.env.DSH_PROFILE?.trim() || 'desktop'
-  const conventional = join(home, 'profiles', name)
-  return existsSync(conventional) ? conventional : undefined
+  return join(home, 'profiles', name)
 }
 
 /**
@@ -582,12 +592,22 @@ function realProfileDir(home) {
  * Every entry contributes its kind, mode, size and mtime; regular files up to
  * `MAX_HASH_BYTES` also contribute their sha256. Paths are compared one by one
  * (the map is retained) so a failure can name what changed instead of only
- * saying the digest differs. `sessions/` and `storages/` under `$DSH_HOME` are
- * the live Desktop host's own state and are left out of the walk.
+ * saying the digest differs. `sessions/` and `storages/` at the top of
+ * `$DSH_HOME` are the live Desktop host's own state and are left out only when
+ * `hostLiveState` is set — the home fingerprint. The profile fingerprint
+ * excludes nothing: a write under `<profile>/sessions` is a violation.
  */
-function fingerprint(dir) {
+function fingerprint(dir, { hostLiveState = false } = {}) {
   const entries = new Map()
   if (dir === undefined) return { present: false, entries, digest: 'absent', files: 0, hashed: 0 }
+  try {
+    lstatSync(dir)
+  } catch {
+    // A root that does not exist is absent, not "present and unreadable": CI
+    // has no real home or profile, and the boot must say so rather than print a
+    // digest of nothing.
+    return { present: false, entries, digest: 'absent', files: 0, hashed: 0 }
+  }
   let files = 0
   let hashed = 0
   const hash = createHash('sha256')
@@ -614,7 +634,7 @@ function fingerprint(dir) {
     if (kind === 'd') {
       entries.set(relative, record)
       for (const name of readdirSync(absolute).sort()) {
-        if (relative === '' && HOST_LIVE_STATE.has(name)) continue
+        if (hostLiveState && relative === '' && HOST_LIVE_STATE.has(name)) continue
         walk(relative === '' ? name : join(relative, name))
       }
       return
@@ -684,7 +704,7 @@ function describe(observed) {
       ? 'real home: absent'
       : `real home: ${home.state} ${home.digest}… (${home.files} files, ${home.hashed} content-hashed; sessions/ storages/ excluded)`,
     profile.state === 'absent'
-      ? 'real profile: unset'
+      ? 'real profile: absent'
       : `real profile: ${profile.state} ${profile.digest}… (${profile.files} files, ${profile.hashed} content-hashed)`,
   ].join('; ')
 }
