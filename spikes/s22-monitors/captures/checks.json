@@ -1,0 +1,122 @@
+[
+  {
+    "id": "client-is-pinned-2.1.329",
+    "ok": true,
+    "detail": "<claude-bin> reports \"2.1.329 (Claude Code)\""
+  },
+  {
+    "id": "marketplace-added",
+    "ok": true,
+    "detail": "exit 0 in 873ms"
+  },
+  {
+    "id": "inline-monitors-array-accepted",
+    "ok": true,
+    "detail": "plugin list status for s22-inline"
+  },
+  {
+    "id": "monitors-json-accepted",
+    "ok": true,
+    "detail": "plugin list status for s22-one"
+  },
+  {
+    "id": "unknown-monitor-key-refused",
+    "ok": true,
+    "detail": "s22-bad-extra@s22-mkt Version: 0.0.0 Read from: <tmp>/marketplace/plugins/s22-bad-extra Scope: user Status: ✘ failed to load Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-extra/mo"
+  },
+  {
+    "id": "short-on-skill-invoke-refused",
+    "ok": true,
+    "detail": "on-skill-invoke:”, ”path”: [ 0, ”when” ], ”message”: ”Invalid string: must start with \\”on-skill-invoke:\\”” }, { ”code”: ”custom”, ”path”: [ 0, ”when” ], ”message”: ”on-skill-invoke: must specify a skill name” } ]"
+  },
+  {
+    "id": "enum-when-refused",
+    "ok": true,
+    "detail": "s22-bad-when-enum@s22-mkt Version: 0.0.0 Read from: <tmp>/marketplace/plugins/s22-bad-when-enum Scope: user Status: ✘ failed to load Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-"
+  },
+  {
+    "id": "details-inventory-omits-monitors",
+    "ok": true,
+    "detail": "claude plugin details s22-one: Skills/Agents/Hooks/MCP/LSP only"
+  },
+  {
+    "id": "monitor-script-emits-beats-standalone",
+    "ok": true,
+    "detail": "2 stdout beats, 6 events; first: S22_MON standalone 1 2026-11-22T06:47:14.877Z pid=1571027"
+  },
+  {
+    "id": "one:turn-completed",
+    "ok": true,
+    "detail": "exit 0 signal - results 2 in 4029ms"
+  },
+  {
+    "id": "one:two-turns-one-session",
+    "ok": true,
+    "detail": "a4871fcc-d2ac-4226-ba51-06ffe7334313,a4871fcc-d2ac-4226-ba51-06ffe7334313"
+  },
+  {
+    "id": "two:turn-completed",
+    "ok": true,
+    "detail": "exit 0 signal - results 2 in 3628ms"
+  },
+  {
+    "id": "two:two-turns-one-session",
+    "ok": true,
+    "detail": "d770a79a-1205-4c0e-8d08-3c4527bfc722,d770a79a-1205-4c0e-8d08-3c4527bfc722"
+  },
+  {
+    "id": "gated:turn-completed",
+    "ok": true,
+    "detail": "exit 0 signal - results 2 in 3838ms"
+  },
+  {
+    "id": "resume:turn-completed",
+    "ok": true,
+    "detail": "exit 0 signal - results 1 in 1879ms"
+  },
+  {
+    "id": "one:hooks-ran",
+    "ok": true,
+    "detail": "6 hook records"
+  },
+  {
+    "id": "one:plugin-in-session-init",
+    "ok": true,
+    "detail": "[\"s22-one\",\"cc-plugin-agents-md\",\"cc-plugin-telemetry\",\"cc-plugin-privacy\",\"cc-plugin-plugin-authoring\"]"
+  },
+  {
+    "id": "one:hook-transcript-has-no-monitor-bytes",
+    "ok": true,
+    "detail": "SessionStart:n/a PreToolUse:120284 PostToolUse:123261 Stop:181682 Stop:187039 SessionEnd:191028"
+  },
+  {
+    "id": "monitor-process-start-recorded",
+    "ok": false,
+    "detail": "one-monitor: 0 start records of 0 monitor records"
+  },
+  {
+    "id": "two-monitor-processes-start-recorded",
+    "ok": false,
+    "detail": "two-monitors: 0 start records"
+  },
+  {
+    "id": "gated-monitor-start-recorded",
+    "ok": false,
+    "detail": "on-skill-invoke: 0 start records"
+  },
+  {
+    "id": "resume-monitor-start-recorded",
+    "ok": false,
+    "detail": "resume: 0 start records"
+  },
+  {
+    "id": "monitor-bytes-never-reached-model",
+    "ok": true,
+    "detail": "9 requests, 560292 request bytes, 0 S22_MON occurrences"
+  },
+  {
+    "id": "transcript-has-no-monitor-bytes",
+    "ok": true,
+    "detail": "196926 bytes at <tmp>/model-home/.claude/projects/-tmp-anyplugin-wt-ticket-157/a4871fcc-d2ac-4226-ba51-06ffe7334313.jsonl"
+  }
+]

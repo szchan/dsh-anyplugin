@@ -1,0 +1,600 @@
+{
+  "pin": "2.1.329",
+  "claudeBin": "<claude-bin>",
+  "tempRoot": "<tmp>",
+  "createdAt": "2026-11-22T06:47:31.097Z",
+  "runs": {
+    "one": {
+      "exit": 0,
+      "signal": null,
+      "timedOut": false,
+      "ms": 4029,
+      "results": [
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "a4871fcc-d2ac-4226-ba51-06ffe7334313",
+          "durationMs": 2093,
+          "numTurns": 2,
+          "result": "s22-one",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15190,
+              "outputTokens": 135,
+              "cacheReadInputTokens": 14976,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.086813,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 70,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        },
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "a4871fcc-d2ac-4226-ba51-06ffe7334313",
+          "durationMs": 655,
+          "numTurns": 1,
+          "result": "turn-two-done",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15386,
+              "outputTokens": 140,
+              "cacheReadInputTokens": 29952,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.095406,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 70,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        }
+      ],
+      "initPlugins": [
+        "s22-one",
+        "cc-plugin-agents-md",
+        "cc-plugin-telemetry",
+        "cc-plugin-privacy",
+        "cc-plugin-plugin-authoring"
+      ]
+    },
+    "two": {
+      "exit": 0,
+      "signal": null,
+      "timedOut": false,
+      "ms": 3628,
+      "results": [
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "d770a79a-1205-4c0e-8d08-3c4527bfc722",
+          "durationMs": 1859,
+          "numTurns": 2,
+          "result": "s22-two",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15203,
+              "outputTokens": 148,
+              "cacheReadInputTokens": 14976,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.08720300000000002,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 84,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        },
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "d770a79a-1205-4c0e-8d08-3c4527bfc722",
+          "durationMs": 528,
+          "numTurns": 1,
+          "result": "turn-two-done",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15412,
+              "outputTokens": 153,
+              "cacheReadInputTokens": 29952,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.09586100000000002,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 84,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        }
+      ],
+      "initPlugins": [
+        "s22-two",
+        "cc-plugin-agents-md",
+        "cc-plugin-telemetry",
+        "cc-plugin-privacy",
+        "cc-plugin-plugin-authoring"
+      ]
+    },
+    "gated": {
+      "exit": 0,
+      "signal": null,
+      "timedOut": false,
+      "ms": 3838,
+      "results": [
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "01c43a02-b069-48b1-8dea-5d6cc4762605",
+          "durationMs": 1758,
+          "numTurns": 1,
+          "result": "S22_SKILL_OK",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15098,
+              "outputTokens": 136,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.07889,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 129,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        },
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "01c43a02-b069-48b1-8dea-5d6cc4762605",
+          "durationMs": 623,
+          "numTurns": 1,
+          "result": "turn-two-done",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15240,
+              "outputTokens": 141,
+              "cacheReadInputTokens": 15104,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.08727700000000001,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 129,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        }
+      ],
+      "initPlugins": [
+        "s22-gated",
+        "cc-plugin-agents-md",
+        "cc-plugin-telemetry",
+        "cc-plugin-privacy",
+        "cc-plugin-plugin-authoring"
+      ]
+    },
+    "resume": {
+      "exit": 0,
+      "signal": null,
+      "timedOut": false,
+      "ms": 1879,
+      "results": [
+        {
+          "subtype": "success",
+          "isError": false,
+          "sessionId": "a4871fcc-d2ac-4226-ba51-06ffe7334313",
+          "durationMs": 660,
+          "numTurns": 1,
+          "result": "resumed-done",
+          "modelUsage": {
+            "deepseek-flash": {
+              "inputTokens": 15598,
+              "outputTokens": 145,
+              "thinkingTokens": 70,
+              "cacheReadInputTokens": 44928,
+              "cacheCreationInputTokens": 0,
+              "cacheCreationEphemeral5mInputTokens": 0,
+              "cacheCreationEphemeral1hInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.104079,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 32000,
+              "canonicalModel": "deepseek-flash",
+              "provider": "firstParty",
+              "costBasis": "unknown"
+            }
+          }
+        }
+      ],
+      "initPlugins": [
+        "s22-one",
+        "cc-plugin-agents-md",
+        "cc-plugin-telemetry",
+        "cc-plugin-privacy",
+        "cc-plugin-plugin-authoring"
+      ]
+    }
+  },
+  "hooks": {
+    "one": [
+      {
+        "t": "2026-11-22T06:47:18.275Z",
+        "event": "SessionStart",
+        "arg": "SessionStart"
+      },
+      {
+        "t": "2026-11-22T06:47:19.660Z",
+        "event": "PreToolUse",
+        "arg": "PreToolUse",
+        "toolName": "Bash",
+        "transcriptSize": 120284,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:19.804Z",
+        "event": "PostToolUse",
+        "arg": "PostToolUse",
+        "toolName": "Bash",
+        "transcriptSize": 123261,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:20.432Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 181682,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:21.096Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 187039,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:21.203Z",
+        "event": "SessionEnd",
+        "arg": "SessionEnd",
+        "transcriptSize": 191028,
+        "monitorMentions": 0
+      }
+    ],
+    "two": [
+      {
+        "t": "2026-11-22T06:47:22.211Z",
+        "event": "SessionStart",
+        "arg": "SessionStart"
+      },
+      {
+        "t": "2026-11-22T06:47:23.456Z",
+        "event": "PreToolUse",
+        "arg": "PreToolUse",
+        "toolName": "Bash",
+        "transcriptSize": 120284,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:23.614Z",
+        "event": "PostToolUse",
+        "arg": "PostToolUse",
+        "toolName": "Bash",
+        "transcriptSize": 123289,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:24.125Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 181710,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:24.658Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 187067,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:24.801Z",
+        "event": "SessionEnd",
+        "arg": "SessionEnd",
+        "transcriptSize": 191079,
+        "monitorMentions": 0
+      }
+    ],
+    "gated": [
+      {
+        "t": "2026-11-22T06:47:26.085Z",
+        "event": "SessionStart",
+        "arg": "SessionStart"
+      },
+      {
+        "t": "2026-11-22T06:47:27.928Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 121931,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:28.562Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 184270,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:28.670Z",
+        "event": "SessionEnd",
+        "arg": "SessionEnd",
+        "transcriptSize": 188283,
+        "monitorMentions": 0
+      }
+    ],
+    "resume": [
+      {
+        "t": "2026-11-22T06:47:29.709Z",
+        "event": "SessionStart",
+        "arg": "SessionStart",
+        "transcriptSize": 191028,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:30.425Z",
+        "event": "Stop",
+        "arg": "Stop",
+        "transcriptSize": 196050,
+        "monitorMentions": 0
+      },
+      {
+        "t": "2026-11-22T06:47:30.547Z",
+        "event": "SessionEnd",
+        "arg": "SessionEnd",
+        "transcriptSize": 197661,
+        "monitorMentions": 0
+      }
+    ]
+  },
+  "monitors": {
+    "startRecords": {
+      "one": 0,
+      "two": 0,
+      "gated": 0,
+      "resume": 0
+    },
+    "records": {
+      "one": [],
+      "two": [],
+      "gated": [],
+      "resume": []
+    }
+  },
+  "modelRequests": {
+    "count": 9,
+    "requestBytes": 560292,
+    "monitorMentions": 0,
+    "taskNotificationMentions": 0,
+    "records": [
+      {
+        "seq": 1,
+        "t": "2026-11-22T06:47:18.489Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 61621,
+        "requestSha256": "53bf2c5aa212842311594947d0ecdf6061b7ebba16108f6e9945c8d6fcd1ff41",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system"
+        ],
+        "status": 200,
+        "responseBytes": 12918,
+        "responseSha256": "53209aa0450e8ded7437a9edf8913142e0b0795a49906db0ad0081146f405b69"
+      },
+      {
+        "seq": 2,
+        "t": "2026-11-22T06:47:19.845Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 62291,
+        "requestSha256": "95ec2eba55a04a762d2b47b79e75c4311d39b65588c4df5e3bc037819414b4af",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system",
+          "assistant",
+          "user"
+        ],
+        "status": 200,
+        "responseBytes": 1654,
+        "responseSha256": "a80c8d505384045761dc3814932cece9f87b3ac3e35f181ef84bfc29516cd066"
+      },
+      {
+        "seq": 3,
+        "t": "2026-11-22T06:47:20.474Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 62529,
+        "requestSha256": "6613449b8642760410b60d9993dc5833ab23eb0c6f6bd427ab379b01707d6f1e",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system",
+          "assistant",
+          "user",
+          "assistant",
+          "user"
+        ],
+        "status": 200,
+        "responseBytes": 1775,
+        "responseSha256": "dcfca8102070d85f88571a0c1ed9de170920a148b1d495fa2101cfd1909563bf"
+      },
+      {
+        "seq": 4,
+        "t": "2026-11-22T06:47:22.398Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 61621,
+        "requestSha256": "b878d00242d3d7d85d20208881dcd6a4f42cffd6a04d1d16aacf9d1240622435",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system"
+        ],
+        "status": 200,
+        "responseBytes": 14539,
+        "responseSha256": "9fd5bb26cdda0457a9ac333eef688cf049262adf0810312b9256459390ac0057"
+      },
+      {
+        "seq": 5,
+        "t": "2026-11-22T06:47:23.647Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 62319,
+        "requestSha256": "145e650fa5f5f83d2891871b9cc1a24aac492bd01d388b6f476bdaca6ab320b4",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system",
+          "assistant",
+          "user"
+        ],
+        "status": 200,
+        "responseBytes": 1654,
+        "responseSha256": "f81eb84a69d15dd636af109f53a05ac723bcfcb26a59d124d220ffd52e7e1557"
+      },
+      {
+        "seq": 6,
+        "t": "2026-11-22T06:47:24.173Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 62557,
+        "requestSha256": "5e5137875b249e6d95ba0ffb0f7b85d5b9f5c7b9e97485f3eae663bc1d8f998c",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system",
+          "assistant",
+          "user",
+          "assistant",
+          "user"
+        ],
+        "status": 200,
+        "responseBytes": 1775,
+        "responseSha256": "dc312f5190a508ee610142cb065a2450781f60251e16cfba7f5c1841e6dd8ad5"
+      },
+      {
+        "seq": 7,
+        "t": "2026-11-22T06:47:26.358Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 61908,
+        "requestSha256": "6e84d0d1aa5b4ed0af059cf4b7c3ac7bdf81b051f7e9e5905db65f7b74554080",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system"
+        ],
+        "status": 200,
+        "responseBytes": 18419,
+        "responseSha256": "2a2c039476e36b8bb0b5901804b0a7c580bd26c6cc60d8202c934671352dee48"
+      },
+      {
+        "seq": 8,
+        "t": "2026-11-22T06:47:27.975Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 62674,
+        "requestSha256": "1e466bf08e79a429827382c865e25fc468f770c744515262986dae9dd9896efa",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system",
+          "assistant",
+          "user"
+        ],
+        "status": 200,
+        "responseBytes": 1775,
+        "responseSha256": "c8cca322581a417cc3eae284bbd4898f5dc22cf8c3317343d23e887891da715e"
+      },
+      {
+        "seq": 9,
+        "t": "2026-11-22T06:47:29.908Z",
+        "method": "POST",
+        "path": "/anthropic/v1/messages?beta=true",
+        "requestBytes": 62772,
+        "requestSha256": "08c0ae616bcc116157f088f1d82fe9b4f025d2eae0886f02ae863e3d72e485d4",
+        "requestMonitorMentions": 0,
+        "requestTaskNotificationMentions": 0,
+        "roles": [
+          "user",
+          "system",
+          "assistant",
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+          "user"
+        ],
+        "status": 200,
+        "responseBytes": 1774,
+        "responseSha256": "8945f12ed4c6c2b2ef9bdb0397939f9c843e269489efdd21d64b747e4439031f"
+      }
+    ]
+  },
+  "transcript": {
+    "path": "<tmp>/model-home/.claude/projects/-tmp-anyplugin-wt-ticket-157/a4871fcc-d2ac-4226-ba51-06ffe7334313.jsonl",
+    "bytes": 197661,
+    "monitorMentions": 0
+  },
+  "loader": {
+    "pluginList": "Installed plugins:\n\n  ❯ s22-bad-extra@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-bad-extra\n    Scope: user\n    Status: ✘ failed to load\n    Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-extra/monitors/monitors.json: [ { ”code”: ”unrecognized_keys”, ”keys”: [ ”trigger” ], ”path”: [ 0 ], ”message”: ”Unrecognized key: \\”trigger\\”” } ]\n\n  ❯ s22-bad-when-enum@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-bad-when-enum\n    Scope: user\n    Status: ✘ failed to load\n    Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-when-enum/monitors/monitors.json: [ { ”origin”: ”string”, ”code”: ”invalid_format”, ”format”: ”starts_with”, ”prefix”: ”on-skill-invoke:”, ”path”: [ 0, ”when” ], ”message”: ”Invalid string: must start with \\”on-skill-invoke:\\”” }, { ”code”: ”custom”, ”path”: [ 0, ”when” ], ”message”: ”on-skill-invoke: must specify a skill name” } ]\n\n  ❯ s22-bad-when-short@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-bad-when-short\n    Scope: user\n    Status: ✘ failed to load\n    Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-when-short/monitors/monitors.json: [ { ”code”: ”custom”, ”path”: [ 0, ”when” ], ”message”: ”on-skill-invoke: must specify a skill name” } ]\n\n  ❯ s22-gated@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-gated\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ s22-inline@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-inline\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ s22-one@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-one\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ s22-two@s22-mkt\n    Version: 0.0.0\n    Read from: <tmp>/marketplace/plugins/s22-two\n    Scope: user\n    Status: ✔ enabled\n\n",
+    "details": {
+      "s22-one": "s22-one 0.0.0\n  Description: Spike S22 fixture one-monitor\n  Source: s22-one@s22-mkt\n\nComponent inventory\n  Skills (0)\n  Agents (0)\n  Hooks (5)  SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd  (harness-only — no model context cost)\n  MCP servers (0)\n  LSP servers (0)\n\nProjected token cost\n  Always-on:   ~0 tok   added to every session\n",
+      "s22-two": "s22-two 0.0.0\n  Description: Spike S22 fixture two-monitors\n  Source: s22-two@s22-mkt\n\nComponent inventory\n  Skills (0)\n  Agents (0)\n  Hooks (5)  SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd  (harness-only — no model context cost)\n  MCP servers (0)\n  LSP servers (0)\n\nProjected token cost\n  Always-on:   ~0 tok   added to every session\n",
+      "s22-gated": "s22-gated 0.0.0\n  Description: Spike S22 fixture gated-skill\n  Source: s22-gated@s22-mkt\n\nComponent inventory\n  Skills (1)  s22-skill\n  Agents (0)\n  Hooks (5)  SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd  (harness-only — no model context cost)\n  MCP servers (0)\n  LSP servers (0)\n\nProjected token cost\n  Always-on:   ~19 tok   added to every session\n\nPer-component (rounded)\n  component  always-on  on-invoke\n  s22-skill       < 20       < 20\n\n  On-invoke cost is paid each time a skill or agent fires.\n  Token counts are estimates and may differ from actual usage.\n",
+      "s22-inline": "s22-inline 0.0.0\n  Description: Spike S22 fixture inline-array\n  Source: s22-inline@s22-mkt\n\nComponent inventory\n  Skills (0)\n  Agents (0)\n  Hooks (5)  SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd  (harness-only — no model context cost)\n  MCP servers (0)\n  LSP servers (0)\n\nProjected token cost\n  Always-on:   ~0 tok   added to every session\n"
+    }
+  }
+}

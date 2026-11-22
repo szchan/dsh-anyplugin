@@ -58,6 +58,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
       owned by plugin scope, and gated by the `bin/` files' exec grant (D25).
       Until it exists, `bin/` is `planned` (S19).
 - [ ] Monitor notifications: a background process's stdout reaching the model.
+      S22 answered the observation half: the pinned client (2.1.329) validates a
+      plugin `monitors` declaration and never spawns it headless — 0 spawns and
+      0 monitor bytes in the model traffic — so there is no observable parity
+      target. What remains is a product decision, not a fidelity gap.
 - [ ] Terminal ANSI palette (F2).
 
 ## Later

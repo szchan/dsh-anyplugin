@@ -1,0 +1,7 @@
+[
+  {
+    "name": "beat",
+    "command": "\"__NODE__\" \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" beat 250 40",
+    "description": "S22 one-monitor beat"
+  }
+]

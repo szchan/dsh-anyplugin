@@ -1,0 +1,12 @@
+[
+  {
+    "name": "beat-a",
+    "command": "\"__NODE__\" \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" beat-a 250 40",
+    "description": "S22 two-monitors beat A"
+  },
+  {
+    "name": "beat-b",
+    "command": "\"__NODE__\" \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" beat-b 250 40",
+    "description": "S22 two-monitors beat B"
+  }
+]

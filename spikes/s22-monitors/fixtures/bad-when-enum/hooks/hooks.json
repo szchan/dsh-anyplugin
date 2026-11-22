@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "\"__NODE__\" \"__PLUGIN_ROOT__/hook.mjs\" SessionStart" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "\"__NODE__\" \"__PLUGIN_ROOT__/hook.mjs\" PreToolUse" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "\"__NODE__\" \"__PLUGIN_ROOT__/hook.mjs\" PostToolUse" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "\"__NODE__\" \"__PLUGIN_ROOT__/hook.mjs\" Stop" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "\"__NODE__\" \"__PLUGIN_ROOT__/hook.mjs\" SessionEnd" } ] }
+    ]
+  }
+}
