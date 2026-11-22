@@ -278,6 +278,34 @@ jobs:
           fi
           npm run spike:s19
 
+      # S21 answers issue #147: a third-party package can declare a
+      # `dsh.client` bundle that the pinned host composes and serves from
+      # /plugins, and the harness browser half mounts it through the module
+      # table — no harness rebuild. The spike boots the host half, the served
+      # bytes and the browser half at both pins, so a drift reddens here.
+      - name: S21 client-panel spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S21 spike would skip"
+            exit 1
+          fi
+          npm run spike:s21
+      - name: S21 client-panel spike (rc.2)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc2 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.2
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.2; the S21 spike would skip"
+            exit 1
+          fi
+          npm run spike:s21
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed

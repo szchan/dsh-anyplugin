@@ -54,6 +54,9 @@ const SHARED_ENTRIES = {
   index: 'packages/dsh-anyplugin-install/src/controller.ts',
   // The single published `bin`; the same CLI the conformance rig runs (D49).
   cli: 'packages/dsh-anyplugin-conformance/src/cli.ts',
+  // The optional panel's server half imports this at runtime (issue #147); it
+  // shares the CLI's install pipeline chunk instead of shipping a second copy.
+  install: 'packages/dsh-anyplugin-conformance/src/install-api.ts',
 }
 
 const MATERIALIZER_ENTRIES = {
@@ -145,6 +148,46 @@ async function main() {
       }
     }
   }
+
+  // The optional panel package (issue #147) is a separate artifact: its client
+  // bundle cannot fit the root tarball's D59 budget. The server half is a node
+  // entry; the browser half is this repo's first `dsh.client` bundle, wrapped
+  // in the registration contract S21 proved at both pins.
+  const ui = join(root, 'packages/dsh-anyplugin-ui')
+  const uiLib = join(ui, 'lib')
+  const uipkg = JSON.parse(readFileSync(join(ui, 'package.json'), 'utf8'))
+  rmSync(uiLib, { recursive: true, force: true })
+  await mkdir(uiLib, { recursive: true })
+  await build({
+    entryPoints: [join(ui, 'src/index.ts')],
+    outfile: join(uiLib, 'index.js'),
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: ['node22'],
+    external: ['dsh-anyplugin', 'dsh-anyplugin/*', '@deepseek-ai/*', 'node:*'],
+    logLevel: 'warning',
+    legalComments: 'none',
+    banner: { js: `// dsh-anyplugin-ui ${uipkg.version} — built by scripts/build.mjs; do not edit.` },
+  })
+  const client = await build({
+    entryPoints: [join(ui, 'src/client/index.js')],
+    bundle: true,
+    write: false,
+    format: 'cjs',
+    platform: 'browser',
+    target: ['es2022'],
+    external: ['react'],
+    logLevel: 'warning',
+    legalComments: 'none',
+  })
+  // The bundle is a classic script that only registers a factory; the loader's
+  // `require` is the host's module table. The id must equal the Loader entry
+  // name (`cordis.patch.yml` inserts `name: dsh-anyplugin-ui`).
+  writeFileSync(
+    join(uiLib, 'client.js'),
+    `window.__ModuleLoader__.load({\n  id: 'dsh-anyplugin-ui',\n  factory: (require) => {\n    var module = { exports: {} };\n    var exports = module.exports;\n${client.outputFiles[0].text}\n    return module.exports;\n  },\n});\n`,
+  )
 
   writeFileSync(
     join(lib, 'kernel-size.json'),

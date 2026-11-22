@@ -59,6 +59,10 @@ const ALLOWED = {
   'dsh-anyplugin-materialize-mcp': [],
   'dsh-anyplugin-materialize-output-style': [],
   'dsh-anyplugin-conformance': '*',
+  // Optional panel bundle (issue #147): its server half reaches the published
+  // `dsh-anyplugin/install` export at runtime, not a workspace source, so it
+  // declares no package edge here. The client half imports only React.
+  'dsh-anyplugin-ui': [],
 }
 
 const SOURCE = /\.(?:ts|mts|cts|js|mjs)$/
