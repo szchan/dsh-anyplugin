@@ -35,6 +35,12 @@ export interface Config {
   home?: string
   /** Workspace whose enablement layers apply. Default `process.cwd()`. */
   projectDir?: string
+  /**
+   * Hostnames allowed in addition to the loopback set. Only for a deliberate
+   * non-loopback bind; after DNS rebinding the `Host` header is the attacker's
+   * name, so a browser on `http://evil.example` must never match by default.
+   */
+  allowedHosts?: string[]
 }
 
 const PREFIX = '/anyplugin'
@@ -73,11 +79,60 @@ function methodNotAllowed(allow: string): Response {
 }
 
 /**
- * The install mutation is reachable from a browser, so a cross-site page must
- * not be able to use it as a blind write. `text/plain` is CORS-safelisted and
- * needs no preflight, hence both checks: a JSON content type, and no foreign
- * `Origin` / cross-site `Sec-Fetch-Site`. Missing Origin is accepted for
- * non-browser callers (the resource route and tests).
+ * The loopback names the panel answers. `Host` is client-supplied, so it can
+ * only be trusted after normalization and an allowlist: a page reached through
+ * DNS rebinding sends its own domain as `Host` emph{and} `Origin`, which makes
+ * a same-origin comparison self-satisfying.
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+
+/** Lowercase, strip a port, strip one trailing dot, unwrap `[::1]`. */
+function hostParts(raw: string): { hostname: string; port: string } | null {
+  let value = raw.trim().toLowerCase()
+  let port = ''
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']')
+    if (end === -1) return null
+    const hostname = value.slice(1, end)
+    const rest = value.slice(end + 1)
+    if (rest !== '') {
+      if (!rest.startsWith(':')) return null
+      port = rest.slice(1)
+    }
+    return { hostname: hostname.replace(/\.$/, ''), port }
+  }
+  const colon = value.lastIndexOf(':')
+  if (colon !== -1 && value.indexOf(':') === colon) {
+    port = value.slice(colon + 1)
+    value = value.slice(0, colon)
+  }
+  value = value.replace(/\.$/, '')
+  return value === '' ? null : { hostname: value, port }
+}
+
+function requestHost(request: Request) {
+  return hostParts(request.headers.get('host') ?? new URL(request.url).host)
+}
+
+/** Both routes are loopback-only unless the plugin was configured otherwise. */
+function hostAllowed(request: Request, config: Config): boolean {
+  const host = requestHost(request)
+  if (host === null) return false
+  if (LOOPBACK_HOSTS.has(host.hostname)) return true
+  for (const entry of config.allowedHosts ?? []) {
+    const allowed = hostParts(entry)
+    if (allowed !== null && allowed.hostname === host.hostname) return true
+  }
+  return false
+}
+
+/**
+ * The mutation is reachable from a browser, so a cross-site page must not be
+ * able to use it as a blind write. `text/plain` is CORS-safelisted and needs
+ * no preflight, hence both checks: a JSON content type, and an `Origin` that
+ * matches the (normalized) request host. Missing Origin is accepted for
+ * non-browser callers (the resource route and tests); the loopback host gate
+ * runs first, so a rebound name never reaches this comparison.
  */
 function sameOrigin(request: Request): boolean {
   const site = request.headers.get('sec-fetch-site')
@@ -91,8 +146,10 @@ function sameOrigin(request: Request): boolean {
   } catch {
     return false
   }
-  const host = request.headers.get('host') ?? new URL(request.url).host
-  return parsed.host === host
+  const host = requestHost(request)
+  const fromOrigin = hostParts(parsed.host)
+  if (host === null || fromOrigin === null) return false
+  return fromOrigin.hostname === host.hostname && fromOrigin.port === host.port
 }
 
 function isJson(request: Request): boolean {
@@ -231,12 +288,17 @@ function reasonOf(error: unknown): string {
 /** One Fetch request in, one Fetch response out; the host's resource route uses this directly. */
 export async function dispatch(request: Request, config: Config = {}): Promise<Response> {
   const url = new URL(request.url, 'http://anyplugin.invalid')
+  const hostRefusal = hostAllowed(request, config)
+    ? null
+    : json({ ok: false, code: 'host-not-allowed', reason: 'the panel answers loopback hosts only' }, 403)
   if (url.pathname === INSTALLS) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD')
+    if (hostRefusal !== null) return hostRefusal
     return list(config)
   }
   if (url.pathname === INSTALL) {
     if (request.method !== 'POST') return methodNotAllowed('POST')
+    if (hostRefusal !== null) return hostRefusal
     if (!sameOrigin(request)) {
       return json({ ok: false, code: 'cross-origin', reason: 'the install route accepts same-origin requests only' }, 403)
     }
@@ -273,7 +335,11 @@ export function installRoute(config: Config = {}) {
       ...(hasBody ? { body: request as unknown as ReadableStream, duplex: 'half' } : {}),
     } as RequestInit)
     const result = await dispatch(forwarded, config)
-    response.writeHead(result.status, Object.fromEntries(result.headers))
+    const headers = Object.fromEntries(result.headers)
+    // A refusal can leave the request body unread; close the connection so the
+    // client stops waiting on a request the server will not consume.
+    if (result.status >= 400) headers.connection = 'close'
+    response.writeHead(result.status, headers)
     const bytes = Buffer.from(await result.arrayBuffer())
     response.end(method === 'HEAD' ? undefined : bytes)
   }

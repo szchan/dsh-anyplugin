@@ -53,8 +53,9 @@ git push --delete origin v0.2.0 && git tag -d v0.2.0
 It has its own budget: `npm run check:ui` refuses a panel tarball above
 64 KiB, and `npm run pack:ui` produces the publishable tarball (the staging
 step rewrites `exports["."]` to the built `lib/index.js`). The release
-workflow publishes only the root package today; wiring a second OIDC publish
-for the panel is a release-workflow change, not a laptop publish.
+workflow publishes only the root package today; the first panel publish needs
+a maintainer's one-time 2FA approval (tracked in `docs/TODO.md`), and wiring a
+second OIDC publish is a release-workflow change, not a laptop publish.
 
 ## After the workflow
 

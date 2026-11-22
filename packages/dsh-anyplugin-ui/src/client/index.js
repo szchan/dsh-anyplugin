@@ -28,6 +28,7 @@ const styles = {
   muted: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-text-secondary, #6b7280)' },
   error: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-text-danger, #b91c1c)' },
   ok: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-text-success, #15803d)' },
+  warn: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-text-warning, #b45309)' },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: '13px' },
   head: {
     textAlign: 'left',
@@ -122,7 +123,15 @@ function Panel() {
       })
       const body = await response.json()
       if (body.ok) {
-        setMessage({ tone: 'ok', text: `installed ${body.plugin}` })
+        const refused = body.report?.totals?.refused ?? 0
+        const first = refused > 0 ? body.report?.components?.find((component) => component.refused) : undefined
+        const detail = first?.reason ? ` — ${first.reason}` : ''
+        setMessage({
+          tone: refused > 0 ? 'warn' : 'ok',
+          text: refused > 0
+            ? `installed ${body.plugin}; ${refused} component${refused === 1 ? '' : 's'} refused${detail}`
+            : `installed ${body.plugin}`,
+        })
         setPath('')
         setRevision((value) => value + 1)
       } else {
@@ -184,7 +193,9 @@ function Panel() {
           busy ? 'Installing…' : 'Install',
         ),
       ),
-      message === null ? null : createElement('p', { style: message.tone === 'ok' ? styles.ok : styles.error }, message.text),
+      message === null
+        ? null
+        : createElement('p', { style: message.tone === 'ok' ? styles.ok : message.tone === 'warn' ? styles.warn : styles.error }, message.text),
     ),
   )
 }

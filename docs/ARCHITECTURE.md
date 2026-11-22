@@ -194,10 +194,16 @@ halves that meet at a JSON route, not at a build step:
   `installPlugin` the CLI calls (D49) — so the manifest, version, compile and
   grant checks are the CLI's. The client's path is the only field read; scope
   and grants from the client are ignored, and a refusal is the CLI's typed
-  `{code, reason}` with HTTP 400. The mutation is same-origin only: it needs
-  `application/json` (415 otherwise — `text/plain` is CORS-safelisted), refuses
-  a foreign `Origin` or cross-site `Sec-Fetch-Site` (403), and caps the body at
-  64 KiB by streaming the bytes and cancelling early (413). `projectDir`
+  `{code, reason}` with HTTP 400. Both routes are loopback-only: the
+  normalized `Host` (port and one trailing dot removed) must be `127.0.0.1`,
+  `localhost` or `::1`, because after DNS rebinding a browser's `Host` is the
+  attacker's name and an `Origin`/`Host` comparison would be self-satisfying;
+  a deliberate non-loopback bind must name the host in the plugin's
+  `allowedHosts` config. The mutation additionally needs `application/json`
+  (415 otherwise — `text/plain` is CORS-safelisted), refuses a foreign
+  `Origin` or cross-site `Sec-Fetch-Site` (403), and caps the body at 64 KiB by
+  streaming the bytes and cancelling early (413, with `Connection: close`).
+  `projectDir`
   defaults to the server process's `cwd`; a web server started outside the
   workspace must pass it in the plugin config or the project enablement layer
   is read from the wrong tree.

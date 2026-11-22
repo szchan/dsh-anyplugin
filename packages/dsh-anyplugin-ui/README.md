@@ -7,13 +7,14 @@ installs one from a local path.
 
 It is a **separate package on purpose**. D61 names it a separately published
 optional artifact; the root `dsh-anyplugin` tarball has a 180 KiB budget (D59)
-and the client bundle belongs to the browser. Install this package only if you
-want the UI:
+and the client bundle belongs to the browser.
 
-```sh
-npm install -g dsh-anyplugin-ui@0.2.0 dsh-anyplugin@0.2.0
-# then add "dsh-anyplugin-ui" to dsh.profile.bundles in ~/.dsh/profiles/<name>/package.json
-```
+The package is built from this repository. There is no published
+`dsh-anyplugin-ui` artifact yet: publishing it is tracked in `docs/TODO.md`
+because the first npm publish needs a one-time 2FA approval from a maintainer.
+To try the panel from a checkout, run `npm run build`, place the built package
+in the profile's `node_modules`, and add `"dsh-anyplugin-ui"` to
+`dsh.profile.bundles` in the profile's `package.json`.
 
 ## Surface
 
@@ -24,9 +25,16 @@ npm install -g dsh-anyplugin-ui@0.2.0 dsh-anyplugin@0.2.0
   client-supplied scope/grant fields; an install writes the `user` layer.
 - The panel registers itself in the `settings.section` slot through the shipped
   `ctx.slots.inject` handshake; no foreign code is loaded in the server process.
-- The install route is same-origin only: `application/json` is required, a
-  foreign `Origin` / cross-site `Sec-Fetch-Site` is refused, and the body is
-  capped at 64 KiB while streaming.
+- Both routes are loopback-only: the normalized `Host` must be `127.0.0.1`,
+  `localhost` or `::1` (port and one trailing dot removed), because after DNS
+  rebinding a browser's `Host` is the attacker's name. A deliberate
+  non-loopback bind must list its host in the plugin's `allowedHosts` config.
+  The mutation also requires `application/json` (415), refuses a foreign
+  `Origin` / cross-site `Sec-Fetch-Site` (403), and caps the body at 64 KiB
+  while streaming (413).
+- A 200 can still carry a refusal inside the transplant report. When the report
+  refused a component (for example an exec hook with no grant), the panel says
+  `installed X; N components refused` and shows the first refusing reason.
 
 The server half loads `dsh-anyplugin/install` — the subpath D61 ratifies —
 lazily, so a profile that never opens the panel does not pay for the install

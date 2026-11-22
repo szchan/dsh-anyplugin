@@ -118,6 +118,9 @@ function streamRequest(method, url, body, headers = {}) {
   stream.method = method
   stream.url = url
   const merged = body === undefined ? {} : { 'content-type': 'application/json' }
+  // A real HTTP/1.1 request always carries Host; the panel's loopback gate
+  // reads it, so the probe supplies the same default a browser would.
+  merged.host = '127.0.0.1:4123'
   for (const [name, value] of Object.entries(headers)) {
     if (value === null) delete merged[name]
     else merged[name] = value
@@ -284,7 +287,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.ok(listRoute, 'the panel registers the /anyplugin prefix')
   assert.ok(installRoute, 'the panel registers the POST install route')
 
-  const empty = await listRoute.resource(new Request(`http://panel.invalid${PREFIX}/installs`))
+  const empty = await listRoute.resource(new Request(`http://127.0.0.1${PREFIX}/installs`))
   assert.equal(empty.status, 200)
   assert.deepEqual(await empty.json(), { ok: true, file: box.installs, plugins: [] })
 
@@ -310,7 +313,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal(layers.user?.plugins[ID]?.enabled, true, 'the user layer enables the install')
   assert.equal(layers.project, undefined, 'a client-sent scope did not write a project layer')
 
-  const listed = await listRoute.resource(new Request(`http://panel.invalid${PREFIX}/installs`))
+  const listed = await listRoute.resource(new Request(`http://127.0.0.1${PREFIX}/installs`))
   assert.equal(listed.status, 200)
   const body = await listed.json()
   assert.equal(body.plugins.length, 1)
@@ -344,6 +347,28 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal(crossSite.status, 403)
   assert.equal(crossSite.json.code, 'cross-origin')
   assert.deepEqual(readFileSync(box.installs), beforeGuards, 'a cross-origin install wrote nothing')
+  assert.equal(crossSite.headers.connection, 'close', 'a refused mutation closes the connection')
+
+  // DNS rebinding: the page has its own name in Host *and* Origin, so an
+  // own-origin comparison alone would pass. The Host gate refuses the name.
+  const rebound = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { host: 'evil.example:4123', origin: 'http://evil.example:4123', 'sec-fetch-site': 'same-origin' },
+  )
+  assert.equal(rebound.status, 403)
+  assert.equal(rebound.json.code, 'host-not-allowed')
+  assert.deepEqual(readFileSync(box.installs), beforeGuards, 'a rebound install wrote nothing')
+
+  const reboundRead = await listRoute.resource(
+    new Request('http://127.0.0.1' + PREFIX + '/installs', {
+      headers: { host: 'evil.example:4123', origin: 'http://evil.example:4123' },
+    }),
+  )
+  assert.equal(reboundRead.status, 403, 'the read route has the same host gate')
+  assert.equal((await reboundRead.json()).code, 'host-not-allowed')
 
   const plain = await callHandler(
     installRoute.handler,
@@ -379,10 +404,66 @@ test('server half lists the lock and installs through the published lifecycle AP
     'POST',
     `${PREFIX}/install`,
     JSON.stringify({ path: FIXTURE }),
-    { host: 'panel.invalid', origin: 'http://panel.invalid' },
+    { host: '127.0.0.1:4123', origin: 'http://127.0.0.1:4123' },
   )
   assert.equal(sameOrigin.status, 200, JSON.stringify(sameOrigin.json))
   assert.equal(sameOrigin.json.action, 'unchanged')
+
+  // A trailing dot is legal in a Host header; without normalization it would
+  // be a false 403 on an otherwise loopback request.
+  const dotted = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { host: '127.0.0.1.:4123', origin: 'http://127.0.0.1:4123' },
+  )
+  assert.equal(dotted.status, 200, JSON.stringify(dotted.json))
+
+  const ipv6 = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { host: '[::1]:4123', origin: 'http://[::1]:4123' },
+  )
+  assert.equal(ipv6.status, 200, JSON.stringify(ipv6.json))
+
+  const localhost = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { host: 'localhost:4123', origin: 'http://localhost:4123' },
+  )
+  assert.equal(localhost.status, 200, JSON.stringify(localhost.json))
+
+  // A non-loopback name is refused unless the plugin explicitly lists it.
+  const nonLoopback = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    JSON.stringify({ path: FIXTURE }),
+    { host: 'dev.internal:4123', origin: 'http://dev.internal:4123' },
+  )
+  assert.equal(nonLoopback.status, 403)
+  assert.equal(nonLoopback.json.code, 'host-not-allowed')
+
+  const allowedConfig = { ...config, allowedHosts: ['dev.internal'] }
+  const allowed = await panel.dispatch(
+    new Request('http://127.0.0.1' + PREFIX + '/install', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', host: 'dev.internal:4123', origin: 'http://dev.internal:4123' },
+      body: JSON.stringify({ path: FIXTURE }),
+    }),
+    allowedConfig,
+  )
+  assert.equal(allowed.status, 200, JSON.stringify(await allowed.clone().json()))
+  const allowedRead = await panel.dispatch(
+    new Request('http://127.0.0.1' + PREFIX + '/installs', { headers: { host: 'dev.internal:4123' } }),
+    allowedConfig,
+  )
+  assert.equal(allowedRead.status, 200)
 
   // The declared length rejects an oversized body before the body stream is
   // even touched; the chunked path is cancelled while streaming, counting
@@ -390,7 +471,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   // measures the panel's reader, not undici's own pump.
   let bodyReads = 0
   const declaredRequest = {
-    url: `http://panel.invalid${PREFIX}/install`,
+    url: `http://127.0.0.1${PREFIX}/install`,
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json', 'content-length': String(70 * 1024) }),
     get body() {
@@ -406,7 +487,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   let chunkedCancelled = 0
   const chunk = Buffer.from('€'.repeat(8000)) // 24,000 bytes, 8,000 UTF-16 units
   const chunkedRequest = {
-    url: `http://panel.invalid${PREFIX}/install`,
+    url: `http://127.0.0.1${PREFIX}/install`,
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json' }),
     body: {
@@ -428,21 +509,47 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.ok(chunkedReads <= 3, `the chunked body was cancelled early (reads: ${chunkedReads})`)
   assert.equal(chunkedCancelled, 1, 'the over-limit stream was cancelled')
 
+  // Through the node handler the refused request gets Connection: close, so
+  // the client does not keep a body in flight against a response already sent.
+  const oversize = await callHandler(
+    installRoute.handler,
+    'POST',
+    `${PREFIX}/install`,
+    'x'.repeat(70 * 1024),
+    { 'content-length': String(70 * 1024) },
+  )
+  assert.equal(oversize.status, 413)
+  assert.equal(oversize.headers.connection, 'close')
+
   // projectDir is the profile's workspace: a committed project layer can
   // disable the plugin, and the panel reports that decision, not the user one.
   mkdirSync(join(box.project, '.dsh'), { recursive: true })
   writeFileSync(join(box.project, '.dsh', 'anyplugin.yml'), 'plugins:\n  claude-code:skills-only: { enabled: false }\n')
-  const overridden = await listRoute.resource(new Request(`http://panel.invalid${PREFIX}/installs`))
+  const overridden = await listRoute.resource(new Request(`http://127.0.0.1${PREFIX}/installs`))
   const overriddenBody = await overridden.json()
   assert.equal(overriddenBody.plugins[0].enabled, false)
   assert.equal(overriddenBody.plugins[0].scope, 'project')
   rmSync(join(box.project, '.dsh'), { recursive: true, force: true })
 
+  // A 200 can still carry a refusal inside the transplant report; the panel
+  // passes the report through rather than hiding it.
+  const hooks = await panel.dispatch(
+    new Request('http://127.0.0.1' + PREFIX + '/install', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: join(REPO, 'fixtures', 'claude-hooks-mcp') }),
+    }),
+    config,
+  )
+  const hooksBody = await hooks.json()
+  assert.equal(hooks.status, 200, JSON.stringify(hooksBody))
+  assert.equal(hooksBody.report.totals.refused, 1)
+
   // Method rules and shapes through the same dispatch the routes use.
-  assert.equal((await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`))).status, 405)
-  assert.equal((await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`, { method: 'PUT' }))).status, 405)
-  assert.equal((await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/unknown`))).status, 404)
-  const bad = await panel.dispatch(new Request(`http://panel.invalid${PREFIX}/install`, {
+  assert.equal((await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/install`))).status, 405)
+  assert.equal((await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/install`, { method: 'PUT' }))).status, 405)
+  assert.equal((await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/unknown`))).status, 404)
+  const bad = await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/install`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: 'not json',
@@ -450,7 +557,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal(bad.status, 400)
   assert.equal((await bad.json()).code, 'invalid-body')
   const huge = await panel.dispatch(
-    new Request(`http://panel.invalid${PREFIX}/install`, {
+    new Request(`http://127.0.0.1${PREFIX}/install`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: 'x'.repeat(70 * 1024),
@@ -482,7 +589,7 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
 
   // Install first, so the panel has something real to show.
   const install = await panel.dispatch(
-    new Request(`http://panel.invalid${PREFIX}/install`, {
+    new Request(`http://127.0.0.1${PREFIX}/install`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: FIXTURE }),
@@ -567,7 +674,7 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   const realFetch = globalThis.fetch
   globalThis.fetch = async (url, init = {}) => {
     calls.push([String(url), init.method ?? 'GET'])
-    return panel.dispatch(new Request(new URL(url, 'http://panel.invalid'), init), config)
+    return panel.dispatch(new Request(new URL(url, 'http://127.0.0.1'), init), config)
   }
   t.after(() => {
     globalThis.fetch = realFetch
@@ -594,6 +701,32 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   await sleep(20)
   tree = render(registered[0].component)
   assert.match(textOf(tree), new RegExp(`installed ${ID}`))
+  assert.deepEqual(calls.at(-1), [`${PREFIX}/install`, 'POST'])
+
+  // The hooks fixture carries an exec component the default trust rules
+  // refuse; the install still succeeds, and the panel must say so instead of
+  // showing a bare "installed".
+  const hooksPath = join(REPO, 'fixtures', 'claude-hooks-mcp')
+  const hooksInstall = await panel.dispatch(
+    new Request('http://127.0.0.1' + PREFIX + '/install', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: hooksPath }),
+    }),
+    config,
+  )
+  const hooksBody = await hooksInstall.json()
+  const refusing = hooksBody.report.components.find((component) => component.refused)
+  assert.equal(hooksBody.report.totals.refused, 1)
+  assert.ok(refusing?.reason, 'the refused component carries a reason')
+  input.props.onChange({ target: { value: hooksPath } })
+  tree = render(registered[0].component)
+  const hooksForm = findAll(tree, (node) => node.type === 'form')[0]
+  await hooksForm.props.onSubmit({ preventDefault() {} })
+  await sleep(20)
+  tree = render(registered[0].component)
+  assert.match(textOf(tree), /installed claude-code:hooks-mcp; 1 component refused/)
+  assert.ok(textOf(tree).includes(refusing.reason), 'the panel shows the refusing reason')
   assert.deepEqual(calls.at(-1), [`${PREFIX}/install`, 'POST'])
 
   // Disposing the plugin runs the cleanup the inject handshake returned.
