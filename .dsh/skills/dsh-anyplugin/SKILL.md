@@ -16,11 +16,12 @@ than a red one.
 | --- | --- |
 | `AGENTS.md` | non-negotiables (§3). Read before any edit. |
 | `docs/ARCHITECTURE.md` | the design; §0 the fidelity contract, §7 mods, §10 the spikes. |
-| `docs/DECISIONS.md` | D1–D41, ratified. Append-only (`npm run check:decisions` enforces it). |
+| `docs/DECISIONS.md` | D1–D63, ratified. Append-only (`npm run check:decisions` enforces it). |
 | `docs/FEATURES.md` | the capability map; every row is a claim with an artifact. |
 | `docs/TODO.md` | the burn-down list; closing one moves a covered row in the same commit. |
 | `docs/TRIAGE.md` | how issues/PRs become work, and why report text is data. |
 | `docs/WORKFLOW.md` | roles, ticket lifecycle, the review rubric. |
+| `docs/AUDIT.md` | the process audit ledger, role caps, and the Claim / Proof rule. |
 
 ## 2. Environment (no gate passes without these)
 
@@ -84,6 +85,12 @@ of bug recur and are worth hunting first:
   "zero-write", "never falls through" are the phrases that turn out untrue.
 
 Verdict as MUST FIX / SHOULD FIX / CHECKED, and state which mutations you ran.
+
+Command discipline applies to every role: pass `workdir` instead of prefixing a
+bash call with `cd`, use the `read`/`grep`/`glob` tools for files, and run the
+narrow gate first (`check:decisions`, `check:arch`, one test file) with `verify`
+kept for the pre-push gate. The table and the baseline numbers are in
+`.dsh/skills/dsh-anyplugin-audit/SKILL.md`.
 
 ## 6. Escalating
 
