@@ -2836,3 +2836,48 @@ is a new decision rather than a `package.json` edit.
 **Consequences.** An optional package can be published on its own and still use
 exactly one install path. A consumer that needs install semantics cites this
 subpath instead of copying `install-cli.ts`, which is what D49 exists to prevent.
+
+## D62 — The panel is a separate, loopback-only bundle that writes only through the install API
+
+**Decided** 2026-11-21, with `#155` (issue `#147`). Related: D49, D59, D61, D27.
+
+The panel lets a user install a foreign plugin from a directory without a
+terminal. Every part of that sentence needed a decision, because each one is a
+new way to make the harness write.
+
+**Decided.**
+
+1. **It is a second bundle, not part of the root package.** The root tarball is
+   capped at 180 KiB by D59 and the client half did not fit. The panel therefore
+   ships as `packages/dsh-anyplugin-ui` with its own `cordis.patch.yml`, its own
+   64 KiB ceiling in `check:ui`, and `private: true` until a one-time npm
+   approval exists for the name (`docs/TODO.md`). A ceiling is not raised to fit
+   a feature; the feature moves.
+2. **It writes only through `installPlugin`.** The server half calls the
+   `dsh-anyplugin/install` export (D61) and passes the path; it does not parse
+   the lock itself, does not accept `scope`, `grants`, `dialect` or `force` from
+   the client, and does not become a second writer (D23, D49). The only scope it
+   may set is the user layer.
+3. **Both routes are loopback-only.** `Host` is client-supplied, so an
+   `Origin`-equals-`Host` comparison is self-satisfying: a page reached through
+   DNS rebinding sends its own name in both, and can write `installs.yml` and
+   read it back. Both the install and list routes require a normalized loopback
+   host (`127.0.0.1`, `localhost`, `::1`); a deliberate non-loopback bind must
+   name itself in `allowedHosts`.
+4. **Reachable mutations are guarded on the request, not the UI.** The install
+   route requires `application/json` (415), rejects a foreign `Origin` or a
+   cross-site `Sec-Fetch-Site` (403), caps the body by declared bytes before
+   reading it (413), and closes the connection on any 4xx. The client is not the
+   security boundary: a `fetch` from devtools or a script has to face the same
+   checks.
+5. **No foreign code in the server process, and refusals stay visible.** The
+   panel never imports an installed plugin; a refusal is reported with the
+   command or file it concerns, and the client renders `installed <plugin>; N
+   components refused` rather than a bare success.
+
+**Consequences.** The panel cannot be published without an explicit release
+decision (it is `private` and the release workflow publishes only the root
+package). Adding a host to `allowedHosts` is a configuration change with the same
+threat model as binding off loopback. The mutation audit lives in
+`packages/dsh-anyplugin-ui/test/mutations.mjs`: eleven single-property breaks,
+each required to redden a named test, so the guards cannot be deleted quietly.
