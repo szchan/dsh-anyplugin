@@ -114,6 +114,12 @@ export const HARNESS_PACKAGES = {
   // Loader entries for `dsh.client`, composes `__DSH_BOOT__`, and serves
   // /plugins/<package>/client.js (ticket #147).
   'dsh-client-modules': 'S21: composes and serves a third-party dsh.client bundle (issue #147)',
+  // The S24 theme-seam probe reads the documented client theme registry and the
+  // terminal palette consumer at both pins; the terminal's only ANSI writer is
+  // its OSC 4/104 parser, not a theme token (ticket #216).
+  'dsh-client-ui-theme': 'S24: ThemeRuntime and its alias-token CSS surface (issue #216)',
+  'dsh-client-ui-layout': 'S24: theme-presenter applies active alias tokens to document.body (issue #216)',
+  'dsh-client-ui-sidebar-terminal': 'S24: terminal theme consumer; ANSI 16 are OSC 4/104-only (issue #216)',
 }
 
 /** Versions that are not the harness under test. Pinned, never `latest`. */

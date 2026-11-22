@@ -39,7 +39,7 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 | Claude output styles | `output-styles/<n>.md` | `equivalent` activation face / `planned` command face (row stays `planned`; carried byte-for-byte) | `fixtures/claude-output-styles`, `fixtures/claude-output-styles-activation`, D29/D37 |
 | Claude bin | `bin/` | `planned` (managed env refuses `PATH`; only a divergent per-call rewrite — S19) | `spikes/s19-path/run.mjs`, `docs/ARCHITECTURE.md` §10 S19, D25 |
 | Claude monitors | `monitors/monitors.json`, manifest `monitors` (array or `"./"` path) | `planned` (declaration read and validated; the pinned client never lists or spawns it headless — S22; a manifest-shaped violation fails the install; a file-shaped one is carried as `unsupported` with the client's captured error text and the plugin still loads) | `packages/dsh-anyplugin-dialect-claude-code/src/index.ts`, `packages/dsh-anyplugin-dialect-claude-code/src/monitor-client-text.ts`, `fixtures/claude-monitors-errors`, `scripts/capture-monitor-errors.mjs`, `packages/dsh-anyplugin-conformance/test/capture-monitor-errors.test.mjs`, `fixtures/claude-monitors-valid`, `fixtures/claude-monitors-bad-key`, `packages/dsh-anyplugin-install/test/compile.test.mjs`, `docs/ARCHITECTURE.md` §10 S22, D37 |
-| Claude themes | `themes/` | `planned` (no host palette seam yet, F2) | `docs/TODO.md` upstream proposals |
+| Claude themes | `themes/` | `planned` — partial seam: 2 of 72 roles map through `--dsw-alias-label-primary`/`--dsw-alias-bg-base` to the terminal's computed foreground/background; 70 roles have no DSH terminal counterpart; `ansi:<name>`/`ansi256(n)` values have no host palette; ANSI 16 are OSC 4/104-only (S24, F2, D75) | `spikes/s24-theme-seam/run.mjs`, `docs/ARCHITECTURE.md` §10 S24, D75 |
 | Foreign-plugin panel | `packages/dsh-anyplugin-ui` | `equivalent` install/list over loopback; never executes foreign code | `packages/dsh-anyplugin-ui/src/index.ts`, `test/mutations.mjs`, D62 |
 | Codex portable plugins | `plugin.json` 1.0.0 + `skills/` + `mcp.json` | `equivalent` installs and runs (no upstream oracle; fixtures are the spec) | `packages/dsh-anyplugin-dialect-codex/src/index.ts`, `packages/dsh-anyplugin-install/src/compile.ts`, D33 |
 
@@ -87,15 +87,24 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 | Fixture ratchet (R14): every `fixtures/` directory is a ratchet row or a named exclusion | `scripts/fixture-ratchet.mjs`, `scripts/check-architecture.mjs` |
 | Count claims (R15): every claim in the R15 vocabulary (`N declared`, `N served`, `N refused`/`N refusals`/`N refused-only`, `N absent`, `N matched`, `N missing`, `N row(s)`) is compared with the number its owner states; the category noun after the number decides, an unknown noun fails, and a table label does not count | `scripts/count-owners.mjs`, `scripts/check-features.mjs` |
 
-## 7. What is deliberately not a feature
+## 7. What is deliberately not a feature — and the partial theme seam
 
-- **Terminal themes (F2).** No evidenced host surface: a `themes/` directory is
-  a `planned` unmaterialized row and sits outside the 100 % statement. The
-  Desktop bundle does ship `@deepseek-ai/dsh-client-ui-theme` (its client
-  bundle exposes `registerTheme`/`registerFixed`/`palettes`, and it is absent
-  from the rc.5 harness), but the client-plugin docs only tell plugins to
-  consume `--dsw-alias-*` tokens — so whether a plugin may register a palette
-  is unproven, not assumed (#216, S24).
+- **Terminal themes (F2) — a partial seam, `planned`, not a feature yet.**
+  A plugin can register a theme through `ctx.theme`
+  (`ThemeRuntime.register`), and `ThemeTokens` is `Record<string, string>`:
+  the inspector's 14 curated `--dsw-*` tokens are not a registration limit.
+  Two of Claude's 72 roles have a real destination: `text` →
+  `--dsw-alias-label-primary` and `background` → `--dsw-alias-bg-base`;
+  `theme-presenter.ts` writes active tokens to `document.body`,
+  `terminal.module.css` consumes those two, and `terminal.tsx:142` passes the
+  computed foreground/background to xterm. The other 70 roles have no DSH
+  terminal counterpart, `ansi:<name>`/`ansi256(n)` values have no host palette,
+  and the ANSI 16 are written only from OSC 4/104:
+  `terminal-theme.ts:57-64` has `update(background, foreground)` and no palette
+  argument, and `:72-79` writes ANSI only from `this.indexed`. `themes/` is
+  therefore one `planned` row (`readOptionalSurfaces`, D75): the host gap is
+  the ANSI-16 palette, not the plugin theme API. No fixture or materializer
+  exists.
 - **GUI chrome (F3).** The foreign side has no such artifact, so it is `derived`
   and excluded from the denominator.
 - **Model identity in `agents/*.md`** (`model: sonnet`). Cannot be reimplemented

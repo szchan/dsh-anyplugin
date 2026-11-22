@@ -3342,3 +3342,137 @@ remedy for audit volume.
 **Evidence.** `docs/audits/2026-11-22.md` and `.audit/evidence-2026-11-22.json`
 (report output, gitignored) carry both counts; #199 carries the proposal this
 entry amends; `docs/AUDIT.md` §7 carries the role table.
+
+---
+
+## D74 — F2 is `unsupported`: the theme seam stops at CSS aliases
+
+**Decided 2026-11-22** (#216, S24). The last open question in
+`ARCHITECTURE.md` §0's F2 row was whether a plugin — not the host bootstrap —
+can register a terminal palette and express every colour in a Claude
+`themes/<slug>.json`. S24 answers both halves at `0.2.2-rc.2` and
+`0.2.2-rc.5`; F2 is not a scheduled slot.
+
+1. **The plugin theme seam is real, but CSS-only.** The pinned theme package's
+   README documents “A composition can register a third-party theme id with
+   alias-token overrides through `ctx.theme`”; `ThemeRuntime.register` accepts
+   a `ThemeDefinition` and `apply` provides the service. Its
+   `ThemeDefinition.tokens` are “Alias-layer overrides applied as inline CSS
+   variables over the base palette”, and the 14 inspector tokens are all
+   `--dsw-alias-*` / `--dsw-specific-*` CSS variables. The S24 runtime probe
+   registers, activates and reads such a theme; no palette appears in the
+   snapshot.
+2. **The terminal consumer has no palette input.** The anchor is
+   `@deepseek-ai/dsh-client-ui-sidebar-terminal/src/client/terminal-theme.ts:57-64`:
+   `update(background: string, foreground: string)` sets only background,
+   foreground, cursor, cursor-accent and selection fields. ANSI 16 are written
+   only from `this.indexed` (`:72-79`), which only the xterm OSC 4 handler fills
+   and OSC 104 clears/deletes. `terminal.tsx:142` calls
+   `colors.current!.update(style.backgroundColor, style.color)` with the
+   computed CSS values; the view's only other theme reads are
+   `theme.fontFamilies.terminal` and `theme.fontSizes.terminal`.
+3. **Claude's theme is larger and still unserved.** The pinned native binary
+   at `claude-code@2.1.329` defines six bases (`light`, `light-ansi`,
+   `dark-ansi`, `light-daltonized`, `dark-daltonized`, dark default) and 72
+   named TUI roles per base. Values validate as `rgb()`, `#rgb`/`#rrggbb`,
+   `ansi256(n)` or `ansi:<one of 16 SGR names>`; overrides are filtered to keys
+   present in the base. DSH can carry at most one computed foreground and one
+   computed background into xterm, and neither is a mapping of the 72 roles.
+   Zero of 72 has an ANSI-index channel, so “every declared colour” fails.
+4. **The class moves; the pins do not.** `themes/` moves from one `planned`
+   unmaterialized row to one `unsupported` row in `readOptionalSurfaces`, with
+   `THEME_REASON` naming the host gap. The rc.5 theme and terminal packages are
+   published upstream; they were absent only from the fetched union, which S24
+   fixes. `engines.dsh` stays `"0.2.2-rc.2 || 0.2.2-rc.5"`: both pins have the
+   same refusal and no version-specific seam, so there is nothing to gate on.
+5. **No fixture, no materializer.** The pinned CLI has no non-interactive
+   `theme` command or `--theme` flag; `/theme` is TUI-only. No
+   `themes/<slug>.json` was captured or invented. A fixture and a materializer
+   require a new decision after the terminal exposes a palette; they do not
+   follow from this one.
+
+**Consequences.** The 100% statement keeps F2 outside its declared fixture
+surface, but F2 is now an explicit `unsupported` row, so the §0.2 GA condition
+(“unsupported is empty”) is not met while F2 is declared. The v0.4 roadmap
+loses the “themes (F2 ANSI seam)” slot; it returns only when the host offers a
+palette. `docs/FEATURES.md` §7 names the refusal, and the dialect test pins the
+row's class. A future plugin-writable palette must reopen this decision rather
+than silently re-plan F2.
+
+**Evidence.** `spikes/s24-theme-seam/run.mjs` (40 assertions, both pins) and
+`spikes/s24-theme-seam/README.md`; CI runs `npm run spike:s24` at rc.5 and
+rc.2. The spike reads the real theme `lib/client.js` in a `vm`, the terminal
+source, and the pinned Claude binary; it fails if a palette channel or the
+recorded 72-role/six-base schema changes. `scripts/fetch-harness.mjs` now
+includes `dsh-client-ui-theme` and `dsh-client-ui-sidebar-terminal` for S24.
+
+---
+
+## D75 — S24 corrects D74: F2 stays `planned`, with the ANSI 16 as the named host gap
+
+**Decided 2026-11-22** (#216, S24). **Supersedes D74.** D74 classified F2 as
+`unsupported` on the strength of the terminal's missing ANSI palette. The S24
+rework shows that the seam is partial, not absent: two of Claude's 72 named
+roles have a real DSH destination. A partial seam with a scheduled slot is
+`planned`, not `unsupported`; D74's class is withdrawn, its evidence kept.
+
+1. **The plugin theme seam is real, and it is alias CSS.** The pinned theme
+   package's README documents “A composition can register a third-party theme
+   id with alias-token overrides through `ctx.theme`”; `ThemeRuntime.register`
+   accepts a `ThemeDefinition` and `apply` provides the service.
+   `ThemeTokens` is `Record<string, string>`; the 14 inspector tokens are a
+   curated list, not a registration limit. `ThemeDefinition.tokens` are
+   “Alias-layer overrides applied as inline CSS variables over the base
+   palette”. The S24 runtime probe registers a theme including a new
+   `--dsw-alias-s24-probe` token, activates it, and reads the CSS tokens back
+   from the active snapshot.
+2. **Two of Claude's 72 roles reach the terminal through that seam.**
+   `text` maps to `--dsw-alias-label-primary` and `background` to
+   `--dsw-alias-bg-base`. `dsh-client-ui-layout/src/client/theme-presenter.ts:85-89`
+   writes every active token to `document.body`;
+   `dsh-client-ui-sidebar-terminal/src/client/terminal.module.css:1-4` consumes
+   the two aliases; `terminal.tsx:142` passes the computed
+   `style.backgroundColor`/`style.color` to xterm. That is a real, observable
+   destination for 2 of 72 roles.
+3. **The terminal has no ANSI-16 palette input; that is the named host gap.**
+   The anchor is
+   `@deepseek-ai/dsh-client-ui-sidebar-terminal/src/client/terminal-theme.ts:57-64`:
+   `update(background: string, foreground: string)` sets only background,
+   foreground, cursor, cursor-accent and selection fields. ANSI 16 are written
+   only from `this.indexed` (`:72-79`), which only the xterm OSC 4 handler
+   fills and OSC 104 clears/deletes. The other 70 roles have no DSH terminal
+   counterpart, and `ansi:<name>`/`ansi256(n)` values have no host palette.
+   There is no direct ANSI-16/palette output API; the only palette writer is
+   OSC 4/104. F2 cannot be complete until DSH exposes a palette channel, or a
+   decision formally removes this sub-surface from the declared set.
+4. **The class stays `planned`; no `unsupported` or `derived` escape.**
+   `readOptionalSurfaces` keeps `themes` as one `planned` row, with
+   `THEME_REASON` naming the 2-role mapping, the 70 unserved roles, the
+   `ansi:*` values with no host palette, and the OSC-only ANSI 16. The row
+   stays one row; it is not split per sub-surface. The v0.4 roadmap keeps the
+   “themes (F2 ANSI seam)” slot, narrowed to mapping the two alias roles while
+   the ANSI-16 host gap remains. `engines.dsh` stays
+   `"0.2.2-rc.2 || 0.2.2-rc.5"`: both pins have the same partial seam and no
+   version-specific channel, so there is nothing to gate on.
+5. **No fixture, no materializer yet.** The pinned CLI has no non-interactive
+   `theme` command or `--theme` flag; `/theme` is TUI-only. No
+   `themes/<slug>.json` was captured or invented. A fixture and a materializer
+   follow when the terminal exposes a palette; a captured file alone would
+   reach only the two CSS roles.
+
+**Consequences.** F2 stays outside the 100 % statement as a `planned` row, and
+the declared surface does not count the 70 unserved roles as matched. The
+roadmap keeps the F2 slot, and `docs/FEATURES.md` §7 names the partial seam and
+the ANSI-16 anchor. The dialect test pins the `planned` class and the 2/70/ANSI
+reason. A future plugin-writable palette must reopen this decision rather than
+silently turning F2 into `complete`.
+
+**Evidence.** `spikes/s24-theme-seam/run.mjs` (65 assertions, both pins) and
+`spikes/s24-theme-seam/README.md`; CI runs `npm run spike:s24` at rc.5 and
+rc.2. The spike enumerates the real theme bundle's exports/prototype, executes
+the real `TerminalTheme` with a fake xterm parser, reads the layout presenter
+and terminal CSS, and checks the pinned Claude binary's six bases and 72 roles.
+It exits non-zero on a palette mutation: a `registerTerminalPalette` prototype
+member reddens two assertions, and a `palette` field plus ANSI write reddens
+four. `scripts/fetch-harness.mjs` now includes `dsh-client-ui-theme`,
+`dsh-client-ui-layout` and `dsh-client-ui-sidebar-terminal` for S24.

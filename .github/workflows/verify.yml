@@ -310,6 +310,33 @@ jobs:
           fi
           npm run spike:s21
 
+      # S24 answers issue #216: the documented client theme surface registers
+      # alias CSS tokens, but the terminal's ANSI 16 are OSC 4/104-only. The
+      # spike reads both packages from the fetched union and asserts the
+      # refusal at both pins, so a host palette seam or a drift reddens here.
+      - name: S24 theme-seam spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S24 spike would skip"
+            exit 1
+          fi
+          npm run spike:s24
+      - name: S24 theme-seam spike (rc.2)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc2 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.2
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.2; the S24 spike would skip"
+            exit 1
+          fi
+          npm run spike:s24
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed
