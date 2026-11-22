@@ -2975,3 +2975,47 @@ owner test file exists, not that the test reads the fixture — deleting
 file-existence, not semantics. The runtime notification channel a monitor would
 feed is still open in `docs/TODO.md`; that is a product decision, not a fidelity
 gap, because there is no observable spawn target at the pin.
+## D65 — The marketplace catalog's path selects its parser; the Claude and Codex entry shapes never mix
+
+**Decided 2026-11-22** (#161, #167). Claude's `.claude-plugin/marketplace.json`
+and Codex's `.agents/plugins/marketplace.json` look alike and are not the
+same catalog.
+
+1. The format comes from the catalog path, never from sniffing the document.
+   `.claude-plugin/marketplace.json` parses as Claude and
+   `.agents/plugins/marketplace.json` as Codex; an entry that disagrees with
+   its file's shape is a problem naming the field. `parseMarketplace` takes an
+   explicit format for unit callers only.
+2. Codex `policy` and `category` are required per entry. On a Claude entry
+   `policy` is a note. `policy.installation` is required but its value is a
+   hint: only `NOT_AVAILABLE` is refused, before the source is resolved and
+   before a copy.
+3. `--from` takes a catalog file or a root. A root is looked up at both paths;
+   when both exist they are merged for listing, each row names its format, and
+   the format selects the install dialect unless `--dialect` overrides. A name
+   declared in both is `ambiguous-marketplace-entry`; the reader never picks
+   the first.
+4. Every install passes the catalog name as `installPlugin`'s `name`
+   assertion, so a catalog/artifact disagreement is `name-mismatch` before any
+   write. A fetched artifact is checked against **the manifest the selected
+   dialect reads**, resolved the way the reader resolves it: the first existing
+   dialect manifest, its non-empty `name`, else the directory basename; a
+   shadowed manifest is never read. Dialect and version refusals are install-time
+   decisions and may leave the artifact cached; the pre-commit check covers the
+   name mismatch. No catalog is `marketplace-not-found`; an existing file at
+   neither path is `unknown-marketplace-format`.
+5. The Codex page is the authority (no offline Codex client);
+   `fixtures/marketplace-codex/PROVENANCE.md` records the URL and read date.
+   D33 covers the portable plugin manifest and is silent on this file.
+6. Remote `url`/`git-subdir`/`npm` entries keep D53 unchanged: `list` makes no
+   network call, `install` needs the network grant, pins the resolved content
+   address, and refuses a moved pin until `--yes`.
+
+**Consequences.** Codex `ref`/`sha` and a named `registry` are typed refusals:
+supporting either is a new fetch kind under D53, not a parser change. The shipped
+CLI grows to 182.0 KiB compressed, so **D59's 180 KiB ceiling moves to 184 KiB**
+(`check:pack` enforces it). D59's text stays as the historical record — the log
+is append-only — so the new number lives here.
+
+---
+

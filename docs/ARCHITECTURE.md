@@ -184,7 +184,8 @@ runtime from `installs.yml`.
 ### The optional panel (issue #147)
 
 The UI half is `packages/dsh-anyplugin-ui`, a separate artifact on purpose: the
-root tarball's 180 KiB budget (enforced by `check:pack`) cannot carry a browser bundle. It has two
+root tarball's 184 KiB budget (D65 supersedes the earlier number; enforced by
+`check:pack`) cannot carry a browser bundle. It has two
 halves that meet at a JSON route, not at a build step:
 
 - **server**: `apply(ctx)` registers `GET /anyplugin/installs` (a `webServer`
@@ -1735,9 +1736,17 @@ trusted child is still mounted. A refusal is a compile decision, not a loader
 failure, and is not reported as `failed`.
 
 The lifecycle CLI (`dsh-anyplugin install|list|enable|disable|uninstall`, plus
-`dsh-anyplugin marketplace list|install` over a local catalog; `npm run rig --`
-is the same surface in a checkout, and `lib/cli.js` is the package’s one `bin`)
-is a caller of this pipeline, not a second implementation. The conformance
+`dsh-anyplugin marketplace list|install` over a Claude or Codex catalog;
+`npm run rig --` is the same surface in a checkout, and `lib/cli.js` is the
+package’s one `bin`) is a caller of this pipeline, not a second implementation.
+The catalog path selects its parser — `.claude-plugin/marketplace.json` is the
+Claude shape and `.agents/plugins/marketplace.json` is the Codex shape — so an
+entry that does not match its file is a problem naming the field, never a
+lenient guess. `--from` may name a catalog file or a marketplace root; a root is
+looked up at both declared paths, and a root that carries both is merged for
+listing (`[claude-code]`/`[codex]` labels, every row naming its format) while a
+name declared in both is refused by `install` as ambiguous instead of the
+reader picking one. The conformance
 gates (`capture`, `verify`, `diff`, `trace`) stay checkout-only: the Claude
 oracle, the harness probe and the trace differ are lazy external modules, and
 the published bin refuses those commands by name instead of shipping the code.

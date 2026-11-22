@@ -1,0 +1,5 @@
+{
+  "name": "claude-only",
+  "version": "0.1.0",
+  "description": "Hand-authored Claude plugin in the both-formats fixture."
+}

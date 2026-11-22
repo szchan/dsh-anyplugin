@@ -136,17 +136,24 @@ export const USAGE = `usage:
   ${PROGRAM} enable  <plugin> [--scope <s>] [--dry-run] [--json]
   ${PROGRAM} disable <plugin> [--scope <s>] [--dry-run] [--json]
   ${PROGRAM} uninstall <plugin> [--dry-run] [--json]
-  ${PROGRAM} marketplace list --from <file> [--json]
-  ${PROGRAM} marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--yes] [--dry-run] [--json]
+  ${PROGRAM} marketplace list --from <file-or-root> [--json]
+  ${PROGRAM} marketplace install <entry> --from <file-or-root> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--yes] [--dry-run] [--json]
 
   marketplace reads a Claude (.claude-plugin/marketplace.json) or Codex
   (.agents/plugins/marketplace.json) catalog without touching the network for
-  \`list\`. \`list\` prints each entry's name, description, source kind and
-  policy, and names every malformed entry instead of failing the file.
-  \`install\` resolves a "./" local source inside the catalog's root and then
-  runs the same install as \`${PROGRAM} install <dir>\`: one lock record, one
-  enablement decision, the same refusals and the same --dry-run. A \`url\`,
-  \`git-subdir\` or \`npm\` entry is fetched into
+  \`list\`. The path selects the format: each file is parsed to its own shape,
+  and an entry that does not match its file is a problem naming the field
+  (never a guess). --from may name either catalog file or a marketplace root;
+  a root is looked up at both declared paths, and if both exist they are read
+  and merged, with a name declared in both refused by \`install\` as ambiguous.
+  Every listed row names its format (claude-code or codex), and \`install\`
+  pairs the dialect from that format. \`list\` prints each entry's name,
+  description, source kind and (Codex) policy, and names every malformed entry
+  instead of failing the file. \`install\` resolves a "./" local source inside
+  the catalog's root and then runs the same install as \`${PROGRAM} install
+  <dir>\`: one lock record, one enablement decision, the same refusals and the
+  same --dry-run. A Codex \`policy.installation: NOT_AVAILABLE\` is refused
+  before any copy. A \`url\`, \`git-subdir\` or \`npm\` entry is fetched into
   <lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/ only with
   --yes, and the grant records the resolved commit/tarball hash; a moved pin
   refuses until --yes accepts it. \`--dry-run\` prints the exact fetch command

@@ -1,0 +1,5 @@
+{
+  "name": "shared",
+  "version": "0.1.0",
+  "description": "Declared in both catalogs of the both-formats fixture (Claude side)."
+}
