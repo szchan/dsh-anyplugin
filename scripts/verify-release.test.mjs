@@ -133,6 +133,18 @@ test('judgeReport: a placed nothing report and a lying total are refused', () =>
   assert.match(judgeReport(lying, { name: 'skills-only', pin: PIN, expected: EXPECTED })[0], /totals say 1 component\(s\) emitted, but 2 row\(s\) are carried/)
 })
 
+test('judgeReport: a report that placed nothing is refused even when every row is present', () => {
+  const downgraded = {
+    ...REPORT,
+    components: REPORT.components.map((row) => ({ ...row, class: 'planned', carried: false })),
+    totals: { declared: 2, emitted: 0, refused: 0, skipped: 2 },
+  }
+  assert.match(
+    judgeReport(downgraded, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'),
+    /no component is exact or equivalent/,
+  )
+})
+
 test('judgeReport: the fixture decides the rows — invented and dropped rows both fail', () => {
   const invented = { ...REPORT, components: [...REPORT.components, component('skills', 'junk', { class: 'planned', carried: false })], totals: { declared: 3, emitted: 2, refused: 0, skipped: 1 } }
   assert.match(judgeReport(invented, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /invented skills\/junk/)

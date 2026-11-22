@@ -81,6 +81,9 @@ export function judgeReport(report, { name, pin, expected }) {
 
   const components = Array.isArray(report.components) ? report.components : []
   if (components.length === 0) failures.push('the report carries no components')
+  else if (!components.some((component) => component.class === 'exact' || component.class === 'equivalent')) {
+    failures.push('no component is exact or equivalent: every row is planned or unsupported, so nothing was planted')
+  }
   for (const [index, component] of components.entries()) {
     const where = `component[${index}]`
     if (typeof component?.surface !== 'string' || component.surface === '') failures.push(`${where} has no surface`)
