@@ -73,10 +73,14 @@ guard's install status, the schedule's last run. A mechanism that is installed
 and never fires is either unnecessary or broken; say which.
 
 Then check **roles**, which is its own surface (§1.2 of the charter): take the
-eight largest sessions with their `cwd`, compare the roots with the ~1,500
-tool-call cap, and check the top write paths for a session writing outside its
-role. A root over the cap is a finding even when the work succeeded; name the
-split (a scheduled audit, an integrator, a narrower ticket).
+eight largest sessions with their `cwd`, compare each root's **window**
+count (the column the digest prints for the window it summarized) with the
+~1,500 tool-call cap, and check the top write paths for a session writing
+outside its role. Print the lifetime count too, but do not judge on it: a lead
+that runs for a month always exceeds a lifetime cap (D73). A root over the
+window cap is a finding even when the work succeeded; name the split (a
+scheduled audit, a narrower ticket, or an integration runner that polls CI and
+updates branches but never merges — D73).
 
 Completion: each shape is either "no instance in this window" with the search you
 ran, or a finding with a path or a count; every root over the cap has a finding

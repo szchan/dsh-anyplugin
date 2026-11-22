@@ -3306,3 +3306,39 @@ stand unchanged.
    dedupe keys and gap warnings; its mutation set (drop `turn`, drop
    `cleanup.revision`, force `isRootSession`, drop the gap calls, set `cwd` to
    the removed path) turns a named test red.
+
+## D73 — The integration runner is a worker, and F18's alarm is per window
+
+**Decided 2026-11-22** (#199, audit finding F18). The daily audit's role check
+found the root session at 2,991 tool calls (1,112 inside the 1-day window) and
+proposed splitting merge mechanics into a dedicated integrator session that
+would itself merge. Two facts make that shape wrong here.
+
+1. **Merge authority stays with the master.** The guard refuses `gh pr merge`
+   to every worker (`isWorker` is `origin === 'subagent' || parentSession !== undefined`,
+   `packages/dsh-anyplugin-guard/src/index.ts:64`), and that is the rule D66
+   hardened. Teaching it a third identity would be a privilege widening, and a
+   child session that merges is exactly what the pin rule exists to prevent.
+   An "integrator" that cannot merge is the only shape consistent with the
+   guard.
+2. **The expensive part of integration is waiting, not merging.** A merge
+   cycle in the root is twelve CI polls plus a branch update plus one pinned
+   `gh pr merge`; the merge call itself is one. So the split is: an
+   **integration runner** child (`integrator-*`) owns CI polling, `origin/main`
+   merges into the ticket branch, push to the ticket branch, PR-body assembly
+   and worktree cleanup; the master issues the single pinned merge call after
+   the runner reports a green head. The guard needs no change: every action the
+   runner takes is already a worker-allowed action.
+
+The alarm is then read the way the evidence is reported. A lifetime count
+measures how long a root has lived, not how much it did; a lead session that
+runs for a month will always exceed 1,500. The master alarm is evaluated on the
+window the pass reports (**~1,500 tool calls in the window**, 1 day for the
+daily pass), while the lifetime number stays printed in the evidence and in
+`## Findings`. A pass that flags either number must still name the remedy; the
+runner is the remedy for integration volume and the audit's own session is the
+remedy for audit volume.
+
+**Evidence.** `docs/audits/2026-11-22.md` and `.audit/evidence-2026-11-22.json`
+(report output, gitignored) carry both counts; #199 carries the proposal this
+entry amends; `docs/AUDIT.md` §7 carries the role table.

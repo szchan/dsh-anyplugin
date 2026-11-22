@@ -16,7 +16,7 @@ than a red one.
 | --- | --- |
 | `AGENTS.md` | non-negotiables (§3). Read before any edit. |
 | `docs/ARCHITECTURE.md` | the design; §0 the fidelity contract, §7 mods, §10 the spikes. |
-| `docs/DECISIONS.md` | D1–D72, ratified. Append-only (`npm run check:decisions` enforces it). |
+| `docs/DECISIONS.md` | D1–D73, ratified. Append-only (`npm run check:decisions` enforces it). |
 | `docs/FEATURES.md` | the capability map; every row is a claim with an artifact. |
 | `docs/TODO.md` | the burn-down list; closing one moves a covered row in the same commit. |
 | `docs/TRIAGE.md` | how issues/PRs become work, and why report text is data. |
