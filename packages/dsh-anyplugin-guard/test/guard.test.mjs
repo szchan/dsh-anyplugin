@@ -30,7 +30,7 @@ import {
 } from '../src/composition.ts'
 import { currentBranch, isMainRef } from '../src/git.ts'
 import { chooseWorktree, messageText, renderBrief } from '../src/brief.ts'
-import { judgeCall, matchWorktree, resolvePolicy } from '../src/policy.ts'
+import { isWorktreeGlob, judgeCall, matchWorktree, resolvePolicy } from '../src/policy.ts'
 import {
   hooksDirectory,
   installPrePushHook,
@@ -1206,6 +1206,60 @@ test('a literal "*" in a worktree path is refused, not widened into a pattern', 
   }
 })
 
+test('a legacy exact-list entry ending in "*" stays literal and is reported stale', () => {
+  const scratch = scratchCheckout()
+  const parent = mkdtempSync(join(tmpdir(), 'guard-legacy-'))
+  const legacy = join(parent, 'legacywt', 'ticket*')
+  const evil = join(parent, 'legacywt', 'ticket-evil')
+  const profile = mkdtempSync(join(tmpdir(), 'guard-legacy-profile-'))
+  const patch = join(profile, 'cordis.patch.yml')
+  try {
+    // A block written before the grammar existed can name a worktree whose
+    // real name ends in `*`; it is a path, not the `<stem>-*` operator.
+    assert.equal(isWorktreeGlob(legacy), false)
+    assert.equal(matchWorktree(legacy, evil), undefined)
+    assert.equal(chooseWorktree({ text: `work in ${evil}`, worktrees: [legacy] }), undefined)
+    const denied = judgeCall(
+      {
+        tool: 'write',
+        args: { file_path: join(evil, 'src/x.ts'), content: 'x' },
+        agent: { id: 'worker-legacy', cwd: scratch, worker: true },
+      },
+      resolvePolicy({ worktrees: [legacy], protectedRoots: [scratch] }),
+      { branch: () => 'ticket/9' },
+    )
+    assert.equal(denied.kind, 'deny')
+    assert.match(denied.reason, /no worktree is recorded/u)
+
+    writeFileSync(
+      patch,
+      renderBlock(join(scratch, 'packages/dsh-anyplugin-guard/src/index.ts'), {
+        worktrees: [legacy],
+        protectedRoots: [scratch],
+        brief: false,
+      }),
+    )
+    const status = spawnSync(
+      process.execPath,
+      [join(scratch, 'scripts/guard-status.mjs'), '--profile-dir', profile],
+      { cwd: scratch, encoding: 'utf8' },
+    )
+    assert.equal(status.status, 1, status.stdout + status.stderr)
+    assert.match(status.stdout, /guard: status {2}installed-with-stale-paths/u)
+    assert.ok(status.stdout.includes(`guard: stale worktree ${legacy} (listed in the block, no longer exists)`))
+    const json = spawnSync(
+      process.execPath,
+      [join(scratch, 'scripts/guard-status.mjs'), '--profile-dir', profile, '--json'],
+      { cwd: scratch, encoding: 'utf8' },
+    )
+    assert.deepEqual(JSON.parse(json.stdout).stalePaths, [legacy])
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(parent, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
 test('a submodule checkout installs and reports from its own root', () => {
   const scratch = scratchCheckout()
   const superRoot = mkdtempSync(join(tmpdir(), 'guard-super-'))
@@ -1237,6 +1291,24 @@ test('a submodule checkout installs and reports from its own root', () => {
     assert.equal(status.status, 1, status.stdout + status.stderr)
     assert.match(status.stdout, /guard: status {2}not-installed/u)
     assert.doesNotMatch(status.stderr, /ENOENT/u)
+
+    // A submodule is the main checkout of its own repository: the real install
+    // must not be refused as a linked worktree of the superproject.
+    const real = spawnSync(
+      process.execPath,
+      [join(sub, 'scripts/guard-install.mjs'), '--profile-dir', profile],
+      { cwd: sub, encoding: 'utf8' },
+    )
+    assert.equal(real.status, 0, real.stdout + real.stderr)
+    assert.doesNotMatch(real.stderr, /linked worktree/u)
+    assert.ok(real.stdout.includes(`name: "${join(sub, 'packages/dsh-anyplugin-guard/src/index.ts')}"`))
+    const current = spawnSync(
+      process.execPath,
+      [join(sub, 'scripts/guard-status.mjs'), '--profile-dir', profile],
+      { cwd: sub, encoding: 'utf8' },
+    )
+    assert.equal(current.status, 0, current.stdout + current.stderr)
+    assert.match(current.stdout, /guard: status {2}current/u)
   } finally {
     rmSync(profile, { recursive: true, force: true })
     rmSync(superRoot, { recursive: true, force: true })
@@ -1272,6 +1344,24 @@ test('a --separate-git-dir checkout resolves to its working tree, not the git di
     assert.equal(status.status, 1, status.stdout + status.stderr)
     assert.match(status.stdout, /guard: status {2}not-installed/u)
     assert.doesNotMatch(status.stderr, /ENOENT/u)
+
+    // The git dir lives elsewhere, but this is still the main worktree, so a
+    // real install is allowed here and writes the block against the worktree.
+    const real = spawnSync(
+      process.execPath,
+      [join(work, 'scripts/guard-install.mjs'), '--profile-dir', profile],
+      { cwd: work, encoding: 'utf8' },
+    )
+    assert.equal(real.status, 0, real.stdout + real.stderr)
+    assert.doesNotMatch(real.stderr, /linked worktree/u)
+    assert.ok(real.stdout.includes(`name: "${join(work, 'packages/dsh-anyplugin-guard/src/index.ts')}"`))
+    const current = spawnSync(
+      process.execPath,
+      [join(work, 'scripts/guard-status.mjs'), '--profile-dir', profile],
+      { cwd: work, encoding: 'utf8' },
+    )
+    assert.equal(current.status, 0, current.stdout + current.stderr)
+    assert.match(current.stdout, /guard: status {2}current/u)
   } finally {
     rmSync(profile, { recursive: true, force: true })
     rmSync(base, { recursive: true, force: true })

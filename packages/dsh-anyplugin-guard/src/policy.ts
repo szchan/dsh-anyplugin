@@ -150,15 +150,18 @@ export function isInside(root: string, target: string): boolean {
 /**
  * True when a configured worktree entry is a pattern instead of one path.
  *
- * The grammar is deliberately narrow: exactly one `*`, and only as the last
- * character (the install derives `<parent>/<stem>*`). A `*` anywhere else is a
- * literal character in a directory name, not an operator. Treating it as one
- * would turn a checkout called `star*` into a wildcard and confine a sibling
- * the plan never named. The installer refuses such paths because the entry it
- * writes could not be read back unambiguously.
+ * The grammar is deliberately narrow: exactly one `*`, only as the last
+ * character, and only after a stem that ends in `-` (the install derives
+ * `<parent>/<stem>-*`). A `*` anywhere else is a literal character in a
+ * directory name, not an operator. Treating it as one would turn a checkout
+ * called `star*` into a wildcard and confine a sibling the plan never named;
+ * the same is true of a legacy exact-list entry for a worktree called
+ * `ticket*`. The installer refuses literal paths because the entry it writes
+ * could not be read back unambiguously; status reads a legacy entry as the
+ * literal path it is.
  */
 export function isWorktreeGlob(entry: string): boolean {
-  return entry.endsWith('*') && entry.indexOf('*') === entry.length - 1
+  return entry.endsWith('-*') && entry.indexOf('*') === entry.length - 1
 }
 
 /**

@@ -73,9 +73,13 @@ the worktrees that existed when it ran, so a directory matching it is admitted
 without a reinstall — including a worktree the master creates later. The pattern
 is a namespace matcher, not a git-worktree attestation: any directory named
 `ticket-*` under `$root` is confinable even if git never created it as a
-worktree. Install once from the main checkout — a real install from a ticket
+worktree. The wildcard only counts after a stem ending in `-`: a block written
+before that grammar (or an exact entry for a worktree whose real name ends in
+`*`) names a path, not a pattern, and status reports it as stale once it is
+gone. Install once from the main checkout — a real install from a ticket
 worktree is refused, because git shares one hooks directory with the main
-checkout. `npm run guard:install -- --dry-run` from anywhere composes the block
+checkout; a submodule or `--separate-git-dir` checkout is its own main checkout
+and is installed from there. `npm run guard:install -- --dry-run` from anywhere composes the block
 and names the main checkout; `npm run guard:status` reports `not-installed`,
 `current`, `stale` or `installed-with-stale-paths` (a literal path in the block
 no longer exists, and the line names it), and prints the desired and installed

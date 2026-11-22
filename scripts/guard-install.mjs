@@ -56,15 +56,12 @@ function gitToplevel(start) {
 }
 
 function isLinkedWorktree(path) {
-  try {
-    const common = execFileSync('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-    return resolve(common, '..') !== resolve(path)
-  } catch {
-    return false
-  }
+  // `dirname(--git-common-dir)` is not the main checkout for a submodule or a
+  // `--separate-git-dir` worktree: both point their git dir at themselves, so
+  // that comparison refused an install from the only checkout they have. The
+  // shared derivation is what tells a linked worktree from a main one.
+  const root = mainCheckout(path)
+  return root !== undefined && root !== resolve(path)
 }
 
 function usage(message) {

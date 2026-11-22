@@ -67,6 +67,20 @@ const MUTANTS = [
     test: 'a submodule checkout installs and reports from its own root',
   },
   {
+    name: 'promote a legacy entry with any trailing star to a wildcard',
+    file: 'packages/dsh-anyplugin-guard/src/policy.ts',
+    find: "return entry.endsWith('-*') && entry.indexOf('*') === entry.length - 1",
+    replacement: "return entry.endsWith('*') && entry.indexOf('*') === entry.length - 1",
+    test: 'a legacy exact-list entry ending in "*" stays literal and is reported stale',
+  },
+  {
+    name: 'treat a submodule root as a linked worktree again',
+    file: 'scripts/guard-install.mjs',
+    find: '  const root = mainCheckout(path)\n  return root !== undefined && root !== resolve(path)',
+    replacement: "  const root = mainCheckout(path)\n  return resolve(root ?? path, '..') !== resolve(path)",
+    test: 'a submodule checkout installs and reports from its own root',
+  },
+  {
     name: 'never report a listed worktree as gone',
     file: 'scripts/guard-status.mjs',
     find: 'const stalePaths = listedWorktrees.filter((entry) => !isWorktreeGlob(entry) && !existsSync(entry))',

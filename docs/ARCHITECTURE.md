@@ -1658,9 +1658,11 @@ because one `*` substitutes exactly one directory name under the shared stem.
 The pattern is a **namespace matcher, not git-worktree attestation**: a
 directory a human or script creates under the shared stem is confinable even if
 git never registered it as a worktree. A literal `*` in a discovered path is
-refused at install and status rather than escaped: the block grammar reserves
-`*` for the one trailing wildcard, and a literal read back as a pattern would
-confine a sibling the plan never named. When the discovered paths do not share a
+refused at install rather than escaped: the block grammar reserves `*` for the
+one wildcard after a stem ending in `-`, and a literal read back as a pattern
+would confine a sibling the plan never named. Status reads a legacy exact entry
+whose path really ends in `*` as that literal path, not as a pattern, so it is
+reported as a stale path when the worktree is gone. When the discovered paths do not share a
 parent and a name stem, the block keeps the exact list; then a single
 out-of-pattern ticket worktree makes the next install drop the pattern for
 *every* future worktree until the next install. `guard:status` reuses the
