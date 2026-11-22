@@ -87,10 +87,12 @@ The installer ships in this package as the `dsh-anyplugin` command: the
 published `lib/cli.js` is the conformance rig's own CLI
 (`packages/dsh-anyplugin-conformance/src/rig.ts`), so the npm artifact and the
 checkout run one command surface. Nothing here needs a DSH installation —
-`--help` and `install <dir> --dry-run` need only Node; the upstream-oracle
-commands (`capture`, `verify`, `diff`, `trace`) are the ones that name the
-pinned Claude Code binary (`CLAUDE_BIN`). Run the published command with `npx`
-(the examples name the command, not the version; pin it as
+`--help` and `install <dir> --dry-run` need only Node. The conformance gates
+(`capture`, `verify`, `diff`, `trace`) are the exception: they read a pinned
+harness and name `CLAUDE_BIN`, and the Claude oracle and trace differ are not
+shipped, so the published bin refuses them with `needs the repository
+checkout` and points at `npm run rig --` from a clone. Run the published
+command with `npx` (the examples name the command, not the version; pin it as
 `npx dsh-anyplugin@0.2.0 …` when the run must be reproducible):
 
 ```bash

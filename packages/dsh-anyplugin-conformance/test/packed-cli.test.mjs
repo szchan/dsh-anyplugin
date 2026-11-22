@@ -44,27 +44,43 @@ function fingerprint(dir) {
   return files
 }
 
+/**
+ * Pack the already-built `lib/` with `--ignore-scripts` and extract it. The
+ * build runs once in `pretest` (and in `check:pack`), not here: test files run
+ * concurrently, and a second `scripts/build.mjs` would delete `lib/` under
+ * `profile-mount.test.mjs`'s pack.
+ */
+function packExtracted(work) {
+  const packDir = join(work, 'pack')
+  mkdirSync(packDir)
+  const packed = JSON.parse(
+    execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', packDir], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+  )[0]
+  const tarball = join(packDir, packed.filename)
+  const tree = join(work, 'unpacked')
+  mkdirSync(tree)
+  execFileSync('tar', ['-xzf', tarball, '--strip-components=1', '-C', tree], { stdio: 'pipe' })
+  return { packed, tree, bin: join(tree, 'lib', 'cli.js') }
+}
+
+/** Run the extracted bin with no DSH, oracle or plugin environment. */
+function runExtracted(bin, tree, home, args, extraEnv = {}) {
+  return spawnSync(process.execPath, [bin, ...args], {
+    cwd: tree,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: home, ...extraEnv },
+  })
+}
+
 test('packed artifact: install from the extracted tarball writes one record and nothing else', () => {
   const work = mkdtempSync(join(tmpdir(), 'anyplugin-packed-cli-'))
   try {
-    const packDir = join(work, 'pack')
-    mkdirSync(packDir)
-    // The same build the publish path runs (prepack → build), then
-    // `--ignore-scripts` so the bytes under test are the built ones.
-    execFileSync(process.execPath, [join(repoRoot, 'scripts', 'build.mjs')], { cwd: repoRoot, stdio: 'pipe' })
-    const packed = JSON.parse(
-      execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', packDir], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }),
-    )[0]
-    const tarball = join(packDir, packed.filename)
-    const tree = join(work, 'unpacked')
-    mkdirSync(tree)
-    execFileSync('tar', ['-xzf', tarball, '--strip-components=1', '-C', tree], { stdio: 'pipe' })
+    const { tree, bin, packed } = packExtracted(work)
 
-    const bin = join(tree, 'lib', 'cli.js')
     assert.equal(existsSync(bin), true, `the tarball has no lib/cli.js:\n${packed.files.map((file) => file.path).join('\n')}`)
     const manifest = JSON.parse(readFileSync(join(tree, 'package.json'), 'utf8'))
     assert.deepEqual(manifest.bin, { 'dsh-anyplugin': './lib/cli.js' })
@@ -74,19 +90,12 @@ test('packed artifact: install from the extracted tarball writes one record and 
     writeFileSync(join(home, 'sentinel.txt'), 'this file must survive unchanged\n')
     writeFileSync(join(home, 'profiles', 'sentinel', 'config.json'), '{"sentinel":true}\n')
 
-    // The only environment a user needs: no DSH_HARNESS_DIR, no CLAUDE_BIN, no
-    // ANYPLUGIN_*; `--help` gets no DSH_HOME either.
-    const run = (args, extraEnv = {}) =>
-      spawnSync(process.execPath, [bin, ...args], {
-        cwd: tree,
-        encoding: 'utf8',
-        env: { PATH: process.env.PATH, HOME: home, ...extraEnv },
-      })
+    const run = (args, extraEnv = {}) => runExtracted(bin, tree, home, args, extraEnv)
 
     const help = run(['--help'])
     assert.equal(help.status, 0, help.stderr)
     assert.match(help.stdout, /^dsh-anyplugin — install foreign agent plugins/)
-    assert.match(help.stdout, /rig install <plugin-dir>/)
+    assert.match(help.stdout, /dsh-anyplugin install <plugin-dir>/)
 
     const before = fingerprint(home)
     const dry = run(['install', fixture, '--dry-run'], { DSH_HOME: home })
@@ -112,6 +121,30 @@ test('packed artifact: install from the extracted tarball writes one record and 
     assert.equal(lock.plugins[0].name, 'skills-only')
     assert.equal(lock.plugins[0].root, fixture)
     assert.match(readFileSync(join(home, 'anyplugin', 'enabled.yml'), 'utf8'), /claude-code:skills-only/)
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
+test('packed artifact: the bin names itself, and repo-only gates refuse by name', () => {
+  const work = mkdtempSync(join(tmpdir(), 'anyplugin-packed-cli-'))
+  try {
+    const { tree, bin } = packExtracted(work)
+    const home = join(work, 'home')
+    mkdirSync(home)
+
+    const help = runExtracted(bin, tree, home, ['report', '--help'])
+    assert.equal(help.status, 0, help.stderr)
+    assert.match(help.stdout, /^ {2}dsh-anyplugin report {2}<plugin-dir>/m)
+    assert.doesNotMatch(help.stdout, /^ {2}rig report/m)
+
+    // `verify` needs the Claude oracle, which stays in the checkout. The failure
+    // must name the reason and the checkout, not throw a module-loading error.
+    const refused = runExtracted(bin, tree, home, ['verify', '--plugin', fixture, '--golden', join(work, 'missing.json')])
+    assert.equal(refused.status, 2, refused.stderr)
+    assert.match(refused.stderr, /^verify needs the repository checkout: oracles\/file\.ts is a conformance-gate module/)
+    assert.match(refused.stderr, /run `npm run rig -- verify \.\.\.` from a clone/)
+    assert.doesNotMatch(refused.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/)
   } finally {
     rmSync(work, { recursive: true, force: true })
   }

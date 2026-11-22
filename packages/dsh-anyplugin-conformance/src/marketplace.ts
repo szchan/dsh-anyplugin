@@ -47,6 +47,7 @@ import {
   type InstallResult,
 } from './install-cli.ts'
 import { fetchEntry, remoteTarget, type RemoteSourceKind } from './marketplace-fetch.ts'
+import { PROGRAM } from './program.ts'
 
 /** Source kinds either ecosystem declares. Four are installable; the rest refuse. */
 export type MarketplaceSourceKind = 'local' | 'url' | 'github' | 'git-subdir' | 'npm' | 'archive' | 'command'
@@ -736,7 +737,7 @@ export async function installFromMarketplace(options: MarketplaceInstallOptions)
     throw new InstallCliError(
       'unknown-marketplace-entry',
       `${file}: no entry named "${requested}"; known: ${known.length === 0 ? '(none)' : known.join(', ')}`,
-      'list the catalog with `rig marketplace list --from <file>`',
+      `list the catalog with \`${PROGRAM} marketplace list --from <file>\``,
     )
   }
   // Codex's policy is part of the catalog contract, not a display field. An

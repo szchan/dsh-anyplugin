@@ -62,6 +62,7 @@ import {
   type Scope,
 } from '../../dsh-anyplugin-install/src/index.ts'
 import { buildTransplantReport, type TransplantReport } from './report.ts'
+import { PROGRAM } from './program.ts'
 
 /** A lifecycle refusal. `reason` is what to print; `code` is what to branch on. */
 export type InstallCliCode =
@@ -328,7 +329,7 @@ export function resolvePluginArgument(argument: string, installs: Installs): Ins
     throw new InstallCliError(
       'unknown-plugin',
       `no installed plugin "${argument}"; the lock is empty`,
-      'run `rig install <plugin-dir>` first',
+      `run \`${PROGRAM} install <plugin-dir>\` first`,
     )
   }
   const colon = argument.indexOf(':')
@@ -506,7 +507,7 @@ export function installPlugin(options: InstallOptions): InstallResult {
     throw new InstallCliError(
       'nothing-emitted',
       `${id}: nothing would be emitted (${totalsLine(report.totals)})${refused.length === 0 ? '' : `; ${refused.join(', ')}`}`,
-      'pass --allow-empty to record an inert plugin, or grant the refused artifacts with `rig grant`',
+      `pass --allow-empty to record an inert plugin, or grant the refused artifacts with \`${PROGRAM} grant\``,
     )
   }
 

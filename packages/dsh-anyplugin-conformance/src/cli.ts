@@ -25,9 +25,9 @@ import { USAGE, runCli } from './rig.ts'
 
 const HEADER = `dsh-anyplugin — install foreign agent plugins into DeepSeek Harness.
 
-The \`rig\` names below are the conformance rig's; this binary runs that same
-CLI, so every command and flag is identical. In a checkout the same surface is
-\`npm run rig -- <command>\`.
+Every command and flag below is the same surface the conformance rig runs in a
+checkout (\`npm run rig -- <command>\`); the program names shown are the ones
+this binary answers to.
 `
 
 const argv = process.argv.slice(2)

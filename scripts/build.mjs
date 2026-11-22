@@ -42,17 +42,27 @@ const kernelDir = 'packages/dsh-anyplugin-mod-host/'
 /**
  * Entry point → output path under `lib/`, matching `exports`/`bin` in
  * package.json.
+ *
+ * `index` and `cli` are built together with splitting: both reach the same
+ * dialects, install pipeline and trust store, and shipping two full copies was
+ * the largest line in the tarball. The materializer entries stay one file each
+ * so `lib/materialize/hook.js` remains the kernel bundle its size claim names.
  */
-const ENTRIES = {
+const SHARED_ENTRIES = {
   index: 'packages/dsh-anyplugin-install/src/controller.ts',
   // The single published `bin`; the same CLI the conformance rig runs (D49).
   cli: 'packages/dsh-anyplugin-conformance/src/cli.ts',
+}
+
+const MATERIALIZER_ENTRIES = {
   'materialize/agents': 'packages/dsh-anyplugin-materialize-agents/src/index.ts',
   'materialize/hook': 'packages/dsh-anyplugin-materialize-hook/src/index.ts',
   'materialize/mcp': 'packages/dsh-anyplugin-materialize-mcp/src/index.ts',
   'materialize/output-style': 'packages/dsh-anyplugin-materialize-output-style/src/index.ts',
   'materialize/skill': 'packages/dsh-anyplugin-materialize-skill/src/index.ts',
 }
+
+const ENTRIES = { ...SHARED_ENTRIES, ...MATERIALIZER_ENTRIES }
 
 const externals = [
   '@deepseek-ai/*',
@@ -62,6 +72,20 @@ const externals = [
   // The kernel's runtime, resolved from the installed dependencies (D34).
   '@babel/core',
   '@babel/plugin-transform-react-jsx',
+]
+
+/**
+ * Conformance-gate modules. The CLI reaches them only from `capture`,
+ * `verify`, `diff` and `trace`, through a lazy loader; leaving them external
+ * keeps the Claude oracle and the trace differ out of the tarball entirely.
+ * The packed bin resolves the relative specifier against `lib/`, catches the
+ * miss, and refuses with the command and checkout named.
+ */
+const repoOnly = [
+  '*/oracles/claude.ts',
+  '*/oracles/file.ts',
+  '*/inventory.ts',
+  '*/trace.ts',
 ]
 
 async function main() {
@@ -74,7 +98,26 @@ async function main() {
   const kernelInputs = new Set()
   const kernelExternals = new Set()
 
-  for (const [out, entry] of Object.entries(ENTRIES)) {
+  // One split build for the two entries that share the dialects, install
+  // pipeline and trust store. The chunks it emits are loaded by `lib/index.js`
+  // and `lib/cli.js`; it is the same code at runtime, shipped once.
+  await build({
+    entryPoints: Object.entries(SHARED_ENTRIES).map(([out, entry]) => ({ in: join(root, entry), out })),
+    outdir: lib,
+    bundle: true,
+    splitting: true,
+    format: 'esm',
+    platform: 'node',
+    target: ['node22'],
+    external: [...externals, ...repoOnly],
+    metafile: true,
+    logLevel: 'warning',
+    legalComments: 'none',
+    chunkNames: 'chunk-[hash]',
+    banner: { js: `// dsh-anyplugin ${pkg.version} — built by scripts/build.mjs; do not edit.` },
+  })
+
+  for (const [out, entry] of Object.entries(MATERIALIZER_ENTRIES)) {
     const result = await build({
       entryPoints: [join(root, entry)],
       outfile: join(lib, `${out}.js`),
@@ -99,9 +142,6 @@ async function main() {
         }
       }
       for (const [input, info] of Object.entries(output.inputs)) {
-        // Only the hook entry is the mods kernel bundle; the CLI and the
-        // controller bundle also reach kernel sources, and counting those
-        // copies would report the same bytes twice.
         if (out !== 'materialize/hook' || !input.startsWith(kernelDir)) continue
         kernelBytes += info.bytesInOutput
         kernelInputs.add(input)

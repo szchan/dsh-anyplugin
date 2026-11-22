@@ -25,6 +25,15 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const failures = []
 const notes = []
+
+/**
+ * The packaged artifact's own budget. D46 asserts the 128 KiB *kernel* ceiling;
+ * this one bounds the tarball the registry serves, so growth is a visible
+ * decision. The deduped controller+CLI build measures ~174.3 KiB; 180 KiB
+ * leaves room for a doc paragraph without inviting drift. Raise it only with a
+ * decision entry.
+ */
+const TARBALL_CEILING_BYTES = 180 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }
@@ -62,6 +71,11 @@ try {
     const tarball = join(packDir, packed.filename)
     check(existsSync(tarball), `npm pack did not leave ${tarball}`)
     notes.push(`${packed.entryCount} entries, ${(packed.size / 1024).toFixed(0)} KiB`)
+    check(
+      packed.size <= TARBALL_CEILING_BYTES,
+      `the tarball is ${packed.size} bytes, above the ${TARBALL_CEILING_BYTES}-byte ceiling; decide before it grows`,
+    )
+    notes.push(`tarball: ${(packed.size / 1024).toFixed(1)} KiB / ceiling ${TARBALL_CEILING_BYTES / 1024} KiB`)
 
     const tree = join(packDir, 'unpacked')
     mkdirSync(tree, { recursive: true })
@@ -149,6 +163,24 @@ try {
     check(!libFiles.some((path) => path.endsWith('.ts') || path.endsWith('.tsx')), 'lib/ contains TypeScript sources')
     check(![...files].some((path) => path.startsWith('src/')), 'the tarball ships src/ — the dev entry must stay out')
     check(![...files].some((path) => path.startsWith('packages/')), 'the tarball ships workspace packages/')
+
+    // 2b. The conformance gates never ship. The shipped commands install, list,
+    //     enable, disable, uninstall, report, grant, revoke and the marketplace
+    //     never reach the Claude oracle, the harness probe or the trace differ;
+    //     those are lazy modules left external. Scan every shipped lib file,
+    //     chunks included, because a static import can land there instead of in
+    //     the entry. `SourceTextModule` is allowed only in the kernel entry: D30
+    //     needs the flag there and nowhere else.
+    const gateMarkers = ['resolveClaudeBinary', 'claude --version', 'diffTraces']
+    for (const path of libFiles.filter((file) => file.endsWith('.js'))) {
+      const source = readFileSync(join(tree, path), 'utf8')
+      const carried = gateMarkers.filter((marker) => source.includes(marker))
+      check(carried.length === 0, `${path} carries conformance-gate code: ${carried.join(', ')}`)
+      if (path !== 'lib/materialize/hook.js') {
+        check(!source.includes('SourceTextModule'), `${path} carries SourceTextModule; only the kernel entry may`)
+      }
+    }
+    notes.push('shipped lib: no conformance-gate markers (oracle, harness probe, trace differ)')
 
     // 3. Runtime imports: every bare specifier in lib must be a declared runtime
     //    dependency or peer, and the harness must never be an import.

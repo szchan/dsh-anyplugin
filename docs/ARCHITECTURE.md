@@ -1655,12 +1655,16 @@ failure, and is not reported as `failed`.
 The lifecycle CLI (`dsh-anyplugin install|list|enable|disable|uninstall`, plus
 `dsh-anyplugin marketplace list|install` over a local catalog; `npm run rig --`
 is the same surface in a checkout, and `lib/cli.js` is the package’s one `bin`)
-is a caller of this pipeline, not a second implementation. `install` reads the plugin, builds
+is a caller of this pipeline, not a second implementation. The conformance
+gates (`capture`, `verify`, `diff`, `trace`) stay checkout-only: the Claude
+oracle, the harness probe and the trace differ are lazy external modules, and
+the published bin refuses those commands by name instead of shipping the code.
+`install` reads the plugin, builds
 the record, and hands the complete lock to `writeInstalls`; `enable`/`disable`
 hand one layer to `writeEnablements`. Both writers validate first and replace
 by temp file + rename, so a typed refusal leaves the previous bytes untouched.
 `list` re-runs `prepareInstalledRecord` + `buildTransplantReport` per record,
-which is why its carry counts are the same rows `rig report` prints rather than
+which is why its carry counts are the same rows `dsh-anyplugin report` prints rather than
 a second counter. Reporting needs the ungated IR: `PreparedRecord` keeps both
 `ir` (gated, for emit) and `ungated` (for the report, which gates itself),
 because gating an already-gated IR would turn every refusal into a skipped row.

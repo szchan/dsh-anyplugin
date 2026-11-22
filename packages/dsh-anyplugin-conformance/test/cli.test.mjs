@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const cliPath = fileURLToPath(new URL('../src/cli.ts', import.meta.url))
+const rigPath = fileURLToPath(new URL('../src/rig.ts', import.meta.url))
 const fixture = join(repoRoot, 'fixtures', 'claude-skills-only')
 
 function scratch() {
@@ -47,10 +48,36 @@ test('published bin: --help exits 0 with no DSH environment', () => {
     assert.equal(result.status, 0, result.stderr)
     assert.equal(result.stderr, '')
     assert.match(result.stdout, /^dsh-anyplugin — install foreign agent plugins into DeepSeek Harness\./)
-    // The published name is the door; the commands under it are the rig's.
-    assert.match(result.stdout, /rig install <plugin-dir>/)
-    assert.match(result.stdout, /rig marketplace install <entry>/)
-    assert.match(result.stdout, /rig report {2}<plugin-dir>/)
+    // The published name is the door; the commands under it are the rig's own.
+    assert.match(result.stdout, /dsh-anyplugin install <plugin-dir>/)
+    assert.match(result.stdout, /dsh-anyplugin marketplace install <entry>/)
+    assert.match(result.stdout, /dsh-anyplugin report {2}<plugin-dir>/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('published bin: the program name comes from the invoked entry', () => {
+  const home = scratch()
+  try {
+    const published = spawnSync(process.execPath, [cliPath, 'report', '--help'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: envFor(home),
+    })
+    assert.equal(published.status, 0, published.stderr)
+    assert.match(published.stdout, /^ {2}dsh-anyplugin report {2}<plugin-dir>/m)
+    assert.doesNotMatch(published.stdout, /^ {2}rig report/m)
+
+    // `npm run rig --` must keep reading like the rig it is.
+    const checkout = spawnSync(process.execPath, [rigPath, 'report', '--help'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: envFor(home),
+    })
+    assert.equal(checkout.status, 0, checkout.stderr)
+    assert.match(checkout.stdout, /^ {2}rig report {2}<plugin-dir>/m)
+    assert.doesNotMatch(checkout.stdout, /^ {2}dsh-anyplugin report/m)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -62,7 +89,7 @@ test('published bin: help takes its documented aliases', () => {
     for (const token of ['help', '-h']) {
       const result = run([token], home)
       assert.equal(result.status, 0, `${token}: ${result.stderr}`)
-      assert.match(result.stdout, /rig install <plugin-dir>/, token)
+      assert.match(result.stdout, /dsh-anyplugin install <plugin-dir>/, token)
     }
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -77,7 +104,7 @@ test('published bin: no arguments is a usage error, not a silent success', () =>
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')
     assert.match(result.stderr, /^dsh-anyplugin — install foreign agent plugins/)
-    assert.match(result.stderr, /rig install <plugin-dir>/)
+    assert.match(result.stderr, /dsh-anyplugin install <plugin-dir>/)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -127,7 +154,7 @@ test('published bin: per-command --help still comes from the rig', () => {
     const result = run(['install', '--help'], home)
 
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /rig install <plugin-dir> \[--scope <s>\]/)
+    assert.match(result.stdout, /dsh-anyplugin install <plugin-dir> \[--scope <s>\]/)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

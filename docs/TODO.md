@@ -75,7 +75,9 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - The installer is the published `bin` (ticket #146): `package.json` maps
   `dsh-anyplugin` to `lib/cli.js`, which the build emits from the conformance
   rig's own `cli.ts`; `npx dsh-anyplugin install <dir> --dry-run` needs no DSH
-  installation, and `check:pack` runs the extracted bin with no DSH environment.
+  installation, and `check:pack` runs the extracted bin with no DSH environment,
+  fails if a conformance-gate marker reaches shipped `lib/`, and holds the
+  tarball under its 180 KiB ceiling.
 - Mod coverage ledger (ticket #130): `scripts/mod-coverage.mjs` scans the pinned
   `mods/types/claude-code.d.ts` by declaration and classifies every declared
   symbol against the runtime `$` table as `served`, `refused` (a typed
