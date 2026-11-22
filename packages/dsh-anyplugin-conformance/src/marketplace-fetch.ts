@@ -53,6 +53,12 @@ const TIMEOUT_MS = 30_000
 const METADATA = '.dsh-anyplugin-artifact.json'
 const PLUGIN_MANIFESTS = ['.claude-plugin/plugin.json', 'plugin.json', '.codex-plugin/plugin.json']
 
+/** The manifests each dialect's reader actually reads, in its own order. */
+const DIALECT_MANIFESTS: Record<string, string[]> = {
+  'claude-code': ['.claude-plugin/plugin.json'],
+  codex: ['plugin.json', '.codex-plugin/plugin.json'],
+}
+
 export type RemoteSourceKind = 'url' | 'git-subdir' | 'npm'
 
 export interface FetchTarget {
@@ -86,6 +92,8 @@ export interface FetchRequest {
   entry: string
   /** The catalog entry's name; the fetched plugin must declare the same one. */
   name?: string
+  /** The selected reader; the name is read from the manifest that reader reads. */
+  dialect: string
   source: MarketplaceSource
   /** The marketplace root, for a relative npm `file:` path. */
   root: string
@@ -454,7 +462,7 @@ function pluginInside(
     if (error instanceof InstallCliError) throw error
   }
   if (request.name !== undefined) {
-    const declared = pluginName(directory)
+    const declared = pluginName(directory, request.dialect)
     if (declared !== undefined && declared !== request.name) {
       throw refusal(
         'name-mismatch',
@@ -598,8 +606,8 @@ function git(args: string[], cwd: string, display: string): string {
   }
 }
 
-function pluginName(directory: string): string | undefined {
-  for (const manifest of PLUGIN_MANIFESTS) {
+function pluginName(directory: string, dialect: string): string | undefined {
+  for (const manifest of DIALECT_MANIFESTS[dialect] ?? []) {
     const file = join(directory, manifest)
     if (!existsSync(file)) continue
     try {
@@ -612,8 +620,8 @@ function pluginName(directory: string): string | undefined {
   return undefined
 }
 
-function pluginVersion(directory: string): string | undefined {
-  for (const manifest of PLUGIN_MANIFESTS) {
+function pluginVersion(directory: string, dialect: string): string | undefined {
+  for (const manifest of DIALECT_MANIFESTS[dialect] ?? []) {
     const file = join(directory, manifest)
     if (!existsSync(file)) continue
     try {
@@ -651,7 +659,7 @@ function fetchGit(request: FetchRequest, source: Extract<MarketplaceSource, { ki
     rmSync(join(work, '.git'), { recursive: true, force: true })
     rejectSymlinks(work, request)
     const { pluginDir, plugin } = pluginInside(work, request, source.path)
-    const version = pluginVersion(pluginDir)
+    const version = pluginVersion(pluginDir, request.dialect)
     const final = cacheDirectory(request.cacheRoot, request.marketplace, request.entry, commit)
     return commitArtifact(work, final, metadataFor('git-subdir', `git:${commit}`, commit, plugin, version))
   } finally {
@@ -914,7 +922,7 @@ function fetchUrl(request: FetchRequest, source: Extract<MarketplaceSource, { ki
         throw error
       }
       const { pluginDir, plugin } = pluginInside(artifactRoot, request, undefined)
-      const version = pluginVersion(pluginDir)
+      const version = pluginVersion(pluginDir, request.dialect)
       return commitArtifact(
         artifactRoot,
         final,

@@ -892,7 +892,10 @@ test('a malformed duplicate still makes the shared name ambiguous', () => {
     const root = join(box.dir, 'malformed-duplicate')
     writeCatalog(root, {
       name: 'claude-side',
-      plugins: [{ name: 'shared', source: './plugins/hello' }],
+      plugins: [
+        { name: 'shared', source: './plugins/hello' },
+        { name: 'no-policy', source: './plugins/hello' },
+      ],
     })
     mkdirSync(join(root, '.agents', 'plugins'), { recursive: true })
     writeFileSync(
@@ -906,20 +909,30 @@ test('a malformed duplicate still makes the shared name ambiguous', () => {
             policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
             source: { source: 'local' },
           },
+          {
+            // A different error kind: the name is recovered, the entry is not
+            // produced, and the duplicate must still be recorded.
+            name: 'no-policy',
+            category: 'testing',
+            source: { source: 'local' },
+          },
         ],
       }),
     )
 
     const listed = run(box, ['marketplace', 'list', '--from', root])
     assert.equal(listed.status, 1, listed.stderr)
-    assert.match(listed.stdout, /\(1 entry, 1 malformed, 1 ambiguous\)/u)
+    assert.match(listed.stdout, /\(2 entries, 2 malformed, 2 ambiguous\)/u)
     assert.match(listed.stdout, /duplicate entry name "shared"; also declared by .*\.claude-plugin\/marketplace\.json/u)
+    assert.match(listed.stdout, /duplicate entry name "no-policy"; also declared by .*\.claude-plugin\/marketplace\.json/u)
 
-    const ambiguous = run(box, ['marketplace', 'install', 'shared', '--from', root])
-    assert.equal(ambiguous.status, 1)
-    assert.match(ambiguous.stderr, /refused \(ambiguous-marketplace-entry\)/u)
-    assert.match(ambiguous.stderr, /duplicate entry name "shared"/u)
-    assert.equal(existsSync(box.lock), false)
+    for (const name of ['shared', 'no-policy']) {
+      const ambiguous = run(box, ['marketplace', 'install', name, '--from', root])
+      assert.equal(ambiguous.status, 1)
+      assert.match(ambiguous.stderr, /refused \(ambiguous-marketplace-entry\)/u)
+      assert.match(ambiguous.stderr, new RegExp(`duplicate entry name "${name}"`, 'u'))
+      assert.equal(existsSync(box.lock), false)
+    }
   } finally {
     cleanup(box.dir)
   }

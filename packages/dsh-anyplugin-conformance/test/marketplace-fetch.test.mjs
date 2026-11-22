@@ -109,6 +109,15 @@ function writeCatalog(root, entries, name = 'fetch-marketplace') {
   return join(root, '.claude-plugin', 'marketplace.json')
 }
 
+function writeCodexCatalog(root, entries, name = 'codex-fetch') {
+  mkdirSync(join(root, '.agents', 'plugins'), { recursive: true })
+  writeFileSync(
+    join(root, '.agents', 'plugins', 'marketplace.json'),
+    `${JSON.stringify({ name, plugins: entries }, null, 2)}\n`,
+  )
+  return join(root, '.agents', 'plugins', 'marketplace.json')
+}
+
 // ---------------------------------------------------------------------------
 // git fixtures (local bare repositories; file:// only)
 // ---------------------------------------------------------------------------
@@ -593,6 +602,191 @@ test('a Codex url entry installs through the same grant and records dialect code
     const network = readGrants(box.grants).grants.filter((row) => row.capability === 'network')
     assert.equal(network.length, 1)
     assert.equal(network[0].artifactHash, `sha256:${sha}`)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex entry reads the Codex manifest, not a Claude manifest beside it', async () => {
+  const box = sandbox()
+  // Both manifests coexist. The catalog entry matches the Claude one, so a
+  // dialect-blind check would accept it; Codex reads the root manifest.
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'expected' })
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'actual',
+      version: '0.1.0',
+      description: 'The manifest Codex reads.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'dual-market',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    assert.match(refused.stderr, /fetched a plugin that calls itself "actual"/u)
+    // The mismatch is detected before `commitArtifact`: the cache is empty.
+    const cache = join(box.cache, 'dual-market')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a malformed manifest the dialect does not read cannot skip the name check', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'actual' })
+  // Codex reads the root manifest; the malformed Claude manifest is foreign.
+  writeFileSync(join(pkg, '.claude-plugin', 'plugin.json'), '{ this is not json\n')
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'actual',
+      version: '0.1.0',
+      description: 'The manifest Codex reads.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'malformed-foreign',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    const cache = join(box.cache, 'malformed-foreign')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex entry installs when its Claude sibling manifest disagrees', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'other' })
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'expected',
+      version: '0.1.0',
+      description: 'The manifest Codex reads.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'sibling-disagrees',
+    )
+    const installed = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    assert.equal(readInstalls(box.lock).plugins[0].dialect, 'codex')
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a remote --dialect mismatch names the layout before the reader runs', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, plugin: false })
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'expected',
+      version: '0.1.0',
+      description: 'A Codex-only plugin.',
+    })}\n`,
+  )
+  mkdirSync(join(pkg, 'skills', 'hello'), { recursive: true })
+  writeFileSync(join(pkg, 'skills', 'hello', 'SKILL.md'), '---\nname: hello\n---\n\nSay hello.\n')
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'remote-dialect',
+    )
+    const refused = await run(
+      box,
+      ['marketplace', 'install', 'expected', '--from', catalog, '--yes', '--dialect', 'claude-code'],
+      { NODE_EXTRA_CA_CERTS: tls.certPath },
+    )
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(dialect-mismatch\)/u)
+    assert.match(refused.stderr, /declares a codex plugin/u)
+    assert.equal(existsSync(box.lock), false)
   } finally {
     await server.close()
     cleanup(box.dir)

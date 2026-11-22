@@ -1260,6 +1260,7 @@ export async function installFromMarketplace(options: MarketplaceInstallOptions)
     marketplace: entry.marketplace,
     entry: entry.name,
     name: entry.name,
+    dialect,
     source: remote,
     root,
     cacheRoot,
