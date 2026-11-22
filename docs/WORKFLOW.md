@@ -15,8 +15,12 @@ merge, which wastes the worker's whole branch.
 
 Only the master merges, after the review verdicts. A worker or the auditor pushes
 its own branch. `main` is protected: PRs only, the `verify` check must be green,
-history is linear (squash), no force pushes. Once #163 lands, a master merge also
-pins the reviewed head.
+history is linear (squash), no force pushes. Every `gh pr merge` must carry
+`--match-head-commit <40-hex>` naming the reviewed head; the guard refuses an
+unpinned merge for every role. The pin prevents omission, not review: it makes
+"what was reviewed" falsifiable, but it does not prove the head was reviewed.
+The guard rule is dormant until the guard is installed (F1/F2); the obligation
+above stands either way.
 
 The auditor is a separate role on purpose. It reads the queue and the
 transcripts, writes findings, and pushes mechanism fixes; it does not implement a

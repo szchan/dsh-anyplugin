@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 
@@ -485,6 +485,54 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
     'accept',
   )
   assert.equal(ran, 1)
+})
+
+test('the installed guard denies an unpinned merge and allows a pinned one', async () => {
+  // The dry-run table proves the policy; this proves the installed block names
+  // a plugin that actually mounts the listener. A dormant finding needs that
+  // second observation: the rule bites wherever the guard is loaded.
+  const composition = composeGuard({
+    repoRoot: checkout,
+    worktrees: [{ path: checkout, branch: 'main', main: true }],
+  })
+  const profile = mkdtempSync(join(tmpdir(), 'guard-install-merge-'))
+  try {
+    const patchPath = join(profile, 'cordis.patch.yml')
+    writeFileSync(patchPath, applyBlock('', composition.block))
+    const installed = readBlock(readFileSync(patchPath, 'utf8'))
+    assert.equal(installed.present, true)
+    const source = installed.block.match(/name:\s*"([^"]+)"/u)?.[1]
+    assert.equal(source, composition.source, 'the installed block names the guard source')
+    const plugin = await import(pathToFileURL(source).href)
+
+    const { ctx, listeners } = harness()
+    await plugin.apply(ctx, composition.config)
+    const listener = listeners.get('tools/pre-execute')[0]
+    assert.equal(typeof listener, 'function')
+
+    const rootAgent = { session: { header: { id: 'root-1', cwd: repo } } }
+    let ran = 0
+    const next = async () => {
+      ran += 1
+      return { kind: 'accept' }
+    }
+    const call = (command) => ({ callId: 1, name: 'bash', arguments: { command }, agent: rootAgent })
+
+    const denied = await listener(call('gh pr merge 161 --squash'), next)
+    assert.equal(denied.kind, 'deny')
+    assert.equal(ran, 0, 'the host never executes a denied call')
+    assert.match(denied.reason, /--match-head-commit <40-hex reviewed head>/u)
+    assert.match(denied.reason, /cannot know which commit was reviewed/u)
+
+    const allowed = await listener(
+      call(`gh pr merge 161 --squash --match-head-commit ${reviewedHead}`),
+      next,
+    )
+    assert.equal(allowed.kind, 'accept')
+    assert.equal(ran, 1)
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+  }
 })
 
 test('the brief is appended to the worker continuation once, and never to the root', async () => {

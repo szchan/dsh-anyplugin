@@ -1515,7 +1515,9 @@ refspec that is not main>`, so a destination of `main`/`master`, **every bare
 refused (`remote.<name>.push` and `push.default` can retarget a bare push after
 it was read); every `gh pr merge` must carry `--match-head-commit <40-hex>`
 (the root is the merge path; a worker may not merge at all), and a raw
-`gh api …/merge` is refused because it has no such flag; writes
+`gh api …/merge` is refused because it has no such flag (the rule is tested at
+the installed mount; it is dormant wherever `guard:status` reports
+not-installed, F1); writes
 outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
@@ -2919,7 +2921,10 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   - One guard rule rides this seam: a `gh pr merge` is refused unless it
     carries `--match-head-commit <40-hex>`. That is omission prevention, not
     review verification — the guard can see that a merge names a head, not
-    that the head was the one the reviewer read.
+    that the head was the one the reviewer read. The installed block is loaded
+    in `guard.test.mjs` and denied/allowed through its `tools/pre-execute`
+    listener; the rule is dormant where `guard:status` reports not-installed
+    (F1).
   - Consequences: the hook arm maps to these waterfalls instead of
     `ctx.tools.guard` (guard is monotonic denial only, no result, no
     injection), the interception kernel's `observe` mode matches the waterfall
