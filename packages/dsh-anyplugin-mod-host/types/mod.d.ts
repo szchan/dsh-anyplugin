@@ -7,12 +7,17 @@
 // Ledger: fixtures/mods/coverage.json (D55) — 9 served namespaces,
 // 26 served members, 7 refused members.
 //
-// This file is the served subset of `$`: `ModDollar` declares exactly the
-// members the ledger says the host serves, with the pin's own signature text,
-// so a served member without a shape fails generation instead of surfacing at
-// runtime. It is not a promise about the pin's whole surface: absent members
-// are named nowhere here, and events, elements, render sites and matchers are
-// counted separately by the ledger, not declared in this file.
+// This file is the repository-side guard against shape drift: `ModDollar`
+// declares exactly the members the ledger says the host serves, with the pin's
+// own signature text, so a served member without a shape fails generation
+// instead of merging silently. It is not shipped and not author-facing:
+// shipping it would require either redistributing Anthropic's pinned
+// declaration (D14 forbids vendoring the artifact, and the licence does not
+// grant redistribution) or a derived inline subset whose shapes are no longer
+// copied verbatim (a different claim under D57). Author-facing types are
+// planned. It is not a promise about the pin's whole surface either: absent
+// members are named nowhere here, and events, elements, render sites and
+// matchers are counted separately by the ledger, not declared in this file.
 //
 // The named types in the signatures are imported from `claude-code` (the pin is
 // their specification); their bodies are not reproduced here.

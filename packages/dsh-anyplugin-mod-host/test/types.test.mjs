@@ -1,6 +1,7 @@
-// The served mod type surface (#144): `types/mod.d.ts` is generated from the
+// The internal mod type surface (#144): `types/mod.d.ts` is generated from the
 // pinned declaration and the mod ledger, so it states only what the host
-// serves, and states it in the pin's own words.
+// serves, and states it in the pin's own words. It is repository-side only: the
+// test proves the shape guard, not a shipped author-facing surface.
 //
 // The test never rewrites the committed file: it regenerates into a temp
 // directory and compares. A skip here would report "0 skipped" while checking
@@ -15,7 +16,12 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { ledgerPath, matchingIndex, parseDeclaration, parseMembers, readDeclaration } from '../../../scripts/mod-coverage.mjs'
-import { renderModTypes, typesPath } from '../../../scripts/gen-mod-types.mjs'
+import {
+  assertImportsCoverTypeReferences,
+  localTypeParameters,
+  renderModTypes,
+  typesPath,
+} from '../../../scripts/gen-mod-types.mjs'
 
 const generator = fileURLToPath(new URL('../../../scripts/gen-mod-types.mjs', import.meta.url))
 const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'))
@@ -117,6 +123,21 @@ test('every refused member is named once, only in the documented error union', (
       index = committed.indexOf(namespace, index + 1)
     }
   }
+
+  // A refused member must not also be declared in `ModDollar`. The dotted
+  // string never appears there, so this has to compare the bare member names.
+  const declared = declaredNamespaces(committed)
+  for (const name of expected.keys()) {
+    const dot = name.indexOf('.')
+    assert.notEqual(dot, -1, `${name} is not a dotted member`)
+    const namespace = name.slice(0, dot)
+    const member = name.slice(dot + 1)
+    assert.equal(
+      declared.get(namespace)?.has(member) ?? false,
+      false,
+      `refused member ${name} is also declared under ${namespace}`,
+    )
+  }
 })
 
 test('the header states the pin, the declaration hash, the ledger, and that the file is generated', () => {
@@ -128,6 +149,8 @@ test('the header states the pin, the declaration hash, the ledger, and that the 
   assert.ok(committed.includes('npm run gen:types'), 'generation command missing')
   assert.match(committed, /generated/i)
   assert.match(committed, /do not edit/i)
+  assert.match(committed, /not shipped and not author-facing/i)
+  assert.match(committed, /Author-facing types are[\s\S]*planned/i)
 })
 
 test('the imported helper types are all declarations in the pin', () => {
@@ -159,6 +182,42 @@ test('generation fails naming a member whose signature references an unknown typ
     () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
     /clock\.after[\s\S]*MysteryCall|MysteryCall[\s\S]*clock\.after/,
   )
+})
+
+test('generation fails when the ledger lists a refused member as served', () => {
+  const mutated = structuredClone(ledger)
+  mutated.served.methods.push('ui.ask')
+  assert.throws(() => renderModTypes({ ledger: mutated, verify: false }), /ui\.ask/)
+})
+
+test('generation fails on a lowercase type the pin does not declare', () => {
+  const declaration = readDeclaration()
+  const text = declaration.text.replace('after: TimerCall;', 'after: mysteryCall;')
+  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
+  assert.throws(
+    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
+    /clock\.after[\s\S]*mysteryCall|mysteryCall[\s\S]*clock\.after/,
+  )
+})
+
+test('generation fails on a signature with no type text', () => {
+  const declaration = readDeclaration()
+  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd: ;')
+  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
+  assert.throws(() => renderModTypes({ declaration: { ...declaration, text }, verify: false }), /session\.cwd/)
+})
+
+test('every type a signature references is imported (reverse closure)', () => {
+  const declarationText = readDeclaration().text
+  assert.doesNotThrow(() => assertImportsCoverTypeReferences(committed, declarationText))
+  const dropped = committed.replace('\n  CommandSpec,', '')
+  assert.notEqual(dropped, committed, 'CommandSpec was not in the import block')
+  assert.throws(() => assertImportsCoverTypeReferences(dropped, declarationText), /CommandSpec/)
+})
+
+test('method-form generics declare their own parameters', () => {
+  assert.deepEqual([...localTypeParameters('cwd<T>(handler: T): T;')], ['T'])
+  assert.deepEqual([...localTypeParameters('resolve: <E extends ResolveInput>(e: E) => E;')], ['E'])
 })
 
 test('generation refuses a declaration that does not match the ledger pin', () => {

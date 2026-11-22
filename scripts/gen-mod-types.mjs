@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generate the mod-facing type surface (#144) from the pinned declaration.
+// Generate the internal mod type surface (#144) from the pinned declaration.
 //
 // `fixtures/mods/coverage.json` (D55) is the authority for what `$` serves; the
 // pin's `mods/types/claude-code.d.ts` is the authority for each signature. This
@@ -8,7 +8,15 @@
 // pin's own signature text, plus the refused members as a closed error-code
 // union. A served member whose signature it cannot copy fails generation naming
 // the member — it is never guessed, because a made-up type is a lie the
-// compiler would repeat to every mod author.
+// compiler would repeat.
+//
+// The file is repository-side only: it is not shipped in the package and is not
+// author-facing. Shipping it would require either redistributing Anthropic's
+// pinned declaration (D14 forbids vendoring the artifact, and the licence does
+// not grant redistribution) or a derived inline subset whose shapes are no
+// longer copied verbatim (a different claim under D57). Until that choice is
+// ratified, author-facing types are `planned`; this file exists to stop shape
+// drift in the repository.
 //
 // The file imports the named helper types from the pinned `claude-code` module.
 // It does not vendor the pin's type library: that library's `OpValueOf` and
@@ -65,6 +73,7 @@ const BUILTIN_TYPES = new Set([
   'Lowercase',
   'Map',
   'Math',
+  'NoInfer',
   'NonNullable',
   'Number',
   'Object',
@@ -74,6 +83,7 @@ const BUILTIN_TYPES = new Set([
   'Pick',
   'Promise',
   'PromiseLike',
+  'PropertyKey',
   'Readonly',
   'ReadonlyArray',
   'ReadonlyMap',
@@ -149,11 +159,75 @@ function refusedSet(ledger) {
   return entries
 }
 
-/** The pin's top-level type-parameter names, e.g. `E` in `ui.resolve`. */
-function localTypeParameters(source) {
-  const colon = source.indexOf(':')
-  if (colon === -1) return new Set()
-  const rest = source.slice(colon + 1).trimStart()
+/** Keywords and built-in primitives that are never imported or declared. */
+const TYPE_KEYWORDS = new Set([
+  'any',
+  'asserts',
+  'bigint',
+  'boolean',
+  'extends',
+  'false',
+  'infer',
+  'is',
+  'keyof',
+  'never',
+  'new',
+  'null',
+  'number',
+  'object',
+  'readonly',
+  'satisfies',
+  'string',
+  'symbol',
+  'this',
+  'true',
+  'typeof',
+  'undefined',
+  'unknown',
+  'void',
+])
+
+/** The index of the first colon outside strings, brackets, braces and parens. */
+function topLevelColon(text) {
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === "'" || c === '"') {
+      i++
+      while (i < text.length && text[i] !== c) {
+        if (text[i] === '\\') i++
+        i++
+      }
+      continue
+    }
+    if (c === '`') {
+      i++
+      while (i < text.length && text[i] !== '`') {
+        if (text[i] === '\\') i++
+        i++
+      }
+      continue
+    }
+    if (c === '<' || c === '(' || c === '[' || c === '{') depth++
+    else if (c === '>' || c === ')' || c === ']' || c === '}') depth--
+    else if (c === ':' && depth === 0) return i
+  }
+  return -1
+}
+
+/**
+ * The type parameters a signature declares: `<E extends X>` either after the
+ * member's colon (property form) or directly after its name (method form).
+ */
+export function localTypeParameters(source) {
+  let rest = source.trimStart()
+  const name = /^[A-Za-z_$][\w$]*/.exec(rest)
+  const afterName = name === null ? '' : rest.slice(name[0].length).trimStart()
+  if (afterName.startsWith('<')) rest = afterName
+  else {
+    const colon = topLevelColon(rest)
+    if (colon !== -1) rest = rest.slice(colon + 1).trimStart()
+  }
   if (!rest.startsWith('<')) return new Set()
   let depth = 0
   let current = ''
@@ -184,7 +258,93 @@ function localTypeParameters(source) {
   return names
 }
 
-const uppercaseReferences = (source) => new Set(source.match(/\b[A-Z][A-Za-z0-9_$]*\b/g) ?? [])
+const identifierStart = (c) => /[A-Za-z_$]/.test(c)
+const identifierPart = (c) => /[\w$]/.test(c)
+
+/** The next non-space character at or after `from`, or '' at end of text. */
+function nextSignificant(text, from) {
+  for (let i = from; i < text.length; i++) if (!/\s/.test(text[i])) return text[i]
+  return ''
+}
+
+/**
+ * Identifiers used in type position, e.g. `TimerCall` in `after: TimerCall;` or
+ * `mysteryCall` in a doctored `after: mysteryCall;`. It deliberately does not
+ * rely on an uppercase convention: an unresolved lowercase type is the same lie
+ * as an unresolved uppercase one. Names followed by `:` or `?` are parameters
+ * or property keys, not type references, so they are skipped.
+ */
+export function typeReferences(source) {
+  const references = new Set()
+  const colon = topLevelColon(source)
+  const from = colon === -1 ? 0 : colon + 1
+  let previous = ''
+  for (let i = from; i < source.length; i++) {
+    const c = source[i]
+    if (c === "'" || c === '"') {
+      i++
+      while (i < source.length && source[i] !== c) {
+        if (source[i] === '\\') i++
+        i++
+      }
+      previous = 'literal'
+      continue
+    }
+    if (c === '`') {
+      i++
+      while (i < source.length && source[i] !== '`') {
+        if (source[i] === '\\') i++
+        i++
+      }
+      previous = 'literal'
+      continue
+    }
+    if (/\s/.test(c)) continue
+    if (c === '=' && source[i + 1] === '>') {
+      previous = '=>'
+      i++
+      continue
+    }
+    if (identifierStart(c)) {
+      let end = i + 1
+      while (end < source.length && identifierPart(source[end])) end++
+      const word = source.slice(i, end)
+      const next = nextSignificant(source, end)
+      const inTypePosition =
+        previous === '' ||
+        previous === ':' ||
+        previous === '|' ||
+        previous === '&' ||
+        previous === '<' ||
+        previous === ',' ||
+        previous === '=>' ||
+        previous === 'extends' ||
+        previous === 'keyof' ||
+        previous === 'typeof' ||
+        previous === 'readonly' ||
+        previous === '?' ||
+        previous === 'as' ||
+        previous === 'satisfies'
+      if (inTypePosition && next !== ':' && next !== '?') references.add(word)
+      previous = word
+      i = end - 1
+      continue
+    }
+    previous = c
+  }
+  return references
+}
+
+/** The type text of a signature, or a failure when it has none. */
+function signatureTypeText(source, label) {
+  const text = source.replace(/;\s*$/, '').trim()
+  const colon = topLevelColon(text)
+  const type = colon === -1 ? '' : text.slice(colon + 1).trim()
+  if (type === '') {
+    fail(`served member ${label} was extracted as ${JSON.stringify(source)} with no type text; refusing to emit an untyped member`)
+  }
+  return type
+}
 
 /**
  * Check the ledger's pin against the declaration it names and the checked-out
@@ -242,6 +402,25 @@ export function renderModTypes(options = {}) {
 
   const served = servedSet(ledger)
   const refused = refusedSet(ledger)
+
+  // Served and refused must partition the pin. If the ledger lists a member in
+  // both, the file would declare it and refuse it at once — a lie in both
+  // directions — so fail before rendering anything.
+  const servedNames = new Set()
+  for (const [namespace, members] of served) {
+    for (const member of members) servedNames.add(`${namespace}.${member}`)
+  }
+  for (const { name } of refused) {
+    if (servedNames.has(name)) {
+      fail(`member ${name} is listed as both served and refused in the ledger; the two sets must not overlap`)
+    }
+  }
+  for (const namespace of ledger.refused.namespaces) {
+    if (served.has(namespace)) {
+      fail(`namespace ${namespace} is listed as both served and refused in the ledger; the two sets must not overlap`)
+    }
+  }
+
   const parsed = parseDeclaration(declaration.text)
 
   const core = parsed.declaration('CoreEngineInterface')
@@ -269,11 +448,12 @@ export function renderModTypes(options = {}) {
         fail(`served member ${qualified} was extracted as ${JSON.stringify(source)}; refusing to emit text that does not start with the member`)
       }
       if (!source.endsWith(';')) source += ';'
+      signatureTypeText(source, qualified)
       lines.push(`    ${source}`)
 
       const locals = localTypeParameters(source)
-      for (const reference of uppercaseReferences(source)) {
-        if (locals.has(reference) || BUILTIN_TYPES.has(reference)) continue
+      for (const reference of typeReferences(source)) {
+        if (locals.has(reference) || BUILTIN_TYPES.has(reference) || TYPE_KEYWORDS.has(reference)) continue
         const users = references.get(reference) ?? new Set()
         users.add(qualified)
         references.set(reference, users)
@@ -306,12 +486,17 @@ export function renderModTypes(options = {}) {
     `// Ledger: ${ledgerRelativePath} (D55) — ${served.size} served namespaces,`,
     `// ${servedMembers} served members, ${refused.length} refused members.`,
     '//',
-    '// This file is the served subset of `$`: `ModDollar` declares exactly the',
-    "// members the ledger says the host serves, with the pin's own signature text,",
-    '// so a served member without a shape fails generation instead of surfacing at',
-    '// runtime. It is not a promise about the pin\'s whole surface: absent members',
-    '// are named nowhere here, and events, elements, render sites and matchers are',
-    '// counted separately by the ledger, not declared in this file.',
+    '// This file is the repository-side guard against shape drift: `ModDollar`',
+    "// declares exactly the members the ledger says the host serves, with the pin's",
+    '// own signature text, so a served member without a shape fails generation',
+    '// instead of merging silently. It is not shipped and not author-facing:',
+    "// shipping it would require either redistributing Anthropic's pinned",
+    '// declaration (D14 forbids vendoring the artifact, and the licence does not',
+    '// grant redistribution) or a derived inline subset whose shapes are no longer',
+    '// copied verbatim (a different claim under D57). Author-facing types are',
+    '// planned. It is not a promise about the pin\'s whole surface either: absent',
+    '// members are named nowhere here, and events, elements, render sites and',
+    '// matchers are counted separately by the ledger, not declared in this file.',
     '//',
     '// The named types in the signatures are imported from `claude-code` (the pin is',
     '// their specification); their bodies are not reproduced here.',
@@ -353,8 +538,51 @@ export function renderModTypes(options = {}) {
   ]
 
   const rendered = [...header, ...refusedUnion].join('\n')
+  assertImportsCoverTypeReferences(rendered, declaration.text)
   assertRendered(rendered, ledger)
   return rendered
+}
+
+/**
+ * The reverse closure check: every type a `ModDollar` signature references must
+ * be imported. The forward check (every imported name is declared by the pin)
+ * cannot see a name that was dropped from the block, so both are needed.
+ */
+export function assertImportsCoverTypeReferences(text, declarationText) {
+  const parsed = parseDeclaration(declarationText)
+  const block = /^import type \{\n([\s\S]*?)\n\} from 'claude-code'$/m.exec(text)
+  if (block === null) fail('generated file has no `claude-code` import block')
+  const imported = new Set(
+    block[1]
+      .split('\n')
+      .map((line) => line.trim().replace(/,$/, ''))
+      .filter((line) => line !== ''),
+  )
+
+  const marker = 'export interface ModDollar {'
+  const start = text.indexOf(marker)
+  if (start === -1) fail('generated file has no ModDollar interface')
+  const open = start + marker.length - 1
+  const close = matchingIndex(text, open)
+  if (close === -1) fail('generated file has an unterminated ModDollar interface')
+
+  for (const namespaceMember of parseMembers(`{${text.slice(open + 1, close)}}`)) {
+    if (namespaceMember.name === undefined || typeof namespaceMember.type !== 'string') continue
+    for (const entry of parseMembers(namespaceMember.type)) {
+      if (entry.name === undefined || typeof entry.type !== 'string') continue
+      const source = `${entry.name}: ${entry.type};`
+      const locals = localTypeParameters(source)
+      for (const reference of typeReferences(source)) {
+        if (locals.has(reference) || BUILTIN_TYPES.has(reference) || TYPE_KEYWORDS.has(reference)) continue
+        if (parsed.declaration(reference) === undefined) {
+          fail(`${namespaceMember.name}.${entry.name} references ${reference}, which the pin does not declare`)
+        }
+        if (!imported.has(reference)) {
+          fail(`${namespaceMember.name}.${entry.name} references ${reference}, which the import block does not import`)
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -395,6 +623,18 @@ function assertRendered(rendered, ledger) {
     }
   }
 
+  const refusedNames = [...ledger.refused.methods, ...ledger.refused.properties].map((entry) =>
+    typeof entry === 'string' ? entry : entry?.name,
+  )
+  for (const name of refusedNames) {
+    const dot = name.indexOf('.')
+    if (dot === -1) continue
+    const namespace = name.slice(0, dot)
+    if (declaredNamespaces.get(namespace)?.has(name.slice(dot + 1))) {
+      fail(`rendered output declares refused member ${name} in ModDollar; the served and refused sets must not overlap`)
+    }
+  }
+
   const marker = 'export interface ModRefusedMemberCodes {'
   const start = rendered.indexOf(marker)
   if (start === -1) fail('rendered output has no ModRefusedMemberCodes union')
@@ -402,9 +642,6 @@ function assertRendered(rendered, ledger) {
   const close = matchingIndex(rendered, open)
   if (close === -1) fail('rendered output has an unterminated ModRefusedMemberCodes union')
 
-  const refusedNames = [...ledger.refused.methods, ...ledger.refused.properties].map((entry) =>
-    typeof entry === 'string' ? entry : entry?.name,
-  )
   for (const name of refusedNames) {
     let index = rendered.indexOf(name)
     let count = 0

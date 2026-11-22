@@ -968,13 +968,19 @@ What a faithful host needs, in dependency order:
    six `ui.*` members the ledger calls are served by the headless sink above);
    then http / mcp / model / agent / audio / theme … from the pinned
    `claude-code.d.ts`;
-5. **type generation** — *served subset landed* (#144): `npm run gen:types`
-   writes `packages/dsh-anyplugin-mod-host/types/mod.d.ts` from the pin and the
-   ledger. It declares only the ledger's served `$` members, with the pin's own
-   signature text (so `$.session.cwd` is `() => Promise<string>`, #138), imports
-   the named helper types from the pin instead of vendoring them, and turns the
-   refused members into one closed `ERR_MOD_HOST_*` union. It names no absent
-   member: it is the served subset, not a promise about the pin's whole surface.
+5. **type generation** — *internal served subset landed* (#144): `npm run
+   gen:types` writes `packages/dsh-anyplugin-mod-host/types/mod.d.ts` from the
+   pin and the ledger. It declares only the ledger's served `$` members, with the
+   pin's own signature text (so `$.session.cwd` is `() => Promise<string>`,
+   #138), imports the named helper types from the pin instead of vendoring them,
+   and turns the refused members into one closed `ERR_MOD_HOST_*` union. It
+   names no absent member. The file is repository-side only — not shipped and
+   not author-facing: shipping it would require either redistributing
+   Anthropic's pinned declaration (D14 forbids vendoring the artifact, and the
+   licence does not grant redistribution) or a derived inline subset whose
+   shapes are no longer copied verbatim (a different claim under D57).
+   Author-facing types are `planned`; this file is the guard against shape drift
+   meanwhile.
 
 Items 3 and 4 are where DSH will fight back: the element runtime needs a
 terminal-grade layout model, and the session/model/tool bridges need the
