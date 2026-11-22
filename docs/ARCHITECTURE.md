@@ -1513,11 +1513,13 @@ a push is accepted only as `git push [-u|--force-with-lease] origin <one
 refspec that is not main>`, so a destination of `main`/`master`, **every bare
 `git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
 refused (`remote.<name>.push` and `push.default` can retarget a bare push after
-it was read); every `gh pr merge` must carry `--match-head-commit <40-hex>`
-(the root is the merge path; a worker may not merge at all), and a raw
-`gh api …/merge` is refused because it has no such flag (the rule is tested at
-the installed mount; it is dormant wherever `guard:status` reports
-not-installed, F1); writes
+it was read); every modelled `gh pr merge` must carry `--match-head-commit <40-hex>`
+(the root is the merge path; a worker may not merge at all), including when
+`-R`/`--repo` sits between `pr` and `merge` or a backslash-newline joins the
+words; a `gh api` request whose path is the live `…/pulls/<n>/merge` route is
+refused whatever the method, because it has no pin flag; a help request is not a
+merge (the rule is tested at the installed mount; it is dormant wherever
+`guard:status` reports not-installed, F1); writes
 outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
@@ -1625,12 +1627,12 @@ outside the guard (the guard models the tool call, not the filesystem),
 `sudo` on a host where it succeeds without a password, a launcher spelling the
 command-position skipper does not model, any git feature outside the
 modelled subcommands, a merge through a client the guard does not model
-(`curl`, a script, a `gh` alias or wrapper, or a raw GraphQL
-`mergePullRequest`), and `--auto` with a valid pin (gh forwards the pin as
-`expectedHeadOid`; when GitHub evaluates it for a deferred merge is GitHub's
-behaviour, not the guard's). The merge rule is omission prevention, not review
-verification: the guard can see that a merge names a head, not that the head
-was the one the reviewer read. The guard decision is recorded on merge; this
+(`curl`, a script, inline interpreters such as `node -e` and `python3 -c`, a
+`gh` alias or wrapper, or a raw GraphQL `mergePullRequest`), and `--auto` with
+a valid pin (gh forwards the pin as `expectedHeadOid`; when GitHub evaluates it
+for a deferred merge is GitHub's behaviour, not the guard's). The merge rule is
+omission prevention, not review verification: the guard can see that a merge
+names a head, not that the head was the one the reviewer read. The guard decision is recorded on merge; this
 paragraph is its framing, not a second decision. Branch protection, the DSH
 file sandbox and CI are the boundary.
 
@@ -2918,11 +2920,13 @@ kernel would have to be rewritten — and would make mods structurally impossibl
     replaced (`tools/post-execute cannot replace the value of a failed
     result`), and a standalone `ctx.tools.execute` call carries no `agent`, so
     the payload's agent-derived fields are absent rather than invented.
-  - One guard rule rides this seam: a `gh pr merge` is refused unless it
-    carries `--match-head-commit <40-hex>`. That is omission prevention, not
-    review verification — the guard can see that a merge names a head, not
-    that the head was the one the reviewer read. The installed block is loaded
-    in `guard.test.mjs` and denied/allowed through its `tools/pre-execute`
+  - One guard rule rides this seam: a modelled `gh pr merge` (including
+    `-R`/`--repo` between `pr` and `merge`, a value flag that could swallow the
+    pin, and a backslash-newline continuation) is refused unless it carries
+    `--match-head-commit <40-hex>`. That is omission prevention, not review
+    verification — the guard can see that a merge names a head, not that the
+    head was the one the reviewer read. The installed block is loaded in
+    `guard.test.mjs` and denied/allowed through its `tools/pre-execute`
     listener; the rule is dormant where `guard:status` reports not-installed
     (F1).
   - Consequences: the hook arm maps to these waterfalls instead of

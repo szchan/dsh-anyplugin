@@ -183,12 +183,102 @@ test('a worker cannot merge even with a pin', () => {
   assert.equal(shell('gh pr view 82', worker).kind, 'allow')
 })
 
+test('a value flag cannot swallow the merge pin', () => {
+  for (const [short, long] of [
+    ['-b', '--body'],
+    ['-F', '--body-file'],
+    ['-t', '--subject'],
+    ['-A', '--author-email'],
+    ['-R', '--repo'],
+  ]) {
+    for (const flag of [short, long]) {
+      for (const form of [flag, `${flag}=`]) {
+        const command =
+          form === `${flag}=`
+            ? `gh pr merge 82 ${form}--match-head-commit=${reviewedHead}`
+            : `gh pr merge 82 ${form} --match-head-commit=${reviewedHead}`
+        const denied = shell(command, root)
+        assert.equal(denied.kind, 'deny', command)
+        assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+        assert.match(denied.reason, /consumed as the value of/u, command)
+      }
+    }
+  }
+  assert.equal(shell(`gh pr merge 82 --body text --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+  assert.equal(shell(`gh pr merge 82 --body=text --match-head-commit=${reviewedHead}`, root).kind, 'allow')
+})
+
+test('a help request is not a merge', () => {
+  for (const agent of [root, worker]) {
+    for (const flag of ['--help', '-h', '--help=true', '-h=true']) {
+      assert.equal(shell(`gh pr merge 82 ${flag}`, agent).kind, 'allow', `${agent.id} ${flag}`)
+    }
+  }
+  const missing = shell('gh pr merge 82 --help=false', root)
+  assert.equal(missing.kind, 'deny')
+  assert.equal(missing.rule, 'gh-pr-merge-pin')
+  assert.equal(shell(`gh pr merge 82 --help=false --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+  // `--help` as body text is not a help request; the real pin is still checked.
+  assert.equal(shell('gh pr merge 82 --body --help', root).kind, 'deny')
+  assert.equal(shell(`gh pr merge 82 --body --help --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+})
+
+test('a merge is judged at the gh command position', () => {
+  for (const agent of [root, worker]) {
+    assert.equal(shell('gh pr list --search pr merge', agent).kind, 'allow')
+    assert.equal(shell('gh pr view 82 --json merge', agent).kind, 'allow')
+  }
+  assert.equal(shell('gh -R szchan/dsh-anyplugin pr merge 82', root).rule, 'gh-pr-merge-pin')
+})
+
+test('a persistent repo flag cannot hide the merge subcommand', () => {
+  for (const command of [
+    'gh pr -R szchan/dsh-anyplugin merge 82',
+    'gh pr --repo szchan/dsh-anyplugin merge 82',
+    'gh pr --repo=szchan/dsh-anyplugin merge 82',
+    'gh pr -Rszchan/dsh-anyplugin merge 82',
+    'gh pr -R=szchan/dsh-anyplugin merge 82',
+    'gh pr --hostname enterprise.example merge 82',
+    'gh --hostname enterprise.example pr merge 82',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+    const workerDenied = shell(command, worker)
+    assert.equal(workerDenied.kind, 'deny', command)
+    assert.equal(workerDenied.rule, 'gh-pr-merge-worker', command)
+  }
+  assert.equal(
+    shell(`gh pr -R szchan/dsh-anyplugin merge 82 --match-head-commit ${reviewedHead}`, root).kind,
+    'allow',
+  )
+})
+
+test('a line continuation cannot hide a merge or a main push', () => {
+  const continuation = (left, right) => left + '\\' + '\n' + right
+  const merge = continuation('gh pr ', 'merge 161 --squash')
+  assert.equal(shell(merge, root).rule, 'gh-pr-merge-pin')
+  assert.equal(shell(merge, worker).rule, 'gh-pr-merge-worker')
+  assert.equal(shell(continuation('git push origin m', 'ain'), worker).rule, 'git-push-main')
+  assert.equal(shell(continuation('g', 'it push origin ticket/80'), worker).kind, 'allow')
+  assert.equal(
+    shell(continuation('gh pr ', `merge 161 --squash --match-head-commit ${reviewedHead}`), root).kind,
+    'allow',
+  )
+})
+
 test('a raw gh api merge is refused because it cannot carry the pin', () => {
   for (const command of [
     'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge',
     'gh api -XPUT repos/szchan/dsh-anyplugin/pulls/82/merge',
     'gh api --method POST repos/szchan/dsh-anyplugin/pulls/82/merge',
     'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge?merge_method=squash',
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge#fragment',
+    'gh api -X PUT https://api.github.com/repos/szchan/dsh-anyplugin/pulls/82/merge#fragment',
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge?x=1#fragment',
+    'gh api -f merge_method=squash repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api --raw-field merge_method=squash repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api repos/szchan/dsh-anyplugin/pulls/82/merge',
   ]) {
     const denied = shell(command, root)
     assert.equal(denied.kind, 'deny', command)

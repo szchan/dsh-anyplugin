@@ -18,7 +18,7 @@
  *    `--exec`, `send-pack` and `update-ref` are refused by name. A push is
  *    never inferred from configuration.
  * 3. `gh-pr-merge-worker` / `gh-pr-merge-pin` — a worker may open a PR, never
- *    merge one; every merge that is allowed must carry
+ *    merge one; every modelled merge that is allowed must carry
  *    `--match-head-commit <40-hex>`. The pin prevents the merge from omitting
  *    the head; it does not prove that the head was reviewed.
  * 4. `write-outside-worktree` — a worker writes inside the worktree it was
@@ -453,65 +453,207 @@ type MergePath = 'pr' | 'api'
 
 const MERGE_PIN_FLAG = '--match-head-commit'
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/iu
-const MERGE_API_PATH = /(?:^|\/)pulls\/[^/]+\/merge(?:\?.*)?$/u
+// `gh` normalises a fragment away before sending the request, so a fragment
+// is just as live as a query string; a trailing slash is not the route.
+const MERGE_API_PATH = /(?:^|\/)pulls\/[^/]+\/merge(?:[?#].*)?$/u
+// `gh pr merge` string flags. A pin written as the value of one of these is
+// body text, not `expectedHeadOid`, so it must not count.
+const MERGE_VALUE_FLAGS = new Set([
+  '-b',
+  '--body',
+  '-F',
+  '--body-file',
+  '-t',
+  '--subject',
+  '-A',
+  '--author-email',
+  '-R',
+  '--repo',
+])
+const MERGE_SHORT_VALUE_FLAGS = new Set(['b', 'F', 't', 'A', 'R'])
+const TRUE_FLAG_VALUE = /^(?:true|1|t)$/iu
 
-/** The position of `pr merge` in `gh`'s arguments, or -1. */
-function mergeSubcommandAt(head: string[]): number {
-  return head.findIndex((token, index) => index > 0 && token === 'pr' && head[index + 1] === 'merge')
-}
-
-/** `gh api repos/o/r/pulls/<n>/merge` with an explicit PUT/POST. */
-function apiMerge(tokens: string[]): boolean {
-  if (!tokens.some((token) => MERGE_API_PATH.test(token))) return false
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]
-    if (token === '-X' || token === '--method') {
-      if (/^(?:PUT|POST)$/iu.test(tokens[index + 1] ?? '')) return true
+/** The position of the `gh` command word after its global flags, or -1. */
+function ghCommandAt(head: string[]): number {
+  let index = 1
+  while (index < head.length) {
+    const token = head[index]
+    if (token === '--') return index + 1
+    if (token === '-R' || token === '--repo' || token === '--hostname') {
+      index += 2
       continue
     }
-    if (/^--method=(?:PUT|POST)$/iu.test(token)) return true
-    if (/^-X=?(?:PUT|POST)$/iu.test(token)) return true
+    if (
+      token.startsWith('--repo=') ||
+      token.startsWith('--hostname=') ||
+      (token.startsWith('-R') && token !== '-R')
+    ) {
+      index += 1
+      continue
+    }
+    if (token.startsWith('-')) {
+      index += 1
+      continue
+    }
+    return index
   }
-  return false
+  return -1
+}
+
+/**
+ * The position of the `merge` word in `gh pr [-R ...] merge`, or -1. `-R` and
+ * `--repo` are persistent flags, so `gh pr -R owner/repo merge` is the same
+ * merge as `gh pr merge`.
+ */
+function mergeSubcommandAt(head: string[]): number {
+  const command = ghCommandAt(head)
+  if (command < 0 || head[command] !== 'pr') return -1
+  let index = command + 1
+  while (index < head.length) {
+    const token = head[index]
+    if (token === 'merge') return index
+    if (token === '-R' || token === '--repo' || token === '--hostname') {
+      index += 2
+      continue
+    }
+    if (
+      token.startsWith('--repo=') ||
+      token.startsWith('--hostname=') ||
+      (token.startsWith('-R') && token !== '-R')
+    ) {
+      index += 1
+      continue
+    }
+    return -1
+  }
+  return -1
+}
+
+/** `gh api repos/o/r/pulls/<n>/merge`, whatever the HTTP method. */
+function apiMerge(tokens: string[]): boolean {
+  return tokens.some((token) => MERGE_API_PATH.test(token))
 }
 
 /** Which modelled `gh` merge path the segment is, if any. */
 function ghMergePath(tokens: string[]): MergePath | undefined {
   const head = stripPrefix(tokens)
   if (head.length === 0 || baseCommand(head[0]) !== 'gh') return undefined
-  if (mergeSubcommandAt(head) > 0) return 'pr'
-  if (head.includes('api') && apiMerge(head)) return 'api'
+  const command = ghCommandAt(head)
+  if (command < 0) return undefined
+  if (mergeSubcommandAt(head) >= 0) return 'pr'
+  if (head[command] === 'api' && apiMerge(head)) return 'api'
   return undefined
+}
+
+type MergeInvocation = {
+  /** The effective `--match-head-commit` value, if the flag was not swallowed. */
+  pin: string | undefined
+  pinFlag: boolean
+  /** The value flag that ate a pin-shaped token, if one did. */
+  consumedBy: string | undefined
+  help: boolean
+}
+
+function pinToken(token: string): boolean {
+  return token === MERGE_PIN_FLAG || token.startsWith(`${MERGE_PIN_FLAG}=`)
+}
+
+/**
+ * Parse the `gh pr merge` argument list the way pflag does: a string flag
+ * consumes the next token (or its `=` value), so a pin-shaped token in that
+ * position is body text. Help is recognised only when it is not consumed.
+ */
+function mergeInvocation(tokens: string[]): MergeInvocation {
+  const head = stripPrefix(tokens)
+  const merge = mergeSubcommandAt(head)
+  const result: MergeInvocation = { pin: undefined, pinFlag: false, consumedBy: undefined, help: false }
+  if (merge < 0) return result
+
+  const consumeValue = (flag: string, value: string | undefined): void => {
+    if (value !== undefined && pinToken(value)) result.consumedBy = flag
+  }
+
+  for (let index = merge + 1; index < head.length; index += 1) {
+    const token = head[index]
+    if (token === '--') break
+    if (token === MERGE_PIN_FLAG) {
+      result.pinFlag = true
+      result.pin = head[index + 1]
+      index += 1
+      continue
+    }
+    if (token.startsWith(`${MERGE_PIN_FLAG}=`)) {
+      result.pinFlag = true
+      result.pin = token.slice(MERGE_PIN_FLAG.length + 1)
+      continue
+    }
+    if (token === '--help') {
+      result.help = true
+      continue
+    }
+    if (token.startsWith('--help=')) {
+      if (TRUE_FLAG_VALUE.test(token.slice('--help='.length))) result.help = true
+      continue
+    }
+    const equals = token.startsWith('--') ? token.indexOf('=') : -1
+    if (equals > 2 && MERGE_VALUE_FLAGS.has(token.slice(0, equals))) {
+      const flag = token.slice(0, equals)
+      consumeValue(flag, token.slice(equals + 1))
+      continue
+    }
+    if (MERGE_VALUE_FLAGS.has(token)) {
+      consumeValue(token, head[index + 1])
+      index += 1
+      continue
+    }
+    if (token.startsWith('-') && token !== '-' && !token.startsWith('--')) {
+      const chars = token.slice(1)
+      let valueAt = -1
+      for (let offset = 0; offset < chars.length; offset += 1) {
+        const char = chars[offset]
+        if (MERGE_SHORT_VALUE_FLAGS.has(char)) {
+          valueAt = offset
+          break
+        }
+        if (char === 'h') {
+          const after = chars.slice(offset + 1)
+          if (after.startsWith('=')) {
+            if (TRUE_FLAG_VALUE.test(after.slice(1))) result.help = true
+            break
+          }
+          result.help = true
+        }
+      }
+      if (valueAt >= 0) {
+        const flag = `-${chars[valueAt]}`
+        const rest = chars.slice(valueAt + 1)
+        if (rest === '' || rest === '=') {
+          consumeValue(flag, head[index + 1])
+          index += 1
+        } else {
+          consumeValue(flag, rest.startsWith('=') ? rest.slice(1) : rest)
+        }
+      }
+      continue
+    }
+    // A positional argument (the PR number or URL) needs no modelling.
+  }
+
+  return result
 }
 
 /** Why the effective `--match-head-commit` on a `gh pr merge` is unusable, if it is. */
 function mergePinProblem(tokens: string[]): string | undefined {
-  const head = stripPrefix(tokens)
-  const pr = mergeSubcommandAt(head)
-  if (pr < 0) return `no ${MERGE_PIN_FLAG} is present`
-  let seen = false
-  let value: string | undefined
-  let missing = false
-  // pflag reads flags until `--` and lets the last repeated flag win, so the
-  // last occurrence is the one GitHub will receive.
-  for (let index = pr + 2; index < head.length; index += 1) {
-    const token = head[index]
-    if (token === '--') break
-    if (token === MERGE_PIN_FLAG) {
-      seen = true
-      value = head[index + 1]
-      missing = value === undefined
-      index += 1
-    } else if (token.startsWith(`${MERGE_PIN_FLAG}=`)) {
-      seen = true
-      value = token.slice(MERGE_PIN_FLAG.length + 1)
-      missing = false
+  const parsed = mergeInvocation(tokens)
+  if (!parsed.pinFlag) {
+    if (parsed.consumedBy !== undefined) {
+      return `${MERGE_PIN_FLAG} was consumed as the value of ${parsed.consumedBy}; pass the pin as its own argument`
     }
+    return `no ${MERGE_PIN_FLAG} is present`
   }
-  if (!seen) return `no ${MERGE_PIN_FLAG} is present`
-  if (missing) return `${MERGE_PIN_FLAG} has no value`
-  if (value === undefined || !FULL_COMMIT_SHA.test(value)) {
-    return `"${value ?? ''}" is not a full 40-hex commit sha`
+  if (parsed.pin === undefined) return `${MERGE_PIN_FLAG} has no value`
+  if (!FULL_COMMIT_SHA.test(parsed.pin)) {
+    return `"${parsed.pin}" is not a full 40-hex commit sha`
   }
   return undefined
 }
@@ -520,7 +662,7 @@ function mergePinReason(raw: string, problem: string): string {
   return `refusing "${excerpt(raw)}": ${problem}; the guard cannot know which commit was reviewed, so the pin is how the merge becomes falsifiable. Use \`gh pr merge <number> [--squash|--merge|--rebase] --match-head-commit <40-hex reviewed head>\`.`
 }
 
-/** `gh pr merge …`, including `gh -R owner/repo pr merge` and `gh api …/merge -X PUT`. */
+/** `gh pr merge …`, including `gh pr -R owner/repo merge` and the `gh api …/merge` route. */
 export function ghPrMerge(tokens: string[]): boolean {
   return ghMergePath(tokens) !== undefined
 }
@@ -1333,6 +1475,8 @@ function judgeCommand(
   for (const segment of flat) {
     const merge = ghMergePath(segment.tokens)
     if (merge === undefined || agent.worker) continue
+    // `gh pr merge --help` prints help and exits; it performs no merge.
+    if (mergeInvocation(segment.tokens).help) continue
     const problem =
       merge === 'api'
         ? `a raw \`gh api\` merge cannot carry ${MERGE_PIN_FLAG}`
@@ -1372,7 +1516,7 @@ function judgeCommand(
         `refusing "${excerpt(segment.raw)}": an interpreter one-liner can write outside its worktree; put the code in a committed file and run it with a plain command`,
       )
     }
-    if (ghPrMerge(segment.tokens)) {
+    if (ghPrMerge(segment.tokens) && !mergeInvocation(segment.tokens).help) {
       return deny(
         'gh-pr-merge-worker',
         `refusing "${excerpt(segment.raw)}": a worker may open a PR but never merge one; the master merges after review`,

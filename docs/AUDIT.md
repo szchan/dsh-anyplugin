@@ -192,9 +192,9 @@ the highest-risk gaps. Cite file:line for every row.
 - The reviewers get the same brief; disagreement is signal, not noise.
 - A reviewer verdict is a PR comment from the bot account, with the
   `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review. F12's
-  guard rule requires `--match-head-commit <40-hex>` on every `gh pr merge`;
-  that is omission prevention, not review verification, and it is dormant on
-  this machine until the guard is installed (F1).
+  guard rule requires `--match-head-commit <40-hex>` on every modelled
+  `gh pr merge`; that is omission prevention, not review verification, and it is
+  dormant on this machine until the guard is installed (F1).
 
 ## 7. Roles, and what "too broad" means
 
@@ -439,11 +439,11 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "status": "dormant",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "tracking": "#163",
-      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a raw gh api .../merge and a malformed sha. Dormant on this machine because the guard is not installed (F1); enforced wherever the guard is installed, proven by guard.test.mjs.",
+      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. Dormant on this machine because the guard is not installed (F1); enforced on the modelled gh merge paths wherever the guard is installed, proven by guard.test.mjs. A merge through an unmodelled client remains a residual outside the guard.",
       "evidence": [
         "2026-11-22 evidence: 100 PRs, 99 merged; #89 11 comments",
         "guard:status not-installed; pre-push hook missing (F1/F2)",
-        "guard.test.mjs merge-pin matrix and installed-mount test; 115-row dry-run table"
+        "guard.test.mjs merge-pin matrix and installed-mount test; 121-row dry-run table"
       ],
       "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
     },
