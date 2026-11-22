@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "shared",
+  "version": "0.1.0",
+  "description": "Declared in both catalogs of the both-formats fixture (Codex side)."
+}

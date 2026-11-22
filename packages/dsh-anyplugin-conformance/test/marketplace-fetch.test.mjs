@@ -109,6 +109,15 @@ function writeCatalog(root, entries, name = 'fetch-marketplace') {
   return join(root, '.claude-plugin', 'marketplace.json')
 }
 
+function writeCodexCatalog(root, entries, name = 'codex-fetch') {
+  mkdirSync(join(root, '.agents', 'plugins'), { recursive: true })
+  writeFileSync(
+    join(root, '.agents', 'plugins', 'marketplace.json'),
+    `${JSON.stringify({ name, plugins: entries }, null, 2)}\n`,
+  )
+  return join(root, '.agents', 'plugins', 'marketplace.json')
+}
+
 // ---------------------------------------------------------------------------
 // git fixtures (local bare repositories; file:// only)
 // ---------------------------------------------------------------------------
@@ -162,7 +171,7 @@ function npmEnv(cache) {
   }
 }
 
-function npmPackage({ prepareMarker = true, plugin = true } = {}) {
+function npmPackage({ prepareMarker = true, plugin = true, pluginName = 'npm-plugin' } = {}) {
   const dir = tempDir('npm-pkg-')
   const scripts = prepareMarker
     ? { prepare: `node -e "require('fs').writeFileSync(require('path').join(process.cwd(),'prepare-marker'),'x')"` }
@@ -171,7 +180,7 @@ function npmPackage({ prepareMarker = true, plugin = true } = {}) {
     join(dir, 'package.json'),
     `${JSON.stringify({ name: 'npm-fixture', version: '0.1.0', private: true, scripts }, null, 2)}\n`,
   )
-  if (plugin) writePlugin(dir, 'npm-plugin', '0.1.0')
+  if (plugin) writePlugin(dir, pluginName, '0.1.0')
   return dir
 }
 
@@ -461,6 +470,8 @@ test('an npm package without a plugin manifest is refused after extraction', asy
     assert.match(refused.stderr, /refused \(marketplace-artifact-invalid\)/u)
     assert.match(refused.stderr, /fetched no plugin manifest/u)
     assert.equal(existsSync(box.lock), false)
+    const cache = join(box.cache, 'fetch-marketplace')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
   } finally {
     cleanup(box.dir)
   }
@@ -472,7 +483,7 @@ test('an npm package without a plugin manifest is refused after extraction', asy
 
 test('a url tarball is fetched over https, hashed before extraction, and installed', async () => {
   const box = sandbox()
-  const pkg = npmPackage({ prepareMarker: false })
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
   const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
   const requests = []
   const server = await serve((request, response) => {
@@ -503,6 +514,466 @@ test('a url tarball is fetched over https, hashed before extraction, and install
     assert.match(source.resolvedAt, /Z$/u)
     assert.equal(existsSync(join(box.cache, 'fetch-marketplace', `url-plugin@${sha}`)), true)
     assert.equal(readGrants(box.grants).grants[0].artifactHash, `sha256:${sha}`)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a fetched plugin name mismatch is refused before the cache commit', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'actual' })
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCatalog(root, [
+      {
+        name: 'expected',
+        version: '0.1.0',
+        source: { source: 'url', url: `${server.url}/expected.tgz` },
+      },
+    ])
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    assert.match(refused.stderr, /fetched a plugin that calls itself "actual"/u)
+    assert.equal(existsSync(box.lock), false)
+    // The name is checked before `commitArtifact`: no cache entry may exist.
+    const cache = join(box.cache, 'fetch-marketplace')
+    const entries = existsSync(cache) ? readdirSync(cache) : []
+    assert.deepEqual(entries, [])
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex url entry installs through the same grant and records dialect codex', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
+  // The same tarball carries the portable manifest Codex reads; the fetch
+  // machinery must not care which format named it.
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'url-plugin',
+      version: '0.1.0',
+      description: 'A Codex plugin fetched from a url source.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    mkdirSync(join(root, '.agents', 'plugins'), { recursive: true })
+    const catalog = join(root, '.agents', 'plugins', 'marketplace.json')
+    writeFileSync(
+      catalog,
+      `${JSON.stringify({
+        name: 'codex-fetch',
+        plugins: [
+          {
+            name: 'url-plugin',
+            category: 'testing',
+            policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+            source: { source: 'url', url: `${server.url}/url-plugin.tgz` },
+          },
+        ],
+      })}\n`,
+    )
+    const installed = await run(box, ['marketplace', 'install', 'url-plugin', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    const sha = createHash('sha256').update(readFileSync(tarball)).digest('hex')
+    const record = readInstalls(box.lock).plugins[0]
+    assert.equal(record.dialect, 'codex')
+    assert.equal(record.pin, 'agent-plugins@1.0.0')
+    assert.equal(record.source.integrity, `sha256:${sha}`)
+    assert.equal(existsSync(join(box.cache, 'codex-fetch', `url-plugin@${sha}`)), true)
+    const network = readGrants(box.grants).grants.filter((row) => row.capability === 'network')
+    assert.equal(network.length, 1)
+    assert.equal(network[0].artifactHash, `sha256:${sha}`)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex entry reads the Codex manifest, not a Claude manifest beside it', async () => {
+  const box = sandbox()
+  // Both manifests coexist. The catalog entry matches the Claude one, so a
+  // dialect-blind check would accept it; Codex reads the root manifest.
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'expected' })
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'actual',
+      version: '0.1.0',
+      description: 'The manifest Codex reads.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'dual-market',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    assert.match(refused.stderr, /fetched a plugin that calls itself "actual"/u)
+    // The mismatch is detected before `commitArtifact`: the cache is empty.
+    const cache = join(box.cache, 'dual-market')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a malformed manifest the dialect does not read cannot skip the name check', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'actual' })
+  // Codex reads the root manifest; the malformed Claude manifest is foreign.
+  writeFileSync(join(pkg, '.claude-plugin', 'plugin.json'), '{ this is not json\n')
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'actual',
+      version: '0.1.0',
+      description: 'The manifest Codex reads.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'malformed-foreign',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    const cache = join(box.cache, 'malformed-foreign')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex entry installs when its Claude sibling manifest disagrees', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'other' })
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'expected',
+      version: '0.1.0',
+      description: 'The manifest Codex reads.',
+    })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'sibling-disagrees',
+    )
+    const installed = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    assert.equal(readInstalls(box.lock).plugins[0].dialect, 'codex')
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex pre-check uses the selected root manifest and falls back to the directory name', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, plugin: false })
+  mkdirSync(join(pkg, '.codex-plugin'), { recursive: true })
+  // The root exists but has no name, so the reader uses the directory name and
+  // never reads the shadowed `.codex-plugin` manifest that names the entry.
+  writeFileSync(join(pkg, 'plugin.json'), `${JSON.stringify({ version: '0.1.0' })}\n`)
+  writeFileSync(
+    join(pkg, '.codex-plugin', 'plugin.json'),
+    `${JSON.stringify({ name: 'expected', version: '0.1.0' })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'nameless-root',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    assert.match(refused.stderr, /fetched a plugin that calls itself "package"/u)
+    const cache = join(box.cache, 'nameless-root')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a malformed selected Codex manifest falls back to the directory name before the cache commit', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, plugin: false })
+  mkdirSync(join(pkg, '.codex-plugin'), { recursive: true })
+  writeFileSync(join(pkg, 'plugin.json'), '{ this is not json\n')
+  writeFileSync(
+    join(pkg, '.codex-plugin', 'plugin.json'),
+    `${JSON.stringify({ name: 'expected', version: '0.1.0' })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'malformed-root',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    assert.match(refused.stderr, /fetched a plugin that calls itself "package"/u)
+    const cache = join(box.cache, 'malformed-root')
+    assert.deepEqual(existsSync(cache) ? readdirSync(cache) : [], [])
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex plugin with only the .codex-plugin fallback installs', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, plugin: false })
+  mkdirSync(join(pkg, '.codex-plugin'), { recursive: true })
+  mkdirSync(join(pkg, 'skills', 'hello'), { recursive: true })
+  writeFileSync(
+    join(pkg, '.codex-plugin', 'plugin.json'),
+    `${JSON.stringify({ name: 'expected', version: '0.1.0', description: 'Fallback-only manifest.' })}\n`,
+  )
+  writeFileSync(join(pkg, 'skills', 'hello', 'SKILL.md'), '---\nname: hello\n---\n\nSay hello.\n')
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'fallback-only',
+    )
+    const installed = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    const record = readInstalls(box.lock).plugins[0]
+    assert.equal(record.dialect, 'codex')
+    assert.equal(record.name, 'expected')
+    assert.equal(record.version, '0.1.0')
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a shadowed Codex manifest cannot supply the recorded version', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, plugin: false })
+  mkdirSync(join(pkg, '.codex-plugin'), { recursive: true })
+  // The selected root has no version; the reader refuses for that reason. The
+  // fetched metadata must not borrow the shadowed fallback's version either.
+  writeFileSync(join(pkg, 'plugin.json'), `${JSON.stringify({ name: 'expected' })}\n`)
+  writeFileSync(
+    join(pkg, '.codex-plugin', 'plugin.json'),
+    `${JSON.stringify({ name: 'expected', version: '9.9.9' })}\n`,
+  )
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const sha = createHash('sha256').update(readFileSync(tarball)).digest('hex')
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          name: 'expected',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'version-shadow',
+    )
+    const refused = await run(box, ['marketplace', 'install', 'expected', '--from', catalog, '--yes'], {
+      NODE_EXTRA_CA_CERTS: tls.certPath,
+    })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(missing-version\)/u)
+    const metadata = JSON.parse(
+      readFileSync(join(box.cache, 'version-shadow', `expected@${sha}`, '.dsh-anyplugin-artifact.json'), 'utf8'),
+    )
+    assert.equal(metadata.version, undefined)
+  } finally {
+    await server.close()
+    cleanup(box.dir)
+  }
+})
+
+test('a remote --dialect mismatch names the layout before the reader runs', async () => {
+  const box = sandbox()
+  const pkg = npmPackage({ prepareMarker: false, plugin: false })
+  writeFileSync(
+    join(pkg, 'plugin.json'),
+    `${JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'expected',
+      version: '0.1.0',
+      description: 'A Codex-only plugin.',
+    })}\n`,
+  )
+  mkdirSync(join(pkg, 'skills', 'hello'), { recursive: true })
+  writeFileSync(join(pkg, 'skills', 'hello', 'SKILL.md'), '---\nname: hello\n---\n\nSay hello.\n')
+  const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
+  const sha = createHash('sha256').update(readFileSync(tarball)).digest('hex')
+  const server = await serve((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/gzip' })
+    response.end(readFileSync(tarball))
+  })
+  try {
+    const root = join(box.dir, 'catalog')
+    const catalog = writeCodexCatalog(
+      root,
+      [
+        {
+          // The fetched directory is named "package", so this entry name keeps
+          // the dialect-blind identity check neutral and the test reaches the
+          // remote assertDialect call it is meant to pin.
+          name: 'package',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'url', url: `${server.url}/expected.tgz` },
+        },
+      ],
+      'remote-dialect',
+    )
+    const refused = await run(
+      box,
+      ['marketplace', 'install', 'package', '--from', catalog, '--yes', '--dialect', 'claude-code'],
+      { NODE_EXTRA_CA_CERTS: tls.certPath },
+    )
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(dialect-mismatch\)/u)
+    assert.match(refused.stderr, /declares a codex plugin/u)
+    assert.equal(existsSync(box.lock), false)
+    // D65 clause 4: a dialect refusal is install-time, after the fetch. The
+    // cache keeps the artifact and its metadata; only the lock stays absent.
+    const cached = join(box.cache, 'remote-dialect', `package@${sha}`)
+    assert.equal(existsSync(join(cached, '.dsh-anyplugin-artifact.json')), true)
+    assert.equal(existsSync(join(cached, 'package', 'plugin.json')), true)
+    assert.equal(existsSync(join(cached, 'package', 'skills', 'hello', 'SKILL.md')), true)
   } finally {
     await server.close()
     cleanup(box.dir)
@@ -590,7 +1061,7 @@ test('http:// is refused before any request reaches the server', async () => {
 
 test('a url query token is sent but never stored or printed', async () => {
   const box = sandbox()
-  const pkg = npmPackage({ prepareMarker: false })
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
   const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
   const requests = []
   const server = await serve((request, response) => {
@@ -798,9 +1269,9 @@ test('a statically malformed catalog cannot name a cache directory', async () =>
   const box = sandbox()
   try {
     const root = join(box.dir, 'catalog')
-    mkdirSync(root, { recursive: true })
-    writeFileSync(join(root, 'marketplace.json'), '{"name":"x","plugins":[]')
-    const refused = await run(box, ['marketplace', 'list', '--from', join(root, 'marketplace.json')])
+    mkdirSync(join(root, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(root, '.claude-plugin', 'marketplace.json'), '{"name":"x","plugins":[]')
+    const refused = await run(box, ['marketplace', 'list', '--from', join(root, '.claude-plugin', 'marketplace.json')])
     assert.equal(refused.status, 1)
     assert.match(refused.stderr, /refused \(malformed-marketplace\)/u)
     assert.equal(existsSync(box.cache), false)
@@ -854,7 +1325,7 @@ test('a git ref that looks like an option is refused before git runs', async () 
 
 test('a query string is part of the grant identity, not display-only', async () => {
   const box = sandbox()
-  const pkg = npmPackage({ prepareMarker: false })
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
   const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
   const requests = []
   const server = await serve((request, response) => {
@@ -900,7 +1371,7 @@ test('a query string is part of the grant identity, not display-only', async () 
 
 test('a cross-origin redirect is refused before the second origin is contacted', async () => {
   const box = sandbox()
-  const pkg = npmPackage({ prepareMarker: false })
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
   const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
   const secondRequests = []
   const second = await serve((request, response) => {
@@ -932,7 +1403,7 @@ test('a cross-origin redirect is refused before the second origin is contacted',
 
 test('--json and list output never print a query token', async () => {
   const box = sandbox()
-  const pkg = npmPackage({ prepareMarker: false })
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
   const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
   const server = await serve((request, response) => {
     response.writeHead(200, { 'content-type': 'application/gzip' })
@@ -1050,7 +1521,7 @@ test('a fetch followed by a refused install writes no network grant', async () =
 
 test('a network grant is revoked by target and a later install refuses', async () => {
   const box = sandbox()
-  const pkg = npmPackage({ prepareMarker: false })
+  const pkg = npmPackage({ prepareMarker: false, pluginName: 'url-plugin' })
   const tarball = packPackage(pkg, join(box.dir, 'tarballs'))
   const server = await serve((request, response) => {
     response.writeHead(200, { 'content-type': 'application/gzip' })
