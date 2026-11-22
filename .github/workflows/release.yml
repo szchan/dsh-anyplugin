@@ -28,7 +28,6 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          registry-url: 'https://registry.npmjs.org'
 
       # A tag that disagrees with the manifest would publish 0.1.0 under v0.2.0.
       - name: Tag matches the package version
@@ -107,13 +106,19 @@ jobs:
           verify_pin 0.2.2-rc.2 "$HARNESS_RC2"
           exit "$status"
 
-      # v0.1.0 bootstraps with the account token. From 0.1.1 the package is
-      # linked to the trusted publisher, and NODE_AUTH_TOKEN is removed: the
-      # OIDC identity then authorizes both the publish and its provenance.
-      - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Release publishing is OIDC-only: the package is linked to the trusted
+      # publisher (GitHub Actions, this repository, this workflow file), and the
+      # job's id-token authorizes both the publish and its provenance. No npm
+      # token is stored in this repository; if the link is missing the step
+      # fails closed instead of falling back to a secret.
+      - name: Publish to npm (trusted publishing)
+        run: |
+          set -euo pipefail
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NODE_AUTH_TOKEN is set; this workflow publishes with OIDC only"
+            exit 1
+          fi
+          npm publish --provenance --access public
 
       - name: Create the GitHub release
         env:

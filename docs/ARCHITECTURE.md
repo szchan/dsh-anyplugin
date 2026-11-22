@@ -1414,7 +1414,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps only the artifact re-hash, the spawn and the D20 verdict translation. Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps the artifact re-hash, the spawn, the D20 verdict translation and the per-child SubagentStart→SubagentStop pair gate (one materializer load; a reload while a start chain is in flight is not covered). Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
@@ -2862,13 +2862,26 @@ kernel would have to be rewritten — and would make mods structurally impossibl
      → `agent/disposed` (SessionEnd).
 
   The fixture's five handlers wrote exactly one line each. Their *set* is fixed;
-  their total order is not. `subagent/end` and `agent/disposed` are independent
+  their total order is not: `SubagentStop` and `SessionEnd` are independent
   emits, so under CPU contention the child's completion and the root's disposal
-  can interleave: the oracle once saw `SessionStart, Stop, SubagentStart,
-  SessionEnd, SubagentStop` on two cores. The only chains the host guarantees,
-  and the only ones asserted, are `SessionStart < Stop < SessionEnd` and
-  `SubagentStart < SubagentStop`; the test compares the label set and those
-  two orders, never a three-way interleaving. The child's own `agent/created`
+  can interleave. `SessionStart < Stop < SessionEnd` is a serial chain on the
+  agent's creation/turn/disposal. `SubagentStart < SubagentStop` is now a
+  *kernel* guarantee, not a host one: the host dispatches `subagent/start`
+  before `subagent/end`, but `createLifecycleEmitter` contains each listener's
+  returned promise instead of awaiting it
+  (`@deepseek-ai/dsh-subagent/lib/index.js:137-154`, identical at both pins),
+  so a slow start hook can still be running when the stop hook begins. The hook
+  materializer keys a pending start chain by the child's id and makes the stop
+  chain for the same child await it (the classic `subagent/*` mount and the mod
+  seat share the pair gate), so the order the test asserts is one the kernel
+  enforces; the rendezvous test in
+  `packages/dsh-anyplugin-materialize-hook/test/lifecycle.test.mjs` proves the
+  stop chain waits. This is a per-load guarantee: the pending map belongs to
+  one materializer apply, so a reload that starts while a start chain is in
+  flight begins a fresh apply with an empty map and does not hold that child's
+  stop; reload-during-flight is explicitly not claimed. The test compares the
+  label set and those two orders, never a three-way interleaving. The child's
+  own `agent/created`
   and `agent/turn-stopping` also fire; the root-only
   `parentSession === undefined` filter keeps them from duplicating
   SessionStart/Stop, while SubagentStart/Stop require `parentSessionId !==
