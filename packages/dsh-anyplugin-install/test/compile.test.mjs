@@ -258,7 +258,10 @@ test('a refused monitors declaration is unsupported while its sibling skill is e
     refusals[0].annotation.reason.includes(monitorClientText('fileUnknownKey', { key: 'trigger' })),
     'the unsupported reason quotes the captured file-shaped client line',
   )
-  assert.match(refusals[0].annotation.reason, /loaded with errors/)
+  assert.ok(
+    refusals[0].annotation.reason.includes(monitorClientText('fileStatus')),
+    'the unsupported reason quotes the captured status line',
+  )
   assert.deepEqual(ir.skills.map((skill) => skill.name), ['innocent'])
 
   const report = compileReport(installs, { materializers, enablements: enabled(id) })

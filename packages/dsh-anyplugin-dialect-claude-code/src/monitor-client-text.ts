@@ -35,6 +35,9 @@ export const MONITOR_CLIENT_TEXT = {
   fileNotRegularFile: 'not a regular file, or too large',
   fileUnreadable: 'EACCES: permission denied, open \u2019{path}\u2019',
   fileMissing: 'ENOENT: no such file or directory, lstat \u2019{path}\u2019',
+  // The `plugin list` status for a file-shaped rejection. Manifest-shaped
+  // shapes print no Status line at all, so they get no entry here.
+  fileStatus: 'Status: ✘ loaded with errors',
 
   // Manifest-shaped: `… Validation errors: <this text>`
   manifestUnknownKey: 'Unrecognized key: "{key}"',

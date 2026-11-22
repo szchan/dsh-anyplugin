@@ -15,11 +15,31 @@
  * `MONITOR_CLIENT_TEXT` table quotes those captured strings, so a pin bump
  * shows up as a reviewable diff here instead of as invented text in a reason.
  *
+ * File-shaped shapes also print a `Status: ✘ loaded with errors` line; that
+ * line is captured to `<shape>.status.txt` and quoted by the dialect through
+ * `MONITOR_CLIENT_TEXT.fileStatus`. Manifest-shaped shapes print no `Status:`
+ * line at all (the plugin never loads), so none is invented for them.
+ *
+ * `--check` re-runs every shape into a temporary directory and diffs it against
+ * the committed corpus, exiting non-zero with a per-file summary. The
+ * conformance suite runs it against the pinned CLI, so a pin bump that changes
+ * any captured byte fails the gate instead of leaving the corpus stale.
+ *
  * The raw plugin trees live under `fixtures/claude-monitors-errors/captured/`
  * (gitignored, AGENTS.md §8). Review the observed diff and commit it.
  */
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const root = new URL('..', import.meta.url).pathname
@@ -110,8 +130,11 @@ const SHAPES = [
   { name: 'manifest-value-null', manifest: { monitors: null } },
 ]
 
+const check = process.argv.includes('--check')
+const outRoot = check ? mkdtempSync(join(tmpdir(), 'monitor-errors-')) : observedRoot
+
 rmSync(rawRoot, { recursive: true, force: true })
-mkdirSync(observedRoot, { recursive: true })
+mkdirSync(outRoot, { recursive: true })
 mkdirSync(join(rawRoot, 'home', '.claude'), { recursive: true })
 
 const env = {
@@ -155,11 +178,44 @@ for (const shape of SHAPES) {
     continue
   }
   const scrubbed = line.split(dir).join('<plugin>')
-  writeFileSync(join(observedRoot, `${shape.name}.txt`), `${scrubbed}\n`)
+  writeFileSync(join(outRoot, `${shape.name}.txt`), `${scrubbed}\n`)
+  const status = lines.find((candidate) => candidate.startsWith('Status: '))
+  if (status) {
+    writeFileSync(join(outRoot, `${shape.name}.status.txt`), `${status.split(dir).join('<plugin>')}\n`)
+  } else if (line.startsWith('Error: monitors load failed')) {
+    failures += 1
+    console.error(`no Status line for file-shaped ${shape.name} (exit ${run.status})`)
+  }
   console.log(`${shape.name}: ${scrubbed}`)
 }
 
 if (failures > 0) {
-  console.error(`capture-monitor-errors: ${failures} shape(s) produced no error line`)
+  console.error(`capture-monitor-errors: ${failures} shape(s) produced no error line or status`)
   process.exit(1)
+}
+
+if (check) {
+  const expected = readdirSync(observedRoot).filter((name) => name.endsWith('.txt')).sort()
+  const actual = readdirSync(outRoot).filter((name) => name.endsWith('.txt')).sort()
+  const differences = []
+  for (const name of expected) {
+    const captured = join(outRoot, name)
+    if (!existsSync(captured)) {
+      differences.push(`${name}: missing from the new capture`)
+      continue
+    }
+    if (readFileSync(join(observedRoot, name), 'utf8') !== readFileSync(captured, 'utf8')) {
+      differences.push(`${name}: differs from the committed corpus`)
+    }
+  }
+  for (const name of actual) {
+    if (!expected.includes(name)) differences.push(`${name}: new capture file not in the committed corpus`)
+  }
+  rmSync(outRoot, { recursive: true, force: true })
+  if (differences.length > 0) {
+    console.error(`capture-monitor-errors: --check found ${differences.length} difference(s)`)
+    for (const difference of differences) console.error(`  ${difference}`)
+    process.exit(1)
+  }
+  console.log('capture-monitor-errors: --check matches the committed corpus')
 }

@@ -27,3 +27,7 @@ when it loads a plugin whose monitor declaration the client rejects.
     with errors and keeps serving its other components;
   - manifest-shaped (`✘ Failed to load plugin: … Validation errors: …`), where
     the plugin does not load at all.
+
+`--check` rebuilds the corpus in a temporary directory and diffs it against
+the committed files; `capture-monitor-errors.test.mjs` runs it with the pinned
+`CLAUDE_BIN` inside `npm run verify`.

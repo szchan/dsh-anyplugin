@@ -16,7 +16,7 @@
 // over `monitors/monitors.json`, because reading both would report a
 // declaration the client never sees.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -111,7 +111,18 @@ function assertOneUnsupportedRow(ir, { sourcePath, detail, clientKey, clientPara
   // Our filesystem vocabulary must not leak into the quoted reason.
   assert.doesNotMatch(rows[0].annotation.reason, /EISDIR|ENOTDIR/)
   assert.doesNotMatch(rows[0].annotation.reason, /line \d+ column|position \d+/)
-  assert.match(rows[0].annotation.reason, /loaded with errors/)
+  const status = monitorClientText('fileStatus')
+  assert.ok(rows[0].annotation.reason.includes(status), `reason quotes the captured status: ${status}`)
+  if (observed) {
+    const statusFile = join(OBSERVED, `${observed}.status.txt`)
+    if (existsSync(statusFile)) {
+      assert.equal(
+        status,
+        readFileSync(statusFile, 'utf8').trim(),
+        `${observed}: status table entry matches the capture`,
+      )
+    }
+  }
   assert.match(rows[0].annotation.reason, /claude-code@2\.1\.329/)
   assert.match(rows[0].annotation.reason, /directory form/)
   assert.match(rows[0].annotation.reason, /\`rig install <dir>\`/)
@@ -657,6 +668,18 @@ test('MONITOR_CLIENT_TEXT is the text captured from the pinned client', () => {
     assert.ok(params !== null || path, `${shape} captured the client's path`)
     const rendered = monitorClientText(key, params ?? { path })
     assert.ok(observed.includes(rendered), `${shape} contains ${key}: ${rendered}`)
+  }
+})
+
+test('the captured status line matches the status table', () => {
+  const files = readdirSync(OBSERVED).filter((name) => name.endsWith('.status.txt'))
+  assert.ok(files.length > 0, 'the corpus carries at least one file-shaped status line')
+  for (const name of files) {
+    assert.equal(
+      monitorClientText('fileStatus'),
+      readFileSync(join(OBSERVED, name), 'utf8').trim(),
+      `${name}: the status table matches the captured line`,
+    )
   }
 })
 

@@ -2841,10 +2841,14 @@ The quoted text is captured, not written from memory: every entry in
 `MONITOR_CLIENT_TEXT` (`packages/dsh-anyplugin-dialect-claude-code/src/monitor-client-text.ts`)
 is a slice of a `claude --plugin-dir <shape> plugin list` line stored in
 `fixtures/claude-monitors-errors/observed/<shape>.txt` (29 shapes, scrubbed
-temp path, `PROVENANCE.md` names the pin). `scripts/capture-monitor-errors.mjs`
-regenerates the corpus; `monitors.test.mjs` asserts each rendered entry is a
-substring of its captured line, so the reason cannot drift into invented text
-and a pin bump produces a reviewable diff.
+temp path, `PROVENANCE.md` names the pin); file-shaped shapes also store the
+client's `Status: ✘ loaded with errors` line beside the error. `scripts/capture-monitor-errors.mjs`
+regenerates the corpus, and `capture-monitor-errors.test.mjs` runs its
+`--check` mode against the resolved pinned CLI inside `npm run verify`, failing
+with the changed file's name. `monitors.test.mjs` asserts each rendered entry,
+and the status line, against the captured file exactly; manifest-shaped shapes
+print no `Status:` line, so none is invented for them. A pin bump therefore
+reddens the gate and produces a reviewable corpus diff.
 
 ## 11. Non-goals
 

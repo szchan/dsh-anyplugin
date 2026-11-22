@@ -1541,9 +1541,9 @@ function rejectDuplicateNames(entries: unknown[], source: string, kind: 'manifes
  * the plugin. It quotes the client's own error text because that text is the
  * evidence: the client reports the plugin as `loaded with errors` and still
  * serves every other component, so refusing the plugin here would be less
- * faithful than the host. The S22 marketplace path printed a different status
- * (`failed to load`); the two load paths diverge at this pin, and the directory
- * form is the one `rig install <dir>` mirrors.
+ * faithful than the host. The S22 marketplace path reports a different verdict
+ * (the plugin fails to load); the two load paths diverge at this pin, and the
+ * directory form is the one `rig install <dir>` mirrors.
  */
 function monitorsRefusedReason(refusal: MonitorsRefusal): string {
   return (
@@ -1551,8 +1551,8 @@ function monitorsRefusedReason(refusal: MonitorsRefusal): string {
     (refusal.generic
       ? "That line is the client's generic validation message; the field-level detail above is ours. "
       : '') +
-    'The client does not refuse the plugin: `claude plugin list` reports `Status: ✘ loaded with errors` and prints that error, while `claude plugin details` still exits 0 and serves the plugin\'s other components; `plugin details` lists no Monitors row. ' +
-    'The S22 marketplace capture printed `Status: ✘ failed to load` for the same kind of declaration, so the two load paths diverge at this pin; this layer mirrors the directory form that `rig install <dir>` uses. ' +
+    `The client does not refuse the plugin: \`claude plugin list\` reports \`${monitorClientText('fileStatus')}\` and prints that error, while \`claude plugin details\` still exits 0 and serves the plugin's other components; \`plugin details\` lists no Monitors row. ` +
+    'The S22 marketplace capture instead reports the plugin as failed to load for the same kind of declaration, so the two load paths diverge at this pin; this layer mirrors the directory form that `rig install <dir>` uses. ' +
     'The declaration is carried as this `unsupported` row and is not emitted (D37): DSH has no channel from a background process stdout into the model context, and a declaration the client itself rejects cannot be installed as if it were valid. The rest of the plugin compiles as before.'
   )
 }
