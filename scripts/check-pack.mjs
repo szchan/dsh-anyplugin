@@ -3,13 +3,17 @@
  *
  * `npm run verify` runs this, so a package that would ship a broken `exports`
  * map, a TypeScript source, a harness import, an undeclared runtime dependency,
- * or a mods stub instead of the kernel cannot merge. It packs with
- * `--ignore-scripts` on purpose: the caller builds first, and the flag is what
- * lets the install smoke be tested against a lib-less tarball (the mutation the
- * smoke must catch).
+ * or a mods stub instead of the kernel cannot merge. It builds first and then
+ * packs with `--ignore-scripts`: building here is what makes `node
+ * scripts/check-pack.mjs` and `npm run check:pack` check the same sources, and
+ * the flag is what lets the install smoke be tested against a lib-less tarball
+ * (the mutation the smoke must catch).
  *
- * The final step is the real install smoke: this is the only check that boots
- * the harness against the packed artifact.
+ * The final steps boot the packed artifact. The install smoke composes the
+ * packed data in a synthetic harness; the profile boot installs the tarball
+ * into a scratch profile and boots the host's own profile loader, so the gate
+ * observes what a user's installation observes (S20, ticket #137). This is the
+ * only check that boots the tarball npm installed.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -33,6 +37,14 @@ function packageName(specifier) {
 
 const packDir = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-pack-'))
 try {
+  // The tarball must be built from the sources in this checkout, not from a
+  // `lib/` left by an earlier run: a direct invocation is a gate too.
+  try {
+    execFileSync(process.execPath, [join(root, 'scripts', 'build.mjs')], { cwd: root, stdio: 'pipe' })
+  } catch (error) {
+    failures.push(`build failed: ${error.stderr?.toString().trim() || error.message}`)
+  }
+
   let packed
   try {
     packed = JSON.parse(
@@ -251,6 +263,31 @@ try {
         }
       } catch (error) {
         failures.push(`install smoke failed:\n${(error.stdout || '') + (error.stderr || '')}`)
+      }
+    }
+
+    // 7. The profile boot is the install claim: the host's own loader mounts
+    // the npm-installed tarball from a scratch profile. The smoke above proves
+    // the packed data; this proves the artifact the profile path actually loads.
+    if (failures.length === 0) {
+      try {
+        const bootOutput = execFileSync(process.execPath, [join(root, 'scripts', 'profile-boot.mjs'), tarball], {
+          cwd: root,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8',
+          timeout: 600_000,
+        })
+        const boot = /^profile boot: ok — (.*)$/m.exec(bootOutput)
+        if (boot === null) {
+          failures.push('profile boot passed without reporting what the boot observed')
+        } else {
+          // The observation itself is the claim: the controller entry, the
+          // applied patch, the live child, the module URL that resolved, and
+          // the untouched real profile stay in the gate's one-line summary.
+          notes.push(`profile boot passed; ${boot[1]}`)
+        }
+      } catch (error) {
+        failures.push(`profile boot failed:\n${(error.stdout || '') + (error.stderr || '')}`)
       }
     }
   }

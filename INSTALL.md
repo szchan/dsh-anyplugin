@@ -534,5 +534,26 @@ release workflow accepts only a `v*` tag whose commit is an ancestor of
 `origin/main`, runs `npm run verify` against both DSH pins, and only then
 calls `npm publish`. A tag on a branch commit cannot publish.
 
+`check:pack` also boots the artefact a user installs through a profile the way a
+user's does: a scratch `$DSH_HOME` gets a profile whose `dependencies` name the
+freshly packed local tarball, `npm install` (offline, from the cache `npm ci`
+primed) installs it, and the same `mountProfile` the S17 test calls boots it
+through `loadProfile` → `readProfilePatches` → `boot`. The gate asserts what the
+boot saw: the controller entry active, the bundle patch applied, the
+`anyplugin.claude-code…skills-only` group and its skill child active, and the
+controller's module URL inside the scratch profile's `node_modules`. It fails
+when the tarball lacks `cordis.patch.yml`, when `dsh.profile.bundles` does not
+list the bundle, or when the package resolves from this checkout — each with its
+own message, and those three mutations are tests in `profile-mount.test.mjs`.
+The real `$DSH_HOME` and `$DSH_PROFILE_DIR` are fingerprinted before and after
+(the Desktop host's own `$DSH_HOME/sessions/` and `$DSH_HOME/storages/` trees are
+excluded from the home fingerprint only, and the exclusion is printed; a write
+under `$DSH_PROFILE_DIR` is a violation), so a boot that touched the user's
+profile fails. A root that does not exist is reported absent, which is what CI
+prints for both. The install reads the repository lockfile to stay offline, so
+this proves npm's install of this tarball into a profile, not registry metadata
+resolution for its declared ranges; `docs/ARCHITECTURE.md` §10 S20 records both
+sides.
+
 See [`README.md`](README.md) for the fidelity
 contract and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.

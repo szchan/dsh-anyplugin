@@ -2489,6 +2489,92 @@ append after the inherited entries rather than prepend, and the row moves to
 proposal in `docs/TODO.md` is the right shape.
 
 
+### S20 — the packed tarball mounts from a profile npm installed it into
+
+**Question.** S17 mounts the packed bundle through a profile, but its
+`extractPackage` copies the tarball into `node_modules` and links the runtime
+scopes from this checkout; the install smoke composes the packed patch itself.
+Does the artifact a user installs — a tarball in a profile whose `package.json`
+names it in `dependencies` and `dsh.profile.bundles`, installed by npm — boot
+through the host's own profile loader with the controller entry active, the
+bundle patch applied and a materializer child live? Does its module resolve
+inside the profile's `node_modules`, and does the gate redden when the patch is
+missing from the tarball, when the profile does not list the bundle, or when the
+package resolves from this checkout?
+
+**Method.** `check:pack` runs `node scripts/profile-boot.mjs <tarball>` after
+its install smoke. The script creates a scratch `$DSH_HOME`, asks the host's own
+`initProfile` for a profile, adds `"dsh-anyplugin": "file:<tarball>"` to the
+profile `dependencies`, copies the repository's `package-lock.json` so npm can
+resolve the tarball's closure offline (the cache `npm ci` leaves holds tarballs,
+not packuments), and runs
+`npm install --no-audit --no-fund --offline --ignore-scripts --legacy-peer-deps`.
+It then boots through `mountProfile`, the same helper
+`packages/dsh-anyplugin-conformance/test/profile-mount.test.mjs` calls, so S17
+and the pack gate share one implementation of `loadProfile` →
+`readProfilePatches` → `boot`. The boot asserts what it observes, not what the
+install returned: the composed patch contains the `dsh-anyplugin` row, the
+controller entry is active, exactly one root group
+`anyplugin.claude-code…skills-only` is active with its
+`dsh-anyplugin/materialize/skill` child active, the fixture's `hello` and
+`greet` skills load and render, the controller reads the scratch
+`installs.yml`, and every recorded module URL is under
+`<profile>/node_modules/dsh-anyplugin/lib/index.js`, never this checkout. On a
+Node where `PluginPackages` initializes, the boot requires that path, no profile
+`@deepseek-ai` link and group-entry URLs under the installation; where it cannot
+(the boundary S18 measured), S17's scope-link fallback is allowed locally and is
+a failure under CI.
+
+**Mutations.** The ticket's three failures are produced by
+`--mutation=no-patch|no-bundle|checkout` and kept as a test in
+`profile-mount.test.mjs`; each must fail for its own message, and the test
+asserts the three are pairwise distinct:
+
+| mutation | how | observed message |
+| --- | --- | --- |
+| no-patch | repack the tarball without `package/cordis.patch.yml` | `bundle skipped: "dsh-anyplugin": … failed to read overlay …/cordis.patch.yml: … ENOENT` |
+| no-bundle | `initProfile` with an empty `dsh.profile.bundles` | `the profile's dsh.profile.bundles does not list dsh-anyplugin (no bundle layer was loaded)` |
+| checkout | replace the installed package with a link to this checkout | `dsh-anyplugin resolved outside the profile node_modules: file:///…/lib/index.js` |
+
+**Real profile.** The boot fingerprints `$DSH_HOME` and `$DSH_PROFILE_DIR`
+before and after — per-entry kind, mode, size and mtime, plus sha256 of every
+regular file up to 64 KiB — and fails naming the changed paths if either moved;
+the success line prints both digests. The running Desktop host writes its own
+session state under `$DSH_HOME/sessions` and `$DSH_HOME/storages` while the boot
+runs, so those two host-owned subtrees are excluded from the home fingerprint
+only, and the exclusion is printed; the profile fingerprint has no exclusion. A
+boot that appends to both `$DSH_HOME/sessions/live.txt` and
+`$DSH_PROFILE_DIR/sessions/live.txt` passes the home comparison only because of
+that scope and fails naming the profile (`profile-mount.test.mjs`, the `guard:`
+test). A root that does not exist is reported absent, not as an unreadable
+empty tree; on CI, where neither a real home nor a real profile exists, the boot
+prints `real home: absent; real profile: absent`.
+
+**Answer.** At pins `0.2.2-rc.5` and `0.2.2-rc.2` (claude-code@2.1.329) the
+npm-installed tarball mounts: controller `dsh-anyplugin` active, patch row
+applied, the `anyplugin.claude-code…skills-only` group active with its skill
+child active, skills `greet,hello`, and the module URL inside the scratch
+profile. Locally the boot was green on both pins under Node 24.22.2
+(scope-link, the failing side of S18's bindings boundary) and on `0.2.2-rc.5`
+under the Desktop's Node 24.21.0 (`PluginPackages`, no scope link, group URLs
+under the installation tree). CI's `node-version: '24'` resolves to 24.22.3,
+the capable side of that boundary, and `npm run verify` runs per pin and
+requires 0 skipped.
+
+**What this does not prove.** Dependency *metadata* resolution: the profile
+install reads the repository lockfile, so a `dependencies` range in the tarball
+that the lock already satisfies is not re-resolved against a registry; a range
+the lock cannot satisfy fails the install offline rather than producing a
+verdict about the range. The installer is npm, not the pnpm the host's profile
+template names. The profile lists only `dsh-anyplugin`, not the stock base
+bundle `normalizeShippedProfile` would add. `PluginPackages` closure on a
+capable Node is asserted only the way S17 asserts it (the addon probe plus the
+group-entry URL); no new Node is measured, and S18 owns that boundary. The live
+Desktop host's `sessions/` and `storages/` writes are excluded rather than
+frozen, so "untouched" is scoped to every other path. Reconcile counts are not
+asserted (S17's note applies).
+
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the
