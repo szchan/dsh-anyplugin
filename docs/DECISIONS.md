@@ -3303,6 +3303,11 @@ stand unchanged.
    `fixtures/claude-hooks-seams` and asserts one line per event, the exact
    payload key sets, and `cwd !== worktree_path`. The materializer's
    `packages/dsh-anyplugin-materialize-hook/test/lifecycle.test.mjs` pins the
-   dedupe keys and gap warnings; its mutation set (drop `turn`, drop
-   `cleanup.revision`, force `isRootSession`, drop the gap calls, set `cwd` to
-   the removed path) turns a named test red.
+   dedupe keys and gap warnings. Its mutation set turns one named test red
+   each: dropping `turn` fails `StopFailure keys each failure by session and
+   turn`; dropping `cleanup.revision` fails `WorktreeRemove keys each removal
+   by cleanup revision`; forcing `isRootSession` fails `StopFailure ignores a
+   child session on both failure records`; dropping the gap calls fails
+   `StopFailure reports every classic field the record cannot supply`; and
+   setting `cwd` to the removed path fails `WorktreeRemove reports the host cwd
+   as a gap, never the removed path`.

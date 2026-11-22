@@ -477,7 +477,10 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
     queue.push(failingChunks('seams child model failure'))
     childAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'fail as a child' }], source: { kind: 'user' } }))
     await childEnded
-    await untilLine('StopFailure')
+    // The root's line is already in the log; a child that wrongly fired would
+    // add a second one later. The count is asserted after the directory barrier
+    // below, which drains the mount's serial queue, so waiting for a
+    // 'StopFailure' line here would pass on the root record and prove nothing.
 
     // A final, deterministic directory set: the CwdChanged payload the script
     // keeps must be the new directory, so the seam's meaning is asserted on the
