@@ -42,6 +42,7 @@ import {
 const checkout = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/u, '')
 const repo = '/work/repo'
 const worktree = '/work/wt/ticket-80'
+const reviewedHead = '0123456789abcdef0123456789abcdef01234567'
 
 // A minimal main checkout that carries the current sources: a linked worktree
 // refuses installs (its hooks dir is the main checkout's), so the rollback path
@@ -123,12 +124,91 @@ test('a nested shell in bash -c cannot smuggle the push past the guard', () => {
   assert.equal(shell('sudo -u root git push origin main').kind, 'deny')
 })
 
-test('gh pr merge is denied for a worker and allowed for the root', () => {
-  const denied = shell('gh pr merge 82 --squash --delete-branch', worker)
-  assert.equal(denied.kind, 'deny')
-  assert.match(denied.reason, /gh-pr-merge-worker/u)
-  assert.equal(shell('gh pr merge 82 --squash', root).kind, 'allow')
+test('an unpinned merge is denied for the root', () => {
+  for (const command of [
+    'gh pr merge 82',
+    'gh pr merge 82 --squash',
+    'gh pr merge 82 --delete-branch',
+    'gh -R szchan/dsh-anyplugin pr merge 82 --merge',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+    assert.match(denied.reason, /cannot know which commit was reviewed/u)
+    assert.match(denied.reason, /--match-head-commit <40-hex reviewed head>/u)
+  }
+})
+
+test('--auto does not exempt a merge from the pin', () => {
+  for (const command of ['gh pr merge --auto 82', 'gh pr merge 82 --auto', 'gh pr merge --auto 82 --squash']) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+  }
+  assert.equal(shell(`gh pr merge --auto 82 --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+})
+
+test('a merge pin must be a full 40-hex head', () => {
+  for (const pin of ['abc1234', reviewedHead.slice(0, 39), `${reviewedHead}0`, 'g'.repeat(40)]) {
+    const denied = shell(`gh pr merge 82 --match-head-commit ${pin}`, root)
+    assert.equal(denied.kind, 'deny', pin)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', pin)
+    assert.match(denied.reason, /not a full 40-hex commit sha/u)
+  }
+  assert.equal(shell('gh pr merge 82 --match-head-commit', root).rule, 'gh-pr-merge-pin')
+  assert.equal(shell(`gh pr merge 82 -- --match-head-commit ${reviewedHead}`, root).rule, 'gh-pr-merge-pin')
+})
+
+test('a pinned merge is allowed for the root', () => {
+  for (const command of [
+    `gh pr merge 82 --squash --match-head-commit ${reviewedHead}`,
+    `gh pr merge 82 --auto --match-head-commit ${reviewedHead}`,
+    `gh pr merge 82 --match-head-commit=${reviewedHead}`,
+    `gh pr merge --squash --match-head-commit ${reviewedHead} 82`,
+    `gh -R szchan/dsh-anyplugin pr merge 82 --squash --match-head-commit ${reviewedHead}`,
+  ]) {
+    assert.equal(shell(command, root).kind, 'allow', command)
+  }
+})
+
+test('a worker cannot merge even with a pin', () => {
+  for (const command of [
+    'gh pr merge 82 --squash',
+    `gh pr merge 82 --squash --match-head-commit ${reviewedHead}`,
+  ]) {
+    const denied = shell(command, worker)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-worker', command)
+  }
   assert.equal(shell('gh pr view 82', worker).kind, 'allow')
+})
+
+test('a raw gh api merge is refused because it cannot carry the pin', () => {
+  for (const command of [
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api -XPUT repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api --method POST repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge?merge_method=squash',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+    assert.match(denied.reason, /gh api/u)
+  }
+})
+
+test('a shell wrapper cannot hide an unpinned merge', () => {
+  for (const command of [
+    `bash -c 'gh pr merge 82 --squash'`,
+    `sh -lc "gh pr merge 82 --squash"`,
+    'git status --short && gh pr merge 82 --squash',
+    'env -i gh pr merge 82 --squash',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+  }
+  assert.equal(shell(`sh -s <<'EOF'\ngh pr merge 82 --squash\nEOF`, root).rule, 'shell-unmodelled')
 })
 
 test('DECISIONS.md is append-only: every writer is denied except the sanctioned update', () => {

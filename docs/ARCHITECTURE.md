@@ -1513,7 +1513,9 @@ a push is accepted only as `git push [-u|--force-with-lease] origin <one
 refspec that is not main>`, so a destination of `main`/`master`, **every bare
 `git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
 refused (`remote.<name>.push` and `push.default` can retarget a bare push after
-it was read); `gh pr merge` from a worker only (the root may merge); writes
+it was read); every `gh pr merge` must carry `--match-head-commit <40-hex>`
+(the root is the merge path; a worker may not merge at all), and a raw
+`gh api …/merge` is refused because it has no such flag; writes
 outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
@@ -1619,8 +1621,14 @@ from allowed tools, a root-run shell script, a root-written exec key that a host
 later runs, config already present in the repository or written by a process
 outside the guard (the guard models the tool call, not the filesystem),
 `sudo` on a host where it succeeds without a password, a launcher spelling the
-command-position skipper does not model, and any git feature outside the
-modelled subcommands. The guard decision is recorded on merge; this
+command-position skipper does not model, any git feature outside the
+modelled subcommands, a merge through a client the guard does not model
+(`curl`, a script, a `gh` alias or wrapper, or a raw GraphQL
+`mergePullRequest`), and `--auto` with a valid pin (gh forwards the pin as
+`expectedHeadOid`; when GitHub evaluates it for a deferred merge is GitHub's
+behaviour, not the guard's). The merge rule is omission prevention, not review
+verification: the guard can see that a merge names a head, not that the head
+was the one the reviewer read. The guard decision is recorded on merge; this
 paragraph is its framing, not a second decision. Branch protection, the DSH
 file sandbox and CI are the boundary.
 
@@ -2908,6 +2916,10 @@ kernel would have to be rewritten — and would make mods structurally impossibl
     replaced (`tools/post-execute cannot replace the value of a failed
     result`), and a standalone `ctx.tools.execute` call carries no `agent`, so
     the payload's agent-derived fields are absent rather than invented.
+  - One guard rule rides this seam: a `gh pr merge` is refused unless it
+    carries `--match-head-commit <40-hex>`. That is omission prevention, not
+    review verification — the guard can see that a merge names a head, not
+    that the head was the one the reviewer read.
   - Consequences: the hook arm maps to these waterfalls instead of
     `ctx.tools.guard` (guard is monotonic denial only, no result, no
     injection), the interception kernel's `observe` mode matches the waterfall

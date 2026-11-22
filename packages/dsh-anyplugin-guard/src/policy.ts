@@ -17,7 +17,10 @@
  *    pushes, extra refspecs or flags, other remotes, `--receive-pack`,
  *    `--exec`, `send-pack` and `update-ref` are refused by name. A push is
  *    never inferred from configuration.
- * 3. `gh-pr-merge-worker` — a worker may open a PR, never merge one.
+ * 3. `gh-pr-merge-worker` / `gh-pr-merge-pin` — a worker may open a PR, never
+ *    merge one; every merge that is allowed must carry
+ *    `--match-head-commit <40-hex>`. The pin prevents the merge from omitting
+ *    the head; it does not prove that the head was reviewed.
  * 4. `write-outside-worktree` — a worker writes inside the worktree it was
  *    given and nowhere else; with no recorded worktree, writes fail closed.
  * 5. `shell-unmodelled` / `shell-script-unverified` — the shell reader refuses
@@ -446,17 +449,80 @@ function judgePush(push: GitPush, branch: string | undefined, raw: string): Verd
   return undefined
 }
 
-/** `gh pr merge …`, including `gh -R owner/repo pr merge` and `gh api …/merge -X PUT`. */
-export function ghPrMerge(tokens: string[]): boolean {
-  const head = stripPrefix(tokens)
-  if (head.length === 0 || baseCommand(head[0]) !== 'gh') return false
-  const pr = head.indexOf('pr')
-  if (pr > 0 && head[pr + 1] === 'merge') return true
-  if (head.includes('api')) {
-    const text = head.join(' ')
-    return /\/merge(?:\s|$)/u.test(text) && /(?:-X|--method)\s+(?:PUT|POST)/iu.test(text)
+type MergePath = 'pr' | 'api'
+
+const MERGE_PIN_FLAG = '--match-head-commit'
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/iu
+const MERGE_API_PATH = /(?:^|\/)pulls\/[^/]+\/merge(?:\?.*)?$/u
+
+/** The position of `pr merge` in `gh`'s arguments, or -1. */
+function mergeSubcommandAt(head: string[]): number {
+  return head.findIndex((token, index) => index > 0 && token === 'pr' && head[index + 1] === 'merge')
+}
+
+/** `gh api repos/o/r/pulls/<n>/merge` with an explicit PUT/POST. */
+function apiMerge(tokens: string[]): boolean {
+  if (!tokens.some((token) => MERGE_API_PATH.test(token))) return false
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === '-X' || token === '--method') {
+      if (/^(?:PUT|POST)$/iu.test(tokens[index + 1] ?? '')) return true
+      continue
+    }
+    if (/^--method=(?:PUT|POST)$/iu.test(token)) return true
+    if (/^-X=?(?:PUT|POST)$/iu.test(token)) return true
   }
   return false
+}
+
+/** Which modelled `gh` merge path the segment is, if any. */
+function ghMergePath(tokens: string[]): MergePath | undefined {
+  const head = stripPrefix(tokens)
+  if (head.length === 0 || baseCommand(head[0]) !== 'gh') return undefined
+  if (mergeSubcommandAt(head) > 0) return 'pr'
+  if (head.includes('api') && apiMerge(head)) return 'api'
+  return undefined
+}
+
+/** Why the effective `--match-head-commit` on a `gh pr merge` is unusable, if it is. */
+function mergePinProblem(tokens: string[]): string | undefined {
+  const head = stripPrefix(tokens)
+  const pr = mergeSubcommandAt(head)
+  if (pr < 0) return `no ${MERGE_PIN_FLAG} is present`
+  let seen = false
+  let value: string | undefined
+  let missing = false
+  // pflag reads flags until `--` and lets the last repeated flag win, so the
+  // last occurrence is the one GitHub will receive.
+  for (let index = pr + 2; index < head.length; index += 1) {
+    const token = head[index]
+    if (token === '--') break
+    if (token === MERGE_PIN_FLAG) {
+      seen = true
+      value = head[index + 1]
+      missing = value === undefined
+      index += 1
+    } else if (token.startsWith(`${MERGE_PIN_FLAG}=`)) {
+      seen = true
+      value = token.slice(MERGE_PIN_FLAG.length + 1)
+      missing = false
+    }
+  }
+  if (!seen) return `no ${MERGE_PIN_FLAG} is present`
+  if (missing) return `${MERGE_PIN_FLAG} has no value`
+  if (value === undefined || !FULL_COMMIT_SHA.test(value)) {
+    return `"${value ?? ''}" is not a full 40-hex commit sha`
+  }
+  return undefined
+}
+
+function mergePinReason(raw: string, problem: string): string {
+  return `refusing "${excerpt(raw)}": ${problem}; the guard cannot know which commit was reviewed, so the pin is how the merge becomes falsifiable. Use \`gh pr merge <number> [--squash|--merge|--rebase] --match-head-commit <40-hex reviewed head>\`.`
+}
+
+/** `gh pr merge …`, including `gh -R owner/repo pr merge` and `gh api …/merge -X PUT`. */
+export function ghPrMerge(tokens: string[]): boolean {
+  return ghMergePath(tokens) !== undefined
 }
 
 const DECISIONS_PATH = /docs\/DECISIONS\.md|decisions\.lock\.json/u
@@ -1259,6 +1325,19 @@ function judgeCommand(
     const pushCwd = push.dir === undefined ? cwd : (resolveTarget(push.dir, cwd) ?? cwd)
     const violation = judgePush(push, context.branch(pushCwd), segment.raw)
     if (violation !== undefined) return violation
+  }
+
+  // Workers are refused outright below; this is the check for the root, the
+  // only role that can reach a merge. It runs before the role shortcut so the
+  // merge path never falls through to an unconditional allow.
+  for (const segment of flat) {
+    const merge = ghMergePath(segment.tokens)
+    if (merge === undefined || agent.worker) continue
+    const problem =
+      merge === 'api'
+        ? `a raw \`gh api\` merge cannot carry ${MERGE_PIN_FLAG}`
+        : mergePinProblem(segment.tokens)
+    if (problem !== undefined) return deny('gh-pr-merge-pin', mergePinReason(segment.raw, problem))
   }
 
   if (!agent.worker) return ALLOW
