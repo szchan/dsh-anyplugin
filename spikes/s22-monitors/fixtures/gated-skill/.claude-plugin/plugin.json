@@ -1,0 +1,5 @@
+{
+  "name": "s22-gated",
+  "description": "S22 spike: a monitor armed only by on-skill-invoke",
+  "version": "0.0.0"
+}

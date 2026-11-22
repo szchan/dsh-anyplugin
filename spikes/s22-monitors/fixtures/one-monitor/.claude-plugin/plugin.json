@@ -1,0 +1,5 @@
+{
+  "name": "s22-one",
+  "description": "S22 spike: one plugin monitor plus hooks that log to the same file",
+  "version": "0.0.0"
+}

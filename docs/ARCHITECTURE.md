@@ -2625,6 +2625,69 @@ adding `identity` to the `session.id` table reddens that test even when the doc
 check stays green.
 
 
+### S22 — a plugin `monitors` declaration is validated and never spawned headless
+
+**Question.** A plugin may declare background monitors (`monitors/monitors.json`,
+or an inline `"monitors"` array) whose stdout is supposed to reach the model.
+Our dialect carries the surface as `planned` for want of an observation. In the
+pinned client, when does a monitor start relative to session start, the first
+model request and the first tool call; does it start at all under headless
+`-p`; how many spawns per session and per turn; does `/clear` or `--resume`
+re-arm it; do its stdout/stderr lines reach the model, in what role and wrapper;
+does `when` change the trigger and which keys does the client accept; how does
+it order against hooks and the transcript; what ends it; and what environment
+and cwd does it inherit?
+
+**Method.** `node spikes/s22-monitors/run.mjs --deepseek` pins
+`@anthropic-ai/claude-code@2.1.329` and runs in three stages. A loader stage
+publishes seven fixtures through a generated marketplace and captures `plugin
+list` and `plugin details` per plugin — four valid declarations (one monitor,
+two monitors, `on-skill-invoke`, an inline array) and three invalid ones (an
+unknown key, a bare `on-skill-invoke:`, an enum value). A standalone control
+runs the fixture monitor directly, so the spike can tell "the client never
+spawned it" from "the fixture never wrote a beat". Four headless sessions then
+drive `-p --input-format stream-json --output-format stream-json --verbose`
+through a local recording proxy: two turns with `when: "always"`, two turns with
+two monitors, a slash-command dispatch of an `on-skill-invoke` monitor whose
+skill body replies `S22_SKILL_OK`, and `--resume` of the first session. The
+driver's 24 checks include four start assertions; when no monitor start record
+exists it prints `s22: REFUSED — the pinned client never spawned a plugin
+monitor.` and exits 1, because a green run with zero observed monitors would be
+a lie about the surface.
+
+**Answer.** The client validates the declaration and then does nothing with it.
+Across four sessions and 19 hook records there are **0 monitor start records**;
+nine model requests totalling 560292 request bytes carry **0** `S22_MON`
+occurrences and **0** `task_notification` occurrences; the 197541-byte session
+transcript carries **0**; 946 debug lines, none matching `/monitor/i`; `Stop`
+carries `"background_tasks": []` on both turns; and `claude plugin details` has
+no Monitors row at all — the surface is invisible to the inventory as well as to
+the model. It is not a refusal: no error, warning or debug line is printed. The
+declaration surface is the one observable piece: `name`, `command`,
+`description` are required, `when` defaults to `"always"` and otherwise must
+start with `on-skill-invoke:` and name a skill, and unknown keys are rejected —
+`Unrecognized key: "trigger"`, `Invalid string: must start with
+"on-skill-invoke:"`, `on-skill-invoke: must specify a skill name` are the
+client's own bytes in `spikes/s22-monitors/captures/loader/plugin-list.txt`.
+Both file and inline forms load (`Status: ✔ enabled`). So six of the seven rows
+are `[not observable]` because there is no process to watch, and the seventh
+(the declaration surface) is `[observed]`; the effect of `when` cannot be
+separated from "no spawn" even though the `on-skill-invoke` skill did dispatch.
+
+**What this does not prove.** It does not observe the interactive client: this
+sandbox denies `/dev/ptmx`, so the TUI was never started and "monitors never
+run" is a statement about headless `-p` only. `/clear` was not exercised (no
+non-interactive way to send it), so the post-clear count is untested rather than
+zero. The argument that the arming effect's only caller is the REPL component is
+source-read, not measured; the measurement is the four sessions. The fixture's
+own control is what rules out a broken monitor script — it emits `S22_MON
+standalone 1 2026-11-22T06:47:14.877Z pid=1571027`, so the silence in the
+sessions belongs to the client. Per D37 this licenses carrying the declaration
+(bytes, hash, and a premise test that the pin still validates these keys) and
+nothing else: no materializer, no golden, and no fidelity class better than
+`planned` until a PTY run shows a monitor actually running.
+
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the

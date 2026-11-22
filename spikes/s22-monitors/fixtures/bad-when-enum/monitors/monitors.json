@@ -1,0 +1,8 @@
+[
+  {
+    "name": "bad",
+    "command": "\"__NODE__\" \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" bad 250 40",
+    "description": "S22 enum-when monitor",
+    "when": "sometimes"
+  }
+]

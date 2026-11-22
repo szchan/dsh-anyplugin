@@ -1,0 +1,13 @@
+s22-one 0.0.0
+  Description: Spike S22 fixture one-monitor
+  Source: s22-one@s22-mkt
+
+Component inventory
+  Skills (0)
+  Agents (0)
+  Hooks (5)  SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd  (harness-only — no model context cost)
+  MCP servers (0)
+  LSP servers (0)
+
+Projected token cost
+  Always-on:   ~0 tok   added to every session

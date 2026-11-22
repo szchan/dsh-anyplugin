@@ -1,0 +1,47 @@
+Installed plugins:
+
+  ❯ s22-bad-extra@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-bad-extra
+    Scope: user
+    Status: ✘ failed to load
+    Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-extra/monitors/monitors.json: [ { ”code”: ”unrecognized_keys”, ”keys”: [ ”trigger” ], ”path”: [ 0 ], ”message”: ”Unrecognized key: \”trigger\”” } ]
+
+  ❯ s22-bad-when-enum@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-bad-when-enum
+    Scope: user
+    Status: ✘ failed to load
+    Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-when-enum/monitors/monitors.json: [ { ”origin”: ”string”, ”code”: ”invalid_format”, ”format”: ”starts_with”, ”prefix”: ”on-skill-invoke:”, ”path”: [ 0, ”when” ], ”message”: ”Invalid string: must start with \”on-skill-invoke:\”” }, { ”code”: ”custom”, ”path”: [ 0, ”when” ], ”message”: ”on-skill-invoke: must specify a skill name” } ]
+
+  ❯ s22-bad-when-short@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-bad-when-short
+    Scope: user
+    Status: ✘ failed to load
+    Error: monitors load failed from <tmp>/marketplace/plugins/s22-bad-when-short/monitors/monitors.json: [ { ”code”: ”custom”, ”path”: [ 0, ”when” ], ”message”: ”on-skill-invoke: must specify a skill name” } ]
+
+  ❯ s22-gated@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-gated
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ s22-inline@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-inline
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ s22-one@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-one
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ s22-two@s22-mkt
+    Version: 0.0.0
+    Read from: <tmp>/marketplace/plugins/s22-two
+    Scope: user
+    Status: ✔ enabled
+

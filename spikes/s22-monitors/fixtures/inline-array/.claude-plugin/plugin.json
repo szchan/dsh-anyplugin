@@ -1,0 +1,12 @@
+{
+  "name": "s22-inline",
+  "description": "S22 spike: the monitors array declared inline in plugin.json",
+  "version": "0.0.0",
+  "monitors": [
+    {
+      "name": "inline-beat",
+      "command": "\"__NODE__\" \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" inline-beat 250 40",
+      "description": "S22 inline monitor"
+    }
+  ]
+}
