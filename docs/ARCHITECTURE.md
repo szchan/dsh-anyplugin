@@ -1479,7 +1479,7 @@ run degraded *by design*.
 | --- | --- | --- |
 | skill registry + filesystem provider | package present | commands-only fallback, `equivalent` |
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
-| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps the artifact re-hash, the spawn, the D20 verdict translation and the per-child SubagentStart→SubagentStop pair gate (one materializer load; a reload while a start chain is in flight is not covered). Six events are unprobed, ten refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
+| hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps the artifact re-hash, the spawn, the D20 verdict translation and the per-child SubagentStart→SubagentStop pair gate (one materializer load; a reload while a start chain is in flight is not covered). S23 probed the six S9-unprobed events: five have a host emitter — `TaskCreated` and `TaskCompleted` are `team/task` durable records (one full-task revision each; the completed revision carries `ownerName`), `WorktreeCreate` is a `plugin:worktree/created` durable record, `WorktreeRemove` is the `worktree/cleanup` emit (scheduled then final), and `StopFailure` is the error-shaped `turn/end` record plus the `agent/error` emit; all five are notification-only (a record or emit cannot veto). `TeammateIdle` has no emitter at rc.5: driving a fork teammate through activation to idle produced only `agent/status {status, agent}` and no `team/member` record or emit, so it is **not fired**, not unprobed (§10 S23). Ten classic events remain refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
@@ -3077,8 +3077,9 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   dispatch sites and 57 host event names; the full 338-package `0.2.2-rc.2`
   Desktop tree was swept separately as a cross-check. A name in a bundle is not
   evidence: every confirmed row booted the harness and a listener received the
-  event. **Fourteen seams are confirmed, six events are unprobed, and ten are
-  refuted with the reason recorded here.**
+  event. At S9's close, **fourteen seams were confirmed, six events were
+  unprobed, and ten were refuted with the reason recorded here; S23 (below)
+  then settles the six.**
 
   **Rule used below.** A classic event is *confirmed* when a listener on the
   existing host bus runs at the classic lifecycle point — a cordis
@@ -3131,33 +3132,19 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   | FileChanged | `fs/observed` (`@deepseek-ai/dsh-tool-fs/lib/index.js:199,354,495,822,841,860,887,892,1869`) | emit | yes — `write`, `read` and `edit` observations | `(target {displayPath}, {kind, version?}, exec)` | none [observed]. Asserted filter: `tool ∈ {write, edit}` and `kind === 'present'` (without it the probe counts 3 observations, including `read`). `apply_patch` was not exercised; the wiring ticket must confirm it. There is no content delta. |
   | ConfigChange | `settings/document-updated` (`@deepseek-ai/dsh-settings/lib/index.js:419-436`) | emit | yes — first read `revision 0`, unchanged second read emits nothing, changed document `revision 1` | `(ns, revision)` | notification-only [observed]; it is a settings-document revision, not the profile config replay, and carries no changed values. It **also fires on first read**, so a hook must not treat every event as a change. |
 
-  **Unprobed (6).** Each has a plausible durable record or emit, but the spike
-  did not establish that it runs at the classic lifecycle point. Marking these
-  confirmed without a probe would repeat the error that made `TaskCreated` look
-  refuted.
+  **Unprobed at S9 (1): `TeammateIdle` — answered not-fired by S23.** S23
+  (below) settled the other five at the same pin; for this one the hypothesized
+  per-member record does not exist, so S23 drove a real fork teammate to idle
+  and watched for it. The S9-era bullet is kept as the question, not as a
+  claim.
 
-  - `TaskCreated` — `team/task` is appended at
-    `@deepseek-ai/dsh-agent-team/lib/index.js:93`. To settle: mount
-    `TeamService` with an agent loop, create a task through the team service or
-    its tool, and assert the record type/payload and whether a create-specific
-    point exists. Not probed here.
-  - `TaskCompleted` — same record family; to settle, drive a task to completion
-    and assert the terminal record (and whether it is distinguishable from a
-    creation record). Not probed here.
-  - `TeammateIdle` — `team/member` records exist; to settle, transition a
-    teammate to idle and assert a record at that transition. Not probed here.
-  - `WorktreeCreate` — `plugin:worktree/created` is appended at
-    `@deepseek-ai/dsh-experimental-worktree/lib/index.js:898`. To settle: mount
-    the worktree service, create a session worktree, and assert the record and
-    its payload. Not probed here.
-  - `WorktreeRemove` — `worktree/cleanup` is emitted at
-    `@deepseek-ai/dsh-experimental-worktree/lib/index.js:112,127`. To settle:
-    remove a worktree and assert whether cleanup fires per removal and what it
-    carries. Not probed here.
-  - `StopFailure` — `turn/end` with an error reason is appended at
-    `@deepseek-ai/dsh-agent-loop/lib/index.js:832`. To settle: drive a turn to an
-    error ending and assert the reason and whether any failure-specific
-    dispatch exists. Not probed here.
+  - `TeammateIdle` — the S9 premise that "`team/member` records exist" is
+    source-false at `0.2.2-rc.5`: the only `team/*` append sites are
+    `team/task` and `team/mode`. S23 enabled Agent Teams, activated a real
+    `fork` teammate, waited for its idle `agent/status`, and observed no
+    `team/member` record and no listener payload. The row is **not fired** at
+    this pin; a per-member lifecycle record would have to be added upstream
+    before a listener can exist.
 
   **Refuted (10), with the reason.** A refuted row is a lifecycle the host does
   not expose as a listener seam, not a claim that the corresponding data is
@@ -3300,6 +3287,101 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   accepts the same third argument; both verify lines exercise it.)
 
   Every field the dialect's reasons call absent is absent.
+
+- **S23 — do the six S9-unprobed events fire, and what do they carry?**
+  ✅ **Answered 2026-11-22** by `spikes/s23-unprobed-events/run.mjs` against
+  the pinned `0.2.2-rc.5` harness (22/22 checks, **5 of 6 events fired**). The
+  spike reuses S9's boot graph and adds JSONL session persistence,
+  `dsh-subagent`, the in-process `fork` provider, Agent Teams, and the worktree stack (`dsh-fs-local`,
+  `dsh-subprocess-local`, the real `dsh-sandbox`, `dsh-sandbox-policy` in
+  `danger-full-access` mode, `dsh-working-directory`,
+  `dsh-experimental-worktree`). `workspaceRegistry` and `sessionQuery` are
+  one-method doubles: `dsh-workspace` and `dsh-session-query` are transitive
+  packages, not members of the fetched union.
+
+  **Rule.** *Fired* means a listener this spike registered on the host bus —
+  `ctx.on('session/event', …)` for a durable record, `ctx.on('<name>', …)`
+  for an emit — received the payload in this run. A source line is not
+  evidence. The team and worktree cases call the service directly (no model
+  turn); `StopFailure` drives a fake model stream whose terminal chunk is
+  `{type:'finish', reason:{kind:'error', failure:{code,message}}}`. The S9
+  fake-adapter shape (`reason:'error'`, a string) is **not** an error at
+  rc.5: `dsh-agent-loop/lib/index.js:936` reads `finish.kind`, so it ends the
+  turn as a default stop and never takes the failure path.
+
+  | Classic event | Emitter (site) | Dispatch | Observed | Payload keys (verbatim) | Classic-field derivation | Tool-call-shaped from the payload? |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `TaskCreated` | `session/event` `team/task` (`@deepseek-ai/dsh-agent-team/lib/index.js:93`) | durable record, revision 1, `status:"pending"` (service call, no model turn) | fired | `version, teamId, task`; task: `id, revision, subject, description, status, blockedBy, writeScopes` | `task_id`, `task_subject`, `task_description`; `team_name` and `teammate_name` absent — `teamId` is the root session id branded as a Team identity, not a display name, and the revision-one task is unowned | no — service record, no tool name/input/call id |
+  | `TaskCompleted` | `session/event` `team/task` (same site) | durable record, revision 3, `status:"completed"` (service call, no model turn) | fired | same envelope; task adds `ownerId, ownerName` | `task_id`, `task_subject`, `task_description`, and `teammate_name` from `ownerName` (observed as `"lead"`); `team_name` absent — `teamId` is a session id; `permission_mode` is session-level, not on the record | no — service record |
+  | `TeammateIdle` | none at `0.2.2-rc.5`; nearest is the generic `agent/status` emit (`@deepseek-ai/dsh-agent-loop/lib/index.js:571`, `status, agent`) | — | **not fired** — a real `fork` teammate was activated and reached idle | none | none — `agent/status` carries the child agent id, not `teammate_name` or `team_name` | no — no event fired |
+  | `WorktreeCreate` | `session/event` `plugin:worktree/created` (`@deepseek-ai/dsh-experimental-worktree/lib/index.js:898`) | durable plugin record (service call, no model turn) | fired | `path, branch, baseCommit, repositoryRoot` | `name` from `branch` | no — service record |
+  | `WorktreeRemove` | `worktree/cleanup` (`@deepseek-ai/dsh-experimental-worktree/lib/index.js:112,:127`) | emit, `scheduled` then final (archive signal, no model turn) | fired | `sessionId, path, cleanup`; cleanup: `revision, status` (`scheduled` then `removed`) | `worktree_path` from `path`; `cleanupOf(session, revision)` exposes the attempt | no — emit |
+  | `StopFailure` | `session/event` `turn/end` (`@deepseek-ai/dsh-agent-loop/lib/index.js:832`), plus `agent/error` (`:657`) | durable record + emit (turn 1, step 1) | fired | `turn, reason`; reason: `kind, error`; error: `message, code`; `agent/error`: `turn, step, error, agent` | `error_details` from `message`; `error` needs a mapping from the host `code` to Claude's error classes; `last_assistant_message` absent — the error turn commits `assistant/attempt`, not `assistant/message` | no — model/stream failure |
+
+  **Not fired — `TeammateIdle`.** The spike enabled Agent Teams, created,
+  claimed and completed a task on the Team Lead, then activated a real
+  in-process `fork` teammate (`ctx.subagents.startActivation`, child name
+  `s23-idle`) and waited for the child's `agent/status` to reach `idle`.
+  During the whole run the `team/member` listeners received nothing: zero
+  records, zero emits. At `0.2.2-rc.5` the package has **no `team/member`
+  record at all** — the only append sites are `team/task` and `team/mode` — so
+  the S9 hypothesis that "`team/member` records exist" is source-false at this
+  pin. The idle transition is visible only as the generic `agent/status`
+  `{status, agent}` emit, whose `agent` is the child `Agent` object (its `id`
+  matches the activated child). That is not a teammate-idle event and carries
+  no `teammate_name` or `team_name`. A wiring ticket cannot create this seam
+  from a listener; the member lifecycle would have to be added upstream.
+
+  Five of the six now have a listener seam, but **none is wired here**: the six
+  stay on the adapter's `unmapped` list until a wiring ticket routes them
+  (§7), and `packages/dsh-anyplugin-intercept/src/mod-events.ts` is
+  unchanged. No coverage row moved, and none of the six is claimable as a hook
+  event yet. Fired is not the same as fully derivable: neither task record
+  carries a team display name (`teamId` is a root session id), `TaskCreated`
+  has no `teammate_name`, and `StopFailure` has no `last_assistant_message`.
+  None of the payloads is tool-call-shaped: no one carries a tool name, tool
+  input, or call id, so a tool-name matcher cannot be populated from the event
+  alone.
+
+  Two probe-only seams were required and are worth recording for the wiring
+  ticket: JSONL persistence (`{root: out/sessions, compression:'none'}`) is
+  what satisfies `TeamJournal`'s `sessions.flush()` durability check; the
+  worktree service must be configured with a **relative** `directory`
+  (`.agents/worktrees`) because an absolute path fails at construction with
+  `worktree: directory must be a relative directory without dot segments`; and
+  the fork provider must be mounted as the whole module namespace
+  (`ctx.plugin(Fork, {providerName:'fork'})`), not as a `{name, apply}` wrapper,
+  because its named `inject: ['subagents']` is part of the module and without it
+  the provider never registers (`no subagent provider registered for "fork"`).
+
+  Reproduce:
+
+  ```bash
+  node scripts/fetch-harness.mjs 0.2.2-rc.5
+  DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+    node spikes/s23-unprobed-events/run.mjs
+  # builds a partial tree (every package but the fork provider) and asserts exit 2
+  DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+    node spikes/s23-unprobed-events/check-partial-harness.mjs
+  ```
+
+  The spike asserts that the resolved harness version equals
+  `DSH_HARNESS_VERSION`; a wrong tree — including the Desktop `0.2.2-rc.2`
+  fallback when `DSH_HARNESS_DIR` is absent — exits 2 and names both versions.
+  An explicitly set `DSH_HARNESS_DIR` is validated as the only tree: a root
+  missing any required package exits 2 and lists **every** missing package; it
+  is never replaced by `DSH_INSTALL_DIR`. Fallback happens only when the
+  variable is unset — then `DSH_INSTALL_DIR`, then the fetched pin, each
+  validated the same way, and an unusable root is its own exit-2 error. A tree
+  that resolves but lacks a probe package (for example
+  `dsh-subagent-fork-in-process`) also exits 2 and names every missing extra.
+  A 0-check run reports `0 checks ran` and exits 2, never an ordinary pass or
+  red; a run that boots the pin can still exit 1 for a failed probe or zero
+  fired.
+  S23 is
+  probe-only in this change and is not wired into `verify.yml` (no
+  `package.json` or workflow edit); `spikes/s23-unprobed-events/out/` is
+  report output only and gitignored.
 
 - **S10 — can a plugin make its `agents/*.md` personas model-selectable?**
   ✅ **Answered 2026-11-19** by `spikes/s10-agents/run.mjs` against the pinned
