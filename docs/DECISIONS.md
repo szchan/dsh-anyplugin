@@ -3152,3 +3152,43 @@ matching transcripts where the guard's own test matrix also matches.
 (every test sets its own `mkdtemp` directory), so a `verify` run writes zero
 lines to an external audit directory; one real denial under the override writes
 one line, asserted against a byte-identical checkout log.
+
+---
+
+## D69 — Performance is a paired ratio against the base tree, not a millisecond count
+
+**Decided 2026-11-22** (#177, #187). Milliseconds do not survive a different
+machine, a busy host or a different Node patch; a ratio measured twice in the
+same run mostly does. `scripts/perf.mjs` therefore compares the working tree
+against a base tree and reports `head / base`.
+
+1. **Ratios are the claim; milliseconds are description.** Each probe times both
+   trees in one run and reports the ratio. The table also prints absolute
+   numbers, but nothing compares them across runs or machines.
+2. **Pairing is the sampling unit.** P1/P3/P4 import both trees into one child
+   per repeat. P2 discards one warm-up pair, then boots one base child and one
+   head child **adjacent in time** with the order alternating; a boot log whose
+   pairs are not adjacent fails to parse (`pairBootLog`) instead of being
+   averaged as two blocks. The reported number is the **median of the per-pair
+   ratios**; the per-side medians sit next to it as description, and a test
+   pins that a side-median ratio cannot be reported in its place.
+3. **`--check` gates P1, P3 and P4 at 1.5×.** P2 (boot + reconcile) and P5
+   (size/RSS) are informational. P2's same-code ratio spans roughly 0.9–1.2, so
+   a 1.5× gate would read a real 1.5× regression as a 0.885× pass; P5 is a
+   budget, not a duration. The verdict sentence says "all **gated** ratios" and
+   names that P2 was not checked, so `all` can never be read as covering it.
+4. **The bar is an observation, not a guarantee.** Five consecutive same-code
+   runs must each land inside 0.85–1.18 for a gated probe on this machine; the
+   measured values are in `docs/PROFILING.md`. A run outside the band is a
+   reason to re-measure the band, not by itself evidence of a regression.
+5. **Not in CI.** `--check` is deliberately not wired to `verify`: it needs a
+   base tree, repeats of short-lived children and a quiet host — none of which a
+   two-core runner gives. CI runs the probe tests; a human runs the comparison
+   before a release and whenever a change claims "no regression".
+6. **A regression claim names the probe, the threshold and the repeat count.**
+   "Faster" or "no regression" without those three is not a measurement.
+
+**Consequences.** #187 lands P1–P5 with the pairing rules and the mutation
+matrix M1–M8. Acceptance pins the pair-median report and the gated-only
+wording. No gate in `verify` reads perf numbers, so a red perf run can block a
+release decision but never a merge.

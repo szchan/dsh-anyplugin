@@ -6,7 +6,8 @@ load go through, and reports each as **head over base**. It exists because
 one answers *did the base commit's tree get slower?* and it answers it on the
 machine you are sitting at.
 
-A regression is **a ratio against the base, not a millisecond count**. The
+A regression is **a ratio against the base, not a millisecond count** (ratified
+as D69 in `docs/DECISIONS.md`). The
 stopwatch is only there to produce the numerator and the denominator; the
 number a reviewer reads is the median of the per-pair `head/base` ratios,
 where `< 1.00` is faster. The pair, not a side's median, is the unit: a burst
