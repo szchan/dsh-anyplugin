@@ -67,24 +67,32 @@ Verify from the registry, not from the log, and **run what the registry
 serves**:
 
 ```bash
-node scripts/verify-release.mjs --version <version>
+node scripts/verify-release.mjs --version <version>          # human output
+node scripts/verify-release.mjs --version <version> --json   # for a release note
 ```
 
-It reads the registry document (the version exists, and
+It judges three things: the registry (the version is in `versions`, and
 `dist.attestations.provenance.predicateType` is `https://slsa.dev/provenance/v1`),
-packs the published tarball with `npm pack`, unpacks it, and runs *its*
-`lib/cli.js report` on `fixtures/claude-skills-only`. The report's own facts
-are the claim: `ok`, the fixture's plugin name, the `claude-code` pin, at
-least one component, and a surface and class on every component. Exit 1 lists
-each claim that did not hold. The script is not part of `verify` — it reaches
-the network; it is the post-publish step.
+the packed manifest (the tarball's `version`, and the `bin` it declares), and
+the packed CLI. For the last one it runs `npm pack`, unpacks the tarball, runs
+*that* bin's `report` on `fixtures/claude-skills-only`, and judges the report:
+`ok`, no `problems`, the fixture's name, the pin exactly as `CLAUDE_CODE_PIN`
+declares it, every component's class in the five-class vocabulary with a reason,
+`carried` consistent with `totals`, and the row set equal to the fixture's files
+— a dropped row and an invented row both fail.
 
-Run it from outside the checkout. Inside one, `npx dsh-anyplugin@<version>`
-resolves the workspace bin, whose `lib/cli.js` only exists after a build, and
-the same command fails with `dsh-anyplugin: command not found`.
+Exit 1 lists each claim that did not hold; exit 2 is a usage error. An
+unpublished version stops after the registry judgment, because nothing after it
+can be true.
 
-`npm view` may serve a cached manifest; the script reads the registry over
-`fetch`, which does not.
+Scope, stated narrowly: this runs the packed CLI's `report` path. It does not
+execute the packed materializers — `report.ok` is IR validation, and a tarball
+whose `lib/materialize/*.js` all throw still reports `ok: true`.
+
+The script is not part of `verify`: it reaches the network and npm, and it is
+the post-publish step. Run it from the checkout root; the default fixture is
+relative. `npm view` supplies the version list; the version document itself is
+read over `fetch`.
 
 Then open the GitHub release for the tag and write what changed, in the same
 five-class vocabulary the docs use (what is now `exact` / `equivalent` / still
