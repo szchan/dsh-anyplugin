@@ -112,6 +112,7 @@ npm run ci                        # watch the verify run for the current branch 
 npm run check:arch                # structural rules R1–R14
 npm run check:features            # the capability map points at real files; owns R15
 npm run check:decisions           # D1–D67 append-only (--update accepts new entries only)
+npm run perf                      # our hot paths as base/head ratios (docs/PROFILING.md)
 npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
 npm run check:audit               # the audit ledger/report gate (part of verify)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
