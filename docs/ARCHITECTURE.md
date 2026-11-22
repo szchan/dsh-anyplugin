@@ -2799,6 +2799,30 @@ sessions belongs to the client. Per D37 this licenses carrying the declaration
 nothing else: no materializer, no golden, and no fidelity class better than
 `planned` until a PTY run shows a monitor actually running.
 
+**Shipped (#159).** `readClaudePlugin` now reads the declaration from the
+manifest array, the manifest `"./"`-relative path string, or
+`monitors/monitors.json`, in that precedence order; the manifest key replaces
+the directory file rather than merging with it (re-probed at the pin: an
+inline-valid or path-valid manifest stays enabled even when
+`monitors/monitors.json` is bad, while a bad manifest form fails the install).
+The path-string form is a third shape the seven spike fixtures did not use:
+`"monitors": "./monitors/custom.json"` loads and validates that file; a string
+not starting with `"./"` is manifest-shaped and fatal; a target that is
+missing, a directory or unreadable is file-shaped and carried.
+The pinned client has two verdicts, and the dialect mirrors both. A
+**manifest-shaped** violation — `monitors` is not an array or a `"./"` string,
+or an inline entry fails the schema — makes the manifest invalid: the client
+refuses the plugin, `plugin details` lists nothing, and the dialect throws
+through the same `CompileReport` path a broken manifest takes, emitting
+nothing. A **file-shaped** violation — bad JSON or content in
+`monitors/monitors.json` or the `"./"` target, a duplicate `name`, or a target
+that is a directory or cannot be read — does not fail the plugin: `plugin list`
+reports `Status: ✘ loaded with errors` and prints the client's error, while
+`plugin details` still exits 0 and serves the plugin's other components. The
+dialect carries that declaration as one `unsupported` row — field path, cause
+and the client's own error text — and compiles the rest. A valid declaration
+remains one `planned` row (D37).
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the

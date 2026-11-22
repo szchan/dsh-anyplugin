@@ -50,9 +50,9 @@ import { baseCommand, expansionHazard, leadingAssignments, parseSegments, shellS
 
 /** The brief the guard injects into a spawned worker (see `brief.ts`). */
 export interface BriefConfig {
-  /** Ratchet totals, verbatim, e.g. `25 declared / 24 matched / 0 missing / 1 refused`. */
+  /** Ratchet totals, verbatim, e.g. `27 declared / 26 matched / 0 missing / 1 refused`. */
   ratchet: string[]
-  /** Fixture count sentence, e.g. `11 fixtures`: the directories the ratchet owns. */
+  /** Fixture count sentence, e.g. `13 fixtures`: the directories the ratchet owns. */
   fixtures?: string
   /** Rows the ratchet is still red on, e.g. `mcpServers:…:refused`. */
   open: string[]

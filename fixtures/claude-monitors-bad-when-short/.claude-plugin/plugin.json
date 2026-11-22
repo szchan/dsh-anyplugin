@@ -1,0 +1,5 @@
+{
+  "name": "monitors-bad-when-short",
+  "description": "Conformance fixture: a monitor whose on-skill-invoke form names no skill",
+  "version": "0.0.1"
+}

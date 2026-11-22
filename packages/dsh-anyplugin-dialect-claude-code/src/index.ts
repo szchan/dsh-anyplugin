@@ -1277,18 +1277,448 @@ const BIN_REASON =
   'Planned for the union-only PATH contribution proposed in docs/TODO.md.'
 
 /**
+ * The declaration keys the pinned client accepts on one monitor entry (S22:
+ * spikes/s22-monitors/captures/loader, re-probed at 2.1.329). Zod's object
+ * schema is strict there: any other key is `unrecognized_keys`. The client does
+ * not throw the plugin away for it — `plugin list` reports the plugin as
+ * `loaded with errors` while `plugin details` still serves the other
+ * components — so the declaration is carried as an `unsupported` row below,
+ * not as a fatal install error.
+ */
+const MONITOR_KEYS = new Set(['name', 'command', 'description', 'when'])
+
+/**
+ * Why a valid monitor declaration is `planned` and nothing more.
+ *
+ * S22 measured the whole observable surface at claude-code@2.1.329: the client
+ * reads and validates `monitors/monitors.json` (or the manifest forms), lists
+ * no Monitors row in `plugin details`, and never spawns the process in a
+ * headless run — 0 monitor starts and 0 monitor bytes across 9 requests
+ * (560292 bytes) and a 197541-byte transcript, for both `when: always` and
+ * `when: on-skill-invoke`. The declaration is therefore the only face an
+ * oracle can see; per D37 it is carried as this row, never emitted, and no
+ * golden claims a runtime behavior. The TUI path remains unobservable
+ * (/dev/ptmx is denied in this environment), so we do not claim it.
+ */
+const MONITORS_REASON =
+  'S22 at claude-code@2.1.329: the client validates this declaration and never runs it headless — 0 monitor starts and 0 monitor bytes across 9 requests (560292 bytes) and a 197541-byte transcript, for `when: always` and `when: on-skill-invoke` alike — and `plugin details` prints no Monitors row. ' +
+  'The TUI path is unobservable (/dev/ptmx denied), so no runtime behaviour is claimed. DSH has no channel from a background process stdout into the model context yet (planned for v0.4); the declaration is carried as this row and never materialized (D37).'
+
+/**
+ * One rejected declaration, carrying the field path, our description of the
+ * cause, the client's own error text, and which verdict the client gives it.
+ *
+ * The pinned client has two verdicts at 2.1.329, measured in S22 and re-probed
+ * on the directory path:
+ *
+ *   - `manifest`: the manifest's own `monitors` value is invalid — a non-array,
+ *     a string that is not `"./"`-relative, or an inline entry the schema
+ *     rejects. The client refuses the whole manifest and never loads the
+ *     plugin: `claude plugin details` lists nothing. This error escapes and
+ *     becomes a fatal compile problem, like a broken manifest.
+ *   - `file`: a declaration file (the default `monitors/monitors.json`, or a
+ *     `"./"` target) has bad content or cannot be read. The client registers
+ *     the plugin, reports `Status: ✘ loaded with errors` (marketplace:
+ *     `✘ failed to load`), and still serves the other components. This error is
+ *     caught in `readMonitors()` and carried as an `unsupported` row.
+ */
+class MonitorsRefusal extends Error {
+  readonly kind: 'manifest' | 'file'
+  readonly source: string
+  readonly at: string
+  readonly detail: string
+  readonly client: string
+
+  constructor(kind: 'manifest' | 'file', source: string, at: string, detail: string, client: string) {
+    super(
+      `invalid monitors declaration in ${source}: ${at}: ${detail}. ` +
+        (kind === 'manifest'
+          ? `The pinned client refuses the manifest (S22, claude-code@2.1.329): ${client}. The plugin is not loaded.`
+          : `The pinned client loads the plugin with errors (S22, claude-code@2.1.329): ${client}.`),
+    )
+    this.name = 'MonitorsRefusal'
+    this.kind = kind
+    this.source = source
+    this.at = at
+    this.detail = detail
+    this.client = client
+  }
+}
+
+function monitorsInvalid(
+  kind: 'manifest' | 'file',
+  source: string,
+  at: string,
+  detail: string,
+  client: string,
+): never {
+  throw new MonitorsRefusal(kind, source, at, detail, client)
+}
+
+/**
+ * The shape word a zod message uses (`received object`, not `received an
+ * object`). Only the top-level and entry checks need it.
+ */
+function monitorsZodShape(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
+function monitorsShape(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'an array'
+  if (typeof value === 'object') return 'an object'
+  return `a ${typeof value}`
+}
+
+function monitorsJson(text: string, source: string, kind: 'manifest' | 'file'): unknown {
+  try {
+    return JSON.parse(text)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    monitorsInvalid(kind, source, 'monitors', `not valid JSON (${detail})`, `JSON Parse error: ${detail}`)
+  }
+}
+
+function monitorsArray(value: unknown, source: string, kind: 'manifest' | 'file'): unknown[] {
+  if (!Array.isArray(value)) {
+    monitorsInvalid(
+      kind,
+      source,
+      'monitors',
+      `must be an array of monitor declarations, not ${monitorsShape(value)}`,
+      `expected array, received ${monitorsZodShape(value)}`,
+    )
+  }
+  return value
+}
+
+function validateMonitorEntry(
+  entry: unknown,
+  source: string,
+  index: number,
+  kind: 'manifest' | 'file',
+): void {
+  const at = `monitors[${index}]`
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    monitorsInvalid(
+      kind,
+      source,
+      at,
+      `must be an object, not ${monitorsShape(entry)}`,
+      `expected object, received ${monitorsZodShape(entry)}`,
+    )
+  }
+  const record = entry as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!MONITOR_KEYS.has(key)) {
+      monitorsInvalid(
+        kind,
+        source,
+        at,
+        `unrecognized key ${JSON.stringify(key)} (the accepted keys are name, command, description, when)`,
+        `Unrecognized key: ${JSON.stringify(key)}`,
+      )
+    }
+  }
+  for (const key of ['name', 'command', 'description'] as const) {
+    const value = record[key]
+    if (value === undefined) {
+      monitorsInvalid(
+        kind,
+        source,
+        `${at}.${key}`,
+        'is required and must be a non-empty string',
+        'Invalid input: expected string, received undefined',
+      )
+    }
+    if (typeof value !== 'string') {
+      monitorsInvalid(
+        kind,
+        source,
+        `${at}.${key}`,
+        `must be a string, not ${monitorsShape(value)}`,
+        `Invalid input: expected string, received ${monitorsZodShape(value)}`,
+      )
+    }
+    if (value.length === 0) {
+      monitorsInvalid(
+        kind,
+        source,
+        `${at}.${key}`,
+        'must be at least 1 character',
+        'Too small: expected string to have >=1 characters',
+      )
+    }
+  }
+  const when = record.when
+  if (when === undefined) return
+  if (typeof when !== 'string') {
+    monitorsInvalid(
+      kind,
+      source,
+      `${at}.when`,
+      `must be "always" or "on-skill-invoke:<skill-name>", not ${monitorsShape(when)}`,
+      `Invalid input: expected "always"; Invalid input: expected string, received ${monitorsZodShape(when)}`,
+    )
+  }
+  if (when === 'always') return
+  if (!when.startsWith('on-skill-invoke:')) {
+    monitorsInvalid(
+      kind,
+      source,
+      `${at}.when`,
+      `must be "always" or "on-skill-invoke:<skill-name>", not ${JSON.stringify(when)}`,
+      'Invalid string: must start with "on-skill-invoke:"; on-skill-invoke: must specify a skill name',
+    )
+  }
+  if (when.length === 'on-skill-invoke:'.length) {
+    monitorsInvalid(
+      kind,
+      source,
+      `${at}.when`,
+      '"on-skill-invoke:" must name a skill after the colon',
+      'on-skill-invoke: must specify a skill name',
+    )
+  }
+}
+
+/**
+ * The client requires unique names in the file form (case-sensitive:
+ * `same`/`SAME` is accepted) and reports `Monitor names must be unique within a
+ * plugin`. Inline duplicates invalidate the whole manifest, so they are fatal.
+ */
+function rejectDuplicateNames(entries: unknown[], source: string, kind: 'manifest' | 'file'): void {
+  const seen = new Set<string>()
+  entries.forEach((entry, index) => {
+    const name = (entry as Record<string, unknown>).name as string
+    if (seen.has(name)) {
+      monitorsInvalid(
+        kind,
+        source,
+        `monitors[${index}].name`,
+        `duplicate monitor name ${JSON.stringify(name)} (names must be unique within a plugin)`,
+        'Monitor names must be unique within a plugin',
+      )
+    }
+    seen.add(name)
+  })
+}
+
+/**
+ * Why a rejected declaration is carried as `unsupported` instead of failing
+ * the plugin. It quotes the client's own error text because that text is the
+ * evidence: the client reports the plugin as `loaded with errors` and still
+ * serves every other component, so refusing the plugin here would be less
+ * faithful than the host. The S22 marketplace path printed a different status
+ * (`failed to load`); the two load paths diverge at this pin, and the directory
+ * form is the one `rig install <dir>` mirrors.
+ */
+function monitorsRefusedReason(refusal: MonitorsRefusal): string {
+  return (
+    `The pinned client rejects this declaration at claude-code@2.1.329: ${refusal.source} ${refusal.at}: ${refusal.detail}. Its own error text is: ${refusal.client}. ` +
+    'The client does not refuse the plugin: `claude plugin list` reports `Status: ✘ loaded with errors` and prints that error, while `claude plugin details` still exits 0 and serves the plugin\'s other components; `plugin details` lists no Monitors row. ' +
+    'The S22 marketplace capture printed `Status: ✘ failed to load` for the same kind of declaration, so the two load paths diverge at this pin; this layer mirrors the directory form that `rig install <dir>` uses. ' +
+    'The declaration is carried as this `unsupported` row and is not emitted (D37): DSH has no channel from a background process stdout into the model context, and a declaration the client itself rejects cannot be installed as if it were valid. The rest of the plugin compiles as before.'
+  )
+}
+
+/**
+ * Read the monitor declaration from the one place the client reads it.
+ *
+ * The manifest key wins outright: `monitors` as an inline array, or as a
+ * `"./"`-relative path string, replaces `monitors/monitors.json` rather than
+ * merging with it (S22: inline-valid + file-bad stays `enabled`, and
+ * path-valid + file-bad does too). Reading both would report a declaration the
+ * client never sees.
+ *
+ * A `file`-class rejection is caught here and returned as one `unsupported`
+ * row: it must not escape, because the client loads the rest of the plugin. A
+ * `manifest`-class rejection escapes and is fatal, because the client does not
+ * load the plugin at all.
+ */
+function readMonitors(
+  root: string,
+  manifest: Record<string, unknown>,
+): { pending: IrUnmaterialized[]; unsupported: IrUnmaterialized[] } {
+  try {
+    return { pending: readMonitorRows(root, manifest), unsupported: [] }
+  } catch (error) {
+    if (!(error instanceof MonitorsRefusal)) throw error
+    if (error.kind === 'manifest') throw error
+    return {
+      pending: [],
+      unsupported: [
+        {
+          surface: 'monitors',
+          name: 'monitors',
+          sourcePath: error.source,
+          annotation: { fidelity: 'unsupported', reason: monitorsRefusedReason(error) },
+        },
+      ],
+    }
+  }
+}
+
+function fileErrorText(error: unknown, absolute: string): string {
+  const code = (error as { code?: string }).code
+  if (code === 'ENOENT') return `ENOENT: no such file or directory, lstat ${JSON.stringify(absolute)}`
+  if (code === 'EACCES') return `EACCES: permission denied, open ${JSON.stringify(absolute)}`
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+function readDeclarationText(absolute: string, source: string): string {
+  try {
+    return readFileSync(absolute, 'utf8')
+  } catch (error) {
+    monitorsInvalid('file', source, 'monitors', `cannot read ${JSON.stringify(absolute)}`, fileErrorText(error, absolute))
+  }
+}
+
+/**
+ * The default file may simply be absent: `monitors/` with no `monitors.json` is
+ * one of the shapes the client accepts. Any other stat failure, or a path that
+ * is not a regular file, is a `file`-class rejection.
+ */
+function readDefaultDeclaration(absolute: string): string | undefined {
+  const source = 'monitors/monitors.json'
+  let info
+  try {
+    info = statSync(absolute)
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    // ENOTDIR means `monitors` itself is a plain file, which the client accepts.
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
+    monitorsInvalid('file', source, 'monitors', `cannot read ${JSON.stringify(absolute)}`, fileErrorText(error, absolute))
+  }
+  if (info.isDirectory()) {
+    monitorsInvalid(
+      'file',
+      source,
+      'monitors',
+      `${JSON.stringify(absolute)} is a directory, not a declaration file`,
+      'EISDIR: illegal operation on a directory, read',
+    )
+  }
+  if (!info.isFile()) {
+    monitorsInvalid(
+      'file',
+      source,
+      'monitors',
+      `${JSON.stringify(absolute)} is not a regular file`,
+      `not a regular file: ${JSON.stringify(absolute)}`,
+    )
+  }
+  return readDeclarationText(absolute, source)
+}
+
+function readManifestDeclaration(absolute: string, declaration: string): string {
+  let info
+  try {
+    info = statSync(absolute)
+  } catch (error) {
+    monitorsInvalid(
+      'file',
+      declaration,
+      'monitors',
+      `refers to ${JSON.stringify(declaration)}, which is not a readable file`,
+      fileErrorText(error, absolute),
+    )
+  }
+  if (info.isDirectory()) {
+    monitorsInvalid(
+      'file',
+      declaration,
+      'monitors',
+      `refers to ${JSON.stringify(declaration)}, which is a directory`,
+      'EISDIR: illegal operation on a directory, read',
+    )
+  }
+  if (!info.isFile()) {
+    monitorsInvalid(
+      'file',
+      declaration,
+      'monitors',
+      `refers to ${JSON.stringify(declaration)}, which is not a regular file`,
+      `not a regular file: ${JSON.stringify(absolute)}`,
+    )
+  }
+  return readDeclarationText(absolute, declaration)
+}
+
+function readMonitorRows(root: string, manifest: Record<string, unknown>): IrUnmaterialized[] {
+  const declaration = manifest.monitors
+  if (declaration !== undefined) {
+    let source: string
+    let entries: unknown[]
+    if (Array.isArray(declaration)) {
+      source = '.claude-plugin/plugin.json'
+      entries = declaration
+    } else if (typeof declaration === 'string') {
+      if (!declaration.startsWith('./')) {
+        monitorsInvalid(
+          'manifest',
+          '.claude-plugin/plugin.json',
+          'monitors',
+          `the manifest path form must start with "./", not ${JSON.stringify(declaration)}`,
+          'Invalid string: must start with "./"',
+        )
+      }
+      source = declaration
+      const text = readManifestDeclaration(resolve(root, declaration), declaration)
+      entries = monitorsArray(monitorsJson(text, declaration, 'file'), declaration, 'file')
+    } else {
+      monitorsInvalid(
+        'manifest',
+        '.claude-plugin/plugin.json',
+        'monitors',
+        `must be an array of monitor declarations or a "./"-relative path, not ${monitorsShape(declaration)}`,
+        'Invalid input',
+      )
+    }
+    const kind = source === '.claude-plugin/plugin.json' ? 'manifest' : 'file'
+    entries.forEach((entry, index) => validateMonitorEntry(entry, source, index, kind))
+    rejectDuplicateNames(entries, source, kind)
+    return [monitorsRow(source)]
+  }
+
+  const source = 'monitors/monitors.json'
+  const text = readDefaultDeclaration(join(root, 'monitors', 'monitors.json'))
+  if (text === undefined) {
+    return existsSync(join(root, 'monitors')) ? [monitorsRow('monitors')] : []
+  }
+  const entries = monitorsArray(monitorsJson(text, source, 'file'), source, 'file')
+  entries.forEach((entry, index) => validateMonitorEntry(entry, source, index, 'file'))
+  rejectDuplicateNames(entries, source, 'file')
+  return [monitorsRow(source)]
+}
+
+function monitorsRow(sourcePath: string): IrUnmaterialized {
+  return {
+    surface: 'monitors',
+    name: 'monitors',
+    sourcePath,
+    annotation: { fidelity: 'planned', reason: MONITORS_REASON },
+  }
+}
+
+/**
  * Surfaces that exist only as a fixed file or a directory and have no
  * materializer at the pin. This is read next to the other surface readers, not
  * inside `readMcp()`: when it lived there, a plugin with `themes/` (or, now,
  * `bin/`) but no `.mcp.json` returned early and reported nothing at all.
  */
-function readOptionalSurfaces(root: string): IrUnmaterialized[] {
+function readOptionalSurfaces(
+  root: string,
+  manifest: Record<string, unknown>,
+): { pending: IrUnmaterialized[]; unsupported: IrUnmaterialized[] } {
   const pending: IrUnmaterialized[] = []
   for (const [surface, dir, reason] of [
     ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
     ['themes', 'themes', 'Terminal colour palettes have no DSH palette seam yet (F2); planned for v0.4.'],
     ['workflows', 'workflows', 'Workflow scripts are close to dsh-tool-workflow but the agent()/pipeline() contract differs; planned for v0.4.'],
-    ['monitors', 'monitors', 'Monitors need a channel from a background process stdout into the model context; planned for v0.4.'],
   ] as const) {
     const abs = join(root, dir)
     if (!existsSync(abs)) continue
@@ -1299,6 +1729,8 @@ function readOptionalSurfaces(root: string): IrUnmaterialized[] {
       annotation: { fidelity: 'planned', reason },
     })
   }
+  const monitors = readMonitors(root, manifest)
+  pending.push(...monitors.pending)
   if (existsSync(join(root, 'bin'))) {
     pending.push({
       surface: 'bin',
@@ -1307,7 +1739,7 @@ function readOptionalSurfaces(root: string): IrUnmaterialized[] {
       annotation: { fidelity: 'planned', reason: BIN_REASON },
     })
   }
-  return pending
+  return { pending, unsupported: monitors.unsupported }
 }
 
 /**
@@ -1424,10 +1856,10 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { mods, pending: modPending } = readMods(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
-  const surfacePending = readOptionalSurfaces(root)
+  const { pending: surfacePending, unsupported: surfaceUnsupported } = readOptionalSurfaces(root, manifest)
 
   const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...surfacePending, ...stylePending]
-  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
+  const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported, ...surfaceUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {
     if (key in manifest) {

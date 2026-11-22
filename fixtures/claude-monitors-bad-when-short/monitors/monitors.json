@@ -1,0 +1,8 @@
+[
+  {
+    "name": "bad-when-short",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" bad-when-short",
+    "description": "S22 bad-when-short monitor",
+    "when": "on-skill-invoke:"
+  }
+]

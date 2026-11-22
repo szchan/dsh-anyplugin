@@ -69,8 +69,8 @@ const config = {
   worktrees: [worktree],
   protectedRoots: [repo],
   brief: {
-    ratchet: ['25 declared / 24 matched / 0 missing / 1 refused'],
-    fixtures: '11 fixtures',
+    ratchet: ['27 declared / 26 matched / 0 missing / 1 refused'],
+    fixtures: '13 fixtures',
     open: ['mcpServers:a-server-name-that-is-long-enough:refused'],
   },
 }
@@ -427,8 +427,8 @@ test('the brief is appended to the worker continuation once, and never to the ro
   const brief = first.messages[1].content[0].text
   assert.match(brief, /<anyplugin-guard-brief>/u)
   assert.match(brief, new RegExp(worktree.replaceAll('/', '\\/'), 'u'))
-  assert.match(brief, /25 declared \/ 24 matched \/ 0 missing \/ 1 refused/u)
-  assert.match(brief, /11 fixtures/u)
+  assert.match(brief, /27 declared \/ 26 matched \/ 0 missing \/ 1 refused/u)
+  assert.match(brief, /13 fixtures/u)
   const message = first.messages[1]
   assert.match(message.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u, 'the loop reads message.source; the id is a real UUID')
   assert.equal(message.source.kind, 'user', 'runtime-context is the snapshot kind; a queued prompt is user')
@@ -866,7 +866,7 @@ test('the install block is marked, idempotent and refused when it would duplicat
   assert.match(composition.block, /- insert:/u)
   assert.match(composition.block, new RegExp(`id: "anyplugin-guard"`, 'u'))
   assert.match(composition.block, new RegExp(composition.source.replaceAll('/', '\\/'), 'u'))
-  assert.match(composition.block, /25 declared \/ 24 matched \/ 0 missing \/ 1 refused/u)
+  assert.match(composition.block, /27 declared \/ 26 matched \/ 0 missing \/ 1 refused/u)
 
   const fresh = applyBlock('[]\n', composition.block)
   assert.equal(fresh.startsWith(BLOCK_START), true, 'the empty-array marker is replaced, not stacked')

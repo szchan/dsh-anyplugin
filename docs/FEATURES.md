@@ -22,8 +22,8 @@ codex plugin spec `1.0.0`.
 
 ## 1. Capability snapshot
 
-The one number the project reports: **25 declared / 24 matched / 0 missing /
-1 refused** across the coverage ratchet's 11 coverage rows
+The one number the project reports: **27 declared / 26 matched / 0 missing /
+1 refused** across the coverage ratchet's 13 coverage rows
 (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`). It only moves
 when a row moves; see `docs/TODO.md` for the queue behind it.
 
@@ -38,7 +38,7 @@ when a row moves; see `docs/TODO.md` for the queue behind it.
 | Claude hooks | `hooks/hooks.json` command handlers | `equivalent` for routed events, `planned` otherwise | `packages/dsh-anyplugin-hook-runner/src/index.ts`, `packages/dsh-anyplugin-materialize-hook/src/index.ts`, D19/D20/D35 |
 | Claude output styles | `output-styles/<n>.md` | `equivalent` activation face / `planned` command face (row stays `planned`; carried byte-for-byte) | `fixtures/claude-output-styles`, `fixtures/claude-output-styles-activation`, D29/D37 |
 | Claude bin | `bin/` | `planned` (managed env refuses `PATH`; only a divergent per-call rewrite — S19) | `spikes/s19-path/run.mjs`, `docs/ARCHITECTURE.md` §10 S19, D25 |
-| Claude monitors | `monitors/` | `planned` — the pinned client validates the declaration and never spawns it headless (S22); we do not validate yet (#159) | `spikes/s22-monitors/REPORT.md`, `docs/ARCHITECTURE.md` §10 S22 |
+| Claude monitors | `monitors/monitors.json`, manifest `monitors` (array or `"./"` path) | `planned` (declaration read and validated; the pinned client never lists or spawns it headless — S22; a manifest-shaped violation fails the install; a file-shaped one is carried as `unsupported` with the client's error text and the plugin still loads) | `packages/dsh-anyplugin-dialect-claude-code/src/index.ts`, `fixtures/claude-monitors-valid`, `fixtures/claude-monitors-bad-key`, `packages/dsh-anyplugin-install/test/compile.test.mjs`, `docs/ARCHITECTURE.md` §10 S22, D37 |
 | Claude themes | `themes/` | `planned` (no host palette seam yet, F2) | `docs/TODO.md` upstream proposals |
 | Foreign-plugin panel | `packages/dsh-anyplugin-ui` | `equivalent` install/list over loopback; never executes foreign code | `packages/dsh-anyplugin-ui/src/index.ts`, `test/mutations.mjs`, D62 |
 | Codex portable plugins | `plugin.json` 1.0.0 + `skills/` + `mcp.json` | `equivalent` installs and runs (no upstream oracle; fixtures are the spec) | `packages/dsh-anyplugin-dialect-codex/src/index.ts`, `packages/dsh-anyplugin-install/src/compile.ts`, D33 |
