@@ -73,10 +73,6 @@ with the exact anchor so the proposal is reviewable without a checkout.
       Blocked on: D14 (read the pin, do not vendor it), D57 (a served shape is
       copied verbatim), and a decision entry for the inline-subset path (D59
       proposed in #150; #144 generated the internal file).
-- [ ] **Count claims for served/refused/absent** — `check:features`'s R15 rule
-      only recognises `N declared`, `N tests` and `N fixtures`; the `$` bridge
-      row's served/refused/absent numbers are still human-maintained. Extend the
-      owner test to emit the counts, or narrow the row to a test-owned claim.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
@@ -94,9 +90,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - Mod type surface (ticket #144): `scripts/gen-mod-types.mjs` reads the pinned
   `mods/types/claude-code.d.ts` and `fixtures/mods/coverage.json` (D55) and
   writes `packages/dsh-anyplugin-mod-host/types/mod.d.ts` — the 9 served
-  namespaces and their 26 members with the pin's own signature text (so
+  namespaces (`fixtures/mods/coverage.json` `totals.namespaces`) and their 26
+  served members (`fixtures/mods/coverage.json` `totals.methods`) with the pin's
+  own signature text (so
   `$.session.cwd` is `() => Promise<string>`, #138), and the 7 refused members
-  as one closed `ERR_MOD_HOST_*` union. It imports the named helper types from
+  (`fixtures/mods/coverage.json` `totals.methods`) as one closed
+  `ERR_MOD_HOST_*` union. It imports the named helper types from
   the pin instead of vendoring them, names no absent member, and fails naming
   the member when a signature cannot be copied rather than guessing one. The
   generator verifies the ledger's pin and the declaration's sha256 before
@@ -118,12 +117,14 @@ with the exact anchor so the proposal is reviewable without a checkout.
   sites and matcher type aliases, and asserts each runtime-comparable
   category's partition (matchers are counted by name only, not partitioned).
   Namespace rows count service, not presence: `process` and `settings` are
-  refused-only (0 served members), so the declared 24 are 9 served / 2
-  refused-only / 13 absent.
+  refused-only (every member is refused), so the 24 declared namespaces are 9
+  served / 2 refused-only / 13 absent (`fixtures/mods/coverage.json`
+  `totals.namespaces`).
   `--update` rewrites it and rejects a runtime member the pin does not declare;
   `mod-api-ledger.test.mjs` fails on drift, and a served method removed from
-  `bridge.ts` reddens it. Render sites are 1 served / 19 planned (`Pane` on
-  terminal only). The ledger is a denominator, not a fidelity claim. The rest of
+  `bridge.ts` reddens it. Render sites are 1 served and 19 absent
+  (`fixtures/mods/coverage.json` `totals.renderSites`), all planned except
+  `Pane` on terminal. The ledger is a denominator, not a fidelity claim. The rest of
   the **Mod host** line (static scanner, chain engine, element runtime, remaining
   bridges) is still Later.
 - Codex install end to end (ticket #101): `compile.ts` resolves a lock row's

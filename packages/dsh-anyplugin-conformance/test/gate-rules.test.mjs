@@ -105,7 +105,7 @@ test('R15: a count in a paragraph without an owning test is a violation', () => 
     'The one number the project reports: **25 declared / 24 matched / 0 missing / 1 refused** rows',
     'in the coverage ratchet (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
     '',
-    'Across 14 fixtures.',
+    'Across 14 absent members.',
     '',
     '| rows | owner |',
     '| --- | --- |',
@@ -113,33 +113,223 @@ test('R15: a count in a paragraph without an owning test is a violation', () => 
   ].join('\n')
   const violations = countOwnerViolations(text)
   assert.equal(violations.length, 1)
-  assert.match(violations[0].claim, /14 fixtures/u)
+  assert.match(violations[0].claim, /14 absent/u)
   assert.equal(violations[0].line, 4)
-  assert.equal(ownedCounts(text), 2, 'the intro paragraph and the table own their counts')
+  assert.equal(ownedCounts(text), 5, 'the four snapshot claims and the table row are verified')
 })
 
 test('R15: a count whose paragraph names the test passes, and a heading is a claim too', () => {
   const owned = 'The ratchet: 25 declared, see `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`.'
-  assert.deepEqual(countOwnerViolations(owned, { ownerExists: () => true }), [])
-  const heading = countOwnerViolations('## 3 tests\n\nprose without a number\n', { ownerExists: () => true })
+  assert.deepEqual(countOwnerViolations(owned), [])
+  assert.equal(ownedCounts(owned), 1)
+  const heading = countOwnerViolations('## 3 absent\n\nprose without a number\n')
   assert.equal(heading.length, 1)
-  assert.match(heading[0].claim, /3 tests/u)
-  assert.equal(ownedCounts('## 3 tests\n\nprose', { ownerExists: () => true }), 0)
+  assert.match(heading[0].claim, /3 absent/u)
+  assert.equal(ownedCounts('## 3 absent\n\nprose'), 0)
 
-  const fake = countOwnerViolations('The gate has 375 total tests, see `packages/dsh-anyplugin-conformance/test/does-not-exist.test.mjs`.', {
-    ownerExists: (owner) => existsSync(join(root, owner)),
-  })
+  const fake = countOwnerViolations('The gate has 375 total rows, see `packages/dsh-anyplugin-conformance/test/does-not-exist.test.mjs`.')
   assert.equal(fake.length, 1)
-  assert.match(fake[0].claim, /375 total tests/u)
+  assert.match(fake[0].claim, /375 total rows/u)
   assert.match(fake[0].message, /does not exist/u)
+})
+
+test('R15: the doc number is compared with the owner, and an owner-only change reddens the doc', () => {
+  const owner = (served) => ({
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { methods: { served } } }),
+  })
+  const text = 'The bridge row states 26 served members (`fixtures/mods/coverage.json` `totals.methods`).'
+  const stale = countOwnerViolations(text, owner(25))
+  assert.equal(stale.length, 1)
+  assert.match(stale[0].claim, /26 served/u)
+  assert.match(
+    stale[0].message,
+    /"26 served" disagrees with its owner: the doc says 26, fixtures\/mods\/coverage\.json totals\.methods\.served says 25/u,
+  )
+  assert.deepEqual(countOwnerViolations(text, owner(26)), [])
+})
+
+test('R15: a claim with no owner citation is a violation', () => {
+  const violations = countOwnerViolations('The bridge row states 26 served members.', {
+    ownerExists: () => true,
+    readOwner: () => '{}',
+  })
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].claim, /26 served/u)
+  assert.match(violations[0].message, /names no owner file/u)
+})
+
+test('R15: a citation to a file that does not exist is a violation', () => {
+  const violations = countOwnerViolations(
+    'The bridge row states 26 served members (`fixtures/mods/does-not-exist.json` `totals.methods`).',
+    {
+      ownerExists: () => false,
+      readOwner: () => {
+        throw new Error('the checker must not read a file it knows is missing')
+      },
+    },
+  )
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /fixtures\/mods\/does-not-exist\.json, which does not exist/u)
+})
+
+test('R15: a JSON citation without a section cannot be read', () => {
+  const violations = countOwnerViolations('The bridge row states 26 served members (`fixtures/mods/coverage.json`).', {
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { methods: { served: 26 } } }),
+  })
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /without an object section/u)
+})
+
+test('R15: a test owner must export EXPECTED_COUNTS with the claim key', () => {
+  const path = 'packages/dsh-anyplugin-conformance/test/coverage.test.mjs'
+  const owner = (body) => ({ ownerExists: () => true, readOwner: () => body })
+  const text = `The ratchet states 25 declared rows (\`${path}\`).`
+  assert.deepEqual(countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { declared: 25 }')), [])
+
+  const stale = countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { declared: 24 }'))
+  assert.equal(stale.length, 1)
+  assert.match(stale[0].message, /the doc says 25, .* EXPECTED_COUNTS\.declared says 24/u)
+
+  const missing = countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { served: 25 }'))
+  assert.match(missing[0].message, /has no `declared`/u)
+
+  const none = countOwnerViolations(text, owner('const EXPECTED_ROWS = {}'))
+  assert.match(none[0].message, /declares no `EXPECTED_COUNTS` object/u)
+})
+
+test('R15: a claim is bound by its category noun, not by the nearest citation', () => {
+  const ledger = JSON.stringify({
+    totals: {
+      renderSites: { served: 1, absent: 19 },
+      namespaces: { served: 9, refusedOnly: 2, absent: 13 },
+    },
+  })
+  const options = { ownerExists: () => true, readOwner: () => ledger }
+  const text =
+    'The host draws 1 served render site and 1 served namespace (`fixtures/mods/coverage.json` `totals.renderSites`).'
+  const violations = countOwnerViolations(text, options)
+  assert.equal(violations.length, 1, 'the render-site claim is right; the namespace claim must not reuse its 1')
+  assert.match(violations[0].claim, /1 served/u)
+  assert.match(violations[0].message, /namespace count but is certified by an owner of a different count/u)
+  assert.match(violations[0].message, /cite fixtures\/mods\/coverage\.json totals\.namespaces/u)
+})
+
+test('R15: a member claim is not certified by the coverage test', () => {
+  const text =
+    'The bridge has 1 refused member (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).'
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => 'export const EXPECTED_COUNTS = { refused: 1 }',
+  })
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /member count but is certified by an owner of a different count/u)
+  assert.match(violations[0].message, /cite fixtures\/mods\/coverage\.json totals\.methods/u)
+})
+
+test('R15: a section-less citation fails rather than borrowing a later section', () => {
+  const text =
+    'The bridge states 26 served members (`fixtures/mods/coverage.json`), and the totals live at (`fixtures/mods/coverage.json` `totals.methods`).'
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { methods: { served: 26 } } }),
+  })
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /without an object section/u)
+})
+
+test('R15: a table row cannot borrow the next row citation', () => {
+  const text = [
+    '| surface | claim |',
+    '| --- | --- |',
+    '| A | 3 served |',
+    '| B | `fixtures/mods/coverage.json` `totals.methods` |',
+  ].join('\n')
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { methods: { served: 3 } } }),
+  })
+  assert.equal(violations.length, 1)
+  assert.equal(violations[0].line, 3)
+  assert.match(violations[0].message, /names no owner file/u)
+})
+
+test('R15: a mismatch reports the claim line, not the paragraph start', () => {
+  const text = [
+    'Intro.',
+    '',
+    'This paragraph starts here',
+    'and runs for several lines',
+    'before the claim appears:',
+    'the ratchet states 25 declared rows (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
+  ].join('\n')
+  const violations = countOwnerViolations(text, {
+    ownerExists: () => true,
+    readOwner: () => 'export const EXPECTED_COUNTS = { declared: 24, rows: 11 }',
+  })
+  assert.equal(violations.length, 1)
+  assert.equal(violations[0].line, 6)
+  assert.match(violations[0].message, /the doc says 25/u)
+})
+
+test('R15: the noun after the number beats a table label', () => {
+  const ledger = JSON.stringify({
+    totals: {
+      methods: { served: 26 },
+      namespaces: { served: 9 },
+    },
+  })
+  const options = { ownerExists: () => true, readOwner: () => ledger }
+  const wrong = '| Methods | 26 served namespaces (`fixtures/mods/coverage.json` `totals.methods`) |'
+  const violations = countOwnerViolations(wrong, options)
+  assert.equal(violations.length, 1)
+  assert.match(violations[0].message, /namespace count but is certified by an owner of a different count/u)
+  assert.match(violations[0].message, /cite fixtures\/mods\/coverage\.json totals\.namespaces/u)
+
+  const mirror = '| Namespaces | 26 served methods (`fixtures/mods/coverage.json` `totals.methods`) |'
+  assert.deepEqual(countOwnerViolations(mirror, options), [])
+})
+
+test('R15: an unknown count noun is an error, not a proximity fallback', () => {
+  const options = {
+    ownerExists: () => true,
+    readOwner: () => JSON.stringify({ totals: { namespaces: { served: 9 } } }),
+  }
+  const violations = countOwnerViolations(
+    'The bridge has 9 served pairs (`fixtures/mods/coverage.json` `totals.namespaces`).',
+    options,
+  )
+  assert.equal(violations.length, 1)
+  assert.match(
+    violations[0].message,
+    /"9 served pairs" uses a count category R15 does not know; add it to the map or reword/u,
+  )
+})
+
+test('R15: fixture and test aliases are no longer advertised', () => {
+  const options = {
+    ownerExists: () => true,
+    readOwner: () => 'export const EXPECTED_COUNTS = { rows: 11 }',
+  }
+  for (const text of [
+    'The ratchet has 11 fixtures (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
+    'The gate has 375 tests (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
+  ]) {
+    assert.deepEqual(countOwnerViolations(text, options), [])
+    assert.equal(ownedCounts(text, options), 0)
+  }
+  const features = readFileSync(join(root, 'docs', 'FEATURES.md'), 'utf8')
+  assert.doesNotMatch(features, /N test\(s\)|N fixture\(s\)/u)
+  const architecture = readFileSync(join(root, 'docs', 'ARCHITECTURE.md'), 'utf8')
+  assert.doesNotMatch(architecture, /test\(s\), fixture\(s\)/u)
 })
 
 test('R15: every non-decisions doc currently owns its counts', () => {
   const failures = []
   for (const name of ['FEATURES.md', 'ARCHITECTURE.md', 'TODO.md', 'WORKFLOW.md', 'TRIAGE.md', 'CONFORMANCE.md']) {
     const text = readFileSync(join(root, 'docs', name), 'utf8')
-    const ownerExists = (owner) => existsSync(join(root, owner))
-    for (const violation of countOwnerViolations(text, { ownerExists })) {
+    for (const violation of countOwnerViolations(text)) {
       failures.push(`${name}:${violation.line}: ${violation.message}`)
     }
   }

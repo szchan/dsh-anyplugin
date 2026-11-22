@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { countOwnerViolations, ownedCounts } from './count-owners.mjs'
+import { checkCountClaims } from './count-owners.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const file = join(root, 'docs', 'FEATURES.md')
@@ -66,28 +66,33 @@ if (tables === 0) problems.push('no tables found; the map has no rows')
 // 3. The snapshot must name the ratchet that owns the number.
 if (!/coverage\.test\.mjs/u.test(text)) problems.push('the snapshot must name the coverage ratchet')
 
-// 4. R15. A doc that states a count states its owner. The number is only true
-//    while the test that asserts it says so; a count without a test path can
-//    drift while the suite stays green. DECISIONS.md is exempt: it is the
+// 4. R15. A doc that states a count must agree with the number its owner
+//    states. The owner is a `.test.mjs` that exports the expected number as
+//    `EXPECTED_COUNTS`, or a JSON ledger cited with its object section
+//    (`fixtures/mods/coverage.json` `totals.methods`). Checking the owner is
+//    the point: a citation that is never compared lets the doc and the owner
+//    drift while the gate stays green. DECISIONS.md is exempt: it is the
 //    append-only historical record, hashed by check:decisions, and its counts
 //    are what was true when the entry was ratified — editing them to follow
 //    the suite would falsify the record.
 let owned = 0
 const ownerExists = (relativePath) => existsSync(join(root, relativePath))
+const readOwner = (relativePath) => readFileSync(join(root, relativePath), 'utf8')
 const docs = readdirSync(join(root, 'docs'))
   .filter((name) => name.endsWith('.md') && name !== 'DECISIONS.md')
   .sort()
 for (const name of docs) {
   const document = readFileSync(join(root, 'docs', name), 'utf8')
-  owned += ownedCounts(document, { ownerExists })
-  for (const violation of countOwnerViolations(document, { ownerExists })) {
+  const { violations, verified } = checkCountClaims(document, { ownerExists, readOwner })
+  owned += verified
+  for (const violation of violations) {
     problems.push(`${name}:${violation.line}: ${violation.message}`)
   }
 }
 
 if (problems.length > 0) {
   for (const problem of problems) console.error(`features: ${problem}`)
-  console.error(`features: ${problems.length} problem(s) in docs/FEATURES.md`)
+  console.error(`features: ${problems.length} problem(s)`)
   process.exit(1)
 }
-console.log(`features: ${tables} tables, ${paths.size} referenced paths, ${owned} count claims owned, classes within contract`)
+console.log(`features: ${tables} tables, ${paths.size} referenced paths, ${owned} count claims verified, classes within contract`)

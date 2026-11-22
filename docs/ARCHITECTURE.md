@@ -1023,10 +1023,10 @@ runtime-comparable category: `served + refusedOnly + absent = declared` for
 namespaces, `served + refused + absent + wrongShape = declared` for methods and
 properties, and `served + absent = declared` for events, elements and render
 sites. A namespace is served only when at least one of its members is served;
-`process` and `settings` are present with every member refused, so the 24
-declared namespaces — asserted by
-`packages/dsh-anyplugin-conformance/test/mod-api-ledger.test.mjs` — are
-**9 served / 2 refused-only / 13 absent**. Event keys
+`process` and `settings` are present with every member refused. The 24 declared
+namespaces are **9 served / 2 refused-only / 13 absent**
+(`fixtures/mods/coverage.json` `totals.namespaces`), asserted by
+`packages/dsh-anyplugin-conformance/test/mod-api-ledger.test.mjs`. Event keys
 are counted in their
 `classic.<Event>` spelling — the bare `ClassicHookEvent` union is the input to
 those spellings and is not counted a second time. Served events are the live
@@ -1036,7 +1036,8 @@ surface-qualified (`vscode:Svg`), so dropping one surface's entry shows up as an
 absent element rather than hiding in a flattened count; the 45/45 row is table
 coverage, not a claim that the host draws all 45. The host draws only one
 render site — it synthesizes `ui.render` for `component: 'Pane'` on terminal —
-so render sites are **1 served / 19 planned**, not 20 served. Matchers are
+so render sites are **1 served** and **19 absent**
+(`fixtures/mods/coverage.json` `totals.renderSites`), not all 20. Matchers are
 counted as the declaration's internal `Matcher*`/`OpenMatcher` helper aliases
 and are not partitioned: there is no runtime type surface to compare.
 
@@ -1293,7 +1294,8 @@ dispatched, and the other render components are `planned`. Its refusal sentence
 and its keep-last-tree policy are
 `derived`: the pin draws the engine's own component on an invalid tree, which
 this host cannot do. The static conformance ledger invokes the
-scanner's 23 sites in source order: 21 served sites complete, and the two
+scanner's 23 sites in source order: 21 served sites complete
+(`packages/dsh-anyplugin-conformance/test/mods.test.mjs`), and the two
 refusal sites answer `ERR_MOD_HOST_EXEC_UNSUPPORTED` (D25's pinned-artifact /
 dynamic-exec rule) or `ERR_MOD_HOST_SETTINGS_UNAVAILABLE` (this host exposes
 no merged settings snapshot), never `undefined`. The ledger records the argument each row used:
@@ -2042,9 +2044,9 @@ the sites and the command.
 
 **Outcome at 2.1.322 (baseline).** 11 handler invocations and 5 `$` calls
 on the turn. The `$` surface authored by all five mods is 50 call sites across
-27 `namespace.method` pairs in 10 namespaces: **16 served**, **8 typed
-refusals** (all six `ui.*` methods, `process.run`, `settings.read`) and **3
-absent** (`session.identity`, `session.root`, `fs.ancestors`). The event surface
+27 `namespace.method` pairs in 10 namespaces: the served pairs, with typed
+refusals for the `ui.*` methods, `process.run` and `settings.read`, and
+absences at `session.identity`, `session.root`, `fs.ancestors`. The event surface
 is the larger gap: only `session.start` and the 16 classic routes are live at this baseline, so
 four events authored by **two of the five mods each** — `tool.check`,
 `tool.call`, `prompt.context`, `agent.spawn` — never reach a handler; eight of
@@ -2052,7 +2054,7 @@ the 16 classic events were not exercised by this turn. The load-time
 `session.start` has no session: `usage()`/`messages()` return empty shapes and
 `session.id()` would refuse `ERR_MOD_HOST_SESSION_UNAVAILABLE`.
 
-**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **17 handler invocations**, **22 `$` calls**, and **0 handler errors** (the same counts at DSH `0.2.2-rc.5` and `0.2.2-rc.2`); its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: with the headless render sink (#75) **24 served**, **3 typed refusals**, **3 absent**. The six `ui.*` members are served by the sink (trees validated against the pinned surface tables, latest revision recorded, nothing drawn; `ui.render`/`ui.resolve` hooks ride `runChain` as sink-dispatched synthetic events, not host routes); the refusals are `process.run`, `settings.read` and `ui.ask` (declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a person); the absent members are `session.identity`, `session.root` and `fs.ancestors`. `vcs.detect`/`vcs.diff` (cited at `mods/diff/hooks/register.ts:962-963`) are served read-only for git by the bridge (#119); `vcs.isolate`/`vcs.list`/`vcs.status`/`vcs.release` are typed refusals (`ERR_MOD_HOST_VCS_UNSUPPORTED`), because DSH fires no vcs event and the host makes no copy.
+**Outcome at 2.1.329 (current pin).** All five seat after the D39 resolver fallback: `sec-default` loads with 45 registrations (its `./reads-as-org-tool` sibling-file import is now served), so the turn has **17 handler invocations**, **22 `$` calls**, and **0 handler errors** (the same counts at DSH `0.2.2-rc.5` and `0.2.2-rc.2`); its `classic.*` guard runs on all eight routed classic events, with `next.to` served by the kernel's own continuation (#68). The authored demand rises to **69 call sites / 30 `namespace.method` pairs / 11 namespaces**: with the headless render sink (#75), of the 30 authored pairs 24 are served, 3 are typed refusals and 3 are absent; the four `vcs` refusals are outside those pairs. The six `ui.*` members are served by the sink (trees validated against the pinned surface tables, latest revision recorded, nothing drawn; `ui.render`/`ui.resolve` hooks ride `runChain` as sink-dispatched synthetic events, not host routes); the refusals are `process.run`, `settings.read` and `ui.ask` (declared at `claude-code.d.ts:2856 @ 2.1.329`, but it answers through a person); the absent members are `session.identity`, `session.root` and `fs.ancestors`. `vcs.detect`/`vcs.diff` (cited at `mods/diff/hooks/register.ts:962-963`) are served read-only for git by the bridge (#119); `vcs.isolate`/`vcs.list`/`vcs.status`/`vcs.release` are typed refusals (`ERR_MOD_HOST_VCS_UNSUPPORTED`), because DSH fires no vcs event and the host makes no copy.
 
 **Host bug found, now fixed (#68).** `next.to`, declared by the pin
 (2.1.322 pin: `Next` at `claude-code.d.ts:5271-5352`, `GlobNext` at `:4236`; 2.1.329 pin: `Next` at `8289-8367` with `to` at
@@ -2589,6 +2591,38 @@ group-entry URL); no new Node is measured, and S18 owns that boundary. The live
 Desktop host's `sessions/` and `storages/` writes are excluded rather than
 frozen, so "untouched" is scoped to every other path. Reconcile counts are not
 asserted (S17's note applies).
+
+**How the docs count check works (R15).** `npm run check:features` scans every
+`docs/*.md` except `DECISIONS.md` and treats a number followed by the R15
+vocabulary — declared, served, refused/refusals/refused-only, absent, matched,
+missing, row(s) — as a claim. A claim is bound to its owner by the category noun
+that immediately follows it, not by proximity: namespace(s) read
+`fixtures/mods/coverage.json` `totals.namespaces`, member(s)/method(s)
+`totals.methods`, event(s) `totals.events`, element(s) `totals.elements`, render
+site(s) `totals.renderSites`, a bridge site reads
+`packages/dsh-anyplugin-conformance/test/mods.test.mjs`, and a coverage row reads
+`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`. An earlier category
+word — a table's first-cell label, a sentence topic — never competes. If the word
+after the number is a noun the map does not know (`9 served pairs`), that is a
+failure, not a fallback to the nearest citation; only when no noun follows
+(punctuation, another number, a code span) does the nearest citation decide. The
+owner is either a `.test.mjs` exporting `EXPECTED_COUNTS` with the key the count
+noun maps to, or a JSON path followed by the object-section code span to read; a
+section that does not own the claim's family is a failure, and a bare JSON path
+cannot borrow a later section. Each table row is its own claim context, so a
+citation at the end of one row cannot certify the next. The checker reads the
+owner and fails with the doc file and the claim's exact line, the claim text, and
+both numbers when they disagree; a missing file, a JSON path without a section, a
+citation from another family, an unknown count noun, or an owner without the key
+is also a failure. `DECISIONS.md` is exempt because it is the append-only
+historical record: its numbers are what was true when the entry was ratified, and
+rewriting them would falsify it. The gate never makes the doc's own digit the
+oracle — the owner's number is on the other side of the comparison, which is what
+makes a stale row like #152 visible — and the ledger is not trusted merely because
+the doc agrees with it: `packages/dsh-anyplugin-conformance/test/mod-api-ledger.test.mjs`
+asserts the generated totals under `npm run verify`, so a bridge change such as
+adding `identity` to the `session.id` table reddens that test even when the doc
+check stays green.
 
 
 ## 11. Non-goals
