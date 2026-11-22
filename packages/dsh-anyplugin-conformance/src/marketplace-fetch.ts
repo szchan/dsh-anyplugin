@@ -39,7 +39,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { get as httpsGet } from 'node:https'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 
 import { InstallCliError, type InstallCliCode } from './install-cli.ts'
@@ -463,7 +463,7 @@ function pluginInside(
   }
   if (request.name !== undefined) {
     const declared = pluginName(directory, request.dialect)
-    if (declared !== undefined && declared !== request.name) {
+    if (declared !== request.name) {
       throw refusal(
         'name-mismatch',
         `entry "${request.marketplace}:${request.entry}" fetched a plugin that calls itself "${declared}"`,
@@ -606,30 +606,46 @@ function git(args: string[], cwd: string, display: string): string {
   }
 }
 
-function pluginName(directory: string, dialect: string): string | undefined {
+/**
+ * The manifest the reader will actually read: the first existing path in the
+ * dialect's order. A root manifest shadows the fallback even when its content
+ * is unusable, exactly as the Codex reader's `if … else if` does.
+ */
+function selectedManifest(directory: string, dialect: string): string | undefined {
   for (const manifest of DIALECT_MANIFESTS[dialect] ?? []) {
     const file = join(directory, manifest)
-    if (!existsSync(file)) continue
-    try {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { name?: unknown }
-      if (typeof parsed.name === 'string' && parsed.name.trim() !== '') return parsed.name
-    } catch {
-      return undefined
-    }
+    if (existsSync(file)) return file
   }
   return undefined
 }
 
-function pluginVersion(directory: string, dialect: string): string | undefined {
-  for (const manifest of DIALECT_MANIFESTS[dialect] ?? []) {
-    const file = join(directory, manifest)
-    if (!existsSync(file)) continue
+/**
+ * Mirror the reader's identity: the selected manifest's non-empty `name`, or
+ * the directory basename when the selected manifest is absent, malformed, or
+ * nameless. Never a shadowed manifest.
+ */
+function pluginName(directory: string, dialect: string): string {
+  const file = selectedManifest(directory, dialect)
+  if (file !== undefined) {
     try {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown }
-      if (typeof parsed.version === 'string' && parsed.version.trim() !== '') return parsed.version
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { name?: unknown }
+      if (typeof parsed.name === 'string' && parsed.name.trim() !== '') return parsed.name
     } catch {
-      return undefined
+      // Fall through to the reader's basename fallback.
     }
+  }
+  return basename(directory)
+}
+
+/** The selected manifest's version; a shadowed manifest never supplies it. */
+function pluginVersion(directory: string, dialect: string): string | undefined {
+  const file = selectedManifest(directory, dialect)
+  if (file === undefined) return undefined
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown }
+    if (typeof parsed.version === 'string' && parsed.version.trim() !== '') return parsed.version
+  } catch {
+    return undefined
   }
   return undefined
 }

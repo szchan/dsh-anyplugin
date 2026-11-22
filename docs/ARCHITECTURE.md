@@ -184,7 +184,8 @@ runtime from `installs.yml`.
 ### The optional panel (issue #147)
 
 The UI half is `packages/dsh-anyplugin-ui`, a separate artifact on purpose: the
-root tarball's 180 KiB budget (enforced by `check:pack`) cannot carry a browser bundle. It has two
+root tarball's 184 KiB budget (D65 supersedes the earlier number; enforced by
+`check:pack`) cannot carry a browser bundle. It has two
 halves that meet at a JSON route, not at a build step:
 
 - **server**: `apply(ctx)` registers `GET /anyplugin/installs` (a `webServer`
