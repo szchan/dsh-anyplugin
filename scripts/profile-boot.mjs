@@ -341,8 +341,9 @@ async function bootInScratch({ tarball, mutation, scratch, harness, host, regist
       throw new Error(`npm install left no ${packageDir}/lib/index.js`)
     }
     const installed = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'))
-    if (installed.name !== 'dsh-anyplugin' || installed.version !== '0.2.0') {
-      throw new Error(`npm installed ${installed.name}@${installed.version}, not dsh-anyplugin@0.2.0`)
+    const expected = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
+    if (installed.name !== 'dsh-anyplugin' || installed.version !== expected.version) {
+      throw new Error(`npm installed ${installed.name}@${installed.version}, not dsh-anyplugin@${expected.version}`)
     }
     if (mutation === 'checkout') {
       // The same profile tree, with the installed package replaced by this

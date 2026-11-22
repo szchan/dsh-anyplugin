@@ -8,11 +8,11 @@
 
 [![verify](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml/badge.svg)](https://github.com/szchan/dsh-anyplugin/actions/workflows/verify.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-informational)](https://nodejs.org)
-[![status](https://img.shields.io/badge/status-pre--release-orange)](#-020-包含什么)
+[![status](https://img.shields.io/badge/status-pre--release-orange)](#-030-包含什么)
 
 **让 DeepSeek Harness 跑 Claude Code 的插件 —— 只按本仓库对每类能力声明的
-保真度，不多一分。** Codex 是第二个 dialect，在 v0.3 发布；0.2.0 是 Claude
-Code 的编译路径加上 mods 内核。
+保真度，不多一分。** 0.3.0 发布 Claude Code 的编译路径、mods 内核，以及
+Codex 便携 dialect；0.2.0 是前两者。
 
 一个 Claude Code 插件是一堆文件：skills、斜杠命令、agents、hooks、MCP server、
 output styles，还有 `mods`（跑在宿主进程里的 JavaScript）。DeepSeek Harness
@@ -59,12 +59,12 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 必须同时移动那一行，于是回归会在同一行上失败。
 
 
-## ✅ 0.2.0 包含什么
+## ✅ 0.3.0 包含什么
 
-下表描述的是 **0.2.0 的产物**，不是仓库里的开发树：每一行都是安装
-`dsh-anyplugin@0.2.0` 真正得到的能力。它就是在 npm 上发布的版本，带签名的 SLSA provenance。`npm run verify` 会启动打出的 tarball 逐行验证。
+下表描述的是 **0.3.0 的产物**，不是仓库里的开发树：每一行都是安装
+`dsh-anyplugin@0.3.0` 真正得到的能力。它就是在 npm 上发布的版本，带签名的 SLSA provenance。`npm run verify` 会启动打出的 tarball 逐行验证。
 
-| 能力 | 在 0.2.0 中 |
+| 能力 | 在 0.3.0 中 |
 | --- | --- |
 | Skills | `exact`（正文、信封、base-directory 前导，以及在宿主有通道时的参数替换） |
 | 斜杠命令 | 以 **skills** 形式发布（模型面 `equivalent`）；人类 `/…` 面是 `planned`，需要宿主的命令名接缝（`D10`） |
@@ -73,10 +73,10 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 | Agents | `exact`：每个 `agents/*.md` 成为名为 `<plugin>:<agent>` 的 scoped 工具 |
 | Output styles | **已发布**：profile 的激活记录选择一个 style（`D42`）；`/<plugin>:<name>` 别名仍缺命令名接缝（`D10`） |
 | `mods` | **已发布**：内核在 tarball 里（`D30`、`D31`、`D34`）——按原样加载 `.js`/`.mjs`/`.ts`（每个 mod 一个 `node:vm` realm），`.tsx` 只走那一次 classic pragma 变换；`$` 提供已测量的命名空间，seat 绑定每个 agent 的事件。hook 行的 config 可以带 `mods: [{ entry }]`；lock 的 schema 仍没有 `mods` 字段，所以 `dsh plugin add` 暂不安装 mods |
-| Codex 插件 | **不在 0.2.0**：第二个 dialect 在 v0.3 发布 |
-| 安装 / 启用 / 发布 | `dsh-anyplugin@0.2.0`（bundle + 控制器 + 协调器） |
+| Codex 插件 | `equivalent` —— `plugin.json` 1.0.0 + `skills/` + `mcp.json`；同一套 IR 上安装并运行，没有上游 oracle，所以 fixture 就是规格 |
+| 安装 / 启用 / 发布 | `dsh-anyplugin@0.3.0`（bundle + 控制器 + 协调器） |
 
-### 0.2.0 明确拒绝什么
+### 0.3.0 明确拒绝什么
 
 内核会加载 mod，但不会假装提供宿主根本没有的调用面。以下仍是**带类型的拒绝**
 （留下记录的理由，绝不静默返回 `undefined`）：
@@ -90,9 +90,11 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 
 ### 仓库证据（本次发布未改变）
 
-- 对照 DSH `0.2.2-rc.5` 与 Claude Code `2.1.329`：声明 25 · 匹配 24 ·
+- 对照 DSH `0.2.2-rc.5` 与 Claude Code `2.1.329`：声明 27 · 匹配 26 ·
   缺失 0 · 拒绝 1（被拒绝的是上表点名的命令名接缝）；
-- Codex 是共用同一份 IR 的第二个 dialect（v0.3）——唯一仍未发布的表面。
+- Codex 便携插件跑自己的端到端 fixture（`fixtures/codex-portable`、
+  `codex-e2e.test.mjs`），不进 Claude 棘轮：没有 Codex oracle 可 diff，fixture
+  就是规格（D33）。
 
 内核是已发布的证据而不是承诺：`check:pack` 启动打出的 tarball，加载钉死的
 上游 `sec-default`（45 条 registration），证明 `$` 经无头桥的一次往返，在同一次
@@ -104,7 +106,7 @@ turn 里保留一个 `classic.*` handler 和一个 classic hook，并在
 
 ## 📦 安装
 
-`dsh-anyplugin@0.2.0`（已发布，从 registry 安装）以一个
+`dsh-anyplugin@0.3.0`（已发布，从 registry 安装）以一个
 **bundle** 的形式发布给 DSH profile：
 
 ```bash
@@ -134,7 +136,7 @@ profile 配置，也不生成代码。
 - **mods 目前只能从手写的 hook 行进入**（`mods: [{ entry }]`），直到 lock
   schema 获得 `mods` 字段；`dsh plugin add` 暂不安装 mods。
 
-0.2.0 同时发布**编译路径** —— skills（斜杠命令以 skills 的模型面落地）、MCP、
+0.3.0 同时发布**编译路径** —— skills（斜杠命令以 skills 的模型面落地）、MCP、
 hooks、agents、由 profile 记录激活的 output style（D42）、安装/协调与信任门 ——
 以及 `lib/materialize/hook.js` 里的 **mods 内核**。hook 行的 config 带
 `mods: [{ entry }]` 时，会在自己的 `node:vm` realm 里按原样加载 mod；lock 的
@@ -176,7 +178,7 @@ ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
 npm run verify
 ```
 
-`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 482 个测试。它必须报告
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 969 个测试。它必须报告
 **0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
 
 ## 📚 接下来读什么

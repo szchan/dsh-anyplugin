@@ -318,7 +318,13 @@ try {
 
     // 5. Metadata a consumer relies on.
     check(manifest.name === 'dsh-anyplugin', `package name is ${JSON.stringify(manifest.name)}`)
-    check(manifest.version === '0.2.0', `version is ${JSON.stringify(manifest.version)}; v0.2 ships as 0.2.0`)
+    // A release train, not an exact patch: the tag-to-version equality is the
+    // release workflow's assertion, this one keeps a tarball on the current train.
+    const [trainMajor = 0, trainMinor = 0] = (manifest.version ?? '0.0.0').split('.').map(Number)
+    check(
+      trainMajor === 0 && trainMinor >= 3,
+      `version is ${JSON.stringify(manifest.version)}; the 0.3 train ships as 0.3.x`,
+    )
     check(manifest.private !== true, 'the published manifest is still private')
     check(manifest.license === 'MIT', `license is ${JSON.stringify(manifest.license)}`)
     check(manifest.engines?.node === '>=22.14', `engines.node is ${JSON.stringify(manifest.engines?.node)}`)

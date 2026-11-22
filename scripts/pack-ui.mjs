@@ -20,7 +20,8 @@ export function stageUi(stage) {
   manifest.private = false
   manifest.license = 'MIT'
   manifest.exports['.'] = './lib/index.js'
-  manifest.peerDependencies = { 'dsh-anyplugin': '^0.2.0' }
+  const rootVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  manifest.peerDependencies = { 'dsh-anyplugin': `^${rootVersion}` }
   for (const entry of ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE']) {
     cpSync(join(source, entry), join(stage, entry), { recursive: true })
   }

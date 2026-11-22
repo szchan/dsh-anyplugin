@@ -1,6 +1,6 @@
 {
   "name": "dsh-anyplugin-ui",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The AnyPlugin panel: what installs.yml declares, and an install-from-a-local-path form.",
   "private": true,
   "type": "module",
@@ -24,7 +24,7 @@
     }
   },
   "peerDependencies": {
-    "dsh-anyplugin": "^0.2.0"
+    "dsh-anyplugin": "^0.3.0"
   },
   "peerDependenciesMeta": {
     "dsh-anyplugin": {

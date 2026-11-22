@@ -1,15 +1,15 @@
 # Installing `dsh-anyplugin`
 
-`dsh-anyplugin@0.2.0` is this release. It is
+`dsh-anyplugin@0.3.0` is this release. It is
 **one bundle** whose
 patch inserts **one row** — the controller. Everything else (skills, including
 commands on their model face, MCP servers, hooks, agents, an activated output
 style) is created at runtime by reconciling the lock file
 `installs.yml`; the package writes no profile config and generates no code.
 
-What 0.2.0 ships:
+What 0.3.0 ships:
 
-| surface | state in 0.2.0 |
+| surface | state in 0.3.0 |
 | --- | --- |
 | Skills | loaded into the harness skill registry |
 | Slash commands | land as **skills** on their model face (`equivalent`); the human `/…` face is still `planned` (D10) |
@@ -18,7 +18,7 @@ What 0.2.0 ships:
 | Agents | one scoped tool per `agents/*.md` |
 | Output styles | activated from `$DSH_HOME/anyplugin/output-styles.yml` (one style, `agent/created`); the `/<plugin>:<name>` command face stays `planned` (D42) |
 | `mods` | loadable through the lock: a `mods` entry pins the authored module tree (`dsh-anyplugin/installs@2`), `dsh-anyplugin install` writes it, `dsh-anyplugin list` names the entry and tree digest, and the tree runs only under a hash-pinned grant (D25/D30/D31/D34). Node's `--experimental-vm-modules` is required |
-| Codex plugins | **not shipped** in 0.2.0 (v0.3) |
+| Codex plugins | `equivalent`: `plugin.json` 1.0.0 + `skills/` + `mcp.json`, installed from a local directory like a Claude plugin; there is no Codex oracle, so the fixture is the specification (D33) |
 
 ## Requirements and the version claim
 
@@ -43,7 +43,7 @@ What 0.2.0 ships:
   record in `installs.yml` must carry `pin: "claude-code@2.1.329"`; a record
   naming a different pin is rejected rather than silently re-interpreted.
 - A Claude Code plugin directory (one with `.claude-plugin/plugin.json`) on
-  disk. 0.2.0 compiles from a local directory; it does not fetch plugins.
+  disk. 0.3.0 compiles from a local directory; it does not fetch plugins.
 
 ## 1. Install the bundle into a profile
 
@@ -79,7 +79,7 @@ That row is the whole bundle. It needs the profile's package scope to resolve
 
 Commands are not a sixth subpath: a slash command lands as a **skill** on its
 model face (`equivalent`). The human `/…` face is still `planned` and needs
-the host command-name seam (D10); wiring it is not part of 0.2.0.
+the host command-name seam (D10); wiring it is not part of 0.3.0.
 
 ## 2. Install and enable a plugin
 
@@ -93,7 +93,7 @@ harness and name `CLAUDE_BIN`, and the Claude oracle and trace differ are not
 shipped, so the published bin refuses them with `needs the repository
 checkout` and points at `npm run rig --` from a clone. Run the published
 command with `npx` (the examples name the command, not the version; pin it as
-`npx dsh-anyplugin@0.2.0 …` when the run must be reproducible):
+`npx dsh-anyplugin@0.3.0 …` when the run must be reproducible):
 
 ```bash
 npx dsh-anyplugin install <plugin-dir> [--scope user|project|local] [--name <name>] [--dialect claude-code|codex] [--force] [--allow-empty] [--dry-run] [--json]
