@@ -295,6 +295,19 @@ test('judgeReport: a non-integer skipped total is refused, like refused', () => 
   assert.match(judgeReport(broken, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /totals\.skipped is "many", not an integer/)
 })
 
+test('judgeReport: refused and skipped are required, not optional', () => {
+  for (const totals of [{ declared: 2, emitted: 2 }, { declared: 2, emitted: 2, refused: 0 }, { declared: 2, emitted: 2, skipped: 0 }]) {
+    const partial = { ...REPORT, totals }
+    assert.match(judgeReport(partial, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /totals\.(refused|skipped) is undefined, not an integer/)
+  }
+})
+
+test('judgeReport: a carried row that also carries a refusal cannot exist', () => {
+  const row = { ...component('skills', 'greet'), refused: 'hook' }
+  const impossible = { ...REPORT, components: [row, component('skills', 'hello')], totals: { declared: 2, emitted: 2, refused: 1, skipped: -1 } }
+  assert.match(judgeReport(impossible, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /is carried and carries a refusal/)
+})
+
 test('judgeReport: totals that contradict the rows are refused', () => {
   const noRefusals = { ...REPORT, totals: { declared: 2, emitted: 2, refused: 99, skipped: 0 } }
   assert.match(judgeReport(noRefusals, { name: 'skills-only', pin: PIN, expected: EXPECTED }).join('\n'), /refuse 99 component\(s\), but 0 row\(s\) carry a refusal/)

@@ -101,6 +101,9 @@ export function judgeReport(report, { name, pin, expected }) {
     if (!CLASSES.has(component?.class)) failures.push(`${where} has class ${JSON.stringify(component?.class)}, not one of the five`)
     if (typeof component?.reason !== 'string' || component.reason.trim() === '') failures.push(`${where} carries no reason`)
     if (typeof component?.carried !== 'boolean') failures.push(`${where} does not say whether it was carried`)
+    if (component?.carried === true && component?.refused !== undefined) {
+      failures.push(`${where} is carried and carries a refusal: report.ts cannot write that row`)
+    }
     if (declared.has(component?.surface)) {
       if (component.class !== 'exact' && component.class !== 'equivalent') {
         failures.push(`${where} is ${component.class}: a row the fixture declares must be exact or equivalent`)
@@ -121,7 +124,7 @@ export function judgeReport(report, { name, pin, expected }) {
       failures.push(`the report's totals declare ${report.totals.declared} component(s) for ${components.length} row(s)`)
     }
     for (const field of ['refused', 'skipped']) {
-      if (report.totals[field] !== undefined && Number.isInteger(report.totals[field]) === false) {
+      if (Number.isInteger(report.totals[field]) === false) {
         failures.push(`the report's totals.${field} is ${JSON.stringify(report.totals[field])}, not an integer`)
       }
     }
