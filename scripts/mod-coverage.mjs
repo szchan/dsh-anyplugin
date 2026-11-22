@@ -1169,7 +1169,7 @@ export function buildLedger(declaration, runtime) {
       elements:
         'from elementsForSurface / ELEMENT_TAGS (ui.ts:701-719, 935-953), not from the $ factory: the surface element row is table coverage (what each surface declares it can draw), not drawing coverage',
       shapeCheck:
-        'classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour; session.cwd is tracked separately in #134',
+        'classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour',
       note: 'The refused set is configuration-dependent. served means callable under this configuration and not a typed refusal.',
     },
     declared,
