@@ -688,13 +688,34 @@ const evidence = {
   github: githubEvidence(),
 }
 
+// The evidence directory is created before anything is printed. A digest on
+// stdout with no file behind it reads as a data problem, when the real problem
+// is that the directory is not writable.
+const failWrite = (where, error) => {
+  console.error(`audit-evidence: cannot write ${where}: ${error.code ?? error.message}`)
+  process.exit(1)
+}
+try {
+  mkdirSync(auditDir, { recursive: true })
+} catch (error) {
+  failWrite(auditDir, error)
+}
+
 if (outFile !== '') {
   const target = isAbsolute(outFile) ? outFile : join(root, outFile)
-  mkdirSync(join(target, '..'), { recursive: true })
-  writeFileSync(target, `${JSON.stringify(evidence, null, 2)}\n`)
+  try {
+    mkdirSync(join(target, '..'), { recursive: true })
+    writeFileSync(target, `${JSON.stringify(evidence, null, 2)}\n`)
+  } catch (error) {
+    failWrite(target, error)
+  }
 }
-mkdirSync(auditDir, { recursive: true })
-writeFileSync(join(auditDir, `evidence-${today}.json`), `${JSON.stringify(evidence, null, 2)}\n`)
+const evidenceTarget = join(auditDir, `evidence-${today}.json`)
+try {
+  writeFileSync(evidenceTarget, `${JSON.stringify(evidence, null, 2)}\n`)
+} catch (error) {
+  failWrite(evidenceTarget, error)
+}
 
 if (asJson) console.log(JSON.stringify(evidence, null, 2))
 else console.log(digest(evidence))
