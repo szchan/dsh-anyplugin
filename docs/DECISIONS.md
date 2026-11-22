@@ -2605,3 +2605,95 @@ checked `CI=true` and passed — that is why `isCI` is now shared and unit-teste
 - `node-addon-require-builtin` is a dependency of `dsh-app-boot`
   (`^0.1.9`); the fetched trees used here resolve `0.1.10`, and the harness
   pin does not fix the addon patch.
+
+---
+
+## D55 — The mod API is measured against the pinned declaration
+
+Ratified 2026-11-21.
+
+The mods subsystem gets a denominator instead of a vibe. `scripts/mod-coverage.mjs`
+parses the generated `claude-code.d.ts` of the pinned `claude-code` release and
+compares it with what our runtime actually exposes; the result is
+`fixtures/mods/coverage.json`, a reviewed artifact with the pin and the
+declaration's sha256.
+
+**What is declared.** At `claude-code@2.1.329` (`f9e4d1e5…`, d.ts sha256
+`c5b4d944…418cf`): 24 `$` namespaces, 100 namespace methods, 2 namespace
+properties, 167 event names, 45 surface-qualified elements (14 unique), 20 render
+sites, and 10 `Matcher*` type aliases. The event count is the union of engine, op
+and `classic.*` names at that pin; it is not the number of events the host fires.
+
+**What is "served".** A member is served only if the runtime surface reaches it
+and it is not a typed refusal: served sets are derived by calling
+`createModBridge(...).dollar()` and enumerating the returned table (elements come
+from `elementsForSurface`/`ELEMENT_TAGS`, events from `MOD_EVENT_ROUTES`), never
+by grep. A typed refusal is its own class with its reason code, because "present
+but refuses" is not "served". A namespace counts as served only if at least one
+member is; `process` and `settings` are refused-only. A member we expose with a
+different shape (`session.cwd` is a method at the pin, a string for us) is a
+`wrongShape`, counted in no other class.
+
+**Partitions.** Every category partitions: namespaces = served + refused-only +
+absent; methods and properties = served + refused + absent + wrongShape; events,
+elements and render sites = served + absent. Matchers are counted by name only —
+there is no runtime type surface to compare, and saying they were "served" would
+be a category error. Elements are table coverage, not drawing coverage: 45/45
+says the surface tables mention every declared element, not that a pane rendered
+it. Render sites are 1 served / 19 absent, because the sink dispatches only
+`Pane` on `terminal` (D44).
+
+**The gate.** `--update` accepts drift in the declaration (a new upstream member
+appears as absent) and refuses members our runtime exposes but the declaration
+does not name. Two runs produce byte-identical output. The ledger never enters
+the fidelity ratchet: it is a denominator, and it never says "mods are 100 %".
+
+**Consequences.** Closing a gap means moving a name from `absent`/`refused` to
+`served` in the same commit that changes the runtime, and the ledger is the only
+place that number is written. Shape mismatches are bugs against the pin and get
+their own ticket (#134 for `session.cwd`). A new pin means re-deriving the
+declaration, not editing the ledger by hand.
+
+---
+
+## D56 — `bin/` is `planned`: the managed environment cannot carry PATH
+
+Ratified 2026-11-21.
+
+S19 answered the question the TODO had been assuming. The model shell's PATH is
+built from the managed environment overlay plus the host process environment; at
+`0.2.2-rc.5` and `0.2.2-rc.2` on Linux:
+
+- `dsh-shell-env` accepts declared `DSH_*` keys only — registering a contributor
+  that declares `PATH` throws `bash env contributor "…" declared invalid key "PATH"`;
+- a resolver that declares a `DSH_*` key but returns `PATH` is refused inside the
+  model call with `bash env contributor "…" returned undeclared key "PATH"`
+  (`SHELL_ENV_CONTRIBUTION_INVALID`);
+- the model-facing bash and pwsh tools send only that overlay and expose no `env`
+  parameter (pwsh is source-read on Linux, not booted);
+- a probe `bin/` is therefore unreachable: `probecmd` exits 127, and a probe `ls`
+  does not shadow the system one.
+
+So `bin/` stays **`planned`**, not `unsupported`: it is expressible another way.
+`tools/pre-execute` can rewrite `exec.arguments` before the call (the same seam
+classic `updatedInput` hooks use), and S19 check 19 demonstrates it — prepending
+the probe directory makes the command run, and disposing the listener returns the
+call to 127. We decline it for now because it diverges:
+
+- later hooks and the hook trace see the rewritten command as `tool_input`; the
+  session transcript keeps the model's original (asserted in
+  `mods.test.mjs`, transcript case);
+- pwsh grammar differs, so a rewrite is shell-specific;
+- Claude's rule "plugin bins follow the user's entries" becomes an ordering
+  decision inside the rewrite rather than a property of the environment.
+
+**The plan** is the union-only contribution proposed upstream: an `extraPath`
+shape in `dsh-shell-env` that appends declared directories to the child PATH,
+which would make the face `equivalent` without rewriting any command. Until that
+exists, the dialect reason says all of the above, names both pins, and does not
+claim that no seam exists.
+
+**Consequences.** The v0.3 roadmap keeps `bin` as pending that seam, not as
+shipped work. A future per-call rewrite would be a new decision with its own
+divergence list, not a silent use of D56. The S19 spike and both CI steps stay
+green so the claim cannot rot.
