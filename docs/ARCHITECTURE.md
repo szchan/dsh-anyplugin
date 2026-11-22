@@ -1652,9 +1652,10 @@ does not invent one: the caller passes the decisions, and the result carries
 trusted child is still mounted. A refusal is a compile decision, not a loader
 failure, and is not reported as `failed`.
 
-The lifecycle CLI (`rig install|list|enable|disable|uninstall`, plus
-`rig marketplace list|install` over a local catalog) is a caller of
-this pipeline, not a second implementation. `install` reads the plugin, builds
+The lifecycle CLI (`dsh-anyplugin install|list|enable|disable|uninstall`, plus
+`dsh-anyplugin marketplace list|install` over a local catalog; `npm run rig --`
+is the same surface in a checkout, and `lib/cli.js` is the package’s one `bin`)
+is a caller of this pipeline, not a second implementation. `install` reads the plugin, builds
 the record, and hands the complete lock to `writeInstalls`; `enable`/`disable`
 hand one layer to `writeEnablements`. Both writers validate first and replace
 by temp file + rename, so a typed refusal leaves the previous bytes untouched.

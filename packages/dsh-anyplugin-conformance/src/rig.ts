@@ -24,7 +24,7 @@
  */
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
@@ -122,7 +122,8 @@ function requiredOptions(args: Args, ...names: string[]): string[] {
   })
 }
 
-const USAGE = `usage:
+/** The command surface; exported so the published bin prints the rig's own text. */
+export const USAGE = `usage:
   rig capture --plugin <dir> [--out <file>] [--name <plugin-name>]
   rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
   rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
@@ -338,7 +339,7 @@ function onePositional(args: Args, name: string): string {
   return first
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
   const allowPinMismatch = args.options.get('allow-pin-mismatch') === true
@@ -1652,13 +1653,32 @@ export function formatRevoke(run: RevokeRun): string {
   return lines.join('\n').trimEnd()
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2))
-    .then((code) => {
-      process.exitCode = code
-    })
-    .catch((error: unknown) => {
-      console.error(error instanceof Error ? error.message : String(error))
-      process.exitCode = 2
-    })
+/**
+ * Run one command line and return the exit code. This is the callable entry the
+ * published bin imports; the error path is the rig's own, so a failing command
+ * exits 2 with a message rather than a stack trace.
+ */
+export async function runCli(argv: string[]): Promise<number> {
+  try {
+    return await main(argv)
+  } catch (error: unknown) {
+    console.error(error instanceof Error ? error.message : String(error))
+    return 2
+  }
+}
+
+// The published `lib/cli.js` is this module bundled behind its own front door
+// (`cli.ts` handles `--help` and then calls `runCli`). In that bundle
+// `process.argv[1]` *is* `lib/cli.js`, so an unwrapped self-run check would run
+// the command a second time; the source-file name keeps the auto-run to the
+// file Node actually executed from the checkout.
+const invoked = process.argv[1]
+if (
+  invoked !== undefined &&
+  basename(invoked) === 'rig.ts' &&
+  import.meta.url === pathToFileURL(invoked).href
+) {
+  runCli(process.argv.slice(2)).then((code) => {
+    process.exitCode = code
+  })
 }

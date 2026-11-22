@@ -13,6 +13,9 @@
     "dsh": "0.2.2-rc.2 || 0.2.2-rc.5"
   },
   "main": "./lib/index.js",
+  "bin": {
+    "dsh-anyplugin": "./lib/cli.js"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./materialize/agents": "./lib/materialize/agents.js",

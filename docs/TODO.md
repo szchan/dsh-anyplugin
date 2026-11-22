@@ -72,6 +72,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Done
 
+- The installer is the published `bin` (ticket #146): `package.json` maps
+  `dsh-anyplugin` to `lib/cli.js`, which the build emits from the conformance
+  rig's own `cli.ts`; `npx dsh-anyplugin install <dir> --dry-run` needs no DSH
+  installation, and `check:pack` runs the extracted bin with no DSH environment.
 - Mod coverage ledger (ticket #130): `scripts/mod-coverage.mjs` scans the pinned
   `mods/types/claude-code.d.ts` by declaration and classifies every declared
   symbol against the runtime `$` table as `served`, `refused` (a typed
@@ -266,9 +270,10 @@ own work while `next`/`$` still pause.
 - Install + reconcile (D23): `installs.yml` is the lock, three scope layers
   decide enablement (narrower wins), and `reconcile` converges loader entries
   by stable id — created, updated, removed, kept, failed — without writing
-  profile config. The lifecycle CLI (`rig install|list|enable|disable|uninstall`)
-  writes that lock through the one canonical writer, enables without inventing
-  a scope, and reports the same carry rows as `rig report`; every mutating
+  profile config. The lifecycle CLI writes that lock through the one canonical
+  writer (`dsh-anyplugin install|list|enable|disable|uninstall`; in a checkout
+  `npm run rig --` takes the same flags), enables without inventing a scope,
+  and reports the same carry rows as `dsh-anyplugin report`; every mutating
   command has a byte-checksummed `--dry-run`.
 - The upstream oracle runs in CI (D24): `@anthropic-ai/claude-code@2.1.329` is
   fetched, resolved through `CLAUDE_BIN`/PATH, version-guarded; a decoy in the

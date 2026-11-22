@@ -39,9 +39,14 @@ const lib = join(root, 'lib')
 /** The kernel's source directory; its `bytesInOutput` sum is the shipped cost. */
 const kernelDir = 'packages/dsh-anyplugin-mod-host/'
 
-/** Entry point → output path under `lib/`, matching `exports` in package.json. */
+/**
+ * Entry point → output path under `lib/`, matching `exports`/`bin` in
+ * package.json.
+ */
 const ENTRIES = {
   index: 'packages/dsh-anyplugin-install/src/controller.ts',
+  // The single published `bin`; the same CLI the conformance rig runs (D49).
+  cli: 'packages/dsh-anyplugin-conformance/src/cli.ts',
   'materialize/agents': 'packages/dsh-anyplugin-materialize-agents/src/index.ts',
   'materialize/hook': 'packages/dsh-anyplugin-materialize-hook/src/index.ts',
   'materialize/mcp': 'packages/dsh-anyplugin-materialize-mcp/src/index.ts',
@@ -94,7 +99,10 @@ async function main() {
         }
       }
       for (const [input, info] of Object.entries(output.inputs)) {
-        if (!input.startsWith(kernelDir)) continue
+        // Only the hook entry is the mods kernel bundle; the CLI and the
+        // controller bundle also reach kernel sources, and counting those
+        // copies would report the same bytes twice.
+        if (out !== 'materialize/hook' || !input.startsWith(kernelDir)) continue
         kernelBytes += info.bytesInOutput
         kernelInputs.add(input)
       }
