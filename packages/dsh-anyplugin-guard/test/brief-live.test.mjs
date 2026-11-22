@@ -6,16 +6,28 @@
 // through the loader, spawns one child and asserts the child completes with
 // the brief exactly once in its history.
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { mainCheckout } from '../src/composition.ts'
 import { resolveHarness, harnessSkipReason } from '../../dsh-anyplugin-conformance/src/harness.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const guardSource = pathToFileURL(join(repoRoot, 'packages', 'dsh-anyplugin-guard', 'src', 'index.ts')).href
+
+// This test really denies a write, and the guard really appends a record. Keep
+// it out of the checkout's `.audit/`: a `verify` run must not change the denial
+// history an audit reads. The assertions below also prove the redirect worked.
+const liveAuditDir = mkdtempSync(join(tmpdir(), 'anyplugin-guard-live-audit-'))
+process.env.DSH_ANYPLUGIN_AUDIT_DIR = liveAuditDir
+after(() => rmSync(liveAuditDir, { recursive: true, force: true }))
+const checkoutRoot = mainCheckout(repoRoot)
+const checkoutDenials = checkoutRoot === undefined ? undefined : join(checkoutRoot, '.audit', 'guard-denials.jsonl')
+const checkoutDenialsBefore =
+  checkoutDenials !== undefined && existsSync(checkoutDenials) ? readFileSync(checkoutDenials, 'utf8') : null
 
 const harness = resolveHarness()
 
@@ -234,6 +246,14 @@ test(
         toolResults.some((text) => /anyplugin-guard: refusing.*write-outside-worktree/u.test(text)),
         `the denial reason reaches the model (saw ${JSON.stringify(toolResults.slice(-2))})`,
       )
+
+      const liveLog = readFileSync(join(liveAuditDir, 'guard-denials.jsonl'), 'utf8').trim().split('\n')
+      assert.equal(liveLog.length, 1, 'the live denial is one structured record')
+      assert.match(liveLog[0], /"rule":"write-outside-worktree"/u)
+      if (checkoutDenials !== undefined) {
+        const afterText = existsSync(checkoutDenials) ? readFileSync(checkoutDenials, 'utf8') : null
+        assert.equal(afterText, checkoutDenialsBefore, 'a guard test run leaves the checkout denial log unchanged')
+      }
     } finally {
       loaderFiber?.dispose?.()
       rmSync(dataDir, { recursive: true, force: true })

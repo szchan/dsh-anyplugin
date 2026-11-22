@@ -46,6 +46,12 @@ const repo = '/work/repo'
 const worktree = '/work/wt/ticket-80'
 const reviewedHead = '0123456789abcdef0123456789abcdef01234567'
 
+// The guard now records every denial (F16). These tests deny on purpose, so
+// point the recorder at a scratch directory: the checkout's `.audit/` is for
+// real sessions, not for this matrix, and an audit reading it must not count a
+// test run as evidence.
+process.env.DSH_ANYPLUGIN_AUDIT_DIR = mkdtempSync(join(tmpdir(), 'guard-test-denials-'))
+
 // A minimal main checkout that carries the current sources: a linked worktree
 // refuses installs (its hooks dir is the main checkout's), so the rollback path
 // has to run in an ordinary repository.

@@ -27,22 +27,28 @@ import { homedir } from 'node:os'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import readline from 'node:readline'
 import { fileURLToPath } from 'node:url'
+import { mainCheckout } from './audit-checkout.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const argv = process.argv.slice(2)
 
 // Sessions are recorded under the *checkout that owns the .git directory*, and a
 // ticket worktree is still the same project. The audit usually runs from a
-// worktree, so resolve the main checkout rather than using `root`.
-function mainCheckout() {
-  const common = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-    cwd: root,
-    encoding: 'utf8',
-  })
-  if (common.status === 0 && common.stdout.trim() !== '') return resolve(common.stdout.trim(), '..')
-  return root
-}
-const projectRoot = mainCheckout()
+// worktree, so resolve the main checkout rather than using `root`. The helper
+// mirrors the guard's resolver (composition.ts) so the denial reader below and
+// the guard's writer agree in worktree, submodule and separate-git-dir layouts.
+const projectRoot = mainCheckout(root)
+
+// `.audit/` is where this script writes its evidence and where the guard
+// appends denials (F16). The override moves both: a test or a per-machine run
+// needs one directory, not a log in the checkout and a report somewhere else.
+const auditDir = (() => {
+  const override = process.env.DSH_ANYPLUGIN_AUDIT_DIR
+  // Both sides follow the checkout that owns `.git`, not the directory this
+  // script was read from: the audit usually runs from a ticket worktree, and a
+  // guard installed there writes the main checkout's log (denials.ts).
+  return typeof override === 'string' && override.trim() !== '' ? resolve(override.trim()) : join(projectRoot, '.audit')
+})()
 
 function option(name, fallback) {
   const index = argv.indexOf(name)
@@ -438,6 +444,72 @@ function guardEvidence() {
   }
 }
 
+// The guard appends one JSON line per refusal to `.audit/guard-denials.jsonl`
+// (F16). The guard's own test matrix points `DSH_ANYPLUGIN_AUDIT_DIR` at a
+// scratch directory, so this is the count of real refusals; the transcript
+// count below is a sighting, not a count. The file is an observability record:
+// missing, unreadable or malformed lines are reported, never fatal — the guard
+// does not fail a merge and neither does its log.
+function guardDenialEvidence() {
+  const file = join(auditDir, 'guard-denials.jsonl')
+  const empty = { available: false, path: file, total: 0, outsideWindow: 0, unreadable: 0, byRule: [], byRole: [], recent: [] }
+  if (!existsSync(file)) return empty
+  let text
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    return { ...empty, error: String(error).slice(0, 200) }
+  }
+  const byRule = new Map()
+  const byRole = new Map()
+  const recent = []
+  let total = 0
+  let outsideWindow = 0
+  let unreadable = 0
+  // A record a few minutes ahead of this process is clock skew, not a denial
+  // from next week; beyond that it is not in the window either.
+  const futureEdge = now.getTime() + 5 * 60 * 1000
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue
+    let record
+    try {
+      record = JSON.parse(line)
+    } catch {
+      unreadable += 1
+      continue
+    }
+    const stamp = typeof record?.ts === 'string' ? Date.parse(record.ts) : Number.NaN
+    const role = record?.role
+    const rule = record?.rule
+    if (!Number.isFinite(stamp) || (role !== 'root' && role !== 'worker') || typeof rule !== 'string' || rule === '') {
+      unreadable += 1
+      continue
+    }
+    if (stamp < since.getTime() || stamp > futureEdge) {
+      outsideWindow += 1
+      continue
+    }
+    total += 1
+    byRule.set(rule, (byRule.get(rule) ?? 0) + 1)
+    byRole.set(role, (byRole.get(role) ?? 0) + 1)
+    recent.push({ ts: record.ts, rule, role })
+  }
+  const rows = (map, key) =>
+    [...map.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ [key]: name, count }))
+  return {
+    available: true,
+    path: file,
+    total,
+    outsideWindow,
+    unreadable,
+    byRule: rows(byRule, 'rule'),
+    byRole: rows(byRole, 'role'),
+    recent: recent.slice(-5),
+  }
+}
+
 function scheduleEvidence() {
   const path = join(homedir(), '.dsh', 'storages', 'schedule.json')
   if (!existsSync(path)) return { available: false, tasks: [] }
@@ -553,9 +625,8 @@ function digest(evidence) {
     lines.push(`- tools: ${sessions.toolCalls.slice(0, 12).map((row) => `${row.name} ${row.count}`).join(', ')}`)
     lines.push('- top command groups: ' + sessions.bashGroups.slice(0, 12).map((row) => `\`${row.group}\` ${row.count}${row.failed > 0 ? ` (${row.failed} failed)` : ''}`).join(', '))
     // These are DENY *lines in tool output*, and agents run the guard's own
-    // test matrix, so the number is not a denial count. The honest use is
-    // "did the guard fire in a real session?" — which needs the structured
-    // denial log this audit asks the guard to grow (F16).
+    // test matrix, so the number is not a denial count; the structured denial
+    // log below is. This line only says whether the guard was seen at all.
     lines.push(`- guard DENY lines (self-tests included): ${sessions.guardDenials.length === 0 ? 'none' : sessions.guardDenials.map((row) => `${row.rule} ${row.count}`).join(', ')}`)
     lines.push(`- largest sessions: ${sessions.largest.map((row) => `${row.id.slice(0, 24)} d${row.depth} ${row.tools} tools${row.cwd ? ` @ ${row.cwd.replace(evidence.repo.root, '.')}` : ''}`).join(', ')}`)
     lines.push(`- write targets (top): ${sessions.topWritePaths.slice(0, 10).map((row) => `\`${row.path.replace(evidence.repo.root, '.')}\` ${row.count}`).join(', ') || 'none'}`)
@@ -566,6 +637,17 @@ function digest(evidence) {
   lines.push(guard.available
     ? `- guard: **${guard.status}**; source ${guard.sourceExists ? 'present' : 'missing'}; worktrees ${guard.worktrees} desired / ${guard.installedWorktrees} installed${guard.stalePaths.length === 0 ? '' : ` (stale: ${guard.stalePaths.join(', ')})`}; hooks ${guard.hooks.map((hook) => `${hook.file} ${hook.status}`).join(', ') || 'none'}`
     : '- guard: unavailable (scripts/guard-status.mjs missing)')
+  const denials = evidence.guardDenials
+  if (!denials.available) {
+    lines.push(denials.error
+      ? `- guard denials (structured, last ${days} days): log unreadable (${denials.error}) at ${denials.path}`
+      : `- guard denials (structured, last ${days} days): no structured log at ${denials.path}`)
+  } else {
+    const roles = denials.byRole.map((row) => `${row.role} ${row.count}`).join(', ') || 'none'
+    const rules = denials.byRule.map((row) => `${row.rule} ${row.count}`).join(', ') || 'none'
+    const recent = denials.recent.map((row) => `${row.ts.slice(0, 19)} ${row.rule} ${row.role}`).join(', ') || 'none'
+    lines.push(`- guard denials (structured, last ${days} days): ${denials.total} (${roles}); by rule: ${rules}; last: ${recent}${denials.unreadable > 0 ? `; ${denials.unreadable} unreadable line(s)` : ''}${denials.outsideWindow > 0 ? `; ${denials.outsideWindow} outside window` : ''}`)
+  }
   const schedules = evidence.schedules
   lines.push(schedules.available
     ? `- schedules: ${schedules.active} active of ${schedules.tasks.length}; ${schedules.tasks.map((task) => `${task.title} [${task.status}] ${task.rrule.split('\n').at(-1) ?? ''} -> ${task.target ? task.target.slice(0, 18) : '?'}${task.lastDelivery ? `; last ${task.lastDelivery}` : ''}`).join('; ')}`
@@ -601,6 +683,7 @@ const evidence = {
   mechanisms: mechanismState(),
   sessions: await sessionEvidence(),
   guard: guardEvidence(),
+  guardDenials: guardDenialEvidence(),
   schedules: scheduleEvidence(),
   github: githubEvidence(),
 }
@@ -610,7 +693,6 @@ if (outFile !== '') {
   mkdirSync(join(target, '..'), { recursive: true })
   writeFileSync(target, `${JSON.stringify(evidence, null, 2)}\n`)
 }
-const auditDir = join(root, '.audit')
 mkdirSync(auditDir, { recursive: true })
 writeFileSync(join(auditDir, `evidence-${today}.json`), `${JSON.stringify(evidence, null, 2)}\n`)
 
