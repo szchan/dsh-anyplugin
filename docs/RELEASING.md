@@ -63,15 +63,50 @@ The job publishes with `npm publish --provenance --access public` using
 `id-token: write`; there is no `NODE_AUTH_TOKEN` in the environment and the
 workflow asserts that before publishing.
 
-Verify from the registry, not from the log:
+Verify from the registry, not from the log, and **run what the registry
+serves**:
 
 ```bash
-curl -s https://registry.npmjs.org/dsh-anyplugin | node -e "…"  # dist-tags.latest, dist.attestations
-npx dsh-anyplugin@<version> --help                              # the bin is real
+node scripts/verify-release.mjs --version <version>          # human output
+node scripts/verify-release.mjs --version <version> --json   # for a release note
 ```
 
-`npm view` may serve a cached manifest; `curl` against the registry does not.
-A published version carries `dist.attestations.provenance.predicateType = https://slsa.dev/provenance/v1`.
+It judges three things: the registry (the version is in `versions`, and
+`dist.attestations.provenance.predicateType` is `https://slsa.dev/provenance/v1`),
+the packed manifest (the tarball's `version`, and the `bin` it declares), and
+the packed CLI. For the last one it runs `npm pack`, unpacks the tarball, runs
+*that* bin's `report` on `fixtures/claude-skills-only`, and judges the report:
+`ok`, a `problems` array that is empty, the fixture's name, the pin exactly as
+`CLAUDE_CODE_PIN` declares it, every row `exact` or `equivalent` and carried (a
+row the report downgrades to `planned` is not proven placed), the totals that
+`report.ts` derives from the rows (`declared` = rows, `emitted` = carried,
+`refused` = rows with a refusal, `skipped` = rows − emitted − refused), and the
+row set equal to the fixture's declared rows —
+a dropped, invented, or repeated row fails. The row list is derived from the
+fixture's own files: `skills/*/SKILL.md`, top-level `commands/*.md`,
+`agents/*.md` and `output-styles/*.md`; nested commands, hooks and MCP rows are
+not enumerated.
+
+**The row checks only run when that list is non-empty.** A fixture made of
+nested commands, hooks or MCP servers enumerates nothing, so only the shape and
+totals rules apply and a dropped row is not detected; a mixed fixture's rows on
+those surfaces are treated as invented. Use the default skills fixture (or
+another built from the four surfaces) when the row claim matters.
+
+The entry point exits 0 when every claim holds, 1 with each failed claim listed,
+and 2 on a usage error. The 0/1 paths are tested through `run`'s return value;
+the usage path is tested by spawning the entry point, so deleting the exit
+assignment reddens. An unpublished
+version stops after the registry judgment, because nothing after it can be true.
+
+Scope, stated narrowly: this runs the packed CLI's `report` path. It does not
+execute the packed materializers — `report.ok` is IR validation, and a tarball
+whose `lib/materialize/*.js` all throw still reports `ok: true`.
+
+The script is not part of `verify`: it reaches the network and npm, and it is
+the post-publish step. Run it from the checkout root; the default fixture is
+relative. `npm view` supplies the version list; the version document itself is
+read over `fetch`.
 
 Then open the GitHub release for the tag and write what changed, in the same
 five-class vocabulary the docs use (what is now `exact` / `equivalent` / still
