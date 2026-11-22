@@ -2776,13 +2776,22 @@ kernel would have to be rewritten — and would make mods structurally impossibl
      → `agent/disposed` (SessionEnd).
 
   The fixture's five handlers wrote exactly one line each. Their *set* is fixed;
-  their total order is not. `subagent/end` and `agent/disposed` are independent
+  their total order is not: `SubagentStop` and `SessionEnd` are independent
   emits, so under CPU contention the child's completion and the root's disposal
-  can interleave: the oracle once saw `SessionStart, Stop, SubagentStart,
-  SessionEnd, SubagentStop` on two cores. The only chains the host guarantees,
-  and the only ones asserted, are `SessionStart < Stop < SessionEnd` and
-  `SubagentStart < SubagentStop`; the test compares the label set and those
-  two orders, never a three-way interleaving. The child's own `agent/created`
+  can interleave. `SessionStart < Stop < SessionEnd` is a serial chain on the
+  agent's creation/turn/disposal. `SubagentStart < SubagentStop` is now a
+  *kernel* guarantee, not a host one: the host dispatches `subagent/start`
+  before `subagent/end`, but `createLifecycleEmitter` contains each listener's
+  returned promise instead of awaiting it
+  (`@deepseek-ai/dsh-subagent/lib/index.js:137-154`, identical at both pins),
+  so a slow start hook can still be running when the stop hook begins. The hook
+  materializer keys a pending start chain by the child's id and makes the stop
+  chain for the same child await it (the classic `subagent/*` mount and the mod
+  seat share the pair gate), so the order the test asserts is one the kernel
+  enforces; the rendezvous test in
+  `packages/dsh-anyplugin-materialize-hook/test/lifecycle.test.mjs` proves the
+  stop chain waits. The test compares the label set and those two orders, never
+  a three-way interleaving. The child's own `agent/created`
   and `agent/turn-stopping` also fire; the root-only
   `parentSession === undefined` filter keeps them from duplicating
   SessionStart/Stop, while SubagentStart/Stop require `parentSessionId !==

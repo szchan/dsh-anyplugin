@@ -84,9 +84,11 @@ const HOOK_PROBES = {
  * hook there is no result to carry their text. The fixture's handlers append
  * one line per event to `$CLAUDE_PLUGIN_DATA/events.log`, so the row is the log
  * line itself: one real root turn plus one delegated child must produce exactly
- * these five lines. The host promises no total order across the root turn and
- * the child, so the test asserts the two chains it does promise: SessionStart
- * before Stop before SessionEnd, and SubagentStart before SubagentStop (S9).
+ * these five lines. The host dispatches `subagent/start` before `subagent/end`
+ * but does not await the listener; the hook materializer holds the stop chain
+ * for the same child until the start chain settles, so the asserted
+ * SubagentStart-before-SubagentStop order is a kernel guarantee (S9). SessionEnd
+ * remains an independent emit and is compared as a set member, not an order.
  */
 const LIFECYCLE_PROBES = {
   'claude-hooks-lifecycle': {

@@ -984,16 +984,54 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   }
 
   /**
+   * The host emits `subagent/start` before `subagent/end` but does not await
+   * either listener: `createLifecycleEmitter` contains the returned promise
+   * (`@deepseek-ai/dsh-subagent/lib/index.js:137-154`, identical at both pins),
+   * so a slow start hook can still be running when the stop hook begins. The
+   * pair gate turns the host's dispatch order into a completion order for the
+   * same child. A start that already settled leaves no entry, so an unpaired
+   * stop is not delayed.
+   */
+  const childKey = (id: unknown): string | undefined =>
+    typeof id === 'string' && id !== '' ? id : undefined
+  const pendingSubagentStarts = new Map<string, Promise<unknown>>()
+  const startSubagentChain = (id: unknown, run: () => Promise<unknown>): Promise<unknown> => {
+    const chain = run()
+    const key = childKey(id)
+    if (key === undefined) return chain
+    pendingSubagentStarts.set(key, chain)
+    // Settles the entry without turning the start hook's failure into an
+    // unhandled rejection; the listener still returns the rejected promise, so
+    // the host keeps logging it.
+    void chain
+      .finally(() => {
+        if (pendingSubagentStarts.get(key) === chain) pendingSubagentStarts.delete(key)
+      })
+      .catch(() => undefined)
+    return chain
+  }
+  const stopSubagentChain = async (id: unknown, run: () => Promise<unknown>): Promise<void> => {
+    const key = childKey(id)
+    const start = key === undefined ? undefined : pendingSubagentStarts.get(key)
+    if (key !== undefined) pendingSubagentStarts.delete(key)
+    if (start !== undefined) await start.catch(() => undefined)
+    await run()
+  }
+
+  /**
    * One lifecycle mount for all five events. The host event is an emit or a
    * serial, never a waterfall, so a decision is reported and dropped rather
    * than applied; every handler returns CONTINUE so the kernel still runs all
-   * matching hooks.
+   * matching hooks. `pair` is set only for the two subagent events: it makes
+   * the stop chain for a child resolve after that child's start chain (the
+   * host itself never awaits the start listener).
    */
   const lifecycle = <T>(
     event: (typeof LIFECYCLE_EVENTS)[number],
     host: string,
     read: (value: T) => LifecycleOccurrence | undefined,
     mount = true,
+    pair?: 'start' | 'stop',
   ): void => {
     const registrations = registerLifecycle(event, host)
     if (registrations.length === 0) return
@@ -1002,12 +1040,15 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     // same classic registration, which fan-out would run twice.
     if (!mount) return
     ctx.effect(() =>
-      ctx.on(host, async (value: T) => {
+      ctx.on(host, (value: T) => {
         const occurrence = read(value)
         if (occurrence === undefined) return
         const payload = { hook_event_name: event, cwd: process.cwd(), ...occurrence.fields }
         const chainEvent = chainEventFor(event, host, payload)
-        await runKernel(chainEvent, registrations)
+        const chain = (): Promise<unknown> => runKernel(chainEvent, registrations)
+        if (pair === 'start') return startSubagentChain(occurrence.fields.agent_id, chain)
+        if (pair === 'stop') return stopSubagentChain(occurrence.fields.agent_id, chain)
+        return chain()
       }),
     )
   }
@@ -1038,7 +1079,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             ...(value.id === undefined ? {} : { agent_id: value.id }),
           },
         },
-  !modsMode)
+  !modsMode, 'start')
   lifecycle<SubagentEvent>('SubagentStop', 'subagent/end', (value) => {
     if (value.parentSessionId === undefined) return undefined
     const last = messageText(value.lastAssistantMessage)
@@ -1049,7 +1090,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
         ...(last === undefined ? {} : { last_assistant_message: last }),
       },
     }
-  }, !modsMode)
+  }, !modsMode, 'stop')
 
   // The nine S9-confirmed seams no earlier ticket mounted: four listener
   // seams and five notification records. Each is registered through the same
@@ -1843,7 +1884,7 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
       )
 
       mount(() =>
-        agentCtx.on('subagent/start', async (value: SubagentEvent) => {
+        agentCtx.on('subagent/start', (value: SubagentEvent) => {
           if (value.parentSessionId === undefined) return
           const payload = {
             hook_event_name: 'SubagentStart',
@@ -1851,12 +1892,14 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             session_id: value.parentSessionId,
             ...(value.id === undefined ? {} : { agent_id: value.id }),
           }
-          await runKernel(classicEvent('SubagentStart', payload), combined('SubagentStart'), agent)
+          return startSubagentChain(value.id, () =>
+            runKernel(classicEvent('SubagentStart', payload), combined('SubagentStart'), agent),
+          )
         }),
       )
 
       mount(() =>
-        agentCtx.on('subagent/end', async (value: SubagentEvent) => {
+        agentCtx.on('subagent/end', (value: SubagentEvent) => {
           if (value.parentSessionId === undefined) return
           const last = messageText(value.lastAssistantMessage)
           const payload = {
@@ -1866,7 +1909,9 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
             ...(value.id === undefined ? {} : { agent_id: value.id }),
             ...(last === undefined ? {} : { last_assistant_message: last }),
           }
-          await runKernel(classicEvent('SubagentStop', payload), combined('SubagentStop'), agent)
+          return stopSubagentChain(value.id, () =>
+            runKernel(classicEvent('SubagentStop', payload), combined('SubagentStop'), agent),
+          )
         }),
       )
     }

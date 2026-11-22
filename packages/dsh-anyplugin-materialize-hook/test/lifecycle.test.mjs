@@ -4,13 +4,14 @@
 // pin the exact keys without booting a turn (the real turn is the conformance
 // oracle's job) and prove the root/child split without a subagent runtime.
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import { apply } from '../src/index.ts'
 import { hashManifest } from '../../dsh-anyplugin-trust/src/index.ts'
+import { pinnedMod } from './pinned.mjs'
 
 /** A pinned command hook whose whole effect is `cat > out`. */
 const pinned = (event, command, matcher) => {
@@ -46,6 +47,22 @@ function harness() {
 
 async function fire(listeners, host, value) {
   for (const listener of listeners.get(host) ?? []) await listener(value)
+}
+
+/** The host invokes each emit listener without awaiting its return value. */
+const listenerFor = (listeners, host) => {
+  const [listener] = listeners.get(host) ?? []
+  assert.equal(typeof listener, 'function', `no listener for ${host}`)
+  return listener
+}
+
+const waitFor = async (predicate, timeoutMs, what) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.fail(`timed out waiting for ${what}`)
 }
 
 const rootAgent = (overrides = {}) => ({
@@ -135,6 +152,108 @@ test('the subagent payloads carry the parent session and the child agent', async
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('the SubagentStop chain waits for the child SubagentStart chain', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  const started = join(dir, 'started')
+  const release = join(dir, 'release')
+  const log = join(dir, 'order.log')
+  let starting
+  let stopping
+  let order
+  try {
+    const { ctx, listeners } = harness()
+    await apply(ctx, {
+      hooks: [
+        pinned(
+          'SubagentStart',
+          `touch ${started}; while [ ! -e ${release} ]; do sleep 0.01; done; printf 'start\\n' >> ${log}`,
+        ),
+        pinned('SubagentStop', `printf 'stop\\n' >> ${log}`),
+      ],
+    })
+    // The host dispatches start and end without awaiting either listener, so
+    // invoke start without awaiting it before firing the matching end.
+    starting = listenerFor(listeners, 'subagent/start')({ parentSessionId: 'session-1', id: 'child-1' })
+    await waitFor(() => existsSync(started), 5000, 'the start hook to begin')
+    stopping = listenerFor(listeners, 'subagent/end')({ parentSessionId: 'session-1', id: 'child-1' })
+    const settledEarly = await Promise.race([
+      Promise.resolve(stopping).then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 500)),
+    ])
+    assert.equal(settledEarly, false, 'SubagentStop completed while the blocked SubagentStart was still running')
+  } finally {
+    // Release a start hook that is still parked, so a failing assertion leaves
+    // no `sh` process behind, then read the order once both chains settled.
+    writeFileSync(release, '')
+    await Promise.allSettled([starting, stopping].filter((item) => item !== undefined))
+    order = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []
+    rmSync(dir, { recursive: true, force: true })
+  }
+  assert.deepEqual(order, ['start', 'stop'])
+})
+
+test('the seat stop chain waits for the seat start chain too', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-lifecycle-'))
+  const started = join(dir, 'started')
+  const release = join(dir, 'release')
+  const log = join(dir, 'order.log')
+  let starting
+  let stopping
+  let order
+  try {
+    writeFileSync(join(dir, 'noop.ts'), 'export function register(_on: On): void {}\n')
+    const { ctx, listeners } = harness()
+    await apply(ctx, {
+      hooks: [
+        pinned(
+          'SubagentStart',
+          `touch ${started}; while [ ! -e ${release} ]; do sleep 0.01; done; printf 'start\\n' >> ${log}`,
+        ),
+        pinned('SubagentStop', `printf 'stop\\n' >> ${log}`),
+      ],
+      mods: [pinnedMod(dir, 'noop.ts')],
+      pluginRoot: dir,
+    })
+    // A mod presence moves the chains onto the root agent's seat (D32), so
+    // the gate must be wired there as well, not only on the classic mount.
+    const seatListeners = new Map()
+    const seat = {
+      on(event, listener) {
+        const list = seatListeners.get(event) ?? []
+        list.push(listener)
+        seatListeners.set(event, list)
+        return () => {}
+      },
+      effect: (register) => register(),
+      logger: { warn: () => {} },
+    }
+    const agent = {
+      session: { header: { id: 'session-seat', cwd: '/work' } },
+      model: { current: () => ({ provider: 'fake', model: 'fake-1' }) },
+      ctx: seat,
+    }
+    for (const listener of listeners.get('agent/created') ?? []) await listener({ agent })
+    starting = listenerFor(seatListeners, 'subagent/start')({
+      parentSessionId: 'session-seat',
+      id: 'child-seat',
+      local: true,
+    })
+    await waitFor(() => existsSync(started), 5000, 'the seat start hook to begin')
+    stopping = listenerFor(seatListeners, 'subagent/end')({ parentSessionId: 'session-seat', id: 'child-seat' })
+    const settledEarly = await Promise.race([
+      Promise.resolve(stopping).then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 500)),
+    ])
+    assert.equal(settledEarly, false, 'the seat SubagentStop chain ran while its SubagentStart chain was blocked')
+  } finally {
+    writeFileSync(release, '')
+    await Promise.allSettled([starting, stopping].filter((item) => item !== undefined))
+    order = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []
+    rmSync(dir, { recursive: true, force: true })
+  }
+  assert.deepEqual(order, ['start', 'stop'])
 })
 
 test('a child creation or turn stop never runs the root lifecycle hooks', async () => {
