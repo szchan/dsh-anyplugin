@@ -3240,3 +3240,27 @@ The classic names and payload shapes do not move (D32).
 asserts one log line per routed event, the payload key sets, and the two
 dedupe cases; the coverage ratchet moves to 32 declared / 31 matched, and
 `fixtures/mods/coverage.json` is regenerated in the same commit.
+
+---
+
+## D71 — The registry tarball ceiling moves to 188 KiB
+
+**Decided 2026-11-22** (#197). Routing the five S23 events adds the record
+translation to the shipped classic hook mount, so `npm pack` measures the
+registry tarball at **190257 bytes (185.8 KiB)**, above D65's 188416-byte
+(184 KiB) ceiling. The ceiling moves to **188 KiB (192512 bytes)**, leaving
+2.2 KiB of headroom; D46's separate 128 KiB kernel ceiling is unchanged.
+
+1. **The tarball is the shipped surface, not the source tree.** The five
+   routes live in `packages/dsh-anyplugin-materialize-hook/src/index.ts`, which
+   ships; trimming comments or moving the translation to another module would
+   hide the code without shrinking the payload materially.
+2. **A budget raise is a decision, not a silent drift.** The next raise cites
+   the measured byte count and the feature that caused it, as D65 and this
+   entry do.
+3. **The kernel ceiling stays the fidelity budget.** D46's 128 KiB limit was
+   not touched; this entry only bounds the registry tarball the CLI serves.
+
+**Consequences.** `scripts/check-pack.mjs` carries the new constant and points
+at this entry. The measured size is from the same build CI runs; no dependency,
+pin, workflow or kernel limit moved.
