@@ -389,7 +389,9 @@ export function sessionViewOf(value: unknown): ModBridgeSession | undefined {
 
   return {
     ...(typeof header.id === 'string' ? { id: header.id } : {}),
-    cwd: typeof header.cwd === 'string' ? header.cwd : process.cwd(),
+    // The header is the session's own record; a missing cwd is reported as
+    // absent, not replaced with the host process's directory.
+    ...(typeof header.cwd === 'string' ? { cwd: header.cwd } : {}),
     messages,
     usage,
   }
@@ -906,6 +908,29 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     return view.id
   }
 
+  /**
+   * The pinned `$.session.cwd()` reads the session's own directory, never the
+   * host process's (`claude-code.d.ts:3339` @ 2.1.329). When no session view is
+   * attached, or its header carries no cwd, refuse with the same typed code as
+   * `$.session.id()` rather than guessing `process.cwd()`.
+   */
+  const sessionCwdOf = async (agent: unknown): Promise<string> => {
+    const view = sessionOfAgent(agent)
+    if (view?.cwd === undefined) {
+      fail(
+        'ERR_MOD_HOST_SESSION_UNAVAILABLE',
+        '$.session.cwd: no session cwd is observable for this invocation; a load-time session.start has no session (D32 §4), and the session header carried none',
+      )
+    }
+    return view.cwd
+  }
+
+  /**
+   * The directory relative fs paths resolve against: the attached session's
+   * cwd when it has one, else the host option, else `process.cwd()`. This stays
+   * synchronous for fs/vcs; it is not `$.session.cwd()`, which refuses when no
+   * session cwd is observable.
+   */
   const sessionCwd = (agent: unknown): string => sessionOfAgent(agent)?.cwd ?? options.cwd ?? process.cwd()
 
   const sessionMessages = async (agent: unknown): Promise<readonly Record<string, unknown>[]> =>
@@ -1606,7 +1631,7 @@ export function createModBridge(options: ModBridgeOptions): ModBridge {
     return {
       session: {
         id: () => sessionId(agent),
-        cwd: sessionCwd(agent),
+        cwd: () => sessionCwdOf(agent),
         messages: () => sessionMessages(agent),
         usage: () => sessionUsage(agent),
       },

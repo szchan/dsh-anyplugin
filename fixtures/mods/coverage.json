@@ -21,7 +21,7 @@
     "refusalProbe": "each function key is called with no arguments; a returned promise is awaited; a typed ERR_MOD_HOST_* unsupported/unavailable code marks the member refused",
     "renderSites": "served: the host synthesizes ui.render for component \"Pane\" on surface \"terminal\" only (ui.ts:1093-1097; D44); the other 19 declared components are planned, not drawn by the host",
     "elements": "from elementsForSurface / ELEMENT_TAGS (ui.ts:701-719, 935-953), not from the $ factory: the surface element row is table coverage (what each surface declares it can draw), not drawing coverage",
-    "shapeCheck": "classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour; session.cwd is tracked separately in #134",
+    "shapeCheck": "classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour",
     "note": "The refused set is configuration-dependent. served means callable under this configuration and not a typed refusal."
   },
   "declared": {
@@ -499,6 +499,7 @@
       "fs.list",
       "fs.read",
       "fs.stat",
+      "session.cwd",
       "session.id",
       "session.messages",
       "session.usage",
@@ -627,21 +628,8 @@
     ],
     "properties": []
   },
-  "shapeMismatches": [
-    {
-      "name": "session.cwd",
-      "declared": "method",
-      "served": "property"
-    }
-  ],
-  "wrongShape": [
-    {
-      "name": "session.cwd",
-      "declared": "method",
-      "runtime": "property",
-      "valueType": "string"
-    }
-  ],
+  "shapeMismatches": [],
+  "wrongShape": [],
   "absent": {
     "namespaces": [
       "agent",
@@ -913,10 +901,10 @@
     },
     "methods": {
       "declared": 100,
-      "served": 25,
+      "served": 26,
       "refused": 7,
       "absent": 67,
-      "wrongShape": 1
+      "wrongShape": 0
     },
     "properties": {
       "declared": 2,
