@@ -18,6 +18,7 @@
   },
   "exports": {
     ".": "./lib/index.js",
+    "./install": "./lib/install.js",
     "./materialize/agents": "./lib/materialize/agents.js",
     "./materialize/hook": "./lib/materialize/hook.js",
     "./materialize/mcp": "./lib/materialize/mcp.js",

@@ -138,9 +138,13 @@ that does not exist yet is under **Not yet built**, not in this table.
 | `dsh-anyplugin-materialize-agents` | one model-facing tool per agent file; the child is started through `ctx.subagents` (S10) |
 | `dsh-anyplugin-materialize-output-style` | IR → the selected style body at `agent/created`, through `agent.ctx.systemPrompt.section`; profile-wide, one selection at a time (ticket #77) |
 | `dsh-anyplugin-conformance` | fixtures + record/replay diff (first-class, not an afterthought) |
+| `dsh-anyplugin-ui` | the optional panel: two routes over the install lock plus a prebuilt `dsh.client` bundle; its own artifact, not part of the root tarball (issue #147) |
 
-**Not yet built.** The original map also named `dsh-anyplugin-ui` (client half:
-install list, fidelity report, trust grants), `dsh-anyplugin-dialect-portable`
+**Not yet built.** The original map also named `dsh-anyplugin-ui` with a wider
+client half (an install list *and* the fidelity report and trust grants); the
+install list now ships as `packages/dsh-anyplugin-ui` (§2, "The optional
+panel"), while the report and grant surfaces remain unbuilt.
+`dsh-anyplugin-dialect-portable`
 (the shared `agent-plugins.org` reader; `dsh-anyplugin-dialect-codex` reads that
 shape itself today), and
 `dsh-anyplugin-materialize-{bin,theme,monitor,workflow}`. Themes are carried as
@@ -153,7 +157,9 @@ reconcile lives in `dsh-anyplugin-install`.
 
 ### The published package
 
-The root package is `dsh-anyplugin` (0.2.0), and it is the one published artifact.
+The root package is `dsh-anyplugin` (0.2.0), and it is the one published artifact
+today. The optional panel is a second, separate artifact; its publication is
+proposed in the issue #147 PR and is not ratified here.
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).
@@ -171,6 +177,32 @@ as separate subpaths, and the reconciler names materializers by published
 subpath (never by file URL), so the tarball can move without rewriting config.
 `cordis.patch.yml` inserts exactly one row; every other entry is created at
 runtime from `installs.yml`.
+
+### The optional panel (issue #147)
+
+The UI half is `packages/dsh-anyplugin-ui`, a separate artifact on purpose: the
+root tarball's 180 KiB budget (enforced by `check:pack`) cannot carry a browser bundle. It has two
+halves that meet at a JSON route, not at a build step:
+
+- **server**: `apply(ctx)` registers `GET /anyplugin/installs` (a `webServer`
+  resource) and `POST /anyplugin/install` (a full-lifecycle handler). The list
+  re-reads `installs.yml` and the enablement layers on every request through
+  `listPlugins`. The mutation calls `dsh-anyplugin/install` — the same
+  `installPlugin` the CLI calls (D49) — so the manifest, version, compile and
+  grant checks are the CLI's. The client's path is the only field read; scope
+  and grants from the client are ignored, and a refusal is the CLI's typed
+  `{code, reason}` with HTTP 400.
+- **client**: `src/client/index.js` is built by `scripts/build.mjs` into
+  `lib/client.js`, a `window.__ModuleLoader__.load({ id: 'dsh-anyplugin-ui',
+  factory })` bundle. It imports `react` from the host module table and
+  renders into the `settings.section` slot. S21 (§10) proves the host
+  serves and mounts that shape without a harness rebuild at both pins.
+
+A profile opts in by adding `dsh-anyplugin-ui` to `dsh.profile.bundles`; the
+package README carries the two lines. The repository manifest keeps
+`exports["."] = "./src/index.ts"` for R7, so publishing needs a step that points
+`exports["."]` at the prebuilt `./lib/index.js`; the panel test runs the
+copied package in that publish-time shape.
 
 ## 3. AgentPlugin IR
 
