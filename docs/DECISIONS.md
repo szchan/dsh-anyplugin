@@ -2697,3 +2697,56 @@ claim that no seam exists.
 shipped work. A future per-call rewrite would be a new decision with its own
 divergence list, not a silent use of D56. The S19 spike and both CI steps stay
 green so the claim cannot rot.
+
+---
+
+## D57 — The declared shape is the contract, and `wrongShape` is a bug queue
+
+**Decided** 2026-11-21. **Supersedes the present-tense example in D55.**
+
+D55 introduced a `wrongShape` class so the mod coverage ledger could say, without
+lying, that we serve a member with a different type than the pinned declaration.
+The class was never meant to be a resting place, and the one member in it is now
+gone: `$.session.cwd` is `() => Promise<string>` at the pin and `#138` made it the
+same promise-returning method here, with the async contract asserted (a hybrid
+that returns a string on the attached path reddens both the pinned-turn test and
+the bridge test).
+
+**The rule now.** A member whose shape disagrees with the pinned declaration is a
+bug with a ticket, not an accepted category. `wrongShape` stays in the ledger
+because a future pin can produce one, but it must trend to zero, and the ledger
+says so (`shapeMismatches` and `wrongShape` are printed, currently empty). No
+materializer may mark a member `served` on the strength of a callable existing:
+the class the runtime actually exposes is asserted, not the name.
+
+**Consequences.** D55's sentence "`session.cwd` is a method at the pin, a string
+for us" is historical; the classification rule it states is unchanged. A pin bump
+that reintroduces a shape mismatch reopens a ticket — it does not inherit an
+allowance.
+
+---
+
+## D58 — The kernel's lifecycle ordering guarantee is per materializer load
+
+**Decided** 2026-11-21, with `#140`/`#141`.
+
+The host's `createLifecycleEmitter` dispatches each listener but only contains its
+promise (`Promise.resolve(returned).catch(...)`); dispatch order is guaranteed and
+completion order is not. That surfaced as a CI red: `SubagentStart` logged after
+`SubagentStop`.
+
+**Decided.** The materializer owns a per-child pair gate: the `SubagentStart`
+chain is recorded and the same child's `SubagentStop` chain awaits it, in both the
+classic mount and the mods-mode seat. `SubagentStart < SubagentStop` is therefore a
+**kernel** guarantee, not a host one, and it is scoped to one materializer load:
+a reload that begins while a start chain is in flight starts a fresh apply with an
+empty map and does not hold that child's stop. `SubagentStop < SessionEnd` stays
+unclaimed, because `agent/disposed` is an independent emit.
+
+**Stated bounds, not hidden costs.** A normal start settles within 65 s (60 s hook
+timeout plus grace; the process is SIGKILLed at 60 s); the stop chain then runs its
+own 65 s chain, so a stop listener may take ~130 s end to end. A mod that pauses in
+`next`/`$` has no bound and can starve the stop. The pending map is not cleared on
+disposal, so a start that never settles retains its entry; that was chosen over
+changing the shutdown path, and it is written in the Risk section rather than
+papered over.
