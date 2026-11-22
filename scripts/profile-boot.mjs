@@ -99,8 +99,21 @@ export function packTarball() {
  * guarded window — after the scratch boot, before the snapshots are compared —
  * so a test can prove that a write under either watched root reddens the boot.
  * The gate never passes it.
+ *
+ * `realHome` and `realProfile` name the roots the guard fingerprints. The gate
+ * passes neither, so it guards the ambient `$DSH_HOME`/`$DSH_PROFILE_DIR`, which
+ * is the install a user is running. A test passes a throwaway pair it owns,
+ * because the running Desktop writes its own state under the ambient roots
+ * while the boot runs; guarding them from a test would redden on the host's
+ * write, not the boot's (issue #165).
  */
-export async function bootPackedTarball({ tarball, mutation = 'none', afterBoot } = {}) {
+export async function bootPackedTarball({
+  tarball,
+  mutation = 'none',
+  afterBoot,
+  realHome: guardedHome,
+  realProfile: guardedProfile,
+} = {}) {
   if (!['none', ...MUTATIONS.keys()].includes(mutation)) throw new Error(`unknown mutation ${JSON.stringify(mutation)}`)
   if (!existsSync(tarball)) throw new Error(`the packed tarball ${tarball} does not exist`)
   const harness = resolveHarness()
@@ -111,8 +124,8 @@ export async function bootPackedTarball({ tarball, mutation = 'none', afterBoot 
   }
 
   const host = await loadHost(harness.harnessDir)
-  const realHome = realHomeDir()
-  const realProfile = realProfileDir(realHome)
+  const realHome = guardedHome === undefined ? realHomeDir() : resolve(guardedHome)
+  const realProfile = guardedProfile === undefined ? realProfileDir(realHome) : resolve(guardedProfile)
   const beforeHome = fingerprint(realHome, { hostLiveState: true })
   const beforeProfile = fingerprint(realProfile)
   const scratch = mkdtempSync(join(tmpdir(), 'dsh-anyplugin-pack-profile-'))
@@ -158,14 +171,18 @@ export async function bootPackedTarball({ tarball, mutation = 'none', afterBoot 
  * Returns `{ mutation, reddened: true, message }` on success. A boot that
  * accepts the mutated artifact, or fails for a different reason, is an error:
  * that is how a vacuous assertion would otherwise pass as a successful mutation.
+ *
+ * `realHome` and `realProfile` are forwarded to `bootPackedTarball`; the
+ * profile-mount test uses them to guard a throwaway home and profile it owns
+ * instead of the ambient roots the live Desktop writes to (issue #165).
  */
-export async function expectMutation({ tarball, mutation }) {
+export async function expectMutation({ tarball, mutation, realHome, realProfile }) {
   const expected = MUTATIONS.get(mutation)
   if (expected === undefined) throw new Error(`unknown mutation ${JSON.stringify(mutation)}`)
   let error
   let observed
   try {
-    observed = await bootPackedTarball({ tarball, mutation })
+    observed = await bootPackedTarball({ tarball, mutation, realHome, realProfile })
   } catch (caught) {
     error = caught
   }

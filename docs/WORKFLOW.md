@@ -11,10 +11,19 @@ merge, which wastes the worker's whole branch.
 | **master** | the ticket queue, assignments, reviews, merges, the coverage totals, `docs/DECISIONS.md`, and its own docs-only PRs | write feature code, push to `main` |
 | **worker** (subagent) | one ticket, in its own worktree, on its own branch | merge, push to `main`, edit files outside its `Touches`, change a decision |
 | **reviewer** (subagent) | one verdict per PR against the rubric below | merge, edit the branch |
+| **auditor** (scheduled) | the daily pass, audit tooling, process docs, and a gate/test that is the finding's fix | feature code, ticket branches, merging |
 
-Only the master merges. Only a worker pushes a branch. `main` is protected: PRs
-only, the `verify` check must be green, history is linear (squash), no force
-pushes.
+Only the master merges, after the review verdicts. A worker or the auditor pushes
+its own branch. `main` is protected: PRs only, the `verify` check must be green,
+history is linear (squash), no force pushes. Once #163 lands, a master merge also
+pins the reviewed head.
+
+The auditor is a separate role on purpose. It reads the queue and the
+transcripts, writes findings, and pushes mechanism fixes; it does not implement a
+ticket or merge. A mechanism PR gets two independent verdicts (F17) and the
+master merges it; an unresolved `weaker`/`not proven` verdict is a merge veto
+for the master. That veto is policy, not a guard check: no gate reads PR
+comments yet. `docs/AUDIT.md` §7 has the caps and the alarm thresholds.
 
 ### Identity
 
@@ -98,6 +107,9 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
 - `npm run verify` green locally (paste the summary line in the PR);
 - every new behaviour has an assertion (a unit test, or a fixture row that moved
   because the behaviour really changed);
+- the PR body states each behavioural claim in a `Claim | Proof` table, the proof
+  naming the assertion (or `file:line`) that would fail if the claim were false;
+  a claim with no such assertion is deleted or shrunk, not reviewed as prose;
 - coverage rows moved **only** when they became true — the totals are the
   master's to change and are reviewed as a claim, not as a number;
 - `docs/ARCHITECTURE.md` still describes the code, and a new decision is written
@@ -118,7 +130,9 @@ The reviewer answers each line, then states **approve** or **request changes**:
    anything import across a layer it should not? `check:arch` catches the
    mechanical part; the reviewer judges the rest.
 5. **Tests that could fail** — would these assertions fail if the behaviour were
-   removed? Name one that would.
+   removed? Name one that would. Check the `Claim | Proof` table: a proof that
+   tests a weaker property than its claim is a request-changes (F5 in
+   `docs/AUDIT.md`).
 6. **Docs** — decision entry, architecture update, TODO burn-down.
 7. **Noise** — unrelated formatting, debug leftovers, a second way to do
    something the repo already does one way.
