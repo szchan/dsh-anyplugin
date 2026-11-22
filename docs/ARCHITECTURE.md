@@ -184,7 +184,8 @@ runtime from `installs.yml`.
 ### The optional panel (issue #147)
 
 The UI half is `packages/dsh-anyplugin-ui`, a separate artifact on purpose: the
-root tarball's 180 KiB budget (enforced by `check:pack`) cannot carry a browser bundle. It has two
+root tarball's 184 KiB budget (D65 supersedes the earlier number; enforced by
+`check:pack`) cannot carry a browser bundle. It has two
 halves that meet at a JSON route, not at a build step:
 
 - **server**: `apply(ctx)` registers `GET /anyplugin/installs` (a `webServer`
@@ -1513,7 +1514,16 @@ a push is accepted only as `git push [-u|--force-with-lease] origin <one
 refspec that is not main>`, so a destination of `main`/`master`, **every bare
 `git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
 refused (`remote.<name>.push` and `push.default` can retarget a bare push after
-it was read); `gh pr merge` from a worker only (the root may merge); writes
+it was read); every modelled `gh pr merge` that performs a merge must carry `--match-head-commit <40-hex>`
+(the root is the merge path; a worker may not merge at all), including when
+`-R`/`--repo` sits between `pr` and `merge` or a backslash-newline joins the
+words; a `gh api` request whose path is the live `…/pulls/<n>/merge` route is
+refused whatever the method, because it has no pin flag; `gh pr merge
+--disable-auto` (its true form) cancels an auto-merge and is allowed, while
+`--auto=false` and `--disable-auto=false` do not cancel it and still need the
+pin; a help request is not a
+merge (the rule is tested at the installed mount; it is dormant wherever
+`guard:status` reports not-installed, F1); writes
 outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
@@ -1620,8 +1630,17 @@ from allowed tools, a root-run shell script, a root-written exec key that a host
 later runs, config already present in the repository or written by a process
 outside the guard (the guard models the tool call, not the filesystem),
 `sudo` on a host where it succeeds without a password, a launcher spelling the
-command-position skipper does not model, and any git feature outside the
-modelled subcommands. The guard decision is recorded on merge; this
+command-position skipper does not model, any git feature outside the
+modelled subcommands, a merge through a client the guard does not model
+(`curl`, a script, inline interpreters such as `node -e` and `python3 -c`, a
+`gh` alias or wrapper, a pre-existing git/client-side alias for a merge
+(`git config alias.pm '!gh pr merge --squash'; git pm 82`) — root-only, because
+the guard does not refuse unknown git subcommands for root, so this is named
+rather than closed — or a raw GraphQL `mergePullRequest`), and `--auto` with
+a valid pin (gh forwards the pin as `expectedHeadOid`; when GitHub evaluates it
+for a deferred merge is GitHub's behaviour, not the guard's). The merge rule is
+omission prevention, not review verification: the guard can see that a merge
+names a head, not that the head was the one the reviewer read. The guard decision is recorded on merge; this
 paragraph is its framing, not a second decision. Branch protection, the DSH
 file sandbox and CI are the boundary.
 
@@ -1756,9 +1775,17 @@ trusted child is still mounted. A refusal is a compile decision, not a loader
 failure, and is not reported as `failed`.
 
 The lifecycle CLI (`dsh-anyplugin install|list|enable|disable|uninstall`, plus
-`dsh-anyplugin marketplace list|install` over a local catalog; `npm run rig --`
-is the same surface in a checkout, and `lib/cli.js` is the package’s one `bin`)
-is a caller of this pipeline, not a second implementation. The conformance
+`dsh-anyplugin marketplace list|install` over a Claude or Codex catalog;
+`npm run rig --` is the same surface in a checkout, and `lib/cli.js` is the
+package’s one `bin`) is a caller of this pipeline, not a second implementation.
+The catalog path selects its parser — `.claude-plugin/marketplace.json` is the
+Claude shape and `.agents/plugins/marketplace.json` is the Codex shape — so an
+entry that does not match its file is a problem naming the field, never a
+lenient guess. `--from` may name a catalog file or a marketplace root; a root is
+looked up at both declared paths, and a root that carries both is merged for
+listing (`[claude-code]`/`[codex]` labels, every row naming its format) while a
+name declared in both is refused by `install` as ambiguous instead of the
+reader picking one. The conformance
 gates (`capture`, `verify`, `diff`, `trace`) stay checkout-only: the Claude
 oracle, the harness probe and the trace differ are lazy external modules, and
 the published bin refuses those commands by name instead of shipping the code.
@@ -2984,6 +3011,16 @@ kernel would have to be rewritten — and would make mods structurally impossibl
     replaced (`tools/post-execute cannot replace the value of a failed
     result`), and a standalone `ctx.tools.execute` call carries no `agent`, so
     the payload's agent-derived fields are absent rather than invented.
+  - One guard rule rides this seam: a modelled `gh pr merge` that performs a
+    merge (including `-R`/`--repo` between `pr` and `merge`, a value flag that
+    could swallow the pin, and a backslash-newline continuation) is refused
+    unless it carries `--match-head-commit <40-hex>`; `--help` and
+    `--disable-auto` perform no merge. That is omission prevention, not review
+    verification — the guard can see that a merge names a head, not that the
+    head was the one the reviewer read. The installed block is loaded in
+    `guard.test.mjs` and denied/allowed through its `tools/pre-execute`
+    listener; the rule is dormant where `guard:status` reports not-installed
+    (F1).
   - Consequences: the hook arm maps to these waterfalls instead of
     `ctx.tools.guard` (guard is monotonic denial only, no result, no
     injection), the interception kernel's `observe` mode matches the waterfall

@@ -40,6 +40,9 @@ export const PATCH_FILE = 'cordis.patch.yml'
 export const BLOCK_START = '# >>> dsh-anyplugin guard'
 export const BLOCK_END = '# <<< dsh-anyplugin guard'
 
+/** A full sha for the dry-run table; not a repository commit. */
+const REVIEWED_HEAD = '0123456789abcdef0123456789abcdef01234567'
+
 export interface Ratchet {
   /** `27 declared / 26 matched / 0 missing / 1 refused`, verbatim from docs/FEATURES.md. */
   totals: string
@@ -485,8 +488,22 @@ export function guardTable(options: { worktree: string; protectedRoot: string })
     { tool: 'bash', payload: 'echo "git push origin main" | sh', role: 'worker', expect: 'deny', rule: 'shell-unmodelled', note: 'shell stage' },
     { tool: 'bash', payload: 'stdbuf -o0 git push origin main', role: 'worker', expect: 'deny', rule: 'shell-unmodelled', note: 'unknown launcher' },
     { tool: 'bash', payload: '. /tmp/evil.sh', role: 'worker', expect: 'deny', rule: 'shell-unmodelled', note: 'dot source' },
-    { tool: 'bash', payload: 'gh pr merge 82 --squash', role: 'worker', expect: 'deny', rule: 'gh-pr-merge-worker', note: 'worker merge' },
-    { tool: 'bash', payload: 'gh pr merge 82 --squash', role: 'root', expect: 'allow', rule: 'allow', note: 'master merge' },
+    { tool: 'bash', payload: 'gh pr merge 82 --squash', role: 'worker', expect: 'deny', rule: 'gh-pr-merge-worker', note: 'worker merge, pinned or not' },
+    { tool: 'bash', payload: `gh pr merge 82 --squash --match-head-commit ${REVIEWED_HEAD}`, role: 'worker', expect: 'deny', rule: 'gh-pr-merge-worker', note: 'a pin does not let a worker merge' },
+    { tool: 'bash', payload: 'gh pr merge 82 --squash', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'master merge omits the pin' },
+    { tool: 'bash', payload: 'gh pr merge 82 --auto', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: '--auto still needs the pin' },
+    { tool: 'bash', payload: 'gh pr merge 82 --match-head-commit 0123456', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'a short sha is not a pin' },
+    { tool: 'bash', payload: `gh pr merge 82 --body --match-head-commit=${REVIEWED_HEAD}`, role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'body text is not the pin' },
+    { tool: 'bash', payload: 'gh pr merge 82 --help', role: 'root', expect: 'allow', rule: 'allow', note: 'help does not merge' },
+    { tool: 'bash', payload: 'gh pr merge 82 --disable-auto', role: 'root', expect: 'allow', rule: 'allow', note: 'disabling auto-merge performs no merge' },
+    { tool: 'bash', payload: 'gh pr merge 82 --disable-auto=false', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'false does not disable; it merges' },
+    { tool: 'bash', payload: 'gh pr list --search pr merge', role: 'root', expect: 'allow', rule: 'allow', note: 'only the command position counts' },
+    { tool: 'bash', payload: 'gh pr -R szchan/dsh-anyplugin merge 82', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'the repo flag does not hide the merge' },
+    { tool: 'bash', payload: `gh pr merge 82 --squash --match-head-commit ${REVIEWED_HEAD}`, role: 'root', expect: 'allow', rule: 'allow', note: 'master merge with the reviewed head' },
+    { tool: 'bash', payload: `gh pr merge 82 --auto --match-head-commit ${REVIEWED_HEAD}`, role: 'root', expect: 'allow', rule: 'allow', note: 'auto-merge with the reviewed head' },
+    { tool: 'bash', payload: 'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'raw API merge cannot carry the pin' },
+    { tool: 'bash', payload: 'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge#frag', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'a fragment is still the merge route' },
+    { tool: 'bash', payload: 'gh api -f merge_method=squash repos/szchan/dsh-anyplugin/pulls/82/merge', role: 'root', expect: 'deny', rule: 'gh-pr-merge-pin', note: 'method does not make the route safe' },
     { tool: 'bash', payload: 'node scripts/check-decisions.mjs --update', role: 'worker', expect: 'allow', rule: 'allow', note: 'sanctioned writer' },
     { tool: 'bash', payload: 'printf x >> docs/DECISIONS.md', role: 'worker', expect: 'deny', rule: 'decisions-append-only', note: 'redirect edit' },
     { tool: 'bash', payload: 'git checkout -- docs/DECISIONS.md', role: 'worker', expect: 'deny', rule: 'decisions-append-only', note: 'restores the file' },

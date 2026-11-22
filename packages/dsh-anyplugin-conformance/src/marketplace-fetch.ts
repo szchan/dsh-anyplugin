@@ -39,7 +39,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { get as httpsGet } from 'node:https'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 
 import { InstallCliError, type InstallCliCode } from './install-cli.ts'
@@ -52,6 +52,12 @@ export const MAX_REDIRECTS = 5
 const TIMEOUT_MS = 30_000
 const METADATA = '.dsh-anyplugin-artifact.json'
 const PLUGIN_MANIFESTS = ['.claude-plugin/plugin.json', 'plugin.json', '.codex-plugin/plugin.json']
+
+/** The manifests each dialect's reader actually reads, in its own order. */
+const DIALECT_MANIFESTS: Record<string, string[]> = {
+  'claude-code': ['.claude-plugin/plugin.json'],
+  codex: ['plugin.json', '.codex-plugin/plugin.json'],
+}
 
 export type RemoteSourceKind = 'url' | 'git-subdir' | 'npm'
 
@@ -84,6 +90,10 @@ export interface FetchRequest {
   marketplace: string
   /** Entry name, as the catalog spells it. */
   entry: string
+  /** The catalog entry's name; the fetched plugin must declare the same one. */
+  name?: string
+  /** The selected reader; the name is read from the manifest that reader reads. */
+  dialect: string
   source: MarketplaceSource
   /** The marketplace root, for a relative npm `file:` path. */
   root: string
@@ -451,6 +461,16 @@ function pluginInside(
   } catch (error) {
     if (error instanceof InstallCliError) throw error
   }
+  if (request.name !== undefined) {
+    const declared = pluginName(directory, request.dialect)
+    if (declared !== request.name) {
+      throw refusal(
+        'name-mismatch',
+        `entry "${request.marketplace}:${request.entry}" fetched a plugin that calls itself "${declared}"`,
+        'the catalog entry name and the plugin manifest name must be the same; the fetch was not committed to the cache',
+      )
+    }
+  }
   return { pluginDir: directory, plugin: relative(artifactRoot, directory) || '.' }
 }
 
@@ -586,16 +606,46 @@ function git(args: string[], cwd: string, display: string): string {
   }
 }
 
-function pluginVersion(directory: string): string | undefined {
-  for (const manifest of PLUGIN_MANIFESTS) {
+/**
+ * The manifest the reader will actually read: the first existing path in the
+ * dialect's order. A root manifest shadows the fallback even when its content
+ * is unusable, exactly as the Codex reader's `if … else if` does.
+ */
+function selectedManifest(directory: string, dialect: string): string | undefined {
+  for (const manifest of DIALECT_MANIFESTS[dialect] ?? []) {
     const file = join(directory, manifest)
-    if (!existsSync(file)) continue
+    if (existsSync(file)) return file
+  }
+  return undefined
+}
+
+/**
+ * Mirror the reader's identity: the selected manifest's non-empty `name`, or
+ * the directory basename when the selected manifest is absent, malformed, or
+ * nameless. Never a shadowed manifest.
+ */
+function pluginName(directory: string, dialect: string): string {
+  const file = selectedManifest(directory, dialect)
+  if (file !== undefined) {
     try {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown }
-      if (typeof parsed.version === 'string' && parsed.version.trim() !== '') return parsed.version
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { name?: unknown }
+      if (typeof parsed.name === 'string' && parsed.name.trim() !== '') return parsed.name
     } catch {
-      return undefined
+      // Fall through to the reader's basename fallback.
     }
+  }
+  return basename(directory)
+}
+
+/** The selected manifest's version; a shadowed manifest never supplies it. */
+function pluginVersion(directory: string, dialect: string): string | undefined {
+  const file = selectedManifest(directory, dialect)
+  if (file === undefined) return undefined
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown }
+    if (typeof parsed.version === 'string' && parsed.version.trim() !== '') return parsed.version
+  } catch {
+    return undefined
   }
   return undefined
 }
@@ -625,7 +675,7 @@ function fetchGit(request: FetchRequest, source: Extract<MarketplaceSource, { ki
     rmSync(join(work, '.git'), { recursive: true, force: true })
     rejectSymlinks(work, request)
     const { pluginDir, plugin } = pluginInside(work, request, source.path)
-    const version = pluginVersion(pluginDir)
+    const version = pluginVersion(pluginDir, request.dialect)
     const final = cacheDirectory(request.cacheRoot, request.marketplace, request.entry, commit)
     return commitArtifact(work, final, metadataFor('git-subdir', `git:${commit}`, commit, plugin, version))
   } finally {
@@ -888,7 +938,7 @@ function fetchUrl(request: FetchRequest, source: Extract<MarketplaceSource, { ki
         throw error
       }
       const { pluginDir, plugin } = pluginInside(artifactRoot, request, undefined)
-      const version = pluginVersion(pluginDir)
+      const version = pluginVersion(pluginDir, request.dialect)
       return commitArtifact(
         artifactRoot,
         final,
