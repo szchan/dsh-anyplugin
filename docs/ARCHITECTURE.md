@@ -992,31 +992,42 @@ commitment survivable.
 The measurement is `scripts/mod-coverage.mjs` plus the committed
 `fixtures/mods/coverage.json` (#130). The script scans the pinned
 `mods/types/claude-code.d.ts` with a declaration scanner (it does not import
-the declaration) and calls the host's `$` factory to enumerate what the runtime
-actually exposes. Every declared member is classified **served** (callable under
+the declaration) and calls the host's `$` factory to enumerate the runtime
+namespaces, methods and properties. Surface elements are not exposed by `$`;
+they come from `elementsForSurface` / `ELEMENT_TAGS` (`ui.ts:701-719`,
+`935-953`) and are table coverage — what each surface declares it can draw —
+not drawing coverage. Every declared member is classified **served** (callable under
 the recorded bridge configuration), **refused** (callable, but always throws a
 typed `ERR_MOD_HOST_*` refusal such as `process.run` or `vcs.status`),
 **absent** (no runtime member), or **wrong shape** (present with the wrong
 callable/property kind, recorded as `shapeMismatches` and the detailed
-`wrongShape`; `session.cwd` is the current instance and is a separate ticket). The refused set depends on configuration, so the ledger records the
+`wrongShape`; `session.cwd` is the current instance and is tracked in #134). The refused set depends on configuration, so the ledger records the
 bridge options — an attached session, a stub command registry, and no settings
 source, which is why `$.settings.read` refuses — and `--update` rejects a
 runtime member the pin does not declare instead of blessing it.
 
 The ledger covers namespaces, methods, properties, events, elements, render
-sites and matcher type aliases, and asserts a partition in every category:
-`served + refused + absent + wrongShape = declared` for methods and properties,
-`served + absent = declared` for the rest. Event keys are counted in their
+sites and matcher type aliases, and asserts a partition for every
+runtime-comparable category: `served + refusedOnly + absent = declared` for
+namespaces, `served + refused + absent + wrongShape = declared` for methods and
+properties, and `served + absent = declared` for events, elements and render
+sites. A namespace is served only when at least one of its members is served;
+`process` and `settings` are present with every member refused, so the 24
+declared namespaces — asserted by
+`packages/dsh-anyplugin-conformance/test/mod-api-ledger.test.mjs` — are
+**9 served / 2 refused-only / 13 absent**. Event keys
+are counted in their
 `classic.<Event>` spelling — the bare `ClassicHookEvent` union is the input to
 those spellings and is not counted a second time. Served events are the live
 host routes; `ui.render` and `ui.resolve` are sink-owned synthetic dispatches,
 not host routes, and are not counted as served here. Elements are
 surface-qualified (`vscode:Svg`), so dropping one surface's entry shows up as an
-absent element rather than hiding in a flattened count. The host draws only one
+absent element rather than hiding in a flattened count; the 45/45 row is table
+coverage, not a claim that the host draws all 45. The host draws only one
 render site — it synthesizes `ui.render` for `component: 'Pane'` on terminal —
 so render sites are **1 served / 19 planned**, not 20 served. Matchers are
-counted as the declaration's internal `Matcher*`/`OpenMatcher` helper aliases;
-there is no runtime type surface to compare.
+counted as the declaration's internal `Matcher*`/`OpenMatcher` helper aliases
+and are not partitioned: there is no runtime type surface to compare.
 
 `node scripts/mod-coverage.mjs` prints the totals, the absent and refused names
 grouped by namespace, the configuration, and the partition; `--update` rewrites

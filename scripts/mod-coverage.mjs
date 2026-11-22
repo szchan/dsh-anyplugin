@@ -1082,7 +1082,26 @@ export function buildLedger(declaration, runtime) {
   const wrongPropertyNames = new Set(
     wrongShape.filter((entry) => entry.declared === 'property').map((entry) => entry.name),
   )
-  const absentNamespaces = declared.namespaces.filter((name) => !runtime.namespaces.includes(name))
+  // A namespace is served only when at least one of its members is served.
+  // Presence alone is not service: `process` and `settings` are present and
+  // expose every member as a typed refusal, so they are refused-only.
+  const namespaceOf = (name) => name.slice(0, name.indexOf('.'))
+  const presentNamespaces = new Set(runtime.namespaces)
+  const servedNamespaceSet = new Set([...servedMethods, ...servedProperties].map(namespaceOf))
+  const refusedNamespaceSet = new Set(refused.map((entry) => namespaceOf(entry.name)))
+  const servedNamespaces = declared.namespaces.filter((name) => servedNamespaceSet.has(name))
+  const refusedOnlyNamespaces = declared.namespaces.filter(
+    (name) => presentNamespaces.has(name) && !servedNamespaceSet.has(name) && refusedNamespaceSet.has(name),
+  )
+  const unclassifiedNamespaces = declared.namespaces.filter(
+    (name) => presentNamespaces.has(name) && !servedNamespaceSet.has(name) && !refusedNamespaceSet.has(name),
+  )
+  if (unclassifiedNamespaces.length > 0) {
+    throw new Error(
+      `mod-coverage: namespace${unclassifiedNamespaces.length === 1 ? '' : 's'} present with no served or refused member: ${unclassifiedNamespaces.join(', ')}`,
+    )
+  }
+  const absentNamespaces = declared.namespaces.filter((name) => !presentNamespaces.has(name))
   const absent = {
     namespaces: absentNamespaces,
     methods: declared.methods.filter((name) => !present.has(name)),
@@ -1093,7 +1112,7 @@ export function buildLedger(declaration, runtime) {
   }
 
   const served = {
-    namespaces: runtime.namespaces,
+    namespaces: servedNamespaces,
     methods: sorted(servedMethods),
     properties: sorted(servedProperties),
     events: servedEvents,
@@ -1119,7 +1138,8 @@ export function buildLedger(declaration, runtime) {
   ])
   assertPartition('namespaces', declared.namespaces.length, [
     { label: 'served', count: served.namespaces.length },
-    { label: 'absent', count: setDifference(declared.namespaces, served.namespaces).length },
+    { label: 'refused-only', count: refusedOnlyNamespaces.length },
+    { label: 'absent', count: absent.namespaces.length },
   ])
 
   return {
@@ -1146,13 +1166,15 @@ export function buildLedger(declaration, runtime) {
         'each function key is called with no arguments; a returned promise is awaited; a typed ERR_MOD_HOST_* unsupported/unavailable code marks the member refused',
       renderSites:
         'served: the host synthesizes ui.render for component "Pane" on surface "terminal" only (ui.ts:1093-1097; D44); the other 19 declared components are planned, not drawn by the host',
+      elements:
+        'from elementsForSurface / ELEMENT_TAGS (ui.ts:701-719, 935-953), not from the $ factory: the surface element row is table coverage (what each surface declares it can draw), not drawing coverage',
       shapeCheck:
-        'classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour',
+        'classifies callable vs non-callable only; it does not compare arguments, return types, sync vs Promise, or behaviour; session.cwd is tracked separately in #134',
       note: 'The refused set is configuration-dependent. served means callable under this configuration and not a typed refusal.',
     },
     declared,
     served,
-    refused: { methods: sortedByName(refused), properties: [] },
+    refused: { namespaces: refusedOnlyNamespaces, methods: sortedByName(refused), properties: [] },
     shapeMismatches: sortedByName(
       wrongShape.map((entry) => ({ name: entry.name, declared: entry.declared, served: entry.runtime })),
     ),
@@ -1162,7 +1184,8 @@ export function buildLedger(declaration, runtime) {
       namespaces: {
         declared: declared.namespaces.length,
         served: served.namespaces.length,
-        absent: setDifference(declared.namespaces, served.namespaces).length,
+        refusedOnly: refusedOnlyNamespaces.length,
+        absent: absent.namespaces.length,
       },
       methods: {
         declared: declared.methods.length,
@@ -1200,8 +1223,15 @@ export function buildLedger(declaration, runtime) {
         absent: null,
         note: 'Counts the type aliases named Matcher* / OpenMatcher in the declaration (internal helper shapes), not user-facing matcher forms; there is no runtime type surface to compare.',
       },
-      partition:
-        'methods and properties: served + refused + absent + wrongShape = declared; events, elements and render sites: served + absent = declared.',
+      partition: {
+        namespaces: 'served + refusedOnly + absent = declared',
+        methods: 'served + refused + absent + wrongShape = declared',
+        properties: 'served + refused + absent + wrongShape = declared',
+        events: 'served + absent = declared',
+        elements: 'served + absent = declared',
+        renderSites: 'served + absent = declared',
+        matchers: 'not partitioned: counted by name only; no runtime type surface',
+      },
     },
   }
 }
@@ -1230,6 +1260,7 @@ export function diffLedger(committed, live) {
   compareList('declared.properties', committed.declared?.properties ?? [], live.declared.properties)
   compareList('served.methods', committed.served?.methods ?? [], live.served.methods)
   compareList('served.properties', committed.served?.properties ?? [], live.served.properties)
+  compareList('refused.namespaces', committed.refused?.namespaces ?? [], live.refused.namespaces)
   compareList('refused.methods', (committed.refused?.methods ?? []).map((entry) => entry.name), live.refused.methods.map((entry) => entry.name))
   compareList('absent.methods', committed.absent?.methods ?? [], live.absent.methods)
   compareList('absent.properties', committed.absent?.properties ?? [], live.absent.properties)
@@ -1338,7 +1369,7 @@ export function report(ledger) {
     '',
     `declared: ${totals.namespaces.declared} namespaces, ${totals.methods.declared} methods, ${totals.properties.declared} ${totals.properties.declared === 1 ? 'property' : 'properties'}, ${totals.events.declared} events, ${totals.elements.declared} surface elements (${totals.elements.unique} unique), ${totals.renderSites.declared} render sites, ${totals.matchers.declared} matcher type aliases`,
     `served:   ${totals.namespaces.served} namespaces, ${totals.methods.served} methods, ${totals.properties.served} ${totals.properties.served === 1 ? 'property' : 'properties'}, ${totals.events.served} events, ${totals.elements.served} surface elements, ${totals.renderSites.served} render site${totals.renderSites.served === 1 ? '' : 's'}`,
-    `refused:  ${totals.methods.refused} methods, callable but a typed refusal under the recorded configuration`,
+    `refused:  ${totals.methods.refused} methods in ${totals.namespaces.refusedOnly} refused-only namespace${totals.namespaces.refusedOnly === 1 ? '' : 's'} (${refused.namespaces.join(', ')}), callable but a typed refusal under the recorded configuration`,
     `absent:   ${totals.namespaces.absent} namespaces, ${totals.methods.absent} methods, ${totals.properties.absent} ${totals.properties.absent === 1 ? 'property' : 'properties'}, ${totals.events.absent} events, ${totals.elements.absent} surface elements, ${totals.renderSites.absent} render sites`,
     `wrong shape: ${totals.methods.wrongShape} method${totals.methods.wrongShape === 1 ? '' : 's'} present but excluded from served and absent`,
     '',
@@ -1388,7 +1419,9 @@ export function report(ledger) {
     for (const name of absent.renderSites) lines.push(`  ${name}`)
   }
   lines.push('', `matcher type aliases: ${totals.matchers.declared} counted by name only; ${totals.matchers.note}`)
-  lines.push(`partition: ${totals.partition}`)
+  for (const [category, rule] of Object.entries(totals.partition)) {
+    lines.push(`partition ${category}: ${rule}`)
+  }
   return `${lines.join('\n')}\n`
 }
 

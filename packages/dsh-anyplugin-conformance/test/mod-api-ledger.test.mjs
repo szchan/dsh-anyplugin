@@ -33,10 +33,15 @@ const assertPartition = (ledger) => {
       `${category} is not a partition: ${JSON.stringify(row)}`,
     )
   }
-  for (const category of ['events', 'elements', 'renderSites', 'namespaces']) {
+  for (const category of ['events', 'elements', 'renderSites']) {
     const row = totals[category]
     assert.equal(row.served + row.absent, row.declared, `${category} is not a partition: ${JSON.stringify(row)}`)
   }
+  assert.equal(
+    totals.namespaces.served + totals.namespaces.refusedOnly + totals.namespaces.absent,
+    totals.namespaces.declared,
+    `namespaces is not a partition: ${JSON.stringify(totals.namespaces)}`,
+  )
 }
 
 test('the committed ledger matches the pinned declaration and the runtime $ table', async () => {
@@ -58,7 +63,7 @@ test('the corrected totals partition declared/served/refused/absent/wrong-shape'
 
   assert.deepEqual(live.totals.methods, { declared: 100, served: 25, refused: 7, absent: 67, wrongShape: 1 })
   assert.deepEqual(live.totals.properties, { declared: 2, served: 0, refused: 0, absent: 2, wrongShape: 0 })
-  assert.deepEqual(live.totals.namespaces, { declared: 24, served: 11, absent: 13 })
+  assert.deepEqual(live.totals.namespaces, { declared: 24, served: 9, refusedOnly: 2, absent: 13 })
   assert.deepEqual(live.totals.events, { declared: 167, served: 19, absent: 148 })
   assert.deepEqual(live.totals.elements, { declared: 45, served: 45, absent: 0, unique: 14 })
   assert.deepEqual(live.totals.renderSites, { declared: 20, served: 1, absent: 19 })
@@ -90,6 +95,26 @@ test('the refused methods are a typed-refusal set with reason codes, excluded fr
     assert.equal(entry.code, expected.get(entry.name), `${entry.name} has the wrong refusal code`)
     assert.equal(live.served.methods.includes(entry.name), false, `${entry.name} is both served and refused`)
   }
+})
+
+test('namespace rows count service, not presence: refused-only namespaces have zero served members', async () => {
+  const live = await computeCoverage()
+  const servedNamespace = (name) => name.slice(0, name.indexOf('.'))
+  const servedNamespaces = new Set(
+    [...live.served.methods, ...live.served.properties].map((name) => servedNamespace(name)),
+  )
+  const refusedNamespaces = new Set(live.refused.methods.map((entry) => servedNamespace(entry.name)))
+
+  assert.deepEqual(live.refused.namespaces, ['process', 'settings'])
+  for (const name of live.served.namespaces) {
+    assert.equal(servedNamespaces.has(name), true, `served namespace ${name} has no served member`)
+  }
+  for (const name of live.refused.namespaces) {
+    assert.equal(servedNamespaces.has(name), false, `refused-only namespace ${name} has a served member`)
+    assert.equal(refusedNamespaces.has(name), true, `refused-only namespace ${name} has no refused member`)
+  }
+  assert.equal(live.served.namespaces.includes('process'), false)
+  assert.equal(live.served.namespaces.includes('settings'), false)
 })
 
 test('session.cwd is a wrong-shape extra, never served and never absent', async () => {
@@ -161,7 +186,11 @@ test('every runtime $ member is classified exactly once', async () => {
   }
 })
 
-test('a served-method removal in the computed ledger is reported as drift', async () => {
+// This is a builder/diff test: it removes a member from a computed ledger copy,
+// not from the bridge source. The bridge-source mutation (deleting `usage` from
+// `dollar()`) is performed manually and recorded in the PR; a test cannot edit
+// the module under test without changing what every other test imports.
+test('diffLedger reports a served-method removal from a computed ledger', async () => {
   const live = await computeCoverage()
   assert.ok(live.served.methods.length > 0, 'the runtime $ table served no methods; the probe is wrong')
   const mutated = structuredClone(live)

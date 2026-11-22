@@ -68,7 +68,11 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `ERR_MOD_HOST_*` refusal under the recorded bridge configuration), `absent`, or
   `wrongShape`. It commits `fixtures/mods/coverage.json` with those sets for
   namespaces, methods, properties, events, surface-qualified elements, render
-  sites and matcher type aliases, and asserts each category's partition.
+  sites and matcher type aliases, and asserts each runtime-comparable
+  category's partition (matchers are counted by name only, not partitioned).
+  Namespace rows count service, not presence: `process` and `settings` are
+  refused-only (0 served members), so the declared 24 are 9 served / 2
+  refused-only / 13 absent.
   `--update` rewrites it and rejects a runtime member the pin does not declare;
   `mod-api-ledger.test.mjs` fails on drift, and a served method removed from
   `bridge.ts` reddens it. Render sites are 1 served / 19 planned (`Pane` on
