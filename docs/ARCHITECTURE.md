@@ -2619,6 +2619,20 @@ test). A root that does not exist is reported absent, not as an unreadable
 empty tree; on CI, where neither a real home nor a real profile exists, the boot
 prints `real home: absent; real profile: absent`.
 
+The two watched roots are parameters, not an ambient read.
+`check:pack` passes neither, so the gate guards the ambient
+`$DSH_HOME`/`$DSH_PROFILE_DIR` — the install the user is running. The three
+mutations in `profile-mount.test.mjs` point the guard at a throwaway home and
+profile they create with the host's `initProfile` under
+`/tmp/dsh-anyplugin-mutations-*` and seed with `sessions/live.txt`; a write to
+that throwaway inside the guarded window must redden and name it, so a
+regression that ignored the two parameters cannot pass quietly. The boot under
+test is still the gate's scratch `$DSH_HOME`
+(`/tmp/dsh-anyplugin-pack-profile-*`), but a live Desktop writing the profile it
+is actually using can no longer redden the mutation test for a write the boot
+did not make (issue #165). The `guard:` tests set the ambient variables to temp
+roots, which is where the named-path resolution itself is exercised.
+
 **Answer.** At pins `0.2.2-rc.5` and `0.2.2-rc.2` (claude-code@2.1.329) the
 npm-installed tarball mounts: controller `dsh-anyplugin` active, patch row
 applied, the `anyplugin.claude-code…skills-only` group active with its skill
