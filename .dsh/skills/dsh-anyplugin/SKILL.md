@@ -28,17 +28,23 @@ than a red one.
 ```bash
 node scripts/fetch-harness.mjs 0.2.2-rc.5      # → prints .harness/0.2.2-rc.5
 node scripts/fetch-harness.mjs 0.2.2-rc.2
-node scripts/fetch-claude.mjs 2.1.322          # → prints the real binary path
+node scripts/fetch-claude.mjs 2.1.329          # → prints the real binary path
 node scripts/fetch-mod.mjs                     # upstream mods tree (ANYPLUGIN_MODS_TREE)
 ```
 
-`npm run verify` must report **0 skipped**. A skip means an environment variable
-is missing — `DSH_HARNESS_DIR`, `CLAUDE_BIN`, `ANYPLUGIN_MODS_TREE`,
-`ANYPLUGIN_MOD_TREE` — and on CI a skip is a failure by design (D22/D24).
+**The suite runs in CI, not here.** Pushing a branch is the feedback loop:
+`verify` runs on every branch push, fetches both DSH pins and the pinned Claude
+CLI once, and fails on a skip by design (D22/D24). Do not run `npm run test`,
+`npm run verify`, `npm run build` or `npm run bench` locally — that is the CPU the
+maintainer needs for other work (#175).
 
 ```bash
-npm run verify        # check:arch + check:features + check:decisions + all tests
-npm run check:arch    # structural rules (layer graph, R1–R13)
+npm run check:arch    # static checks only: layer graph, R1–R14 (<2 s, no child processes)
+npm run check:features
+npm run check:decisions
+npm run ci            # watch the verify run for this branch and print what failed
+npm run ci -- --log-failed   # only the failed log
+git push -u origin ticket/<n> && npm run ci   # the whole loop, in that order
 npm run rig -- report <plugin-dir>   # the fidelity report for one plugin
 npm run capture:fixtures             # re-record goldens (needs CLAUDE_BIN; never for hand-authored)
 npm run triage                       # the GitHub queue, read-only

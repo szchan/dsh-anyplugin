@@ -107,7 +107,8 @@ npm install                       # workspace deps (uses the repo-local .npmrc c
 node spikes/s1-loader/run.mjs     # run a spike
 npm run rig -- verify --plugin <dir> --golden <file>   # conformance rig
 npm run capture:fixtures          # re-capture goldens after a pin bump; review the diff
-npm run verify                    # check:arch + check:features + check:decisions + check:audit + pack/ui + tests
+npm run verify                    # CI only (all five env vars, both pins); do not run it locally
+npm run ci                        # watch the verify run for the current branch and print the failure
 npm run check:arch                # structural rules R1–R14
 npm run check:features            # the capability map points at real files; owns R15
 npm run check:decisions           # D1–D67 append-only (--update accepts new entries only)
@@ -121,8 +122,12 @@ An agent never posts as `szchan`. Comments, reviews, labels and PRs go through
 `npm run gh-bot -- <gh args…>`, because the login is what stays readable after the
 fact; the `<!-- dsh-anyplugin-agent -->` marker is only a fallback (docs/TRIAGE.md §1).
 
-`verify` is the gate. It must report **0 skipped**: a skip means an environment
-variable is missing, and on CI a skip is a failure by design (D22/D24).
+`verify` is the gate, and it runs **in CI**: every branch push triggers it. It
+must report **0 skipped** — a skip means an environment variable is missing, and
+on CI a skip is a failure by design (D22/D24). Do not run it, `npm test`,
+`npm run build` or `npm run bench` locally; push and read `npm run ci`. Static
+checks (`check:arch`, `check:features`, `check:decisions`) are the only local
+gate, because they spawn nothing.
 
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.
