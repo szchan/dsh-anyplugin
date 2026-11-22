@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 
@@ -42,6 +42,7 @@ import {
 const checkout = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/u, '')
 const repo = '/work/repo'
 const worktree = '/work/wt/ticket-80'
+const reviewedHead = '0123456789abcdef0123456789abcdef01234567'
 
 // A minimal main checkout that carries the current sources: a linked worktree
 // refuses installs (its hooks dir is the main checkout's), so the rollback path
@@ -123,12 +124,194 @@ test('a nested shell in bash -c cannot smuggle the push past the guard', () => {
   assert.equal(shell('sudo -u root git push origin main').kind, 'deny')
 })
 
-test('gh pr merge is denied for a worker and allowed for the root', () => {
-  const denied = shell('gh pr merge 82 --squash --delete-branch', worker)
-  assert.equal(denied.kind, 'deny')
-  assert.match(denied.reason, /gh-pr-merge-worker/u)
-  assert.equal(shell('gh pr merge 82 --squash', root).kind, 'allow')
+test('an unpinned merge is denied for the root', () => {
+  for (const command of [
+    'gh pr merge 82',
+    'gh pr merge 82 --squash',
+    'gh pr merge 82 --delete-branch',
+    'gh -R szchan/dsh-anyplugin pr merge 82 --merge',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+    assert.match(denied.reason, /cannot know which commit was reviewed/u)
+    assert.match(denied.reason, /--match-head-commit <40-hex reviewed head>/u)
+  }
+})
+
+test('--auto does not exempt a merge from the pin', () => {
+  for (const command of ['gh pr merge --auto 82', 'gh pr merge 82 --auto', 'gh pr merge --auto 82 --squash']) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+  }
+  assert.equal(shell(`gh pr merge --auto 82 --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+})
+
+test('a merge pin must be a full 40-hex head', () => {
+  for (const pin of ['abc1234', reviewedHead.slice(0, 39), `${reviewedHead}0`, 'g'.repeat(40)]) {
+    const denied = shell(`gh pr merge 82 --match-head-commit ${pin}`, root)
+    assert.equal(denied.kind, 'deny', pin)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', pin)
+    assert.match(denied.reason, /not a full 40-hex commit sha/u)
+  }
+  assert.equal(shell('gh pr merge 82 --match-head-commit', root).rule, 'gh-pr-merge-pin')
+  assert.equal(shell(`gh pr merge 82 -- --match-head-commit ${reviewedHead}`, root).rule, 'gh-pr-merge-pin')
+})
+
+test('a pinned merge is allowed for the root', () => {
+  for (const command of [
+    `gh pr merge 82 --squash --match-head-commit ${reviewedHead}`,
+    `gh pr merge 82 --auto --match-head-commit ${reviewedHead}`,
+    `gh pr merge 82 --match-head-commit=${reviewedHead}`,
+    `gh pr merge --squash --match-head-commit ${reviewedHead} 82`,
+    `gh -R szchan/dsh-anyplugin pr merge 82 --squash --match-head-commit ${reviewedHead}`,
+  ]) {
+    assert.equal(shell(command, root).kind, 'allow', command)
+  }
+})
+
+test('a worker cannot merge even with a pin', () => {
+  for (const command of [
+    'gh pr merge 82 --squash',
+    `gh pr merge 82 --squash --match-head-commit ${reviewedHead}`,
+  ]) {
+    const denied = shell(command, worker)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-worker', command)
+  }
   assert.equal(shell('gh pr view 82', worker).kind, 'allow')
+})
+
+test('a value flag cannot swallow the merge pin', () => {
+  for (const [short, long] of [
+    ['-b', '--body'],
+    ['-F', '--body-file'],
+    ['-t', '--subject'],
+    ['-A', '--author-email'],
+    ['-R', '--repo'],
+  ]) {
+    for (const flag of [short, long]) {
+      for (const form of [flag, `${flag}=`]) {
+        const command =
+          form === `${flag}=`
+            ? `gh pr merge 82 ${form}--match-head-commit=${reviewedHead}`
+            : `gh pr merge 82 ${form} --match-head-commit=${reviewedHead}`
+        const denied = shell(command, root)
+        assert.equal(denied.kind, 'deny', command)
+        assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+        assert.match(denied.reason, /consumed as the value of/u, command)
+      }
+    }
+  }
+  assert.equal(shell(`gh pr merge 82 --body text --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+  assert.equal(shell(`gh pr merge 82 --body=text --match-head-commit=${reviewedHead}`, root).kind, 'allow')
+})
+
+test('a help request is not a merge', () => {
+  for (const agent of [root, worker]) {
+    for (const flag of ['--help', '-h', '--help=true', '-h=true']) {
+      assert.equal(shell(`gh pr merge 82 ${flag}`, agent).kind, 'allow', `${agent.id} ${flag}`)
+    }
+  }
+  const missing = shell('gh pr merge 82 --help=false', root)
+  assert.equal(missing.kind, 'deny')
+  assert.equal(missing.rule, 'gh-pr-merge-pin')
+  assert.equal(shell(`gh pr merge 82 --help=false --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+  // `--help` as body text is not a help request; the real pin is still checked.
+  assert.equal(shell('gh pr merge 82 --body --help', root).kind, 'deny')
+  assert.equal(shell(`gh pr merge 82 --body --help --match-head-commit ${reviewedHead}`, root).kind, 'allow')
+})
+
+test('disabling auto-merge is not a merge', () => {
+  for (const flag of ['--disable-auto', '--disable-auto=true']) {
+    assert.equal(shell(`gh pr merge 82 ${flag}`, root).kind, 'allow', flag)
+  }
+  // A false disable/auto flag does not cancel the merge; it merges immediately.
+  for (const flag of ['--disable-auto=false', '--auto=false']) {
+    const immediate = shell(`gh pr merge 82 ${flag}`, root)
+    assert.equal(immediate.kind, 'deny', flag)
+    assert.equal(immediate.rule, 'gh-pr-merge-pin', flag)
+    assert.equal(shell(`gh pr merge 82 ${flag} --match-head-commit ${reviewedHead}`, root).kind, 'allow', flag)
+  }
+})
+
+test('a merge is judged at the gh command position', () => {
+  for (const agent of [root, worker]) {
+    assert.equal(shell('gh pr list --search pr merge', agent).kind, 'allow')
+    assert.equal(shell('gh pr view 82 --json merge', agent).kind, 'allow')
+  }
+  assert.equal(shell('gh -R szchan/dsh-anyplugin pr merge 82', root).rule, 'gh-pr-merge-pin')
+})
+
+test('a persistent repo flag cannot hide the merge subcommand', () => {
+  for (const command of [
+    'gh pr -R szchan/dsh-anyplugin merge 82',
+    'gh pr --repo szchan/dsh-anyplugin merge 82',
+    'gh pr --repo=szchan/dsh-anyplugin merge 82',
+    'gh pr -Rszchan/dsh-anyplugin merge 82',
+    'gh pr -R=szchan/dsh-anyplugin merge 82',
+    'gh pr --hostname enterprise.example merge 82',
+    'gh --hostname enterprise.example pr merge 82',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+    const workerDenied = shell(command, worker)
+    assert.equal(workerDenied.kind, 'deny', command)
+    assert.equal(workerDenied.rule, 'gh-pr-merge-worker', command)
+  }
+  assert.equal(
+    shell(`gh pr -R szchan/dsh-anyplugin merge 82 --match-head-commit ${reviewedHead}`, root).kind,
+    'allow',
+  )
+})
+
+test('a line continuation cannot hide a merge or a main push', () => {
+  const continuation = (left, right) => left + '\\' + '\n' + right
+  const merge = continuation('gh pr ', 'merge 161 --squash')
+  assert.equal(shell(merge, root).rule, 'gh-pr-merge-pin')
+  assert.equal(shell(merge, worker).rule, 'gh-pr-merge-worker')
+  assert.equal(shell(continuation('git push origin m', 'ain'), worker).rule, 'git-push-main')
+  assert.equal(shell(continuation('g', 'it push origin ticket/80'), worker).kind, 'allow')
+  assert.equal(
+    shell(continuation('gh pr ', `merge 161 --squash --match-head-commit ${reviewedHead}`), root).kind,
+    'allow',
+  )
+})
+
+test('a raw gh api merge is refused because it cannot carry the pin', () => {
+  for (const command of [
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api -XPUT repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api --method POST repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge?merge_method=squash',
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge#fragment',
+    'gh api -X PUT https://api.github.com/repos/szchan/dsh-anyplugin/pulls/82/merge#fragment',
+    'gh api -X PUT repos/szchan/dsh-anyplugin/pulls/82/merge?x=1#fragment',
+    'gh api -f merge_method=squash repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api --raw-field merge_method=squash repos/szchan/dsh-anyplugin/pulls/82/merge',
+    'gh api repos/szchan/dsh-anyplugin/pulls/82/merge',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+    assert.match(denied.reason, /gh api/u)
+  }
+})
+
+test('a shell wrapper cannot hide an unpinned merge', () => {
+  for (const command of [
+    `bash -c 'gh pr merge 82 --squash'`,
+    `sh -lc "gh pr merge 82 --squash"`,
+    'git status --short && gh pr merge 82 --squash',
+    'env -i gh pr merge 82 --squash',
+  ]) {
+    const denied = shell(command, root)
+    assert.equal(denied.kind, 'deny', command)
+    assert.equal(denied.rule, 'gh-pr-merge-pin', command)
+  }
+  assert.equal(shell(`sh -s <<'EOF'\ngh pr merge 82 --squash\nEOF`, root).rule, 'shell-unmodelled')
 })
 
 test('DECISIONS.md is append-only: every writer is denied except the sanctioned update', () => {
@@ -188,6 +371,15 @@ test('an alias, a git config write and an unknown subcommand cannot hide a push'
   assert.equal(unknown.kind, 'deny')
   assert.equal(unknown.rule, 'git-unknown-subcommand')
   assert.match(unknown.reason, /alias/u)
+})
+
+test('a pre-existing git alias is a documented root residual', () => {
+  // Root may run an unknown git subcommand, so an alias already in config is
+  // outside the tool layer's model; the worker still gets `git-unknown-subcommand`.
+  assert.equal(shell('git pm 82', root).kind, 'allow')
+  const workerView = shell('git pm 82')
+  assert.equal(workerView.kind, 'deny')
+  assert.equal(workerView.rule, 'git-unknown-subcommand')
 })
 
 test('ordinary work survives: non-exec -c keys, local history verbs, reads and lease pushes', () => {
@@ -405,6 +597,54 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
     'accept',
   )
   assert.equal(ran, 1)
+})
+
+test('the installed guard denies an unpinned merge and allows a pinned one', async () => {
+  // The dry-run table proves the policy; this proves the installed block names
+  // a plugin that actually mounts the listener. A dormant finding needs that
+  // second observation: the rule bites wherever the guard is loaded.
+  const composition = composeGuard({
+    repoRoot: checkout,
+    worktrees: [{ path: checkout, branch: 'main', main: true }],
+  })
+  const profile = mkdtempSync(join(tmpdir(), 'guard-install-merge-'))
+  try {
+    const patchPath = join(profile, 'cordis.patch.yml')
+    writeFileSync(patchPath, applyBlock('', composition.block))
+    const installed = readBlock(readFileSync(patchPath, 'utf8'))
+    assert.equal(installed.present, true)
+    const source = installed.block.match(/name:\s*"([^"]+)"/u)?.[1]
+    assert.equal(source, composition.source, 'the installed block names the guard source')
+    const plugin = await import(pathToFileURL(source).href)
+
+    const { ctx, listeners } = harness()
+    await plugin.apply(ctx, composition.config)
+    const listener = listeners.get('tools/pre-execute')[0]
+    assert.equal(typeof listener, 'function')
+
+    const rootAgent = { session: { header: { id: 'root-1', cwd: repo } } }
+    let ran = 0
+    const next = async () => {
+      ran += 1
+      return { kind: 'accept' }
+    }
+    const call = (command) => ({ callId: 1, name: 'bash', arguments: { command }, agent: rootAgent })
+
+    const denied = await listener(call('gh pr merge 161 --squash'), next)
+    assert.equal(denied.kind, 'deny')
+    assert.equal(ran, 0, 'the host never executes a denied call')
+    assert.match(denied.reason, /--match-head-commit <40-hex reviewed head>/u)
+    assert.match(denied.reason, /cannot know which commit was reviewed/u)
+
+    const allowed = await listener(
+      call(`gh pr merge 161 --squash --match-head-commit ${reviewedHead}`),
+      next,
+    )
+    assert.equal(allowed.kind, 'accept')
+    assert.equal(ran, 1)
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+  }
 })
 
 test('the brief is appended to the worker continuation once, and never to the root', async () => {
