@@ -84,6 +84,8 @@ export interface FetchRequest {
   marketplace: string
   /** Entry name, as the catalog spells it. */
   entry: string
+  /** The catalog entry's name; the fetched plugin must declare the same one. */
+  name?: string
   source: MarketplaceSource
   /** The marketplace root, for a relative npm `file:` path. */
   root: string
@@ -451,6 +453,16 @@ function pluginInside(
   } catch (error) {
     if (error instanceof InstallCliError) throw error
   }
+  if (request.name !== undefined) {
+    const declared = pluginName(directory)
+    if (declared !== undefined && declared !== request.name) {
+      throw refusal(
+        'name-mismatch',
+        `entry "${request.marketplace}:${request.entry}" fetched a plugin that calls itself "${declared}"`,
+        'the catalog entry name and the plugin manifest name must be the same; the fetch was not committed to the cache',
+      )
+    }
+  }
   return { pluginDir: directory, plugin: relative(artifactRoot, directory) || '.' }
 }
 
@@ -584,6 +596,20 @@ function git(args: string[], cwd: string, display: string): string {
       `git fetch failed for ${display}: ${redactText(firstLine(stderr))}`,
     )
   }
+}
+
+function pluginName(directory: string): string | undefined {
+  for (const manifest of PLUGIN_MANIFESTS) {
+    const file = join(directory, manifest)
+    if (!existsSync(file)) continue
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { name?: unknown }
+      if (typeof parsed.name === 'string' && parsed.name.trim() !== '') return parsed.name
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
 }
 
 function pluginVersion(directory: string): string | undefined {
