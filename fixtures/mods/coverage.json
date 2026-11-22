@@ -533,9 +533,14 @@
       "classic.SessionEnd",
       "classic.SessionStart",
       "classic.Stop",
+      "classic.StopFailure",
       "classic.SubagentStart",
       "classic.SubagentStop",
+      "classic.TaskCompleted",
+      "classic.TaskCreated",
       "classic.UserPromptSubmit",
+      "classic.WorktreeCreate",
+      "classic.WorktreeRemove",
       "prompt.context",
       "session.start",
       "tool.call"
@@ -740,13 +745,8 @@
       "classic.PostToolBatch",
       "classic.PreModelSwitch",
       "classic.Setup",
-      "classic.StopFailure",
-      "classic.TaskCompleted",
-      "classic.TaskCreated",
       "classic.TeammateIdle",
       "classic.UserPromptExpansion",
-      "classic.WorktreeCreate",
-      "classic.WorktreeRemove",
       "clock.after",
       "clock.every",
       "clock.now",
@@ -915,8 +915,8 @@
     },
     "events": {
       "declared": 167,
-      "served": 19,
-      "absent": 148
+      "served": 24,
+      "absent": 143
     },
     "elements": {
       "declared": 45,

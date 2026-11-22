@@ -1,5 +1,5 @@
-// The four S9-confirmed listener seams and the five notification records, on
-// one real headless turn.
+// The four S9-confirmed listener seams, the five notification records and the
+// five S23-routed records, on one real headless run.
 //
 // The probe boots the pinned harness (not a hand-rolled emitter), materializes
 // `claude-hooks-seams`, and proves that every handler wrote a line *because the
@@ -14,8 +14,9 @@
 // test.
 
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
@@ -70,6 +71,13 @@ function loaderBaseUrl(harnessDir) {
 
 const loadFromHarness = (harnessDir, specifier) =>
   import(pathToFileURL(join(harnessDir, specifier)).href)
+
+const failingChunks = (text) => [
+  { type: 'block-start', index: 0, blockType: 'text' },
+  { type: 'text-delta', index: 0, text },
+  { type: 'block-end', index: 0, block: { type: 'text', text } },
+  { type: 'finish', reason: { kind: 'error', failure: { code: 'SEAMS_FAILURE', message: text } } },
+]
 
 const textChunks = (text) => [
   { type: 'block-start', index: 0, blockType: 'text' },
@@ -136,6 +144,19 @@ const boomTool = {
 export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_000 }) {
   const workDir = join(dataDir, 'work')
   mkdirSync(workDir, { recursive: true })
+  // The worktree service resolves a repository from the agent's working
+  // directory, so the probe workdir is a real git repository with one commit.
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: workDir, encoding: 'utf8' })
+    if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed (${result.status}): ${result.stderr}`)
+    return result.stdout.trim()
+  }
+  git('init', '-q')
+  git('config', 'user.email', 'seams@example.invalid')
+  git('config', 'user.name', 'Seams probe')
+  writeFileSync(join(workDir, 'README.md'), '# Seams probe repository\n')
+  git('add', 'README.md')
+  git('commit', '-qm', 'seams probe base')
   const written = join(workDir, 'changed.txt')
   const elsewhere = join(workDir, 'elsewhere')
   mkdirSync(elsewhere, { recursive: true })
@@ -163,6 +184,12 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
   const Settings = (await loadFromHarness(harnessDir, 'dsh-settings/lib/index.js')).default
   const TokenMeter = (await loadFromHarness(harnessDir, 'dsh-token-meter/lib/index.js')).default
   const Compaction = (await loadFromHarness(harnessDir, 'dsh-compaction-basic/lib/index.js')).default
+  const Jsonl = await loadFromHarness(harnessDir, 'dsh-session-persistence-jsonl/lib/index.js')
+  const SubprocessLocal = (await loadFromHarness(harnessDir, 'dsh-subprocess-local/lib/index.js')).default
+  const Sandbox = (await loadFromHarness(harnessDir, 'dsh-sandbox/lib/index.js')).default
+  const SandboxPolicy = (await loadFromHarness(harnessDir, 'dsh-sandbox-policy/lib/index.js')).default
+  const Teams = (await loadFromHarness(harnessDir, 'dsh-agent-team/lib/index.js')).default
+  const Worktrees = (await loadFromHarness(harnessDir, 'dsh-experimental-worktree/lib/index.js')).default
   const z = (await loadFromHarness(harnessDir, 'schemastery/lib/index.mjs')).default
 
   // One mutable configuration entry, so the settings revision can move from
@@ -212,7 +239,18 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
     }
   }
 
+  const sessionsRoot = join(dataDir, 'sessions')
+  mkdirSync(sessionsRoot, { recursive: true })
   const ctx = new Context()
+  // The worktree reclamation reads the workspace registry and the session
+  // query; both are transitive, not members of the fetched union, so they are
+  // one-method doubles (the S23 spike does the same).
+  ctx.provide('workspaceRegistry', { archivedSessionIds: new Set() })
+  ctx.provide('sessionQuery', {
+    async listSessions() {
+      return []
+    },
+  })
   const loaderFiber = ctx.plugin(Loader, { baseUrl: loaderBaseUrl(harnessDir) })
   ctx.plugin(SkillRegistry, {})
   ctx.plugin(SessionStore)
@@ -221,10 +259,17 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
   ctx.plugin(ToolsService, {})
   ctx.plugin(AgentRegistry)
   ctx.plugin(nativeExecutor, {})
-  ctx.plugin(FileSystem, { cwd: process.cwd() })
-  ctx.plugin(WorkingDirectory, { defaultDirectory: process.cwd() })
+  ctx.plugin({ name: Jsonl.name, apply: Jsonl.apply, Config: Jsonl.Config }, { root: sessionsRoot, compression: 'none' })
+  ctx.plugin(FileSystem, { cwd: workDir })
+  ctx.plugin(SubprocessLocal)
+  ctx.plugin(Sandbox)
+  ctx.plugin(SandboxPolicy, { mode: 'danger-full-access', workspaceRoot: workDir })
+  ctx.plugin(WorkingDirectory, { defaultDirectory: workDir })
   ctx.plugin(SubagentRuntime, {})
   ctx.plugin(ForkProvider, { providerName: 'fork' })
+  ctx.plugin(Teams, { defaultEnabled: false })
+  // createCheckout resolves this relative pool against the repository root it
+  // discovers from the agent's working directory.
   ctx.plugin(LlmRuntime)
   ctx.plugin(AgentLoop)
   ctx.plugin(Approval, {})
@@ -245,7 +290,7 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
   const settingsEvents = []
 
   try {
-    for (const name of ['sessions', 'sessionProjections', 'systemPrompt', 'tools', 'agents', 'subagents', 'approval', 'fs', 'workingDirectory', 'tokenMeter', 'compaction']) {
+    for (const name of ['sessions', 'sessionProjections', 'systemPrompt', 'tools', 'agents', 'subagents', 'approval', 'fs', 'workingDirectory', 'tokenMeter', 'compaction', 'agentTeams']) {
       await until(() => Boolean(ctx.get(name)), 10_000, `${name} service`)
     }
     assert.ok(ctx.settings !== undefined, 'the settings service is live')
@@ -355,7 +400,98 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
       'the CwdChanged line',
     )
 
-    const lines = readFileSync(join(dataDir, 'events.log'), 'utf8').trim().split('\n')
+    const eventsLog = join(dataDir, 'events.log')
+    const lineCount = (name) =>
+      safeExists(eventsLog) ? readFileSync(eventsLog, 'utf8').trim().split('\n').filter((line) => line === name).length : 0
+    const untilLine = (name, expected = 1) => until(() => lineCount(name) >= expected, 30_000, `the ${name} line`)
+
+    // TaskCreated/TaskCompleted: service calls on the root's own team. The
+    // durable record is the occurrence; no model turn is involved.
+    const taskSubject = 'Seams task'
+    const taskDescription = 'Route the team/task record'
+    await ctx.agentTeams.setEnabled(root, true)
+    const createdTask = await ctx.agentTeams.createTask(root, { subject: taskSubject, description: taskDescription })
+    await ctx.agentTeams.updateTask(root, { taskId: createdTask.id, expectedRevision: 1, action: 'claim' })
+    await ctx.agentTeams.updateTask(root, { taskId: createdTask.id, expectedRevision: 2, action: 'complete' })
+    await untilLine('TaskCreated')
+    await untilLine('TaskCompleted')
+
+    // The worktree service reads the settings document when it loads, which
+    // would consume the revision-0 read the ConfigChange case observes; it is
+    // mounted here, after those reads, because nothing before needs it.
+  ctx.plugin(Worktrees, { directory: '.agents/worktrees', retainOnArchive: false })
+    await until(() => Boolean(ctx.get('worktrees')), 10_000, 'worktrees service')
+
+    // WorktreeCreate/Remove: a second agent with the repository as its working
+    // directory. Archiving it runs reclamation, whose scheduled and settled
+    // cleanup records must produce exactly one handler line.
+    const worktreeAgent = await ctx.agentLoop.create('anyplugin-seams-worktree', { provider: 'fake', model: 'fake-1' })
+    await ctx.workingDirectory.set(worktreeAgent, workDir)
+    const branch = `seams-worktree-${Date.now().toString(36)}`
+    const checkout = await ctx.worktrees.create(worktreeAgent, { name: branch })
+    await untilLine('WorktreeCreate')
+    const workspaceRegistry = ctx.get('workspaceRegistry')
+    workspaceRegistry.archivedSessionIds.add(worktreeAgent.session.id)
+    ctx.emit('workspace/session-archived', { sessionId: worktreeAgent.session.id })
+    await untilLine('WorktreeRemove')
+    const cleanup = await ctx.worktrees.cleanupOf(worktreeAgent.session, null)
+
+    // StopFailure: one failing turn. The loop emits agent/error and commits an
+    // error-shaped turn/end; both observers share one key, so one handler runs.
+    const failureText = 'seams model failure'
+    const stopAgent = await ctx.agentLoop.create('anyplugin-seams-stop-failure', { provider: 'fake', model: 'fake-1' })
+    const stopAgentId = stopAgent.session.id
+    const stopped = new Promise((resolveStop, rejectStop) => {
+      const timer = setTimeout(() => rejectStop(new Error('the failing turn did not end')), timeoutMs)
+      const dispose = ctx.on('session/event', (session, event) => {
+        if (event?.type !== 'turn/end' || event?.data?.turn !== 1) return
+        if (session?.header?.id !== stopAgentId) return
+        clearTimeout(timer)
+        if (typeof dispose === 'function') dispose()
+        resolveStop()
+      })
+    })
+    queue.push(failingChunks(failureText))
+    stopAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'trigger the failure' }], source: { kind: 'user' } }))
+    await stopped
+    await untilLine('StopFailure')
+
+    // A real child session that fails: StopFailure is root-only (SubagentStop
+    // owns children), so this must not add a second line.
+    const childAgent = await ctx.agentLoop.create(
+      'anyplugin-seams-child',
+      { provider: 'fake', model: 'fake-1' },
+      { parentSession: root.session.id, cwd: workDir },
+    )
+    const childEnded = new Promise((resolveChild, rejectChild) => {
+      const timer = setTimeout(() => rejectChild(new Error('the child failing turn did not end')), timeoutMs)
+      const dispose = ctx.on('session/event', (session, event) => {
+        if (event?.type !== 'turn/end') return
+        if (session?.header?.id !== childAgent.session.id) return
+        if (event?.data?.turn !== 1) return
+        clearTimeout(timer)
+        if (typeof dispose === 'function') dispose()
+        resolveChild()
+      })
+    })
+    queue.push(failingChunks('seams child model failure'))
+    childAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'fail as a child' }], source: { kind: 'user' } }))
+    await childEnded
+    await untilLine('StopFailure')
+
+    // A final, deterministic directory set: the CwdChanged payload the script
+    // keeps must be the new directory, so the seam's meaning is asserted on the
+    // record this probe itself produced last.
+    await ctx.workingDirectory.set(stopAgent, elsewhere)
+    await until(() => {
+      try {
+        return JSON.parse(readFileSync(join(dataDir, 'payloads', 'CwdChanged.json'), 'utf8')).cwd === elsewhere
+      } catch {
+        return false
+      }
+    }, 10_000, 'the last CwdChanged payload')
+
+    const lines = readFileSync(eventsLog, 'utf8').trim().split('\n')
     const count = (name) => lines.filter((line) => line === name).length
     const payload = (name) => JSON.parse(readFileSync(join(dataDir, 'payloads', `${name}.json`), 'utf8'))
     return {
@@ -374,6 +510,14 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
       workDir,
       written,
       elsewhere,
+      taskId: createdTask.id,
+      taskSubject,
+      worktreeBranch: branch,
+      worktreePath: checkout.path,
+      worktreeSessionId: worktreeAgent.session.id,
+      worktreeCleanup: cleanup?.status,
+      stopFailureMessage: failureText,
+      stopFailureSessionId: stopAgentId,
     }
   } finally {
     loaderFiber?.dispose?.()
@@ -386,7 +530,7 @@ if (isEntry) {
   const harness = resolveHarness()
 
   test(
-    'the four listener seams and the five notification records fire on one real turn',
+    'the four listener seams and the ten notification records fire on one real run',
     { skip: harness ? false : harnessSkipReason(), timeout: 120_000 },
     async () => {
       const dataDir = mkdtempSync(join(tmpdir(), `anyplugin-${FIXTURE}-`))
@@ -413,17 +557,20 @@ if (isEntry) {
         // mutation counters below are the same turn without the filter, so the
         // gap between a handler's line count and its counter is the filter's
         // measured work, not a declaration.
-        assert.equal(count('UserPromptSubmit'), 3, `one line per prompt, not per model step: ${lines.join(', ')}`)
+        assert.equal(count('UserPromptSubmit'), 4, `one line per prompt, not per model step: ${lines.join(', ')}`)
         assert.equal(count('PermissionRequest'), 1, 'the matcher runs only for gated-allow')
         assert.equal(count('PostToolUseFailure'), 1, 'only the failed body is the failure slice; the denied call is excluded')
         assert.equal(count('FileChanged'), 1, 'only the write is a mutation; the read is dropped')
 
         // The fixture's script keeps the most recent payload per event; the line
         // count above is what proves the earlier prompts also ran.
-        assert.equal(payload('UserPromptSubmit').prompt, 'after the compaction')
+        // The stop-failure turn is a prompt too; the last payload is that one.
+        assert.equal(payload('UserPromptSubmit').prompt, 'trigger the failure')
         assert.equal(payload('UserPromptSubmit').hook_event_name, 'UserPromptSubmit')
-        assert.equal(payload('UserPromptSubmit').session_id, 'anyplugin-seams-root')
-        assert.equal(payload('UserPromptSubmit').cwd, observed.workDir)
+        assert.equal(payload('UserPromptSubmit').session_id, 'anyplugin-seams-stop-failure')
+        // The stop-failure agent is created without a cwd, so the host gives it
+        // the process directory; that is the session's real cwd, not the fixture's.
+        assert.equal(payload('UserPromptSubmit').cwd, process.cwd())
         assert.deepEqual(Object.keys(payload('UserPromptSubmit')).sort(), ['cwd', 'hook_event_name', 'prompt', 'session_id'])
 
         assert.equal(payload('PermissionRequest').tool_name, 'gated-allow')
@@ -466,11 +613,80 @@ if (isEntry) {
         assert.equal(payload('PermissionDenied').outcome, 'rejected')
         assert.equal(payload('PermissionDenied').hook_event_name, 'PermissionDenied')
 
-        assert.equal(count('CwdChanged'), 1)
+        // Five sets happen on the run: the root leaves the repo, the worktree
+        // agent is created in the process cwd, enters the repo, createCheckout
+        // enters the checkout, and the final set below moves the stop-failure
+        // agent. The last payload is that final set, so its meaning is checked.
+        assert.equal(count('CwdChanged'), 5)
         assert.equal(payload('CwdChanged').cwd, observed.elsewhere)
         assert.equal(payload('CwdChanged').hook_event_name, 'CwdChanged')
 
         assert.equal(count('ConfigChange'), 2, 'first read (0) and one change (1), not the unchanged read')
+
+        // The five S23 records. WorktreeRemove and StopFailure are emitted
+        // twice by the host; one line each on a real run shows the mount ran
+        // once. The paired/replayed records are pinned in the materializer's
+        // lifecycle tests, which is where a dropped key goes red.
+        assert.equal(count('TaskCreated'), 1)
+        assert.equal(count('TaskCompleted'), 1)
+        assert.equal(count('WorktreeCreate'), 1)
+        assert.equal(count('WorktreeRemove'), 1, 'scheduled and removed collapsed to one handler run')
+        assert.equal(count('StopFailure'), 1, 'agent/error and turn/end collapsed to one handler run')
+        assert.equal(
+          payload('StopFailure').session_id,
+          observed.stopFailureSessionId,
+          'the failing child turn did not add a StopFailure line',
+        )
+        assert.equal(observed.worktreeCleanup, 'removed', 'the reclamation settled before the line was read')
+        assert.equal(payload('TaskCreated').task_id, observed.taskId)
+        assert.equal(payload('TaskCreated').task_subject, observed.taskSubject)
+        assert.equal(payload('TaskCreated').hook_event_name, 'TaskCreated')
+        assert.equal(payload('TaskCreated').session_id, 'anyplugin-seams-root')
+        assert.deepEqual(Object.keys(payload('TaskCreated')).sort(), [
+          'cwd',
+          'hook_event_name',
+          'session_id',
+          'task_description',
+          'task_id',
+          'task_subject',
+        ])
+        assert.equal(payload('TaskCompleted').task_id, observed.taskId)
+        assert.equal(payload('TaskCompleted').hook_event_name, 'TaskCompleted')
+        assert.equal(typeof payload('TaskCompleted').teammate_name, 'string')
+        assert.ok(payload('TaskCompleted').teammate_name.length > 0, 'ownerName is the teammate_name source')
+        assert.deepEqual(Object.keys(payload('TaskCompleted')).sort(), [
+          'cwd',
+          'hook_event_name',
+          'session_id',
+          'task_description',
+          'task_id',
+          'task_subject',
+          'teammate_name',
+        ])
+        assert.equal(payload('WorktreeCreate').name, observed.worktreeBranch)
+        assert.equal(payload('WorktreeCreate').hook_event_name, 'WorktreeCreate')
+        assert.equal(payload('WorktreeCreate').session_id, observed.worktreeSessionId)
+        assert.deepEqual(Object.keys(payload('WorktreeCreate')).sort(), ['cwd', 'hook_event_name', 'name', 'session_id'])
+        assert.equal(payload('WorktreeRemove').worktree_path, observed.worktreePath)
+        assert.equal(payload('WorktreeRemove').cwd, process.cwd(), 'cwd is the host process directory, not the removed checkout')
+        assert.notEqual(payload('WorktreeRemove').cwd, observed.worktreePath, 'classic cwd and worktree_path stay distinct')
+        assert.equal(payload('WorktreeRemove').hook_event_name, 'WorktreeRemove')
+        assert.equal(payload('WorktreeRemove').session_id, observed.worktreeSessionId)
+        assert.deepEqual(Object.keys(payload('WorktreeRemove')).sort(), [
+          'cwd',
+          'hook_event_name',
+          'session_id',
+          'worktree_path',
+        ])
+        assert.equal(payload('StopFailure').error_details, observed.stopFailureMessage)
+        assert.equal(payload('StopFailure').hook_event_name, 'StopFailure')
+        assert.equal(payload('StopFailure').session_id, observed.stopFailureSessionId)
+        assert.deepEqual(Object.keys(payload('StopFailure')).sort(), [
+          'cwd',
+          'error_details',
+          'hook_event_name',
+          'session_id',
+        ])
         assert.deepEqual(observed.settingsEvents.map((event) => event.revision), [0, 1])
         assert.equal(observed.settingsEvents[0].namespace, 'hooks-seams-config')
         assert.equal(payload('ConfigChange').hook_event_name, 'ConfigChange')

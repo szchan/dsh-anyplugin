@@ -55,10 +55,11 @@ export interface ModEventRoute {
 }
 
 /**
- * The 19 live routes: sixteen classic routes, `session.start`, `tool.call`
- * and `prompt.context`.
+ * The 24 live routes: twenty-one classic routes (sixteen S9 routes and
+ * five S23 notification records), `session.start`, `tool.call` and
+ * `prompt.context`.
  *
- * The sixteen `classic.*` rows are the mod-side spellings of the classic hook
+ * The twenty-one `classic.*` rows are the mod-side spellings of the classic hook
  * points; each shares the kernel event name (`ClassicEventOf` maps them
  * one-to-one, d.ts:1656-1658 at the 2.1.329 pin), so a mod and a classic hook
  * on one point land in one chain. `session.start` is the mod host's own load
@@ -226,6 +227,63 @@ export const MOD_EVENT_ROUTES: readonly ModEventRoute[] = Object.freeze([
     status: 'live',
     evidence:
       'ClassicEventOf keeps the classic payload (d.ts:1656-1658 at the 2.1.329 pin); S9 confirms settings/document-updated, notification-only and also fired on first read (docs/ARCHITECTURE.md:1286).',
+  },
+  {
+    modEvent: 'classic.TaskCreated',
+    kernelEvent: 'TaskCreated',
+    hostSeam: 'session/event team/task',
+    hostFilter: 'task.revision === 1',
+    payload: 'classic',
+    status: 'live',
+    caveat:
+      'team_name and teammate_name have no host source: teamId is the Team identity (the root session id at this pin), not a display name, and a revision-one task is unowned. Both are reported gaps, never synthesized.',
+    evidence:
+      'ClassicEventOf keeps the classic payload (d.ts:1656-1658 at the 2.1.329 pin); S23 confirms session/event team/task, revision 1 status pending, notification-only (docs/ARCHITECTURE.md §10 S23).',
+  },
+  {
+    modEvent: 'classic.TaskCompleted',
+    kernelEvent: 'TaskCompleted',
+    hostSeam: 'session/event team/task',
+    hostFilter: "task.status === 'completed'",
+    payload: 'classic',
+    status: 'live',
+    caveat:
+      'team_name has no host source (teamId is a session identity, not a display name); it is a reported gap. teammate_name comes from task.ownerName.',
+    evidence:
+      'ClassicEventOf keeps the classic payload (d.ts:1656-1658 at the 2.1.329 pin); S23 confirms the terminal team/task revision, status completed with ownerId/ownerName, notification-only (docs/ARCHITECTURE.md §10 S23).',
+  },
+  {
+    modEvent: 'classic.WorktreeCreate',
+    kernelEvent: 'WorktreeCreate',
+    hostSeam: 'session/event plugin:worktree/created',
+    payload: 'classic',
+    status: 'live',
+    evidence:
+      'ClassicEventOf keeps the classic payload (d.ts:1656-1658 at the 2.1.329 pin); S23 confirms the plugin:worktree/created record (path, branch, baseCommit, repositoryRoot), notification-only (docs/ARCHITECTURE.md §10 S23).',
+  },
+  {
+    modEvent: 'classic.WorktreeRemove',
+    kernelEvent: 'WorktreeRemove',
+    hostSeam: 'worktree/cleanup',
+    hostFilter: "cleanup.status === 'removed'",
+    payload: 'classic',
+    status: 'live',
+    caveat:
+      'The cleanup emit fires twice per removal; only the settled removed record is routed, deduped by sessionId/path/cleanup.revision. The scheduled record is an intent, and retained/failed are not removals.',
+    evidence:
+      'ClassicEventOf keeps the classic payload (d.ts:1656-1658 at the 2.1.329 pin); S23 confirms worktree/cleanup (scheduled then final), notification-only (docs/ARCHITECTURE.md §10 S23).',
+  },
+  {
+    modEvent: 'classic.StopFailure',
+    kernelEvent: 'StopFailure',
+    hostSeam: 'session/event turn/end + agent/error',
+    hostFilter: "reason.kind === 'error' / agent/error",
+    payload: 'classic',
+    status: 'live',
+    caveat:
+      'The host carries a failure code and message, not Claude’s error class enum, and the failed turn commits no assistant/message record. error and last_assistant_message are reported gaps; error_details is the host message.',
+    evidence:
+      'ClassicEventOf keeps the classic payload (d.ts:1656-1658 at the 2.1.329 pin); S23 confirms the error-shaped turn/end record plus the agent/error emit, notification-only (docs/ARCHITECTURE.md §10 S23).',
   },
   {
     modEvent: 'session.start',
@@ -476,20 +534,10 @@ const CLASSIC_UNMAPPED: Readonly<Record<string, string>> = Object.freeze({
     'S9 refuted: agent/request fires per request, not on a model switch, and is deprecated (docs/ARCHITECTURE.md:1326-1330).',
   'classic.Setup':
     'S9 refuted: no dispatch; agent/created with source startup is the closest lifecycle point, but it is not setup (docs/ARCHITECTURE.md:1334-1335).',
-  'classic.StopFailure':
-    'S23: the error-shaped turn/end record and the agent/error emit mark the failure, but neither carries the last assistant message and a record cannot veto. Routing it is a payload translation with a named gap, not a decision path; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
-  'classic.TaskCreated':
-    'S23: team/task is a durable record (revision 1, status pending, one service call, no model turn). It has no tool name/input/call id and no team_name/teammate_name, and a record cannot veto; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
-  'classic.TaskCompleted':
-    'S23: the terminal team/task revision (status completed, ownerId, ownerName) stands for completion; same record limits as TaskCreated, and a record cannot veto; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
   'classic.TeammateIdle':
     'S23: driving a fork teammate through activation to idle produced only agent/status (status idle, agent id) and no team/member record at 0.2.2-rc.5, so the transition and teammate_name cannot be built. Not fired at the pin — a host gap, not an unprobed point (docs/ARCHITECTURE.md §10 S23).',
   'classic.UserPromptExpansion':
     'S9 refuted: expansion happens in the command layer before the prompt; agent/pre-step sees only the expanded messages (docs/ARCHITECTURE.md:1333-1334).',
-  'classic.WorktreeCreate':
-    'S23: plugin:worktree/created is a durable record carrying path, branch, baseCommit and repositoryRoot. It is a record, not an event: no veto, no tool-shaped fields; not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
-  'classic.WorktreeRemove':
-    'S23: worktree/cleanup is emitted twice per removal (scheduled, then final) with sessionId, path and cleanup {revision, status}; notification-only and duplicated, so routing needs a dedupe key and a chosen emission — not routed in 0.3.0 (docs/ARCHITECTURE.md §10 S23).',
 })
 
 function reasons(events: readonly string[], reason: string): Readonly<Record<string, string>> {

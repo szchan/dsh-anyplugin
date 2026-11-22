@@ -1261,7 +1261,7 @@ function expandModPattern(pattern: string): ModPatternExpansion {
  *   (`PluginRegisterInput.tier`, d.ts:9899 at the 2.1.329 pin); the adapter never invents a
  *   per-mod table.
  * - A `Pattern` (d.ts:9447 at the 2.1.329 pin) expands to the routed names it selects: `classic.*`
- *   selects the sixteen classic routes, `*` selects all nineteen, and a
+ *   selects the twenty-one classic routes, `*` selects all twenty-four, and a
  *   negation selects the complement. Selected names that are not routed are
  *   reported with their pinned reason; a pattern that cannot be expanded gets
  *   its own reason.

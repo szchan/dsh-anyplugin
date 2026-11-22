@@ -90,7 +90,7 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 
 ### 仓库证据（本次发布未改变）
 
-- 对照 DSH `0.2.2-rc.5` 与 Claude Code `2.1.329`：声明 27 · 匹配 26 ·
+- 对照 DSH `0.2.2-rc.5` 与 Claude Code `2.1.329`：声明 32 · 匹配 31 ·
   缺失 0 · 拒绝 1（被拒绝的是上表点名的命令名接缝）；
 - Codex 便携插件跑自己的端到端 fixture（`fixtures/codex-portable`、
   `codex-e2e.test.mjs`），不进 Claude 棘轮：没有 Codex oracle 可 diff，fixture
@@ -143,7 +143,8 @@ hooks、agents、由 profile 记录激活的 output style（D42）、安装/协�
 schema 仍没有 `mods` 字段，所以 `dsh plugin add` 暂不安装 mods。内核唯一的运行时
 依赖是 `@babel/core` 与 `@babel/plugin-transform-react-jsx`（那一次 classic
 pragma 变换，D34）；`check:pack` 会断言这个精确集合并打印内核的字节成本。
-Codex 方言**不在**本版本内。版本声明为 DSH
+Codex 便携方言是本版本的一部分：`plugin.json` 1.0.0、`skills/` 与
+`mcp.json`，对其 fixture 是 `equivalent`。版本声明为 DSH
 `0.2.2-rc.2 || 0.2.2-rc.5`（`engines.dsh`：恰好是测试套件启动的两个版本，
 其他运行时都会被拒绝，直到它被测过 —— `dsh plugin
 allow-version` 可授予精确版本豁免）与 Claude Code `2.1.329`。
@@ -178,7 +179,7 @@ ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MODS_TREE \
 npm run verify
 ```
 
-`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及 969 个测试。它必须报告
+`verify` 会跑结构规则、能力地图检查、决策只增不改检查，以及完整测试套件。它必须报告
 **0 skipped**：跳过意味着某个环境变量缺失，而在 CI 里跳过按失败处理。
 
 ## 📚 接下来读什么

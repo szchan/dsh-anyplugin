@@ -43,7 +43,27 @@
     },
     {
       "surface": "hooks",
+      "name": "StopFailure"
+    },
+    {
+      "surface": "hooks",
+      "name": "TaskCompleted"
+    },
+    {
+      "surface": "hooks",
+      "name": "TaskCreated"
+    },
+    {
+      "surface": "hooks",
       "name": "UserPromptSubmit"
+    },
+    {
+      "surface": "hooks",
+      "name": "WorktreeCreate"
+    },
+    {
+      "surface": "hooks",
+      "name": "WorktreeRemove"
     }
   ],
   "pin": {

@@ -64,7 +64,7 @@ test('the corrected totals partition declared/served/refused/absent/wrong-shape'
   assert.deepEqual(live.totals.methods, { declared: 100, served: 26, refused: 7, absent: 67, wrongShape: 0 })
   assert.deepEqual(live.totals.properties, { declared: 2, served: 0, refused: 0, absent: 2, wrongShape: 0 })
   assert.deepEqual(live.totals.namespaces, { declared: 24, served: 9, refusedOnly: 2, absent: 13 })
-  assert.deepEqual(live.totals.events, { declared: 167, served: 19, absent: 148 })
+  assert.deepEqual(live.totals.events, { declared: 167, served: 24, absent: 143 })
   assert.deepEqual(live.totals.elements, { declared: 45, served: 45, absent: 0, unique: 14 })
   assert.deepEqual(live.totals.renderSites, { declared: 20, served: 1, absent: 19 })
 
