@@ -19,7 +19,8 @@ Read `docs/audits/` (latest report) and the `open` entries in the
 it moved. Last pass's actions are this pass's first question.
 
 Completion: every prior `open` entry is either still open with a note, or closed
-with a link to the commit/PR that did it.
+with a link to the commit/PR that did it. An item that was not worked is named
+as blocked or explicitly accepted; it is not silently carried.
 
 ## 2. Collect the window
 
@@ -40,8 +41,9 @@ task is missing, recreate it: daily 09:00 `America/Los_Angeles`, target
 `new_once`, working directory the main checkout. The prompt must say: fetch
 `origin/main`, create or reset `.agents/worktrees/audit-daily` on a fresh
 branch, load this skill, always write the report and open a PR (even a
-report-only pass), run two reviewers for a mechanism change, never merge, and
-run the Monday mutation check (§8). Confirm the task in the next digest.
+report-only pass), give every finding an action in the same pass, run two
+reviewers for a mechanism change, never merge or close, and run the Monday
+mutation check (§8). Confirm the task in the next digest.
 
 For PR detail, the digest only counts comments. Read the bodies and comments:
 
@@ -94,15 +96,20 @@ window; commands read; the numbers.
 F<n> — title. Observation with path/count. Why it recurs.
 
 ## Actions
-finding → what changed, or the issue/PR that tracks it.
+finding → what changed in this pass, or the issue/PR opened in this pass.
 
 ## Open
-each still-open finding and its tracking issue.
+only blocked or deferred findings, each with a tracking issue, an owner, and
+the condition that reopens it. Not a backlog.
 ```
 
 Number new findings after the highest `F<n>` in the ledger. A finding that
 already exists gets its entry updated, not a second id. New ledger entries quote
 this report in `evidence`; the report quotes the JSON.
+
+Every finding must leave this pass with an action: fixed in the PR, tracked by
+an issue/PR opened in the same pass, or accepted with an owner and review date.
+"Investigate later" is not an action.
 
 Completion: every sentence in `## Findings` has a path, a count, or a quoted
 sample; no sentence relies on memory.
@@ -169,6 +176,12 @@ A report-only PR adds only `docs/AUDIT.md`, `docs/audits/`, and the skill. A
 mechanism fix carries the code and its test. A finding that needs product code
 gets an issue labelled `enhancement` (or `bug`) and a separate worker; the audit
 does not edit feature files, push a ticket branch, or merge its own PR.
+
+The report PR is opened in the same pass; there is no separate branch or
+comment-only path for a daily report. The auditor may open issues and PRs, but
+it does not merge or close them: the PR goes to the normal review and merge
+path. Until the permission layer lands, this is a reviewed convention, and the
+report says so when it matters.
 
 Completion: `verify` is green, the report and ledger are in the PR, every open
 finding is tracked, and the PR names the two reviewers when it changed a

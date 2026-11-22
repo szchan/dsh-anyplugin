@@ -38,7 +38,7 @@ Five surfaces, in this order of value:
 
 | When | What | Where |
 | --- | --- | --- |
-| daily, 09:00 America/Los_Angeles | the full pass in §4, one report | `docs/audits/YYYY-MM-DD.md` |
+| daily, 09:00 America/Los_Angeles | the full pass in §4, one report and its PR | `docs/audits/YYYY-MM-DD.md` |
 | weekly (the Monday pass) | mechanism effectiveness: mutate one enforced rule and confirm the gate fails | same report, `## Actions` |
 | on demand | after an incident (a bad merge, a regression, a review that found a pattern), or when a human asks | same |
 | monthly | retire/refresh ledger entries; split the schedule if §8 says so | `docs/AUDIT.md` |
@@ -52,6 +52,12 @@ rrule, target and last delivery. A fresh checkout recreates it with
 checkout; the prompt carries the full step list from the audit skill §2,
 including "always write the report and open a PR" and the Monday mutation
 check), then confirms the task appears in the next digest.
+
+Every pass publishes its report as a pull request. There is no side branch or
+comment-only channel for a daily report: the PR is what the review and merge
+process sees, and a finding that is not in that PR did not enter the process.
+The report-only PR goes through the same review and merge path as any other
+change; "report-only" changes what the PR contains, not whether it is reviewed.
 
 ## 3. Evidence
 
@@ -96,8 +102,11 @@ that contains a token, an email, or a customer path.
    the ~1,500 cap and name the split (a scheduled audit, an integrator, a
    narrower ticket). F18 is the recorded miss.
 6. Write the report (§5), add or update ledger entries, run `npm run
-   check:audit`, and open a PR. A report-only PR is docs; a PR that changes a
-   mechanism also carries the code and its test.
+   check:audit`, and open the PR in the same pass. A report-only PR is docs; a
+   PR that changes a mechanism also carries the code and its test. Every
+   finding gets an action in this pass: the fix in the PR, a tracking issue, or
+   an explicit accepted risk with an owner and a review date. A finding with no
+   action is a plan, not a finding; it does not become next pass's backlog.
 7. For a change to a *mechanism* (not a report), run the reviewers in §6 before
    opening the PR.
 
@@ -121,10 +130,12 @@ window, commands run, what was read; numbers from the evidence JSON.
 F<n> — one line, then what was observed, with a path or a count.
 
 ## Actions
-what changed (or the issue/PR that tracks it), with the finding id.
+what changed in this pass, with the finding id. An issue or PR opened in the
+same pass is an action; "investigate later" is not.
 
 ## Open
-findings still open, each with its tracking issue.
+only findings that are genuinely blocked or deferred, each with a tracking
+issue, an owner, and the condition that reopens it. `Open` is not a backlog.
 ```
 
 A report is not a diary. If nothing new was found, the report says which
@@ -205,7 +216,15 @@ adds measurable caps:
 | master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts (with a pinned head once #163 lands) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
-| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix | feature code, ticket branches, `docs/DECISIONS.md`, merges; it proposes a decision and the master writes it | an audit PR that changes a mechanism without two reviewers |
+| auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, merge, close an issue or PR, approve its own PR; it proposes a decision and the master writes it | an audit PR that changes a mechanism without two reviewers, or one the auditor merged or closed itself |
+
+The auditor's "no merge, no close" rule is a convention first: the auditor opens
+the issue or PR, comments with evidence, and hands it to the review and merge
+path. It does not close the issue it filed or merge the PR it authored, even
+after the fix lands. Permission-layer enforcement (branch protection, the
+`gh-bot` allowlist, and a separate merger identity) is deliberately deferred;
+until it lands this is reviewed behavior, not a guard check, and a report must
+say so if it relied on the convention.
 
 The caps are heuristics, not gates. The evidence script reports the eight
 largest sessions with their `cwd`; a pass that sees a root session above the
