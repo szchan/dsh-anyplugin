@@ -9,11 +9,19 @@
 //
 // The boot graph is S9's (see spikes/s9-host-events/run.mjs), plus the services
 // the six events live behind: the JSONL persistence provider (TeamJournal's
-// flush check), the subagent registry (Team task ownership), Agent Teams, and
-// the worktree stack. `dsh-sandbox` is mounted for real; `workspaceRegistry`
-// and `sessionQuery` are one-method doubles because dsh-workspace and
-// dsh-session-query are not in the fetched harness union (scripts/fetch-harness.mjs).
-// The reclamation side only reads `archivedSessionIds` and `listSessions`.
+// flush check), the subagent registry (Team task ownership and the fork
+// teammate), Agent Teams, and the worktree stack. `dsh-sandbox` is mounted for
+// real; `workspaceRegistry` and `sessionQuery` are one-method doubles because
+// dsh-workspace and dsh-session-query are not in the fetched harness union
+// (scripts/fetch-harness.mjs). The reclamation side only reads
+// `archivedSessionIds` and `listSessions`.
+//
+// TeammateIdle is not recorded by any service at this pin, so the probe drives
+// a real fork teammate (`dsh-subagent-fork-in-process`) through
+// `startActivation` to idle. The row is only meaningful if the child actually
+// reaches idle; the check fails when it does not, and the `team/member`
+// listeners are registered before activation so "nothing fired" is measured
+// over the idle transition rather than assumed.
 //
 // Run:
 //   node scripts/fetch-harness.mjs 0.2.2-rc.5
@@ -39,6 +47,7 @@ const FULL_TURN = [...REQUIRED, 'dsh-agent-loop', 'dsh-tool-executor-native', 'd
 const S23_PACKAGES = [
   'dsh-session-persistence-jsonl',
   'dsh-subagent',
+  'dsh-subagent-fork-in-process',
   'dsh-agent-team',
   'dsh-fs-local',
   'dsh-subprocess-local',
@@ -97,7 +106,16 @@ const version = () => {
 const load = (name) => import(pathToFileURL(name.endsWith('.js') ? join(HARNESS, name) : join(HARNESS, name, 'lib', 'index.js')).href)
 const has = (name) => existsSync(join(HARNESS, name, 'package.json'))
 
-console.log(`harness: ${HARNESS} (${HARNESS_SOURCE}, ${version()})`)
+// A resolved tree that is not the pin is not evidence for this pin. Without
+// this check, an absent DSH_HARNESS_DIR silently falls through to the Desktop
+// install and the spike reports a green run against a different version.
+const resolvedVersion = version()
+if (resolvedVersion !== VERSION) {
+  console.error(`s23: harness pin mismatch: wanted ${VERSION}, found ${resolvedVersion} at ${HARNESS} (${HARNESS_SOURCE})`)
+  process.exit(2)
+}
+
+console.log(`harness: ${HARNESS} (${HARNESS_SOURCE}, ${resolvedVersion})`)
 
 // ---------------------------------------------------------------------------
 // Fixture repo for the worktree probes
@@ -175,6 +193,7 @@ async function boot({ repo, sessionsRoot, fakeScript }) {
   const nativeExecutor = await load('dsh-tool-executor-native/lib/index.js')
   const Jsonl = await load('dsh-session-persistence-jsonl/lib/index.js')
   const Subagents = (await load('dsh-subagent/lib/index.js')).default
+  const Fork = await load('dsh-subagent-fork-in-process/lib/index.js')
   const Teams = (await load('dsh-agent-team/lib/index.js')).default
   const FsLocal = (await load('dsh-fs-local/lib/index.js')).default
   const SubprocessLocal = (await load('dsh-subprocess-local/lib/index.js')).default
@@ -210,6 +229,7 @@ async function boot({ repo, sessionsRoot, fakeScript }) {
   mount(SandboxPolicy, { mode: 'danger-full-access', workspaceRoot: repo })
   mount(WorkingDirectory, { defaultDirectory: repo })
   mount(Subagents)
+  mount(Fork, { providerName: 'fork' })
   mount(Teams, { defaultEnabled: false })
   // The service rejects absolute or dot-segment directories; `createCheckout`
   // resolves this relative pool against the repository root it discovers from
@@ -233,7 +253,7 @@ async function boot({ repo, sessionsRoot, fakeScript }) {
 // Probes
 // ---------------------------------------------------------------------------
 
-const observations = { team: [], worktreeRecords: [], cleanups: [], agentErrors: [], statuses: [], sessionTypes: [] }
+const observations = { team: [], worktreeRecords: [], cleanups: [], agentErrors: [], statuses: [], sessionTypes: [], memberRecords: [], teamMemberEmits: [], assistantMessages: [] }
 const events = new Map()
 function recordEvent(event, fired, emitter, payloadKeys, detail) {
   events.set(event, { event, fired, emitter, payloadKeys, detail })
@@ -248,19 +268,26 @@ async function probeAll() {
   mkdirSync(sessionsRoot, { recursive: true })
   const branch = `s23-probe-${Date.now().toString(36)}`
   let breakdown = {}
+  // Set after the StopFailure agent exists; the fork teammate's call succeeds,
+  // the error turn's call fails. Keying on the session id keeps the script
+  // independent of call ordering (the team and worktree actions make no calls).
+  let stopFailureSessionId
 
   const { ctx, adapter, createUserMessage, workspaceRegistry } = await boot({
     repo,
     sessionsRoot,
-    fakeScript: (call) => (call === 1 ? failingChunks('s23 model failure') : textChunks('unexpected second call')),
+    fakeScript: (_call, options) => (options.sessionId === stopFailureSessionId ? failingChunks('s23 model failure') : textChunks('teammate turn complete')),
   })
 
   const offs = [
     ctx.on('session/event', (_session, event) => {
       observations.sessionTypes.push(event.type)
       if (event.type === 'team/task') observations.team.push(event)
+      if (event.type === 'team/member') observations.memberRecords.push(event)
+      if (event.type === 'assistant/message') observations.assistantMessages.push({ sessionId: _session?.id, turn: event.data?.turn })
       if (event.type === 'plugin:worktree/created') observations.worktreeRecords.push(event)
     }),
+    ctx.on('team/member', (payload) => observations.teamMemberEmits.push(payload)),
     ctx.on('worktree/cleanup', (payload) => observations.cleanups.push(payload)),
     ctx.on('agent/error', (payload) => observations.agentErrors.push(payload)),
     ctx.on('agent/status', (payload) => observations.statuses.push(payload)),
@@ -286,8 +313,44 @@ async function probeAll() {
   check('TaskCreated: record data carries version/teamId/task', ['version', 'teamId', 'task'].every((key) => createKeys.includes(key)) && createTaskKeys.includes('id') && createTaskKeys.includes('subject') && createTaskKeys.includes('description'), `data=${createKeys.join(',')} task=${createTaskKeys.join(',')}`)
   check('TaskCompleted: a listener received a completed team/task revision', completeRecord !== undefined && completeRecord.data.task.revision === 3 && completeRecord.data.task.status === 'completed', `status=${completeRecord?.data?.task?.status}`)
   check('the board recorded the claim between create and complete', claimedView.status === 'in_progress' && claimedView.ownerId === lead.id, `status=${claimedView.status} ownerId=${claimedView.ownerId}`)
-  check('no team/member record exists to carry TeammateIdle', taskRecords.every((event) => event.type !== 'team/member') && !observations.sessionTypes.includes('team/member'), `types=${emitterList(observations.sessionTypes)}`)
   check('the only team record types observed are team/mode and team/task', [...new Set(observations.sessionTypes.filter((type) => type.startsWith('team/')))].sort().join(',') === 'team/mode,team/task', `types=${[...new Set(observations.sessionTypes.filter((type) => type.startsWith('team/')))]}`)
+
+  // -- TeammateIdle: drive a fork teammate to idle ---------------------------
+  // The worktree/cleanup and StopFailure probes do not need a teammate, so this
+  // runs before them. The listeners above are already registered; the idle
+  // assertion is what makes "nothing fired" a measurement rather than a
+  // vacuous `[].every(...)`.
+  console.log('\n[probe] fork teammate to idle')
+  let activation
+  let idleStatus
+  let teammateError
+  try {
+    activation = await ctx.subagents.startActivation({
+      provider: 'fork',
+      parent: lead,
+      label: 'S23 idle teammate',
+      name: 's23-idle',
+      prompt: [{ type: 'text', text: 'finish this turn and go idle' }],
+      delivery: 'parent',
+      signal: new AbortController().signal,
+    })
+    const child = ctx.agents.get(activation.childId)
+    if (child === undefined) throw new Error(`activated child ${activation.childId} is not live`)
+    await Promise.race([
+      child.whenIdle(),
+      sleep(15_000).then(() => {
+        throw new Error(`fork teammate ${activation.childId} did not reach idle within 15s`)
+      }),
+    ])
+    idleStatus = await until(() => observations.statuses.find((payload) => payload.agent?.id === activation.childId && payload.status === 'idle'), 5000, 'agent/status idle for the fork teammate')
+  } catch (error) {
+    teammateError = error
+  }
+  const idleKeys = keyList(idleStatus)
+  const teammateFired = observations.memberRecords.length > 0 || observations.teamMemberEmits.length > 0
+  check('TeammateIdle: the fork teammate actually reached idle', idleStatus !== undefined, teammateError === undefined ? `child=${activation?.childId} keys=${idleKeys.join(',')}` : String(teammateError?.message ?? teammateError))
+  check('TeammateIdle: no team/member record and no team/member listener fired', !teammateFired, `records=${observations.memberRecords.length} emits=${observations.teamMemberEmits.length} sessionTypes=${[...new Set(observations.sessionTypes.filter((type) => type === 'team/member'))].join(',') || 'none'}`)
+  check('TeammateIdle: the nearest payload is agent/status {status, agent}', idleKeys.includes('status') && idleKeys.includes('agent') && idleStatus?.status === 'idle', `keys=${idleKeys.join(',')} agentId=${idleStatus?.agent?.id}`)
 
   recordEvent('TaskCreated', createRecord !== undefined, 'session/event team/task @ dsh-agent-team/lib/index.js:93', createKeys, {
     mechanism: 'service call: agentTeams.createTask (no model turn)',
@@ -309,13 +372,22 @@ async function probeAll() {
     toolCallNote: 'service record; no tool name or call id, though a completed task carries ownerName',
     note: 'ownerName (observed as "lead") is the source for teammate_name; teamId is a session id, not a team display name; completion requires claim first',
   })
-  recordEvent('TeammateIdle', false, 'none: no team/member record in 0.2.2-rc.5', [], {
-    mechanism: 'no listener received a teammate-idle payload; create/claim/complete produced team/task only',
-    tried: 'enabled Agent Teams, created, claimed and completed a task on the Team Lead',
-    nearest: 'agent/status {status, agent} (generic agent status, not per-teammate idle)',
+  recordEvent('TeammateIdle', teammateFired, 'none: no team/member record or emit in 0.2.2-rc.5; nearest agent/status @ dsh-agent-loop/lib/index.js:571', [], {
+    mechanism: 'fork teammate: subagents.startActivation(provider "fork") drove a real turn and the child reached idle; no per-member record was appended and no team/member listener fired',
+    childId: activation?.childId,
+    childName: activation?.name,
+    childReachedIdle: idleStatus !== undefined,
+    teamMemberRecords: observations.memberRecords.length,
+    teamMemberEmits: observations.teamMemberEmits.length,
+    nearest: 'agent/status {status, agent} (generic agent status, not a teammate-idle record)',
+    nearestKeys: idleKeys,
+    nearestAgentId: idleStatus?.agent?.id,
+    classicFields: [],
+    missingClassicFields: ['teammate_name', 'team_name'],
     toolCallShaped: false,
-    toolCallNote: 'no event fired at all; agent/status is a generic status payload',
-    nextAttempt: 'probe a subagent teammate reaching idle and look for a per-member record or an agent/status payload carrying a member identity; at this pin no member catalog record exists',
+    toolCallNote: 'no event fired; agent/status carries no tool name, tool input, or call id',
+    error: teammateError === undefined ? undefined : String(teammateError?.message ?? teammateError),
+    nextAttempt: 'none at this pin: the teammate lifecycle has no record or emit, so TeammateIdle needs an upstream per-member event; no listener can be wired to an existing one',
   })
 
   // -- Worktree: WorktreeCreate / WorktreeRemove ------------------------------
@@ -384,6 +456,7 @@ async function probeAll() {
   // -- StopFailure: turn/end with an error reason -----------------------------
   console.log('\n[probe] error turn')
   const sfAgent = await ctx.agentLoop.create('s23-stop-failure', { provider: 'fake', model: 'fake-1' })
+  stopFailureSessionId = sfAgent.session.id
   const ended = await (async () => {
     const done = new Promise((resolveEnd, rejectEnd) => {
       const timer = setTimeout(() => rejectEnd(new Error('turn 1 did not end')), 10_000)
@@ -408,7 +481,7 @@ async function probeAll() {
   check('StopFailure: reason.error carries message and code', failureKeys.includes('message') && failureKeys.includes('code'), `keys=${failureKeys.join(',')}`)
   check('StopFailure: agent/error reached a listener with turn/step/error', errorPayload !== undefined && ['turn', 'step', 'error'].every((key) => keyList(errorPayload).includes(key)), `keys=${keyList(errorPayload).join(',')}`)
   check('StopFailure: the model failure is the one the probe injected', errorPayload?.error?.failure?.code === 'PROBE_FAILURE' && errorPayload?.error?.message === 's23 model failure', `code=${errorPayload?.error?.failure?.code}`)
-  check('StopFailure: the error turn produced no assistant/message', !observations.sessionTypes.includes('assistant/message'))
+  check('StopFailure: the error turn produced no assistant/message', !observations.assistantMessages.some((message) => message.sessionId === sfAgent.session.id && message.turn === 1), `messages=${JSON.stringify(observations.assistantMessages)}`)
 
   recordEvent('StopFailure', reason?.kind === 'error', 'session/event turn/end @ dsh-agent-loop/lib/index.js:832 (+ agent/error @ :657)', keyList(ended.data), {
     mechanism: 'model turn: the fake adapter returns a finish error; the loop throws LlmError and appends turn/end',
@@ -433,6 +506,14 @@ async function probeAll() {
       claim: claimedView,
       complete: completedView,
       records: taskRecords.map((event) => ({ type: event.type, dataKeys: keyList(event.data), task: event.data?.task })),
+      teammate: {
+        activation: activation === undefined ? undefined : { childId: activation.childId, name: activation.name, messageId: activation.messageId },
+        reachedIdle: idleStatus !== undefined,
+        idleStatus: idleStatus === undefined ? undefined : { keys: idleKeys, status: idleStatus.status, agentId: idleStatus.agent?.id },
+        memberRecords: observations.memberRecords.length,
+        teamMemberEmits: observations.teamMemberEmits.length,
+        error: teammateError === undefined ? undefined : String(teammateError?.message ?? teammateError),
+      },
     },
     worktree: {
       branch,
