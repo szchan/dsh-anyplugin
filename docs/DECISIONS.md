@@ -3062,3 +3062,53 @@ GitHub's own deferred evaluation of `--auto` even with a valid pin.
 
 ---
 
+
+---
+
+## D67 — The guard installs from the real git layout, and the block says what it can and cannot attest
+
+**Decided 2026-11-22** (#166, #172). The install block used to be written from
+the installing *worktree* and a static list of twenty-two paths. That mixed two
+different things — where the installer happened to stand, and where worktrees
+will exist — and it could name a directory the plan never intended.
+
+1. **Layout comes from git, not from the process.** The install root is derived
+   from `git rev-parse --path-format=absolute --git-common-dir` (its parent),
+   and a tree whose `--git-dir` differs from `--git-common-dir` is a **linked
+   worktree**: install refuses there, before any write, and names the main
+   checkout (or says git cannot name it, for a submodule or a
+   `--separate-git-dir` repository). `--dry-run` still writes nothing.
+2. **The block carries three lists, each with a job.** `worktrees` holds the
+   derived pattern (see 3); `protectedRoots` holds the main working tree and a
+   common git dir that differs from it; `gitDirectories` holds the real git
+   directory identities. A worker write anywhere inside a git directory is
+   `git-dir-write` whether the directory is called `.git` or `sep-gitdir`; a
+   root write there stays allowed, because the root is the one who installs the
+   hook.
+3. **The pattern is a namespace matcher, and that is a caveat, not an
+   attestation.** `<stem>-*` admits future ticket worktrees without a reinstall.
+   It therefore also admits a sibling that merely shares the prefix
+   (`ticket-notes` next to `ticket-*`). The guard cannot tell them apart: the
+   block stores no worktree identity list, and git cannot attest a future
+   namespace. The `ticket-notes` test names the behaviour so it is a known
+   property rather than a surprise; a stricter mode would be a new decision.
+4. **`-*` is the whole grammar.** Only an entry ending in exactly `-*` is a
+   pattern; `ticket*` and `ticket-**` are literal paths. A live worktree whose
+   name contains `*` therefore makes the installed block unsafe to honour: the
+   status is `refused` (not `current`), and the remedy is to rename the checkout
+   rather than to silently reinterpret the entry. Entries written by the old
+   installer are read as the literals they are, and a missing one reports
+   `installed-with-stale-paths`.
+5. **Four statuses, four meanings.** `not-installed` (no block), `current`
+   (every listed path exists), `stale` (a listed path is gone), and
+   `installed-with-stale-paths` (a path that *was* a worktree is gone while the
+   rest are fine), plus `refused` for 4. Each is a distinct exit code, so a
+   script can tell "not installed" from "installed and drifted".
+
+**Consequences.** Installation is from the main checkout or a scratch clone;
+`--dry-run` prints the block and writes nothing. Residual: when the stem cannot
+be derived, the block keeps an exact list, so a worktree created later is
+refused (with a message naming it) until `guard:refresh` or a reinstall —
+recorded rather than hidden. This does not change D47's rule table or the
+dormant status of F12; it changes where the block gets its paths and what the
+guard can claim about them.
