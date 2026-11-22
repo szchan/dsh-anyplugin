@@ -1,4 +1,4 @@
-// Ticket #117: `rig marketplace list|install`.
+// Ticket #117 and #161: `rig marketplace list|install`.
 //
 // The catalog formats are upstream specifications (Claude's
 // `.claude-plugin/marketplace.json`, Codex's `.agents/plugins/marketplace.json`
@@ -6,6 +6,12 @@
 // here is hand-authored — nothing is vendored from an upstream repository
 // (D14). The tests run the real CLI against a temp `$DSH_HOME`: the claims are
 // file claims (which record, which bytes, which refusal), not stdout claims.
+//
+// The two files are not one schema: the catalog's *path* selects the parser.
+// A Claude entry's `source` is a string or a Claude source object; a Codex
+// entry's `source` is a Codex source object (or a string path for `local`),
+// and `policy` is Codex's field. An entry that does not match its file's
+// shape is a recorded problem naming the field, never a guess.
 //
 // The property that keeps this slice honest is delegation: a marketplace
 // install must leave the same lock and the same enablement layer a plain
@@ -40,6 +46,9 @@ const fixture = join(repoRoot, 'fixtures', 'marketplace-local')
 const catalog = join(fixture, '.claude-plugin', 'marketplace.json')
 const pluginDir = join(fixture, 'plugins', 'local-hello')
 const claudeFixture = join(repoRoot, 'fixtures', 'claude-skills-only')
+const codexFixture = join(repoRoot, 'fixtures', 'marketplace-codex')
+const codexCatalog = join(codexFixture, '.agents', 'plugins', 'marketplace.json')
+const bothRoot = join(codexFixture, 'both')
 
 function sandbox() {
   const dir = mkdtempSync(join(tmpdir(), 'anyplugin-marketplace-'))
@@ -92,11 +101,31 @@ function writeCatalog(dir, document, plugin = true) {
   }
 }
 
+/** A catalog directory shaped like a Codex marketplace root, with one portable plugin. */
+function writeCodexCatalog(dir, document, plugin = true) {
+  mkdirSync(join(dir, '.agents', 'plugins'), { recursive: true })
+  writeFileSync(join(dir, '.agents', 'plugins', 'marketplace.json'), JSON.stringify(document, null, 2))
+  if (plugin) {
+    mkdirSync(join(dir, 'plugins', 'hello'), { recursive: true })
+    writeFileSync(
+      join(dir, 'plugins', 'hello', 'plugin.json'),
+      JSON.stringify({
+        $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+        name: 'hello',
+        version: '0.1.0',
+        description: 'Hand-authored Codex test plugin.',
+      }),
+    )
+    mkdirSync(join(dir, 'plugins', 'hello', 'skills', 'hello'), { recursive: true })
+    writeFileSync(join(dir, 'plugins', 'hello', 'skills', 'hello', 'SKILL.md'), '---\nname: hello\n---\n\nSay hello.\n')
+  }
+}
+
 // ---------------------------------------------------------------------------
 // list
 // ---------------------------------------------------------------------------
 
-test('list prints name, description, source kind and policy, and records what it cannot carry', () => {
+test('list prints name, description, source kind and format, and records what it cannot carry', () => {
   const box = sandbox()
   try {
     const listed = run(box, ['marketplace', 'list', '--from', catalog])
@@ -104,11 +133,14 @@ test('list prints name, description, source kind and policy, and records what it
     assert.equal(listed.status, 1, listed.stderr)
     assert.match(listed.stdout, /^marketplace: local-marketplace {2}.*marketplace\.json/u)
     assert.match(listed.stdout, /\(2 entries, 1 malformed\)/u)
-    assert.match(listed.stdout, / {2}local-hello {2}local {2}\.\/plugins\/local-hello/u)
+    assert.match(listed.stdout, / {2}local-hello {2}claude-code {2}local {2}\.\/plugins\/local-hello/u)
     assert.match(listed.stdout, / {4}A skill that greets the user\./u)
     assert.match(listed.stdout, /category: testing {2}version: 0\.1\.0/u)
-    assert.match(listed.stdout, / {2}remote-helper {2}url {2}https:\/\/example\.invalid\/remote-helper\.git/u)
-    assert.match(listed.stdout, /policy: AVAILABLE \/ ON_INSTALL/u)
+    assert.match(listed.stdout, / {2}remote-helper {2}claude-code {2}url {2}https:\/\/example\.invalid\/remote-helper\.git/u)
+    // `policy` is Codex's entry field; a Claude entry that carries it is a
+    // note, never an installation policy (the fixture moved it to the Codex
+    // catalog on purpose).
+    assert.doesNotMatch(listed.stdout, /policy:/u)
     // url/git-subdir/npm are installable through a network grant; only the
     // remaining kinds carry an `unsupported:` line, and this catalog has none.
     assert.doesNotMatch(listed.stdout, /unsupported:/u)
@@ -128,9 +160,14 @@ test('list --json distinguishes "not installable here" from "malformed"', () => 
     const payload = JSON.parse(listed.stdout)
     assert.equal(payload.ok, false)
     assert.equal(payload.name, 'local-marketplace')
+    assert.equal(payload.format, 'claude')
+    assert.equal(payload.catalogs.length, 1)
+    assert.equal(payload.catalogs[0].format, 'claude')
     assert.equal(payload.entries.length, 2)
     const [local, remote] = payload.entries
     assert.equal(local.name, 'local-hello')
+    assert.equal(local.format, 'claude')
+    assert.equal(local.marketplace, 'local-marketplace')
     assert.equal(local.installable, true)
     assert.deepEqual(local.source, { kind: 'local', path: './plugins/local-hello' })
     assert.equal(remote.name, 'remote-helper')
@@ -209,41 +246,110 @@ test('install by name writes the same canonical YAML as `rig install <dir>`, plu
   }
 })
 
-test('a Codex marketplace resolves its object source under the marketplace root', () => {
+test('a Codex catalog resolves its object source under the root and pairs dialect codex', () => {
   const box = sandbox()
   try {
     const root = join(box.dir, 'codex-market')
-    writeCatalog(root, {
+    writeCodexCatalog(root, {
       name: 'codex-market',
+      interface: { displayName: 'Codex Market' },
       plugins: [
         {
           name: 'hello',
-          description: 'Installed from a Codex catalog.',
-          category: 'testing',
+          // Codex's local source is an object with a nested discriminator; the
+          // path still resolves from the marketplace root, not from
+          // `.agents/plugins/`.
           source: { source: 'local', path: './plugins/hello' },
           policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          category: 'testing',
         },
       ],
     })
-    // Codex keeps the catalog in `.agents/plugins/`, but `source.path` still
-    // resolves from the marketplace root, not from the catalog's directory.
-    mkdirSync(join(root, '.agents', 'plugins'), { recursive: true })
-    cpSync(
-      join(root, '.claude-plugin', 'marketplace.json'),
-      join(root, '.agents', 'plugins', 'marketplace.json'),
-    )
-    const codexCatalog = join(root, '.agents', 'plugins', 'marketplace.json')
+    const file = join(root, '.agents', 'plugins', 'marketplace.json')
 
-    const listed = run(box, ['marketplace', 'list', '--from', codexCatalog])
+    const listed = run(box, ['marketplace', 'list', '--from', file])
     assert.equal(listed.status, 0, listed.stderr)
-    assert.match(listed.stdout, /hello {2}local {2}\.\/plugins\/hello/u)
+    assert.match(listed.stdout, / {2}hello {2}codex {2}local {2}\.\/plugins\/hello/u)
     assert.match(listed.stdout, /policy: AVAILABLE \/ ON_INSTALL/u)
+    assert.match(listed.stdout, /Codex Market/u)
 
-    const installed = run(box, ['marketplace', 'install', 'hello', '--from', codexCatalog])
+    const installed = run(box, ['marketplace', 'install', 'hello', '--from', file])
     assert.equal(installed.status, 0, installed.stderr)
+    assert.match(installed.stdout, /install codex:hello: added/u)
     const record = readInstalls(box.lock).plugins[0]
+    assert.equal(record.dialect, 'codex')
+    assert.equal(record.pin, 'agent-plugins@1.0.0')
     assert.equal(record.root, join(root, 'plugins', 'hello'))
     assert.deepEqual(record.source, { marketplace: 'codex-market', entry: 'hello' })
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex string local source is a path, and a string no longer hides a Claude object', () => {
+  const box = sandbox()
+  try {
+    const root = join(box.dir, 'string-codex')
+    writeCodexCatalog(root, {
+      name: 'string-codex',
+      plugins: [
+        {
+          name: 'hello',
+          // The published Codex page allows this plain-string local form.
+          source: './plugins/hello',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          category: 'testing',
+        },
+      ],
+    })
+    const file = join(root, '.agents', 'plugins', 'marketplace.json')
+    const listed = run(box, ['marketplace', 'list', '--from', file])
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.match(listed.stdout, / {2}hello {2}codex {2}local {2}\.\/plugins\/hello/u)
+
+    // A Claude-shaped object in a Codex file is not rewritten into a Codex
+    // source: `github` is Claude's kind and the entry is a problem naming the
+    // field, so the name never becomes installable by guessing.
+    const claudeShaped = join(box.dir, 'claude-shaped')
+    writeCodexCatalog(
+      claudeShaped,
+      {
+        name: 'claude-shaped',
+        plugins: [{ name: 'hello', source: { source: 'github', repo: 'example/plugin' } }],
+      },
+      false,
+    )
+    const refused = run(box, [
+      'marketplace',
+      'install',
+      'hello',
+      '--from',
+      join(claudeShaped, '.agents', 'plugins', 'marketplace.json'),
+    ])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(malformed-marketplace-entry\)/u)
+    assert.match(refused.stderr, /"source\.source" is "github"; a Codex source must be one of local, url, git-subdir, npm/u)
+    assert.equal(existsSync(box.lock), false)
+
+    // The other direction of the same trap: Codex's object-local form in a
+    // Claude file is a problem naming the field, not a local install.
+    const claudeObject = join(box.dir, 'claude-object')
+    writeCatalog(claudeObject, {
+      name: 'claude-object',
+      plugins: [{ name: 'hello', source: { source: 'local', path: './plugins/hello' } }],
+    })
+    const claudeCatalog = join(claudeObject, '.claude-plugin', 'marketplace.json')
+    const listedObject = run(box, ['marketplace', 'list', '--from', claudeCatalog])
+    assert.equal(listedObject.status, 1)
+    assert.match(listedObject.stdout, /problem: plugins\[0\] \("hello"\)/u)
+    assert.match(
+      listedObject.stdout,
+      /"source\.source" is "local"; a Claude local source is a "\.\/"-relative path string, not an object/u,
+    )
+    const refusedObject = run(box, ['marketplace', 'install', 'hello', '--from', claudeCatalog])
+    assert.equal(refusedObject.status, 1)
+    assert.match(refusedObject.stderr, /refused \(malformed-marketplace-entry\)/u)
+    assert.equal(existsSync(box.lock), false)
   } finally {
     cleanup(box.dir)
   }
@@ -362,7 +468,7 @@ test('a missing catalog file is a typed refusal, not an empty catalog', () => {
     const refused = run(box, ['marketplace', 'list', '--from', join(box.dir, 'absent.json')])
     assert.equal(refused.status, 1)
     assert.match(refused.stderr, /refused \(unreadable-marketplace\)/u)
-    assert.match(refused.stderr, /hint: pass --from the catalog file/u)
+    assert.match(refused.stderr, /hint: pass --from a catalog file/u)
   } finally {
     cleanup(box.dir)
   }
@@ -458,7 +564,8 @@ test('parseMarketplace keeps good entries when siblings are malformed, and never
       { name: 'good', source: './duplicate' },
     ],
   })
-  const marketplace = parseMarketplace(text, 'unit.json')
+  const marketplace = parseMarketplace(text, 'unit.json', 'claude')
+  assert.equal(marketplace.format, 'claude')
   assert.deepEqual(marketplace.entries.map((entry) => entry.name), ['good'])
   assert.equal(marketplace.notes.length, 1)
   assert.match(marketplace.notes[0], /field "futureField" is not carried/u)
@@ -475,7 +582,7 @@ test('parseMarketplace keeps good entries when siblings are malformed, and never
 test('parseMarketplace refuses a catalog that has no usable name or plugins array', () => {
   for (const text of ['{"plugins": []}', '{"name": "m"}', '{"name": "m", "plugins": {}}', 'not json']) {
     assert.throws(
-      () => parseMarketplace(text, 'bad.json'),
+      () => parseMarketplace(text, 'bad.json', 'claude'),
       (error) => error instanceof InstallCliError && error.code === 'malformed-marketplace',
     )
   }
@@ -501,25 +608,26 @@ function writeCatalogAt(root, document) {
   writeFileSync(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify(document, null, 2))
 }
 
-test('policy.installation NOT_AVAILABLE is enforced by install, not just printed by list', () => {
+test('Codex policy.installation NOT_AVAILABLE is enforced by install, not just printed by list', () => {
   const box = sandbox()
   try {
     const root = join(box.dir, 'policy-catalog')
-    writePluginAt(join(root, 'plugins', 'hello'), 'hello')
-    writeCatalogAt(root, {
+    writeCodexCatalog(root, {
       name: 'policy-marketplace',
       plugins: [
         {
           name: 'hello',
-          source: './plugins/hello',
+          source: { source: 'local', path: './plugins/hello' },
           policy: { installation: 'NOT_AVAILABLE', authentication: 'ON_INSTALL' },
+          category: 'testing',
         },
       ],
     })
-    const file = join(root, '.claude-plugin', 'marketplace.json')
+    const file = join(root, '.agents', 'plugins', 'marketplace.json')
 
     const listed = run(box, ['marketplace', 'list', '--from', file])
     assert.equal(listed.status, 0, listed.stderr)
+    assert.match(listed.stdout, / {2}hello {2}codex {2}local/u)
     assert.match(listed.stdout, /policy: NOT_AVAILABLE \/ ON_INSTALL/u)
 
     const refused = run(box, ['marketplace', 'install', 'hello', '--from', file])
@@ -631,10 +739,448 @@ test('an entry with no usable name still reports a line, not just an array index
     }
   ]
 }`
-  const marketplace = parseMarketplace(text, 'lines.json')
+  const marketplace = parseMarketplace(text, 'lines.json', 'claude')
   assert.equal(marketplace.problems.length, 1)
   assert.equal(marketplace.problems[0].index, 0)
   assert.equal(marketplace.problems[0].name, undefined)
   assert.equal(marketplace.problems[0].line, 4)
   assert.match(marketplace.problems[0].reason, /"name" must be a bare plugin name/u)
+})
+
+// ---------------------------------------------------------------------------
+// ticket #161: a Codex catalog is its own shape, selected by its path
+// ---------------------------------------------------------------------------
+
+test('the hand-authored Codex fixture lists every documented source shape with its format', () => {
+  const box = sandbox()
+  try {
+    const listed = run(box, ['marketplace', 'list', '--from', codexFixture])
+    // The root has no Claude catalog, so discovery found `.agents/plugins/`.
+    assert.equal(listed.status, 1, listed.stderr)
+    assert.match(listed.stdout, /^marketplace: codex-marketplace {2}.*\.agents\/plugins\/marketplace\.json/u)
+    assert.match(listed.stdout, /\(7 entries, 3 malformed\)/u)
+    assert.match(listed.stdout, / {2}Codex Marketplace Fixture/u)
+    assert.match(listed.stdout, / {2}hello {2}codex {2}local {2}\.\/plugins\/hello/u)
+    // The page allows a plain-string local source; it is the same local kind.
+    assert.match(listed.stdout, / {2}hello-string {2}codex {2}local {2}\.\/plugins\/hello/u)
+    assert.match(listed.stdout, / {2}remote-helper {2}codex {2}url {2}https:\/\/example\.invalid\/remote-helper\.git/u)
+    assert.match(listed.stdout, / {2}git-helper {2}codex {2}git-subdir {2}https:\/\/example\.invalid\/mono\.git/u)
+    assert.match(listed.stdout, / {2}npm-helper {2}codex {2}npm {2}@example\/helper@1\.0\.0/u)
+    assert.match(listed.stdout, /policy: AVAILABLE \/ ON_INSTALL/u)
+    assert.match(listed.stdout, /policy: NOT_AVAILABLE \/ ON_INSTALL/u)
+    // A kind from the other file is a refusal naming the field, not an entry.
+    assert.match(
+      listed.stdout,
+      /problem: plugins\[7\] \("claude-shaped"\) at line \d+: "source\.source" is "github"; a Codex source must be one of local, url, git-subdir, npm/u,
+    )
+    assert.match(
+      listed.stdout,
+      /problem: plugins\[8\] \("described"\) at line \d+: entry "described": field "description" is not a Codex marketplace entry field/u,
+    )
+    assert.match(
+      listed.stdout,
+      /problem: plugins\[9\] \("partial-policy"\) at line \d+: "policy\.authentication" must be a non-empty string/u,
+    )
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('Codex list --json carries the format, the interface title and the policy', () => {
+  const box = sandbox()
+  try {
+    const listed = run(box, ['marketplace', 'list', '--from', codexCatalog, '--json'])
+    assert.equal(listed.status, 1, listed.stderr)
+    const payload = JSON.parse(listed.stdout)
+    assert.equal(payload.format, 'codex')
+    assert.equal(payload.displayName, 'Codex Marketplace Fixture')
+    assert.equal(payload.entries.length, 7)
+    const hello = payload.entries.find((entry) => entry.name === 'hello')
+    assert.equal(hello.format, 'codex')
+    assert.equal(hello.marketplace, 'codex-marketplace')
+    assert.deepEqual(hello.policy, { installation: 'AVAILABLE', authentication: 'ON_INSTALL' })
+    assert.deepEqual(hello.source, { kind: 'local', path: './plugins/hello' })
+    const remote = payload.entries.find((entry) => entry.name === 'remote-helper')
+    assert.equal(remote.installable, true)
+    assert.equal(remote.unsupported, undefined)
+    assert.deepEqual(
+      payload.problems.map((problem) => problem.name),
+      ['claude-shaped', 'described', 'partial-policy'],
+    )
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('Codex entries refuse their own malformed fields before any copy', () => {
+  const box = sandbox()
+  try {
+    const described = run(box, ['marketplace', 'install', 'described', '--from', codexCatalog])
+    assert.equal(described.status, 1)
+    assert.match(described.stderr, /refused \(malformed-marketplace-entry\)/u)
+    assert.match(described.stderr, /plugins\[8\] \("described"\) at line \d+/u)
+    assert.match(described.stderr, /field "description" is not a Codex marketplace entry field/u)
+
+    const policy = run(box, ['marketplace', 'install', 'partial-policy', '--from', codexCatalog])
+    assert.equal(policy.status, 1)
+    assert.match(policy.stderr, /"policy\.authentication" must be a non-empty string/u)
+
+    // `hello-string` is a valid Codex entry (string local source) whose path
+    // names a plugin that calls itself `hello`: the entry name is asserted
+    // against the manifest, not used to rename the record.
+    const mismatch = run(box, ['marketplace', 'install', 'hello-string', '--from', codexCatalog])
+    assert.equal(mismatch.status, 1)
+    assert.match(mismatch.stderr, /refused \(name-mismatch\)/u)
+    assert.match(mismatch.stderr, /entry "hello-string" does not match the plugin its source declares/u)
+    assert.match(mismatch.stderr, /--name "hello-string" does not match the plugin name "hello"/u)
+
+    const escape = run(box, ['marketplace', 'install', 'escape', '--from', codexCatalog])
+    assert.equal(escape.status, 1)
+    assert.match(escape.stderr, /refused \(marketplace-path-escape\)/u)
+    assert.match(escape.stderr, /outside the marketplace root/u)
+
+    assert.equal(existsSync(box.lock), false)
+    assert.equal(existsSync(box.userLayer), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex entry must declare both policy and category', () => {
+  const box = sandbox()
+  try {
+    const root = join(box.dir, 'bare-codex')
+    const bare = writeCodexCatalog(root, {
+      name: 'bare-codex',
+      plugins: [
+        { name: 'no-policy', category: 'testing', source: './plugins/hello' },
+        {
+          name: 'no-category',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: './plugins/hello',
+        },
+      ],
+    })
+    const catalogFile = bare ?? join(root, '.agents', 'plugins', 'marketplace.json')
+
+    const listed = run(box, ['marketplace', 'list', '--from', catalogFile])
+    assert.equal(listed.status, 1, listed.stderr)
+    assert.match(listed.stdout, /\(0 entries, 2 malformed\)/u)
+    assert.match(
+      listed.stdout,
+      /problem: plugins\[0\] \("no-policy"\).*"policy" is required for a Codex marketplace entry/u,
+    )
+    assert.match(
+      listed.stdout,
+      /problem: plugins\[1\] \("no-category"\).*"category" is required for a Codex marketplace entry/u,
+    )
+
+    for (const name of ['no-policy', 'no-category']) {
+      const refused = run(box, ['marketplace', 'install', name, '--from', catalogFile])
+      assert.equal(refused.status, 1, refused.stderr)
+      assert.match(refused.stderr, /refused \(malformed-marketplace-entry\)/u)
+    }
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a malformed duplicate still makes the shared name ambiguous', () => {
+  const box = sandbox()
+  try {
+    const root = join(box.dir, 'malformed-duplicate')
+    writeCatalog(root, {
+      name: 'claude-side',
+      plugins: [
+        { name: 'shared', source: './plugins/hello' },
+        { name: 'no-policy', source: './plugins/hello' },
+      ],
+    })
+    mkdirSync(join(root, '.agents', 'plugins'), { recursive: true })
+    writeFileSync(
+      join(root, '.agents', 'plugins', 'marketplace.json'),
+      JSON.stringify({
+        name: 'codex-side',
+        plugins: [
+          {
+            name: 'shared',
+            category: 'testing',
+            policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+            source: { source: 'local' },
+          },
+          {
+            // A different error kind: the name is recovered, the entry is not
+            // produced, and the duplicate must still be recorded.
+            name: 'no-policy',
+            category: 'testing',
+            source: { source: 'local' },
+          },
+        ],
+      }),
+    )
+
+    const listed = run(box, ['marketplace', 'list', '--from', root])
+    assert.equal(listed.status, 1, listed.stderr)
+    assert.match(listed.stdout, /\(2 entries, 2 malformed, 2 ambiguous\)/u)
+    assert.match(listed.stdout, /duplicate entry name "shared"; also declared by .*\.claude-plugin\/marketplace\.json/u)
+    assert.match(listed.stdout, /duplicate entry name "no-policy"; also declared by .*\.claude-plugin\/marketplace\.json/u)
+
+    for (const name of ['shared', 'no-policy']) {
+      const ambiguous = run(box, ['marketplace', 'install', name, '--from', root])
+      assert.equal(ambiguous.status, 1)
+      assert.match(ambiguous.stderr, /refused \(ambiguous-marketplace-entry\)/u)
+      assert.match(ambiguous.stderr, new RegExp(`duplicate entry name "${name}"`, 'u'))
+      assert.equal(existsSync(box.lock), false)
+    }
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('--dialect across formats names the layout mismatch, not a missing version', () => {
+  const box = sandbox()
+  try {
+    const wrongCodex = run(box, ['marketplace', 'install', 'codex-only', '--from', bothRoot, '--dialect', 'claude-code'])
+    assert.equal(wrongCodex.status, 1)
+    assert.match(wrongCodex.stderr, /refused \(dialect-mismatch\)/u)
+    assert.match(wrongCodex.stderr, /entry "codex-only" is a codex entry/u)
+    assert.match(wrongCodex.stderr, /declares a codex plugin/u)
+
+    const wrongClaude = run(box, ['marketplace', 'install', 'claude-only', '--from', bothRoot, '--dialect', 'codex'])
+    assert.equal(wrongClaude.status, 1)
+    assert.match(wrongClaude.stderr, /refused \(dialect-mismatch\)/u)
+    assert.match(wrongClaude.stderr, /entry "claude-only" is a claude-code entry/u)
+    assert.match(wrongClaude.stderr, /declares a claude-code plugin/u)
+
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('the catalog path, not a Codex marker, selects the parser', () => {
+  const box = sandbox()
+  try {
+    const root = join(box.dir, 'sniffed-as-claude')
+    writeCatalog(root, {
+      name: 'sniffed',
+      interface: { displayName: 'Looks Codex' },
+      plugins: [
+        {
+          name: 'hello',
+          category: 'testing',
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          source: { source: 'local', path: './plugins/hello' },
+        },
+      ],
+    })
+    const catalogFile = join(root, '.claude-plugin', 'marketplace.json')
+
+    const listed = run(box, ['marketplace', 'list', '--from', catalogFile])
+    assert.equal(listed.status, 1, listed.stderr)
+    assert.match(
+      listed.stdout,
+      /problem: plugins\[0\] \("hello"\).*"source\.source" is "local"; a Claude local source is a "\.\/"-relative path string, not an object/u,
+    )
+    assert.match(listed.stdout, /note: marketplace: field "interface" is not carried by this slice/u)
+
+    const refused = run(box, ['marketplace', 'install', 'hello', '--from', catalogFile])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(malformed-marketplace-entry\)/u)
+    assert.equal(existsSync(box.lock), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex remote entry keeps the D53 refusal in install and stays offline', () => {
+  const box = sandbox()
+  try {
+    const refused = run(box, ['marketplace', 'install', 'remote-helper', '--from', codexCatalog])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(network-consent-required\)/u)
+    assert.match(refused.stderr, /entry "codex-marketplace:remote-helper" is fetched, not read/u)
+    assert.match(refused.stderr, /GET https:\/\/example\.invalid\/remote-helper\.git/u)
+    assert.equal(existsSync(box.lock), false)
+    assert.equal(existsSync(box.userLayer), false)
+    assert.equal(existsSync(join(box.home, 'anyplugin', 'marketplace-cache')), false, 'a refusal must not fetch')
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a Codex url source with a ref, or npm with a registry, is refused naming the field', () => {
+  const text = JSON.stringify({
+    name: 'closed-source',
+    plugins: [
+      {
+        name: 'pinned',
+        source: { source: 'url', url: 'https://example.invalid/pinned.git', ref: 'main' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        category: 'testing',
+      },
+      {
+        name: 'registry',
+        source: { source: 'npm', package: 'pkg', registry: 'https://registry.example.invalid' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        category: 'testing',
+      },
+    ],
+  })
+  const marketplace = parseMarketplace(text, codexCatalog)
+  assert.equal(marketplace.entries.length, 0)
+  assert.deepEqual(
+    marketplace.problems.map((problem) => problem.name),
+    ['pinned', 'registry'],
+  )
+  assert.match(marketplace.problems[0].reason, /"source\.ref" is not carried for a Codex "url" source/u)
+  assert.match(marketplace.problems[1].reason, /"source\.registry" is not carried for a Codex "npm" source/u)
+})
+
+test('a directory --from discovers either catalog; a missing or foreign name is typed', () => {
+  const box = sandbox()
+  try {
+    // A Claude root and a Codex root are both accepted as a directory.
+    const claudeRootList = run(box, ['marketplace', 'list', '--from', fixture])
+    assert.equal(claudeRootList.status, 1, claudeRootList.stderr)
+    assert.match(claudeRootList.stdout, /^marketplace: local-marketplace {2}.*\.claude-plugin\/marketplace\.json/u)
+
+    const codexRootList = run(box, ['marketplace', 'list', '--from', codexFixture])
+    assert.equal(codexRootList.status, 1, codexRootList.stderr)
+    assert.match(codexRootList.stdout, /^marketplace: codex-marketplace {2}.*\.agents\/plugins\/marketplace\.json/u)
+
+    const empty = join(box.dir, 'no-catalog')
+    mkdirSync(empty, { recursive: true })
+    const notFound = run(box, ['marketplace', 'list', '--from', empty])
+    assert.equal(notFound.status, 1)
+    assert.match(notFound.stderr, /refused \(marketplace-not-found\)/u)
+    assert.match(notFound.stderr, /\.claude-plugin\/marketplace\.json/u)
+    assert.match(notFound.stderr, /\.agents\/plugins\/marketplace\.json/u)
+
+    // A file that exists but is neither declared path is not guessed at.
+    const elsewhere = join(box.dir, 'elsewhere')
+    mkdirSync(elsewhere, { recursive: true })
+    writeFileSync(join(elsewhere, 'marketplace.json'), JSON.stringify({ name: 'elsewhere', plugins: [] }))
+    const unknown = run(box, ['marketplace', 'list', '--from', join(elsewhere, 'marketplace.json')])
+    assert.equal(unknown.status, 1)
+    assert.match(unknown.stderr, /refused \(unknown-marketplace-format\)/u)
+    assert.match(unknown.stderr, /not a Claude or Codex marketplace path/u)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a root with both catalogs labels each row and refuses a name declared in both', () => {
+  const box = sandbox()
+  try {
+    const listed = run(box, ['marketplace', 'list', '--from', bothRoot])
+    assert.equal(listed.status, 1, listed.stderr)
+    assert.match(listed.stdout, /^marketplace: claude-side \+ codex-side/u)
+    assert.match(listed.stdout, /\(4 entries, 0 malformed, 1 ambiguous\)/u)
+    assert.match(listed.stdout, /catalog: claude-side {2}claude-code {2}.*\.claude-plugin\/marketplace\.json/u)
+    assert.match(listed.stdout, /catalog: codex-side {2}codex {2}.*\.agents\/plugins\/marketplace\.json/u)
+    assert.match(listed.stdout, / {2}claude-only {2}claude-code {2}local {2}\.\/plugins\/claude-only/u)
+    assert.match(listed.stdout, / {2}codex-only {2}codex {2}local {2}\.\/plugins\/codex-only/u)
+    assert.match(
+      listed.stdout,
+      /problem: \[codex\] plugins\[1\] \("shared"\): duplicate entry name "shared"; also declared by .*\.claude-plugin\/marketplace\.json/u,
+    )
+
+    const ambiguous = run(box, ['marketplace', 'install', 'shared', '--from', bothRoot])
+    assert.equal(ambiguous.status, 1)
+    assert.match(ambiguous.stderr, /refused \(ambiguous-marketplace-entry\)/u)
+    assert.match(ambiguous.stderr, /duplicate entry name "shared"/u)
+    assert.match(ambiguous.stderr, /\.claude-plugin\/marketplace\.json/u)
+    assert.match(ambiguous.stderr, /\.agents\/plugins\/marketplace\.json/u)
+    assert.equal(existsSync(box.lock), false)
+
+    // Each single-format entry still installs through the right dialect.
+    const claude = run(box, ['marketplace', 'install', 'claude-only', '--from', bothRoot])
+    assert.equal(claude.status, 0, claude.stderr)
+    const codex = run(box, ['marketplace', 'install', 'codex-only', '--from', bothRoot])
+    assert.equal(codex.status, 0, codex.stderr)
+    const records = readInstalls(box.lock).plugins
+    const claudeRecord = records.find((record) => record.name === 'claude-only')
+    const codexRecord = records.find((record) => record.name === 'codex-only')
+    assert.equal(claudeRecord.dialect, 'claude-code')
+    assert.equal(claudeRecord.source.marketplace, 'claude-side')
+    assert.equal(codexRecord.dialect, 'codex')
+    assert.equal(codexRecord.source.marketplace, 'codex-side')
+
+    // An explicit file is unambiguous: the same `shared` installs from the
+    // Claude catalog without a merge.
+    const explicit = sandbox()
+    try {
+      const fromFile = run(explicit, [
+        'marketplace',
+        'install',
+        'shared',
+        '--from',
+        join(bothRoot, '.claude-plugin', 'marketplace.json'),
+      ])
+      assert.equal(fromFile.status, 0, fromFile.stderr)
+      assert.equal(readInstalls(explicit.lock).plugins[0].dialect, 'claude-code')
+    } finally {
+      cleanup(explicit.dir)
+    }
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a Claude entry keeps a Codex policy field as a note, not an install policy', () => {
+  const box = sandbox()
+  try {
+    const root = join(box.dir, 'claude-policy')
+    writeCatalog(root, {
+      name: 'claude-policy',
+      plugins: [
+        {
+          name: 'hello',
+          source: './plugins/hello',
+          policy: { installation: 'NOT_AVAILABLE', authentication: 'ON_INSTALL' },
+        },
+      ],
+    })
+    const file = join(root, '.claude-plugin', 'marketplace.json')
+    const listed = run(box, ['marketplace', 'list', '--from', file])
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.doesNotMatch(listed.stdout, /policy:/u)
+    assert.match(listed.stdout, /note: entry "hello": field "policy" is not carried by this slice/u)
+
+    const parsed = parseMarketplace(readFileSync(file, 'utf8'), file)
+    assert.equal(parsed.entries[0].policy, undefined)
+    assert.match(parsed.notes[0], /field "policy" is not carried/u)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('a Claude entry name that differs from its manifest name is refused before any write', () => {
+  const box = sandbox()
+  try {
+    const root = join(box.dir, 'alias-catalog')
+    writeCatalog(root, { name: 'alias-marketplace', plugins: [{ name: 'alias', source: './plugins/hello' }] })
+    const file = join(root, '.claude-plugin', 'marketplace.json')
+    const refused = run(box, ['marketplace', 'install', 'alias', '--from', file])
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /refused \(name-mismatch\)/u)
+    assert.match(refused.stderr, /entry "alias" does not match the plugin its source declares/u)
+    assert.equal(existsSync(box.lock), false)
+    assert.equal(existsSync(box.userLayer), false)
+  } finally {
+    cleanup(box.dir)
+  }
+})
+
+test('parseMarketplace refuses a path it cannot classify, and accepts an explicit format', () => {
+  const text = JSON.stringify({ name: 'm', plugins: [] })
+  assert.throws(
+    () => parseMarketplace(text, 'whatever.json'),
+    (error) => error instanceof InstallCliError && error.code === 'unknown-marketplace-format',
+  )
+  assert.equal(parseMarketplace(text, 'whatever.json', 'claude').format, 'claude')
+  assert.equal(parseMarketplace(text, '.claude-plugin/marketplace.json').format, 'claude')
+  assert.equal(parseMarketplace(text, '.agents/plugins/marketplace.json').format, 'codex')
 })

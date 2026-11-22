@@ -44,12 +44,18 @@ export function splitSegments(command: string): string[] {
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index]
     if (quote !== null) {
+      if (char === '\\' && quote === '"' && index + 1 < command.length) {
+        if (command[index + 1] === '\n') {
+          // A backslash-newline is removed by the shell, not kept as data.
+          index += 1
+          continue
+        }
+        current += char + command[index + 1]
+        index += 1
+        continue
+      }
       current += char
       if (char === quote) quote = null
-      else if (char === '\\' && quote === '"' && index + 1 < command.length) {
-        current += command[index + 1]
-        index += 1
-      }
       continue
     }
     if (char === '"' || char === "'") {
@@ -58,6 +64,10 @@ export function splitSegments(command: string): string[] {
       continue
     }
     if (char === '\\' && index + 1 < command.length) {
+      if (command[index + 1] === '\n') {
+        index += 1
+        continue
+      }
       current += char + command[index + 1]
       index += 1
       continue
@@ -171,6 +181,8 @@ export function expansionHazard(command: string): string | undefined {
         continue
       }
       if (char === '\\') {
+        // A backslash-newline is a continuation; either way the escaped
+        // character is data, not syntax.
         index += 1
         continue
       }
@@ -187,6 +199,8 @@ export function expansionHazard(command: string): string | undefined {
       continue
     }
     if (char === '\\') {
+      // A backslash-newline is a continuation; either way the escaped
+      // character is data, not syntax.
       index += 1
       continue
     }
@@ -224,6 +238,11 @@ export function tokenize(segment: string): string[] {
         continue
       }
       if (char === '\\' && quote === '"' && index + 1 < segment.length) {
+        if (segment[index + 1] === '\n') {
+          // The shell removes a backslash-newline instead of making it data.
+          index += 1
+          continue
+        }
         current += segment[index + 1]
         index += 1
         started = true
@@ -239,6 +258,10 @@ export function tokenize(segment: string): string[] {
       continue
     }
     if (char === '\\' && index + 1 < segment.length) {
+      if (segment[index + 1] === '\n') {
+        index += 1
+        continue
+      }
       current += segment[index + 1]
       index += 1
       started = true

@@ -102,14 +102,14 @@ test('R14: a fake owner and a row for a missing fixture are both violations', ()
 
 test('R15: a count in a paragraph without an owning test is a violation', () => {
   const text = [
-    'The one number the project reports: **25 declared / 24 matched / 0 missing / 1 refused** rows',
+    'The one number the project reports: **27 declared / 26 matched / 0 missing / 1 refused** rows',
     'in the coverage ratchet (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
     '',
     'Across 14 absent members.',
     '',
     '| rows | owner |',
     '| --- | --- |',
-    '| 25 declared | `packages/dsh-anyplugin-conformance/test/coverage.test.mjs` |',
+    '| 27 declared | `packages/dsh-anyplugin-conformance/test/coverage.test.mjs` |',
   ].join('\n')
   const violations = countOwnerViolations(text)
   assert.equal(violations.length, 1)
@@ -119,7 +119,7 @@ test('R15: a count in a paragraph without an owning test is a violation', () => 
 })
 
 test('R15: a count whose paragraph names the test passes, and a heading is a claim too', () => {
-  const owned = 'The ratchet: 25 declared, see `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`.'
+  const owned = 'The ratchet: 27 declared, see `packages/dsh-anyplugin-conformance/test/coverage.test.mjs`.'
   assert.deepEqual(countOwnerViolations(owned), [])
   assert.equal(ownedCounts(owned), 1)
   const heading = countOwnerViolations('## 3 absent\n\nprose without a number\n')
@@ -185,12 +185,12 @@ test('R15: a JSON citation without a section cannot be read', () => {
 test('R15: a test owner must export EXPECTED_COUNTS with the claim key', () => {
   const path = 'packages/dsh-anyplugin-conformance/test/coverage.test.mjs'
   const owner = (body) => ({ ownerExists: () => true, readOwner: () => body })
-  const text = `The ratchet states 25 declared rows (\`${path}\`).`
-  assert.deepEqual(countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { declared: 25 }')), [])
+  const text = `The ratchet states 26 declared rows (\`${path}\`).`
+  assert.deepEqual(countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { declared: 26 }')), [])
 
   const stale = countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { declared: 24 }'))
   assert.equal(stale.length, 1)
-  assert.match(stale[0].message, /the doc says 25, .* EXPECTED_COUNTS\.declared says 24/u)
+  assert.match(stale[0].message, /the doc says 26, .* EXPECTED_COUNTS\.declared says 24/u)
 
   const missing = countOwnerViolations(text, owner('export const EXPECTED_COUNTS = { served: 25 }'))
   assert.match(missing[0].message, /has no `declared`/u)
@@ -262,7 +262,7 @@ test('R15: a mismatch reports the claim line, not the paragraph start', () => {
     'This paragraph starts here',
     'and runs for several lines',
     'before the claim appears:',
-    'the ratchet states 25 declared rows (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
+    'the ratchet states 26 declared rows (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
   ].join('\n')
   const violations = countOwnerViolations(text, {
     ownerExists: () => true,
@@ -270,7 +270,7 @@ test('R15: a mismatch reports the claim line, not the paragraph start', () => {
   })
   assert.equal(violations.length, 1)
   assert.equal(violations[0].line, 6)
-  assert.match(violations[0].message, /the doc says 25/u)
+  assert.match(violations[0].message, /the doc says 26/u)
 })
 
 test('R15: the noun after the number beats a table label', () => {
@@ -313,7 +313,7 @@ test('R15: fixture and test aliases are no longer advertised', () => {
     readOwner: () => 'export const EXPECTED_COUNTS = { rows: 11 }',
   }
   for (const text of [
-    'The ratchet has 11 fixtures (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
+    'The ratchet has 12 fixtures (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
     'The gate has 375 tests (`packages/dsh-anyplugin-conformance/test/coverage.test.mjs`).',
   ]) {
     assert.deepEqual(countOwnerViolations(text, options), [])

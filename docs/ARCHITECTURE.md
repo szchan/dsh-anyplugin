@@ -184,7 +184,8 @@ runtime from `installs.yml`.
 ### The optional panel (issue #147)
 
 The UI half is `packages/dsh-anyplugin-ui`, a separate artifact on purpose: the
-root tarball's 180 KiB budget (enforced by `check:pack`) cannot carry a browser bundle. It has two
+root tarball's 184 KiB budget (D65 supersedes the earlier number; enforced by
+`check:pack`) cannot carry a browser bundle. It has two
 halves that meet at a JSON route, not at a build step:
 
 - **server**: `apply(ctx)` registers `GET /anyplugin/installs` (a `webServer`
@@ -1513,12 +1514,22 @@ a push is accepted only as `git push [-u|--force-with-lease] origin <one
 refspec that is not main>`, so a destination of `main`/`master`, **every bare
 `git push`**, a wildcard or range refspec, and `--receive-pack`/`--exec` are
 refused (`remote.<name>.push` and `push.default` can retarget a bare push after
-it was read); `gh pr merge` from a worker only (the root may merge); writes
+it was read); every modelled `gh pr merge` that performs a merge must carry `--match-head-commit <40-hex>`
+(the root is the merge path; a worker may not merge at all), including when
+`-R`/`--repo` sits between `pr` and `merge` or a backslash-newline joins the
+words; a `gh api` request whose path is the live `…/pulls/<n>/merge` route is
+refused whatever the method, because it has no pin flag; `gh pr merge
+--disable-auto` (its true form) cancels an auto-merge and is allowed, while
+`--auto=false` and `--disable-auto=false` do not cancel it and still need the
+pin; a help request is not a
+merge (the rule is tested at the installed mount; it is dormant wherever
+`guard:status` reports not-installed, F1); writes
 outside the worker's recorded worktree, with the main checkout always
 protected; and `docs/DECISIONS.md` / `docs/decisions.lock.json` through
 anything but the sanctioned `node scripts/check-decisions.mjs --update`.
 "Recorded" is the operative word: the worktree comes from an explicit path in
-the spawn prompt or from a cwd that is itself a configured worktree. A branch
+the spawn prompt (an exact worktree, or a worktree a configured pattern
+matches) or from a cwd that is itself a configured worktree. A branch
 name in the prompt (the review prompt names the branch under review) never
 implies a path; with no recorded worktree a worker's writes are refused rather
 than checked against every configured worktree. The policy is a
@@ -1619,8 +1630,17 @@ from allowed tools, a root-run shell script, a root-written exec key that a host
 later runs, config already present in the repository or written by a process
 outside the guard (the guard models the tool call, not the filesystem),
 `sudo` on a host where it succeeds without a password, a launcher spelling the
-command-position skipper does not model, and any git feature outside the
-modelled subcommands. The guard decision is recorded on merge; this
+command-position skipper does not model, any git feature outside the
+modelled subcommands, a merge through a client the guard does not model
+(`curl`, a script, inline interpreters such as `node -e` and `python3 -c`, a
+`gh` alias or wrapper, a pre-existing git/client-side alias for a merge
+(`git config alias.pm '!gh pr merge --squash'; git pm 82`) — root-only, because
+the guard does not refuse unknown git subcommands for root, so this is named
+rather than closed — or a raw GraphQL `mergePullRequest`), and `--auto` with
+a valid pin (gh forwards the pin as `expectedHeadOid`; when GitHub evaluates it
+for a deferred merge is GitHub's behaviour, not the guard's). The merge rule is
+omission prevention, not review verification: the guard can see that a merge
+names a head, not that the head was the one the reviewer read. The guard decision is recorded on merge; this
 paragraph is its framing, not a second decision. Branch protection, the DSH
 file sandbox and CI are the boundary.
 
@@ -1649,13 +1669,63 @@ same block, prints it and runs the payload→verdict table through the same judg
 writing nothing; `guard:status` re-composes and compares (ignoring the state
 line), so a stale block is visible without loading the profile.
 
-The installer's target checkout is the caller's, not the script's: `--worktree`
-if given, else the git top level of the cwd, else the checkout the script lives
-in. A linked worktree shares its hooks directory with the main checkout, so a
-real install from one is refused before anything is written (the message names
-the checkout); `--dry-run` still works because it writes nothing. This is what
-keeps a review worktree from installing a hook into the checkout it is
-reviewing.
+The block's `worktrees` entry is a **pattern derived from the discovered ticket
+directories** (`/tmp/anyplugin-wt/ticket-*`), not a snapshot of the paths that
+existed when the install ran: a directory matching the pattern is admitted
+without reinstalling, and the pattern stays narrower than the parent directory,
+because one `*` substitutes exactly one directory name under the shared stem.
+The pattern is a **namespace matcher, not git-worktree attestation**: a
+directory a human or script creates under the shared stem is confinable even if
+git never registered it as a worktree. A literal `*` in a discovered path is
+refused at install rather than escaped: the block grammar reserves `*` for the
+one wildcard after a stem ending in `-`, and a literal read back as a pattern
+would confine a sibling the plan never named. Status reads a legacy exact entry
+whose path ends in `*` as that literal path, not as a pattern — unless it ends
+in exactly `-*`, which is indistinguishable from the grammar and is promoted
+(the namespace caveat above): `ticket*` and `ticket-**` stay literal, while a
+legacy `ticket-*` is the wildcard. A literal path is reported as stale when the
+worktree is gone. A live ticket path that contains a literal `*` makes status
+report `refused` with the path and the rename remedy, because reinstalling
+cannot make the entry readable. When the discovered paths do not share a
+parent and a name stem, the block keeps the exact list; then a single
+out-of-pattern ticket worktree makes the next install drop the pattern for
+*every* future worktree until the next install. `guard:status` reuses the
+installed pattern when composing, and it distinguishes `not-installed` from
+`installed-with-stale-paths`: a literal path in the block that no longer exists
+is reported by name, because the freshly composed block would silently drop it.
+
+The git directory is protected by identity, not by its name. A
+`--separate-git-dir` checkout keeps it in an arbitrary directory, a submodule
+keeps it in the superproject's `.git/modules/<name>`, and a linked worktree
+keeps it under `<common>/worktrees/<name>`; the derived pattern can match such
+a directory (a `sep-*` pattern also matches `sep-gitdir`). The install
+therefore writes the resolved common dir into `protectedRoots` when it differs
+from the main working tree, and into `gitDirectories` always. The policy
+refuses a worker write under either by the `git-dir-write` rule — a config or
+hook there runs as the next git command — while a root write is still allowed.
+The common dir contains every linked worktree's git dir, so a worktree created
+after the install stays covered without re-listing it or widening the block.
+
+The installer's root is the repository's **main checkout**, not the caller's:
+when `git rev-parse --path-format=absolute --git-dir` and `--git-common-dir`
+name the same path (an ordinary checkout, a submodule, a
+`--separate-git-dir` checkout) the root is the working tree from
+`--show-toplevel`; when they differ and the common dir is `<main>/.git`, its
+parent is the root. Every linked worktree is the case where the two paths
+differ, so a real install from one is refused before anything is written —
+git shares one hooks directory with the main checkout. A linked worktree of a
+submodule or a `--separate-git-dir` repository has no main working tree git
+can name (its common dir is not `<main>/.git`), so the refusal names the
+worktree and offers the main checkout or a scratch clone; a dry run from one
+composes from the invocation checkout and writes nothing. The guard's git calls
+use `--path-format=absolute` and therefore require git ≥ 2.31. A linked
+worktree is disposable, so the block must not name it — removing the worktree
+after a merge would make the composition point at a source path that no longer
+exists. `--worktree` names an extra worktree to include, or the one to put
+first in the printed table; it does not move the root. `--dry-run` writes
+nothing, and it is the check that names the main checkout from a review
+worktree. This is what keeps a review worktree from installing a hook into the
+checkout it is reviewing.
 
 ### Why dynamic packages cannot be the reconcile substrate
 
@@ -1717,9 +1787,17 @@ trusted child is still mounted. A refusal is a compile decision, not a loader
 failure, and is not reported as `failed`.
 
 The lifecycle CLI (`dsh-anyplugin install|list|enable|disable|uninstall`, plus
-`dsh-anyplugin marketplace list|install` over a local catalog; `npm run rig --`
-is the same surface in a checkout, and `lib/cli.js` is the package’s one `bin`)
-is a caller of this pipeline, not a second implementation. The conformance
+`dsh-anyplugin marketplace list|install` over a Claude or Codex catalog;
+`npm run rig --` is the same surface in a checkout, and `lib/cli.js` is the
+package’s one `bin`) is a caller of this pipeline, not a second implementation.
+The catalog path selects its parser — `.claude-plugin/marketplace.json` is the
+Claude shape and `.agents/plugins/marketplace.json` is the Codex shape — so an
+entry that does not match its file is a problem naming the field, never a
+lenient guess. `--from` may name a catalog file or a marketplace root; a root is
+looked up at both declared paths, and a root that carries both is merged for
+listing (`[claude-code]`/`[codex]` labels, every row naming its format) while a
+name declared in both is refused by `install` as ambiguous instead of the
+reader picking one. The conformance
 gates (`capture`, `verify`, `diff`, `trace`) stay checkout-only: the Claude
 oracle, the harness probe and the trace differ are lazy external modules, and
 the published bin refuses those commands by name instead of shipping the code.
@@ -2813,6 +2891,43 @@ sessions belongs to the client. Per D37 this licenses carrying the declaration
 nothing else: no materializer, no golden, and no fidelity class better than
 `planned` until a PTY run shows a monitor actually running.
 
+**Shipped (#159).** `readClaudePlugin` now reads the declaration from the
+manifest array, the manifest `"./"`-relative path string, or
+`monitors/monitors.json`, in that precedence order; the manifest key replaces
+the directory file rather than merging with it (re-probed at the pin: an
+inline-valid or path-valid manifest stays enabled even when
+`monitors/monitors.json` is bad, while a bad manifest form fails the install).
+The path-string form is a third shape the seven spike fixtures did not use:
+`"monitors": "./monitors/custom.json"` loads and validates that file; a string
+not starting with `"./"` is manifest-shaped and fatal; a target that is
+missing, a directory or unreadable is file-shaped and carried.
+The pinned client has two verdicts, and the dialect mirrors both. A
+**manifest-shaped** violation — `monitors` is not an array or a `"./"` string,
+or an inline entry fails the schema — makes the manifest invalid: the client
+refuses the plugin, `plugin details` lists nothing, and the dialect throws
+through the same `CompileReport` path a broken manifest takes, emitting
+nothing. A **file-shaped** violation — bad JSON or content in
+`monitors/monitors.json` or the `"./"` target, a duplicate `name`, or a target
+that is a directory or cannot be read — does not fail the plugin: `plugin list`
+reports `Status: ✘ loaded with errors` and prints the client's error, while
+`plugin details` still exits 0 and serves the plugin's other components. The
+dialect carries that declaration as one `unsupported` row — field path, cause
+and the client's own error text — and compiles the rest. A valid declaration
+remains one `planned` row (D37).
+
+The quoted text is captured, not written from memory: every entry in
+`MONITOR_CLIENT_TEXT` (`packages/dsh-anyplugin-dialect-claude-code/src/monitor-client-text.ts`)
+is a slice of a `claude --plugin-dir <shape> plugin list` line stored in
+`fixtures/claude-monitors-errors/observed/<shape>.txt` (29 shapes, scrubbed
+temp path, `PROVENANCE.md` names the pin); file-shaped shapes also store the
+client's `Status: ✘ loaded with errors` line beside the error. `scripts/capture-monitor-errors.mjs`
+regenerates the corpus, and `capture-monitor-errors.test.mjs` runs its
+`--check` mode against the resolved pinned CLI inside `npm run verify`, failing
+with the changed file's name. `monitors.test.mjs` asserts each rendered entry,
+and the status line, against the captured file exactly; manifest-shaped shapes
+print no `Status:` line, so none is invented for them. A pin bump therefore
+reddens the gate and produces a reviewable corpus diff.
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the
@@ -2908,6 +3023,16 @@ kernel would have to be rewritten — and would make mods structurally impossibl
     replaced (`tools/post-execute cannot replace the value of a failed
     result`), and a standalone `ctx.tools.execute` call carries no `agent`, so
     the payload's agent-derived fields are absent rather than invented.
+  - One guard rule rides this seam: a modelled `gh pr merge` that performs a
+    merge (including `-R`/`--repo` between `pr` and `merge`, a value flag that
+    could swallow the pin, and a backslash-newline continuation) is refused
+    unless it carries `--match-head-commit <40-hex>`; `--help` and
+    `--disable-auto` perform no merge. That is omission prevention, not review
+    verification — the guard can see that a merge names a head, not that the
+    head was the one the reviewer read. The installed block is loaded in
+    `guard.test.mjs` and denied/allowed through its `tools/pre-execute`
+    listener; the rule is dormant where `guard:status` reports not-installed
+    (F1).
   - Consequences: the hook arm maps to these waterfalls instead of
     `ctx.tools.guard` (guard is monotonic denial only, no result, no
     injection), the interception kernel's `observe` mode matches the waterfall

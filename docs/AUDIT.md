@@ -202,9 +202,10 @@ the highest-risk gaps. Cite file:line for every row.
 - Neither reviewer is the author. At least one has not touched the change.
 - The reviewers get the same brief; disagreement is signal, not noise.
 - A reviewer verdict is a PR comment from the bot account, with the
-  `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review. Once #163
-  lands, F12's merge rule pins the reviewed head; today that is policy, not a
-  guard check.
+  `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review. F12's
+  guard rule requires `--match-head-commit <40-hex>` on every modelled merge
+  (`--help` and `--disable-auto` perform none); that is omission prevention, not review verification, and it is
+  dormant on this machine until the guard is installed (F1).
 
 ## 7. Roles, and what "too broad" means
 
@@ -213,7 +214,7 @@ adds measurable caps:
 
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
-| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts (with a pinned head once #163 lands) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (dormant until the guard is installed, F1) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
 | auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, merge, close an issue or PR, approve its own PR; it proposes a decision and the master writes it | an audit PR that changes a mechanism without two reviewers, or one the auditor merged or closed itself |
@@ -454,14 +455,16 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F12",
       "title": "The master merges a head that was not the head reviewed",
       "mechanism": "hook",
-      "status": "open",
+      "status": "dormant",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "tracking": "#163",
-      "rationale": "Review verdicts are issue comments, not GitHub reviews, and the guard only denies gh pr merge to workers. A master can merge after new commits land. The proposed rule requires --match-head-commit for master merges; until it lands this is tracked, not prevented.",
+      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Dormant on this machine because the guard is not installed (F1); enforced on the modelled gh merge paths wherever the guard is installed, proven by guard.test.mjs. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
       "evidence": [
         "2026-11-22 evidence: 100 PRs, 99 merged; #89 11 comments",
-        "D47 residual holes"
-      ]
+        "guard:status not-installed; pre-push hook missing (F1/F2)",
+        "guard.test.mjs merge-pin matrix and installed-mount test; 123-row dry-run table"
+      ],
+      "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
     },
     {
       "id": "F13",

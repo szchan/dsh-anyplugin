@@ -1,0 +1,1 @@
+Error: monitors load failed from <plugin>/monitors/monitors.json: [ { ”origin”: ”string”, ”code”: ”too_small”, ”minimum”: 1, ”inclusive”: true, ”path”: [ 0, ”name” ], ”message”: ”Too small: expected string to have >=1 characters” } ]

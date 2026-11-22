@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-only",
+  "version": "0.1.0",
+  "description": "Hand-authored Codex plugin in the both-formats fixture."
+}

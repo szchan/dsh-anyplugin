@@ -15,7 +15,6 @@
       "name": "remote-helper",
       "description": "Lives in a git repository the local slice must not fetch.",
       "category": "testing",
-      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "source": {
         "source": "url",
         "url": "https://example.invalid/remote-helper.git"

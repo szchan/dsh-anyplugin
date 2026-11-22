@@ -1,0 +1,8 @@
+[
+  {
+    "name": "beat",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/monitor.mjs\" beat",
+    "description": "Emit a heartbeat line while the gated skill is in use.",
+    "when": "on-skill-invoke:greet"
+  }
+]

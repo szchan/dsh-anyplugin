@@ -2921,3 +2921,144 @@ outside the repository and a fresh checkout recreates it. The guard's push rule
 is `dormant` until the pre-push hook is installed (F1/F2), and the merge-head pin
 (#163) and structured denial log (#164) remain open. The first baseline is
 `docs/audits/2026-11-22.md`.
+
+## D64 — A monitors declaration the client rejects is loaded with an error, not fatal
+
+**Status:** ratified 2026-11-22 (#159, S22).
+
+At `claude-code@2.1.329` the client's verdict on a `monitors` declaration depends
+on **where the declaration lives**, not only on its shape, and this layer mirrors
+that split instead of averaging it:
+
+- A **manifest-shaped** violation — an invalid entry in the inline `monitors`
+  array, a `monitors` value that is not an array, or a path string that does not
+  start with `"./"` — makes the manifest invalid: the plugin is not loaded and
+  `plugin details` does not list it. We keep the fatal `CompileReport` path and
+  emit nothing.
+- A **file-shaped** violation — bad JSON or an invalid entry in
+  `monitors/monitors.json` (or in a `"./"`-declared file), a duplicate monitor
+  name, or a `"./"` target that is missing, is not a regular file, or is
+  unreadable — is printed by `claude plugin list` as `Status: ✘ loaded with
+  errors`, while the plugin stays registered and `plugin details` still serves
+  its other components (`fixtures/claude-monitors-bad-key` lists
+  `Skills (1) innocent`). We therefore compile the plugin, emit its siblings,
+  and carry the declaration as one `unsupported` row. The marketplace load path
+  printed `Status: ✘ failed to load` for the same declarations; the two paths
+  diverge at this pin, this layer mirrors the directory path that
+  `rig install <dir>` corresponds to, and the carried reason states the
+  divergence.
+
+Precedence and validation: the manifest `monitors` key (array or `"./"`-relative
+path) overrides `monitors/monitors.json` entirely; a missing file, a plain
+`monitors` file, or ENOENT/ENOTDIR counts as no declaration; names are unique and
+case-sensitive; `name`, `command` and `description` are non-empty strings; `when`
+is `always` or `on-skill-invoke:<name>` with a non-empty name; unknown keys are
+rejected. A valid declaration stays one `planned` row and is carried, never
+materialized (D37, S22: the client validates it and never runs it headless).
+
+Every quoted client string, including the `plugin list` status, comes from
+`MONITOR_CLIENT_TEXT`, generated from `fixtures/claude-monitors-errors/observed/`
+by `scripts/capture-monitor-errors.mjs` at the pin. File-shaped shapes also
+capture the `Status: ✘ loaded with errors` line; manifest-shaped shapes print no
+status line, so none is invented or quoted for them. The tests compare the
+emitted row with the captured files exactly, including the client's typographic
+quotes, and reject our own fs codes and Node position details. `capture-monitor-errors.mjs
+--check` rebuilds the corpus and diffs it byte-for-byte inside `npm run verify`,
+so a pin bump that rewords the client reddens the gate with the changed file's
+name and produces a reviewable corpus diff instead of a silent drift.
+
+**Consequences.** A rejected declaration no longer fails a plugin the client
+still serves; the price is that "the plugin loaded" and "its monitors work" are
+now separate claims, and only the first is observable. R14 checks that the named
+owner test file exists, not that the test reads the fixture — deleting
+`monitors.test.mjs` produces the expected violations, but the link is
+file-existence, not semantics. The runtime notification channel a monitor would
+feed is still open in `docs/TODO.md`; that is a product decision, not a fidelity
+gap, because there is no observable spawn target at the pin.
+## D65 — The marketplace catalog's path selects its parser; the Claude and Codex entry shapes never mix
+
+**Decided 2026-11-22** (#161, #167). Claude's `.claude-plugin/marketplace.json`
+and Codex's `.agents/plugins/marketplace.json` look alike and are not the
+same catalog.
+
+1. The format comes from the catalog path, never from sniffing the document.
+   `.claude-plugin/marketplace.json` parses as Claude and
+   `.agents/plugins/marketplace.json` as Codex; an entry that disagrees with
+   its file's shape is a problem naming the field. `parseMarketplace` takes an
+   explicit format for unit callers only.
+2. Codex `policy` and `category` are required per entry. On a Claude entry
+   `policy` is a note. `policy.installation` is required but its value is a
+   hint: only `NOT_AVAILABLE` is refused, before the source is resolved and
+   before a copy.
+3. `--from` takes a catalog file or a root. A root is looked up at both paths;
+   when both exist they are merged for listing, each row names its format, and
+   the format selects the install dialect unless `--dialect` overrides. A name
+   declared in both is `ambiguous-marketplace-entry`; the reader never picks
+   the first.
+4. Every install passes the catalog name as `installPlugin`'s `name`
+   assertion, so a catalog/artifact disagreement is `name-mismatch` before any
+   write. A fetched artifact is checked against **the manifest the selected
+   dialect reads**, resolved the way the reader resolves it: the first existing
+   dialect manifest, its non-empty `name`, else the directory basename; a
+   shadowed manifest is never read. Dialect and version refusals are install-time
+   decisions and may leave the artifact cached; the pre-commit check covers the
+   name mismatch. No catalog is `marketplace-not-found`; an existing file at
+   neither path is `unknown-marketplace-format`.
+5. The Codex page is the authority (no offline Codex client);
+   `fixtures/marketplace-codex/PROVENANCE.md` records the URL and read date.
+   D33 covers the portable plugin manifest and is silent on this file.
+6. Remote `url`/`git-subdir`/`npm` entries keep D53 unchanged: `list` makes no
+   network call, `install` needs the network grant, pins the resolved content
+   address, and refuses a moved pin until `--yes`.
+
+**Consequences.** Codex `ref`/`sha` and a named `registry` are typed refusals:
+supporting either is a new fetch kind under D53, not a parser change. The shipped
+CLI grows to 182.0 KiB compressed, so **D59's 180 KiB ceiling moves to 184 KiB**
+(`check:pack` enforces it). D59's text stays as the historical record — the log
+is append-only — so the new number lives here.
+
+---
+
+## D66 — A modelled merge must name the reviewed head, and the pin is what makes omission visible
+
+**Decided 2026-11-22** (#163, #171). The guard's push rules made the root's
+merge path the one action a worker could not take, but a root merge could omit
+the head entirely, leaving GitHub nothing to check.
+
+1. Every modelled `gh pr merge` must carry `--match-head-commit <40-hex>`, for
+   every role. A bare merge, `--auto` without a pin, a short (7-character) or
+   41-character sha, a non-hex 40-character value, a flag with no value, and a
+   flag hidden after `--` are refused before the tool runs. Workers remain
+   refused outright by `gh-pr-merge-worker`; `gh-pr-merge-pin` is the root-facing
+   check and sits before the unconditional root allow.
+2. **The pin prevents omission; it is not review verification.** The guard can
+   see that a merge names a head; it cannot know that head was the one a
+   reviewer read. GitHub refuses a moved head when the pin is the reviewed sha,
+   which is the value added — a merge cannot silently skip the check.
+3. A pin cannot be smuggled or swallowed. A URL fragment or query keeps the raw
+   `gh api …/pulls/<n>/merge` route live, so **any** method, query or fragment
+   on that path is refused — a raw `gh api` can never carry the pin. The value
+   flags `-b/--body`, `-F/--body-file`, `-t/--subject`, `-A/--author-email`
+   and `-R/--repo` consume their values (both the long and short sets), so a
+   pin-shaped token in value position is not a pin. `gh pr -R o/r merge` is
+   judged as a merge, and a backslash-newline cannot split `gh pr \` / `merge`
+   or `m\` / `ain`.
+4. Two false positives are explicitly exempt: `gh pr merge --help` performs no
+   merge, and for the root `--disable-auto` / `--disable-auto=true` cancels
+   auto-merge rather than merging. Their merging forms (`--disable-auto=false`,
+   `--auto=false`) still require the pin.
+5. The status of finding F12 is **dormant**: the mechanism is implemented and
+   tested, and it is enforced on the modelled merge paths wherever the guard is
+   installed, but the guard is not installed on this machine (F1). Installation
+   is a separate step, not part of this decision.
+
+**Consequences.** This amends D47's rule table (109 rows to 123) and supersedes
+D63's "the merge-head pin (#163) remains open" sentence. Named residuals, none
+closed here: `curl` and other non-gh clients, a root-run script, inline
+interpreters (`node -e`, `python3 -c`), a `gh` alias or wrapper, **a
+pre-existing git alias** (`git config alias.pm '!gh pr merge --squash'; git pm 82`
+— root-only, named rather than refused), raw GraphQL `mergePullRequest`, and
+GitHub's own deferred evaluation of `--auto` even with a valid pin.
+
+---
+
