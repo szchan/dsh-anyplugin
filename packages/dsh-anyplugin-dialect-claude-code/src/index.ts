@@ -1245,11 +1245,49 @@ function readMcp(root: string, plugin: string): {
       },
     })
   }
+  return { servers, pending, unsupported }
+}
+
+/**
+ * Why `bin/` is `planned`, not `unsupported`.
+ *
+ * S19 measured that the managed environment cannot carry it: `dsh-shell-env`
+ * accepts declared `DSH_*` keys only, and the model-facing shell tools send
+ * only that overlay, with no `env` parameter. But the surface is expressible
+ * without a core change: a `tools/pre-execute` listener can rewrite the bash
+ * command before dispatch (this repository's classic-hook materializer does
+ * exactly that for `updatedInput`, packages/dsh-anyplugin-materialize-hook/
+ * src/index.ts:224-257, applied at :1716). That route diverges, so it is
+ * declined for now rather than shipped silently:
+ *
+ * - the rewritten command is the `tool_input` later hooks and the hook trace
+ *   see, so the plugin's PATH prefix becomes part of the observed call, while
+ *   the session transcript still carries the model's original;
+ * - PowerShell syntax differs, so one rewrite grammar cannot serve both tools;
+ * - Claude appends plugin bins after the user's entries; a rewrite has to make
+ *   that ordering decision itself, and a prepend would win where Claude loses.
+ *
+ * What remains is the union-only PATH contribution proposed in docs/TODO.md.
+ * Exec classification (D25) already pins the files; this row claims only that
+ * the surface is expressible, not that it is carried.
+ */
+const BIN_REASON =
+  'bin/ needs the model shell PATH. The managed environment cannot supply it: at 0.2.2-rc.5 and 0.2.2-rc.2 on Linux, dsh-shell-env accepts declared DSH_* keys only (register() throws `bash env contributor "s19-path" declared invalid key "PATH"`) and refuses an undeclared key at resolve with SHELL_ENV_CONTRIBUTION_INVALID; the model-facing bash and pwsh tools (pwsh was source-read only on Linux) send only that overlay and expose no env parameter. ' +
+  'It is expressible only as a per-call rewrite through the tools/pre-execute seam (packages/dsh-anyplugin-materialize-hook/src/index.ts:224-257 rewrites exec.arguments before next()), which we decline for now because it diverges: later hooks and the hook trace see the rewritten command as tool_input, while the session transcript still carries the model\'s original; pwsh syntax differs, and Claude\'s rule that plugin bins follow the user\'s entries becomes an ordering choice inside the rewrite. ' +
+  'Planned for the union-only PATH contribution proposed in docs/TODO.md.'
+
+/**
+ * Surfaces that exist only as a fixed file or a directory and have no
+ * materializer at the pin. This is read next to the other surface readers, not
+ * inside `readMcp()`: when it lived there, a plugin with `themes/` (or, now,
+ * `bin/`) but no `.mcp.json` returned early and reported nothing at all.
+ */
+function readOptionalSurfaces(root: string): IrUnmaterialized[] {
+  const pending: IrUnmaterialized[] = []
   for (const [surface, dir, reason] of [
     ['lspServers', '.lsp.json', 'LSP server registration needs a DSH LSP seam; not shipped in the Desktop bundle.'],
     ['themes', 'themes', 'Terminal colour palettes have no DSH palette seam yet (F2); planned for v0.4.'],
     ['workflows', 'workflows', 'Workflow scripts are close to dsh-tool-workflow but the agent()/pipeline() contract differs; planned for v0.4.'],
-    ['bin', 'bin', 'bin/ must join the model shell PATH; dsh-shell-env only manages DSH_* keys (ARCHITECTURE §9). Planned for v0.3.'],
     ['monitors', 'monitors', 'Monitors need a channel from a background process stdout into the model context; planned for v0.4.'],
   ] as const) {
     const abs = join(root, dir)
@@ -1261,7 +1299,15 @@ function readMcp(root: string, plugin: string): {
       annotation: { fidelity: 'planned', reason },
     })
   }
-  return { servers, pending, unsupported }
+  if (existsSync(join(root, 'bin'))) {
+    pending.push({
+      surface: 'bin',
+      name: 'bin',
+      sourcePath: 'bin',
+      annotation: { fidelity: 'planned', reason: BIN_REASON },
+    })
+  }
+  return pending
 }
 
 /**
@@ -1378,8 +1424,9 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const { mods, pending: modPending } = readMods(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)
   const { styles: outputStyles, pending: stylePending } = readOutputStyles(root)
+  const surfacePending = readOptionalSurfaces(root)
 
-  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...stylePending]
+  const pending: IrUnmaterialized[] = [...skillPending, ...hookPending, ...modPending, ...mcpPending, ...surfacePending, ...stylePending]
   const unsupported: IrUnmaterialized[] = [...skillUnsupported, ...agentUnsupported, ...mcpUnsupported]
 
   for (const key of ['commands', 'skills', 'agents', 'hooks', 'mcpServers'] as const) {

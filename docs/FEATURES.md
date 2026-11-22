@@ -38,7 +38,8 @@ it.
 | Claude MCP servers | `.mcp.json`, stdio + streamable HTTP | `equivalent` (tools/names/schemas byte-level; no reconnection policy) | `packages/dsh-anyplugin-materialize-mcp/src/index.ts`, D11/D12 |
 | Claude hooks | `hooks/hooks.json` command handlers | `equivalent` for routed events, `planned` otherwise | `packages/dsh-anyplugin-hook-runner/src/index.ts`, `packages/dsh-anyplugin-materialize-hook/src/index.ts`, D19/D20/D35 |
 | Claude output styles | `output-styles/<n>.md` | `equivalent` activation face / `planned` command face (row stays `planned`; carried byte-for-byte) | `fixtures/claude-output-styles`, `fixtures/claude-output-styles-activation`, D29/D37 |
-| Claude bin / monitors / themes | `bin/`, `monitors/`, `themes/` | `planned` (no host seam yet) | `docs/TODO.md` upstream proposals |
+| Claude bin | `bin/` | `planned` (managed env refuses `PATH`; only a divergent per-call rewrite — S19) | `spikes/s19-path/run.mjs`, `docs/ARCHITECTURE.md` §10 S19, D25 |
+| Claude monitors / themes | `monitors/`, `themes/` | `planned` (no host seam yet) | `docs/TODO.md` upstream proposals |
 | Codex portable plugins | `plugin.json` 1.0.0 + `skills/` + `mcp.json` | `equivalent` installs and runs (no upstream oracle; fixtures are the spec) | `packages/dsh-anyplugin-dialect-codex/src/index.ts`, `packages/dsh-anyplugin-install/src/compile.ts`, D33 |
 
 ## 3. Kernel path — Claude mod API → DSH mod host

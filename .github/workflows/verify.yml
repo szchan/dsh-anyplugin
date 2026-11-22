@@ -252,6 +252,32 @@ jobs:
           fi
           npm run spike:s16
 
+      # S19 answers issue #131: whether a plugin bin/ can reach the model shell
+      # PATH. It is a spike, so 19/19 checks are required at both pins; the
+      # shell-env and shell-tool packages it boots are in the fetched union.
+      - name: S19 PATH spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S19 spike would skip"
+            exit 1
+          fi
+          npm run spike:s19
+      - name: S19 PATH spike (rc.2)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc2 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.2
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.2; the S19 spike would skip"
+            exit 1
+          fi
+          npm run spike:s19
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed

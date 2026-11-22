@@ -1418,7 +1418,7 @@ run degraded *by design*.
 | MCP client | package present | whole `mcp` node unsupported |
 | subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
-| shell env PATH | non-`DSH_*` key accepted | `bin` unsupported |
+| shell env PATH | managed-env `register()` accepts a `PATH` key (S19: it does not) | `bin` planned: no managed-env contribution; only a divergent per-call `tools/pre-execute` rewrite |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | `theme` unsupported (F2) |
 | dynamic package runner | present | `planned`/`mod` unavailable as well |
@@ -2000,7 +2000,7 @@ oracle.
   weights.
 
 Fixtures: skills-only; hook-heavy (blocking + injection); MCP + commands;
-agents + bin + theme.
+agents + theme. `bin/` is a `planned` annotation row (S19), not a fixture.
 
 ### 10.5 S15 result: what the five pinned mods demand on one real turn
 
@@ -2399,6 +2399,96 @@ per-version assertions fail and D54 must be revisited rather than silently
 kept.
 
 
+### S19 — a plugin `bin/` reaches the model shell PATH only through a per-call rewrite
+
+**Question.** Claude Code appends `<plugin>/bin` to the PATH of the shell its
+model calls, after the user's own entries. Does a plugin `bin/` reach DSH's
+model shell PATH without a core change — and if not, what exactly can carry it?
+
+**Method.** `spikes/s19-path/run.mjs`, 19 checks. Nine read the installed source
+at the pin (the registry API and its validation, both model-facing shell tools,
+the local executor's env merge, the scrub). Ten boot the primitives the oracle's
+tool probes boot — `SessionStore`, `SessionProjections`, `SystemPrompt`,
+`ToolsService`, `dsh-tool-executor-native`, `dsh-fs-local`, `WorkingDirectory`,
+`ShellEnv`, `dsh-subprocess-local`, `dsh-bash-local`, `dsh-tool-bash` — and call
+`bash` the way the model does: a `tool-call` batch through
+`ctx.tools.execute`, never `process.env` directly. A probe contributor is the
+positive control (a registered `DSH_*` value must be visible in the child);
+then `PATH` is declared, then smuggled from `resolve()`; then a probe `bin/` with
+`probecmd` and `ls` is exercised by bare name; then a synthetic
+`tools/pre-execute` listener rewrites the `bash` command to prepend that bin,
+which proves the per-call route runs a command and that disposing the listener
+returns the call to 127. The spike never mutates `process.env.PATH` — the gate
+in issue #131; the scrub check sets and restores three ordinary names, never
+`PATH`. Run at both pins, each in CI:
+
+```
+DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 DSH_HARNESS_VERSION=0.2.2-rc.5 \
+  node spikes/s19-path/run.mjs
+```
+
+**Answer (pinned `0.2.2-rc.5` and `0.2.2-rc.2`, 19/19 checks each).** Not
+through the managed environment. The only registration API is
+`ctx.shellEnv.register(contributor)` (`dsh-shell-env/src/index.ts:122`), and its
+key grammar is `DSH_` plus `/^[A-Z][A-Z0-9_]*$/` (`:91`), checked at
+registration (`:133-135`); the key type is a compile-time template,
+``DshEnvironmentKey = `DSH_${string}` `` (`dsh-subprocess/src/types.ts:16`).
+Declaring `PATH` throws, verbatim, `bash env contributor "s19-path" declared
+invalid key "PATH"`. A resolver that declares `DSH_S19_SMUGGLE` but returns
+`PATH` is refused inside the model call with `bash env contributor "s19-smuggle"
+returned undeclared key "PATH"`, `ShellEnvError` code
+`SHELL_ENV_CONTRIBUTION_INVALID` (`:188`). The model-facing tools send only the
+collected overlay (`dsh-tool-bash/src/index.ts:515-521`,
+`dsh-tool-pwsh/src/index.ts:542`) and expose no `env` parameter — the bash
+schema offers `description`, `command`, `timeoutMs`, `workdir`, and an `env`
+member added to the arguments is ignored. The child environment is
+`{ ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv }`
+(`dsh-bash-local/src/index.ts:172`) over `scrubbedParentEnv()`
+(`dsh-subprocess-local/src/spawn.ts:45-46`), which keeps `PATH` from the harness
+process (`dsh-subprocess/src/index.ts:76`). Measured on the model side: `$PATH`
+is byte-equal to `process.env.PATH`; `DSH_S19_PROBE=hello-s19` from a registered
+contributor **is** visible (so the registry is applied to real calls); the probe
+bin is absent from every PATH entry, `probecmd` exits 127 "not found", and a
+probe file named `ls` does not shadow `/nix/store/…-coreutils-9.12/bin/ls`.
+
+But `bin/` is not `unsupported`: a second host path exists and S19 exercises
+it. `tools/pre-execute` runs before dispatch with the execution object, and a
+listener may replace `exec.arguments`; the pipeline freezes the argument
+*value*, not the execution object (`dsh-tools/src/pipeline.ts:154-158`). This
+repository already relies on that for `updatedInput`
+(`packages/dsh-anyplugin-materialize-hook/src/index.ts:224-257`, applied at
+`:1716`), and the conformance test `a classic command hook updatedInput follows
+the same chain rewrite`
+(`packages/dsh-anyplugin-conformance/test/mods.test.mjs:371`) proves a rewritten
+command reaches the bash tool at both pins. The spike's rewrite check does the
+same with a synthetic listener: it prepends the probe bin to the `bash`
+command, `probecmd` runs (exit 0), and disposing the listener returns the call
+to 127. So the surface is expressible without a core change.
+
+It is still `planned`, not `equivalent`, because that route diverges and we
+decline it for now. Later hooks and the hook trace see the rewritten command as
+`tool_input`; the session transcript still carries the model's original
+(`packages/dsh-anyplugin-conformance/test/mods.test.mjs:591-635` asserts
+`use.input` is `{ command: 'ls' }`). pwsh syntax differs, so one rewrite grammar
+cannot serve both shells; and Claude's "plugin bins after the user's entries"
+ordering becomes a choice inside the rewrite — a prepend wins where Claude
+loses. The dialect reason names both measured refusals and these divergences. The union-only PATH contribution in `docs/TODO.md` is the shape
+that would make the row `equivalent` without them; until it lands, the row
+stays `planned`. Exec classification is unchanged: D25 pins `bin` files and the
+grant shows the command line; nothing here injects a PATH silently.
+
+**What this does not prove.** The rewrite check proves a command runs under a
+listener that prepends the probe bin; it does not reproduce Claude's ordering,
+and S19 does not ship that listener. The transcript statement rests on the
+conformance test at `packages/dsh-anyplugin-conformance/test/mods.test.mjs:591-635`
+(the stored `use.input` is the model's original), not on a new spike check.
+pwsh was source-read only on Linux, never booted, so its rewrite grammar is an
+argument from its source, not a measurement. A future PATH contribution must
+append after the inherited entries rather than prepend, and the row moves to
+`equivalent` only with a probe of that order. It also does not prove the
+proposal in `docs/TODO.md` is the right shape.
+
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the
@@ -2417,7 +2507,7 @@ kept.
 | --- | --- |
 | v0.1 | S1 + S3 rig; **`dsh-anyplugin-intercept` skeleton**; skills + commands materializers; Claude Code dialect read-only; fidelity report |
 | v0.2 | MCP; classic hooks on the shared kernel (command handler, event subset); exec trust grants; project/user scope |
-| v0.3 | Codex dialect via portable IR; LSP; output-styles (body carried in the IR; activation waits on D10's command alias, at-start provenance and the `keep-coding-instructions` rule); bin |
+| v0.3 | Codex dialect via portable IR; LSP; output-styles (body carried in the IR; activation waits on D10's command alias, at-start provenance and the `keep-coding-instructions` rule); bin (planned: needs the union-only PATH contribution; the per-call rewrite is declined in S19) |
 | v0.4 | agents (per-agent tools or prompt template); themes (F2 ANSI seam); monitors; workflows |
 | v0.5 | `dsh-mod-host` alpha: static scanner + chain engine + fs/store/http/session bridges + `AbovePrompt` render site |
 | v0.6 | mod host beta: headless element sink (#75: validated trees recorded, panes served, one reader tool), drawing + redraw scheduler, guard layer (sec-default equivalent) |
