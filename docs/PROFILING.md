@@ -8,17 +8,23 @@ machine you are sitting at.
 
 A regression is **a ratio against the base, not a millisecond count**. The
 stopwatch is only there to produce the numerator and the denominator; the
-number a reviewer reads is `head/base`, where `< 1.00` is faster. A standalone
+number a reviewer reads is the median of the per-pair `head/base` ratios,
+where `< 1.00` is faster. The pair, not a side's median, is the unit: a burst
+that slows one side also slows the boot or sample measured next to it, so it
+mostly cancels inside the pair instead of becoming a regression.
+
+`--check` gates **P1, P3 and P4**. **P2 is informational** — its five-run
+stability evidence is below — and **P5 is informational**. A standalone
 millisecond figure is not comparable to a number measured in another process,
 on another machine, or at another commit, so the tool never presents one as a
-claim — P5 says `informational` in both output modes for the same reason.
+claim.
 
 ```bash
 npm run perf                                   # base origin/main, 5 samples, table
 npm run perf -- --base HEAD~1 --repeat 7       # a different base, more samples
 npm run perf -- --json                         # the same report as JSON
 npm run perf -- --quiet                        # JSON on stdout, nothing else
-npm run perf -- --check --threshold 1.5        # local gate; exit 1 above 1.5x
+npm run perf -- --check --threshold 1.5        # gate P1/P3/P4; exit 1 above 1.5x
 ```
 
 `perf` is **not** wired into `verify` or CI, and `--check` is not called by any
@@ -66,9 +72,9 @@ The base is measured in a detached `git worktree` at the base commit:
    `[base, head]` and `[head, base]`. Each side keeps its own module graph and
    its own `vm` contexts; because the two halves of a pair are adjacent in
    time, a drift in the host's load cancels inside the pair instead of being
-   reported as a ratio. P2 boots the two sides in separate children (two
-   hosts in one process would fight over the DSH globals) and runs two passes
-   in opposite order, merging their samples for the same reason;
+   reported as a ratio. P2 does the same in one child per pin: it boots the
+   base side and the head side as a pair, alternating which side goes first,
+   and reports the median of the per-pair ratios;
 6. the worktree and the scratch home are removed in a `finally`.
 
 Everything the runner needs for itself — worktree creation, dependency sharing,
@@ -83,8 +89,8 @@ only timed regions are the four numbered `performance.now()` spans below.
 (`$ANYPLUGIN_MODS_TREE/mods/diff/hooks/register.ts`). This is the kernel's
 slowest single unit: link, type-strip and evaluate a foreign module in a fresh
 `vm` context. Every sample creates a fresh context. One warmup per side is
-discarded; the report's median is over `2 × --repeat` samples per side (the
-paired halves of the run). After the stopwatch closes, the probe asserts the pinned
+discarded; the report's ratio is the median of `2 × --repeat` per-pair ratios
+(two samples per side per pair). After the stopwatch closes, the probe asserts the pinned
 registration count from `fixtures/mods/upstream.json` (11 for `diff`) and
 disposes the mod.
 
@@ -97,17 +103,19 @@ The host's own profile loader boots a scratch profile with **one installed
 plugin** (`fixtures/claude-skills-only`), and the controller reconciles it from
 `installs.yml`. This is measured **once per DSH pin declared in
 `engines.dsh`** that is fetched next to `DSH_HARNESS_DIR`; a declared pin that
-is not fetched is a note without `--check` and a failure with it.
+is not fetched is a note naming the fetch command, either way.
 
 Outside the timed region: scratch home, `installPlugin()` (writes
 `installs.yml` + `enabled.yml`), `appBoot.initProfile()`, the
 `<profile>/node_modules/dsh-anyplugin → <side root>` symlink, and
 `appBoot.loadProfile()`. The timed region is `mountProfile()`: the harness
 boot, the profile's plugin activation, module loading from the side's `lib/`,
-and the controller's reconcile pass. A warmup boot is discarded; each sample
-uses a fresh profile directory and disposes the context afterwards. Two passes
-run in opposite order and their boots are merged, so the median is over
-`2 × --repeat` boots per pin.
+and the controller's reconcile pass. A full warm-up pair (one boot per side,
+both discarded) runs first. Each repeat then boots the base side and the head
+side **as a pair**, adjacent in time and with the order alternating; each boot
+uses a fresh profile directory and disposes its context afterwards. The
+reported ratio is the median of the per-pair ratios; the per-side medians next
+to it are descriptive, not the ratio.
 
 After the stopwatch closes, P2 asserts:
 
@@ -128,6 +136,24 @@ that the reconcile ran, and the group is active, is the honest one.
 
 The probe records which host path the boot took (`PluginPackages` or the
 scope-link fallback) so the JSON report says how the plugin was found.
+
+P2 is **informational, not gated**. The bar a gated probe must hold is every
+ratio inside 0.85–1.18 over five consecutive `--base HEAD --repeat 5` runs on
+identical code. Five such runs produced:
+
+| pin | ratios from the five runs |
+| --- | --- |
+| rc.2 | 0.906, 0.928, 0.933, 0.966, 1.021 |
+| rc.5 | 0.958, 1.011, 1.021, 1.073, 1.193 |
+
+rc.2 holds. rc.5 misses the bar once (1.193). Individual paired boots still
+swing from ~21 ms to ~36 ms when a GC or another agent's build lands inside
+one, and a pair cannot cancel a pause that hits only one side. Gating at 1.5
+would therefore let a real 1.5x boot regression pass whenever that noise lands
+on the head side — which is exactly what the merged-block design did before
+pairing: reviewer-perf measured 0.59x and 1.02x back to back on identical code.
+The threshold is not widened to hide that; P2 is printed and `--check` does not
+read it.
 
 ### P3 — interception
 
@@ -198,40 +224,42 @@ slower", so it is stamped `informational` in the table and the JSON, and
 
 ## Variance: what to expect, and what a ratio means
 
-The report's median is over `2 × --repeat` samples per side, and the base and
-head halves of a pair are measured back to back. That pairing is not cosmetic.
-Before it, the harness measured the base in one block and the head in the next.
-On identical code (that is, with every ratio a noise control) that produced
-0.93x–1.01x on P1 and 1.01x–1.08x on P3 at a quiet moment, but 1.20x/1.51x and
-then 1.74x/1.73x when the host was busy; merely alternating whole-side blocks
-still produced 1.89x on P3. The machine's load trajectory had become the
-regression.
+A ratio is the median of per-pair `head/base` values, and the two halves of a
+pair run back to back. On identical code — every ratio a noise control — that
+is the number to expect around 1.00.
 
-With the paired measurement, on the same busy host and the same commit:
+Before pairing, the harness measured the base in one block and the head in the
+next. On identical code that produced 1.20x/1.51x and then 1.74x/1.73x on
+P1/P3 while the host was busy; even alternating whole-side blocks still
+produced 1.89x on P3. The machine's load trajectory had become the regression.
 
-| probe | run 1 ratio | run 2 ratio | base median, run 1 → run 2 |
-| --- | --- | --- | --- |
-| P1 | 1.02x | 1.08x | 416.1 → 247.9 ms |
-| P2 rc.2 | 1.06x | 1.05x | 50.0 → 27.0 ms |
-| P2 rc.5 | 1.01x | 1.03x | 49.6 → 25.1 ms |
-| P3 | 0.98x | 0.98x | 9.90 → 5.90 µs |
-| P4 | 1.01x | 1.01x | 186.3 → 115.8 ms |
+Five consecutive `--base HEAD --repeat 5` runs after pairing, on the same busy
+host and the same commit:
 
-The ratio agreed within ~6 % on P1 and exactly on P3, while the absolute
-medians still moved by ~40 % because the two runs happened at different
-moments. A third run under heavier load (P1 base median 675.9 ms, three times
-the second run) gave 1.05x and 1.12x: pairing removes the drift between the two
-halves, not every burst. That is the point: a base/head ratio survives a busy machine; a
-millisecond count does not. So:
+| probe | the five ratios | gated by `--check`? |
+| --- | --- | --- |
+| P1 | 1.077, 1.011, 1.033, 1.014, 1.025 | yes |
+| P3 | 0.924, 0.967, 0.944, 0.965, 0.987 | yes |
+| P4 | 1.025, 0.990, 0.994, 1.005, 0.990 | yes |
+| P2 rc.2 | 1.021, 0.966, 0.928, 0.933, 0.906 | no — informational |
+| P2 rc.5 | 1.073, 0.958, 1.021, 1.193, 1.011 | no — informational |
 
-- a ratio of 0.9–1.1 is noise; do not open a ticket for it;
-- a ratio above the `--check` default of 1.5 is worth a look at the probe that
-  moved, after a second run;
-- absolute medians in two different runs are not a comparison. Only the ratio
-  of a base and a head measured by the same run is.
+The bar a gated probe must hold is every ratio inside 0.85–1.18 over five
+consecutive runs. P1, P3 and P4 hold; P2 does not (1.193 once on rc.5), so it
+is informational. Do not widen `--threshold` to turn a miss into a pass; make
+the probe honest or stop gating it.
 
-P2 is the least stable probe: each sample boots a host and loads a profile, so
-a pair costs about a second and a load burst can still move its ratio by
-20–30 %. It is gated by `--check` because a real boot regression is large, but
-read a 1.1x P2 as noise. Raising `--repeat` tightens every median; it cannot
-remove the drift between separate runs.
+So:
+
+- on the gated probes the five-run spread was 0.924–1.077. A ratio inside that
+  band is the probe's own noise, not a regression; a ratio outside it is worth
+  a second run before reading anything into it;
+- a gated ratio above the `--check` default of 1.5 fails the local gate. That
+  is the only automatic verdict the tool has;
+- P2 and P5 are printed, never gated. Read P2 as a direction (about ±20–30 %),
+  not as a pass/fail; P5 says `informational` in both output modes;
+- absolute medians in two different runs are not a comparison. Only ratios
+  from the same run are, and only the paired ones.
+
+Raising `--repeat` tightens every median; it cannot remove the drift between
+separate runs.

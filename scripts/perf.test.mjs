@@ -27,6 +27,7 @@ import {
   headOverBase,
   median,
   pairBootLog,
+  pairRatios,
   parseArgs,
   perfEnvProblems,
   sampleBootPairs,
@@ -143,7 +144,7 @@ test('parseArgs accepts the internal probe flags, and only their values', () => 
   assert.throws(() => parseArgs(['--pins', 'not json']), PerfError)
 })
 
-test('checkFailures gates P1, P3 and P4 plus every P2 pin, and never P5', () => {
+test('checkFailures gates P1, P3 and P4, and never P2 or P5', () => {
   const report = {
     probes: {
       P1: { ratio: 1.2 },
@@ -156,7 +157,7 @@ test('checkFailures gates P1, P3 and P4 plus every P2 pin, and never P5', () => 
     },
     p5: { tarballBytes: 1 },
   }
-  assert.deepEqual(checkFailures(report, 1.5), ['P3 1.51x', 'P2 @ 0.2.2-rc.5 1.60x'])
+  assert.deepEqual(checkFailures(report, 1.5), ['P3 1.51x'])
   assert.deepEqual(checkFailures(report, 2), [])
 })
 
@@ -172,7 +173,6 @@ test('checkFailures names an unmeasured probe and a P4 that mixed plugin sets', 
   assert.deepEqual(checkFailures(report, 1.5), [
     'P1 not measured',
     'P4 not comparable (base and head compiled different plugin sets)',
-    'P2 @ 0.2.2-rc.2 not measured',
   ])
 })
 
@@ -263,7 +263,8 @@ test('formatTable shows base, head and ratio, and marks P5 informational', () =>
     notes: [],
   }
   const table = formatTable(report)
-  assert.match(table, /ratio = head\/base/)
+  assert.match(table, /ratio = median of per-pair head\/base/)
+  assert.match(table, /gated by --check: P1, P3, P4 · informational: P2 \(boot timing\), P5/u)
   assert.match(table, /P1\s+cold mod load: diff \(loadMod \+ evaluate\)\s+200\.0 ms\s+220\.0 ms\s+1\.10x/u)
   assert.match(table, /P4\s+compile: 21 plugins \(read\+gate\+emit\)\s+100\.0 ms\s+101\.0 ms\s+1\.01x/u)
   assert.match(table, /P5  informational — never gated, head only/u)
@@ -349,4 +350,12 @@ test('pairBootLog refuses block-merged samples and takes the median of per-pair 
   ]
   assert.throws(() => pairBootLog(blockMerged), PerfError)
   assert.throws(() => pairBootLog([{ pair: 0, side: 'base', elapsed: 100 }]), PerfError)
+})
+
+
+test('pairRatios pairs sample i with sample i and refuses different counts', () => {
+  assert.deepEqual(pairRatios([100, 50], [120, 40]), [1.2, 0.8])
+  assert.throws(() => pairRatios([], []), PerfError)
+  assert.throws(() => pairRatios([100], [120, 40]), PerfError)
+  assert.throws(() => pairRatios([0], [120]), PerfError)
 })

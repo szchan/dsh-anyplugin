@@ -98,7 +98,8 @@ Usage:
 Probes (each prints base, head and ratio; a regression is a ratio):
   P1  cold mod load      loadMod + evaluate of the pinned upstream diff mod
   P2  boot + reconcile   the host's profile loader boots one installed plugin,
-                         once per DSH pin declared in engines.dsh
+                         once per DSH pin declared in engines.dsh; paired and
+                         informational today, not gated
   P3  interception       runChain over three handlers, one matcher hit (us)
   P4  compile            readClaudePlugin + gate + emit over the seven upstream
                          mods and every fixture that carries a plugin manifest
@@ -113,8 +114,8 @@ Options:
                      paired boots per side plus one discarded warm-up pair
   --json             print the JSON report instead of the table
   --quiet            print only the JSON report; suppress notes (failures print)
-  --check            exit 1 when any ratio exceeds --threshold; never applied
-                     to P5, and not wired into verify
+  --check            exit 1 when a gated ratio (P1, P3, P4) exceeds --threshold;
+                     P2 and P5 are printed but never gated; not wired into verify
   --threshold <x>    ratio ceiling for --check (default: ${DEFAULT_THRESHOLD});
                      requires --check
   -h, --help         this text
@@ -171,7 +172,24 @@ export function headOverBase(baseValue, headValue) {
   return headValue / baseValue
 }
 
-/** Ratio failures for `--check`. P5 is never in this list; neither is a note. */
+/**
+ * Ratios for paired samples: sample i on the head over sample i on the base.
+ * The pair, not the side's median, is the unit — a burst that slows one side
+ * also slows the adjacent sample, so it mostly cancels inside the pair.
+ */
+export function pairRatios(baseSamples, headSamples) {
+  if (!Array.isArray(baseSamples) || !Array.isArray(headSamples)) {
+    throw new PerfError('perf: pairRatios() needs two sample arrays')
+  }
+  if (baseSamples.length === 0 || baseSamples.length !== headSamples.length) {
+    throw new PerfError(
+      `perf: pairRatios() needs the same non-zero sample count on both sides (${baseSamples.length} vs ${headSamples.length})`,
+    )
+  }
+  return baseSamples.map((value, index) => headOverBase(value, headSamples[index]))
+}
+
+/** Ratio failures for `--check`. P2 and P5 are never in this list; neither is a note. */
 export function checkFailures(report, threshold) {
   const failures = []
   for (const id of ['P1', 'P3', 'P4']) {
@@ -186,13 +204,6 @@ export function checkFailures(report, threshold) {
       continue
     }
     if (exceedsThreshold(probe.ratio, threshold)) failures.push(`${id} ${probe.ratio.toFixed(2)}x`)
-  }
-  for (const row of report.probes?.P2 ?? []) {
-    if (row.ratio === null || !Number.isFinite(row.ratio)) {
-      failures.push(`P2 @ ${row.pin} not measured`)
-      continue
-    }
-    if (exceedsThreshold(row.ratio, threshold)) failures.push(`P2 @ ${row.pin} ${row.ratio.toFixed(2)}x`)
   }
   return failures
 }
@@ -431,7 +442,7 @@ export function formatTable(report) {
     `dsh-anyplugin perf — base ${report.base.commit.slice(0, 8)} (${report.base.ref}) -> head ${report.head.commit.slice(0, 8)}`,
   )
   lines.push(
-    `node ${report.node} · P1/P3/P4 ${report.repeat * 2} interleaved samples/side · P2 ${report.repeat} paired boots/side · ratio = head/base (<1.00 is faster)`,
+    `node ${report.node} · ratio = median of per-pair head/base · P1/P3/P4 ${report.repeat * 2} interleaved samples/side · P2 ${report.repeat} paired boots/side`,
   )
   lines.push('')
 
@@ -477,6 +488,7 @@ export function formatTable(report) {
   for (const row of rows) lines.push(formatRow(row))
 
   lines.push('')
+  lines.push('gated by --check: P1, P3, P4 · informational: P2 (boot timing), P5')
   lines.push('P5  informational — never gated, head only')
   const p5 = report.p5
   const byte = (value) => (typeof value === 'number' ? `${groupDigits(value)} bytes` : '-')
@@ -723,7 +735,7 @@ async function runSuite(options) {
     const coreRow = (id, unit) => {
       const base = summarize(baseCore[id].samples, unit)
       const head = summarize(headCore[id].samples, unit)
-      return { unit, base, head, ratio: headOverBase(base.median, head.median) }
+      return { unit, base, head, ratio: median(pairRatios(baseCore[id].samples, headCore[id].samples)) }
     }
 
     const headPluginNames = [...headCore.p4.upstream, ...headCore.p4.fixtures].sort()
