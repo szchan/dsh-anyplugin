@@ -17,7 +17,7 @@ What 0.2.0 ships:
 | Hooks | the events the host actually fires; `exec`-class hooks need a grant |
 | Agents | one scoped tool per `agents/*.md` |
 | Output styles | activated from `$DSH_HOME/anyplugin/output-styles.yml` (one style, `agent/created`); the `/<plugin>:<name>` command face stays `planned` (D42) |
-| `mods` | loadable through the lock: a `mods` entry pins the authored module tree (`dsh-anyplugin/installs@2`), `rig install` writes it, `rig list` names the entry and tree digest, and the tree runs only under a hash-pinned grant (D25/D30/D31/D34). Node's `--experimental-vm-modules` is required |
+| `mods` | loadable through the lock: a `mods` entry pins the authored module tree (`dsh-anyplugin/installs@2`), `dsh-anyplugin install` writes it, `dsh-anyplugin list` names the entry and tree digest, and the tree runs only under a hash-pinned grant (D25/D30/D31/D34). Node's `--experimental-vm-modules` is required |
 | Codex plugins | **not shipped** in 0.2.0 (v0.3) |
 
 ## Requirements and the version claim
@@ -83,23 +83,42 @@ the host command-name seam (D10); wiring it is not part of 0.2.0.
 
 ## 2. Install and enable a plugin
 
-The installer is the conformance rig in this checkout (`packages/dsh-anyplugin-conformance/src/rig.ts`);
-it is not a separate published executable yet. From the repository root:
+The installer ships in this package as the `dsh-anyplugin` command: the
+published `lib/cli.js` is the conformance rig's own CLI
+(`packages/dsh-anyplugin-conformance/src/rig.ts`), so the npm artifact and the
+checkout run one command surface. Nothing here needs a DSH installation —
+`--help` and `install <dir> --dry-run` need only Node. The conformance gates
+(`capture`, `verify`, `diff`, `trace`) are the exception: they read a pinned
+harness and name `CLAUDE_BIN`, and the Claude oracle and trace differ are not
+shipped, so the published bin refuses them with `needs the repository
+checkout` and points at `npm run rig --` from a clone. Run the published
+command with `npx` (the examples name the command, not the version; pin it as
+`npx dsh-anyplugin@0.2.0 …` when the run must be reproducible):
 
 ```bash
-npm run rig -- install <plugin-dir> [--scope user|project|local] [--name <name>] [--dialect claude-code|codex] [--force] [--allow-empty] [--dry-run] [--json]
+npx dsh-anyplugin install <plugin-dir> [--scope user|project|local] [--name <name>] [--dialect claude-code|codex] [--force] [--allow-empty] [--dry-run] [--json]
+npx dsh-anyplugin list [--json]
+npx dsh-anyplugin enable <plugin> [--scope user|project|local] [--dry-run] [--json]
+npx dsh-anyplugin disable <plugin> [--scope user|project|local] [--dry-run] [--json]
+npx dsh-anyplugin uninstall <plugin> [--dry-run] [--json]
+```
+
+When the package is installed (globally, or in the profile's `node_modules`),
+the same command is the installed binary: `dsh-anyplugin install …`. The second
+option is for development in this repository, where the source entry needs no
+build and takes the identical flags:
+
+```bash
+npm run rig -- install <plugin-dir> [--scope user|project|local] [--dry-run] [--json]
 npm run rig -- list [--json]
-npm run rig -- enable <plugin> [--scope user|project|local] [--dry-run] [--json]
-npm run rig -- disable <plugin> [--scope user|project|local] [--dry-run] [--json]
-npm run rig -- uninstall <plugin> [--dry-run] [--json]
 ```
 
 `install` reads `<plugin-dir>` with the dialect detected from its manifest
 (`.claude-plugin/plugin.json` → `claude-code`; a root `plugin.json` or
 `.codex-plugin/plugin.json` → `codex`, overridable with `--dialect`), compiles
-it through the same report path as `rig report`, and writes exactly one record
-to `$DSH_HOME/anyplugin/installs.yml` through the canonical lock writer. It
-then enables the plugin in the layer named by `--scope` (default `user`), but
+it through the same report path as `dsh-anyplugin report`, and writes exactly
+one record to `$DSH_HOME/anyplugin/installs.yml` through the canonical lock
+writer. It then enables the plugin in the layer named by `--scope` (default `user`), but
 only if that layer does not already mention it — a previous `disable` is never
 silently flipped. `<plugin>` in `enable`/`disable`/`uninstall` is
 `<dialect>:<name>`, or a bare name that is unique in the lock.
@@ -118,14 +137,14 @@ lines and writes no byte. `--json` prints typed refusals as
 `{ok:false, refusals:[{code, reason, hint?}]}` and exits 1; the reason is the
 parser's own message, never a paraphrase.
 
-A mod is granted before it is installed. `rig report <plugin-dir>` (or an
-install that refuses) names the entry and the tree digest, e.g.
+A mod is granted before it is installed. `dsh-anyplugin report <plugin-dir>` (or
+an install that refuses) names the entry and the tree digest, e.g.
 `mods/hooks/register.ts refused:exec (entry: hooks/register.ts (606 files, tree
-sha256:…))`; `rig grant --plugin <plugin-dir> --grants
+sha256:…))`; `dsh-anyplugin grant --plugin <plugin-dir> --grants
 $DSH_HOME/anyplugin/grants.yml` prints the same entry and digest and writes only
-with `--yes`; the next `rig install <plugin-dir>` records the tree in
-`installs.yml`. `rig revoke ... --target mod:hooks/register.ts` works after
-`uninstall` too.
+with `--yes`; the next `dsh-anyplugin install <plugin-dir>` records the tree in
+`installs.yml`. `dsh-anyplugin revoke ...` with
+`--target mod:hooks/register.ts` works after `uninstall` too.
 
 What `install` does **not** do:
 
@@ -205,8 +224,8 @@ The files are framed in ascending plugin-relative path order before hashing — 
 *derived* rule: D25 fixes code-as-manifest and says order matters, and sorted
 paths are our definition for a tree, not an upstream one. A symlink whose real
 path leaves the plugin root, or a directory symlink, is refused when the tree is
-scanned. `rig grant` prints the entry and the tree digest before writing with
-`--yes`; without that grant the tree stays `refused:exec`.
+scanned. `dsh-anyplugin grant` prints the entry and the tree digest before
+writing with `--yes`; without that grant the tree stays `refused:exec`.
 
 The lock schema is strict, and it is versioned. `dsh-anyplugin/installs@2` adds
 `mods` as a first-class field with the shape above; an unknown field (including
@@ -225,8 +244,8 @@ sources are fetched into a content-addressed cache under a per-fetch `network`
 grant:
 
 ```bash
-npm run rig -- marketplace list --from <file> [--json]
-npm run rig -- marketplace install <entry> --from <file> [--scope user|project|local] [--yes] [--dry-run] [--json]
+npx dsh-anyplugin marketplace list --from <file> [--json]
+npx dsh-anyplugin marketplace install <entry> --from <file> [--scope user|project|local] [--yes] [--dry-run] [--json]
 ```
 
 `--from` accepts Claude's `<root>/.claude-plugin/marketplace.json`, Codex's
@@ -243,9 +262,9 @@ the readable entries; a remote entry is a valid row, not a malformed one.
 root; `.agents/plugins/` catalog paths resolve from the marketplace root, not
 from the catalog's own directory), refuses any target that resolves outside
 that root — including through a symlink — and then calls the same
-`installPlugin` path as `rig install <dir>`. The lock record, the enablement
-decision, the refusals and `--dry-run` are therefore byte-for-byte the ones a
-directory install produces, except for the record's `source`:
+`installPlugin` path as `dsh-anyplugin install <dir>`. The lock record, the
+enablement decision, the refusals and `--dry-run` are therefore byte-for-byte
+the ones a directory install produces, except for the record's `source`:
 
 ```yaml
     source: "{\"marketplace\":\"my-marketplace\",\"entry\":\"my-plugin\",\"version\":\"1.2.3\"}"
@@ -307,9 +326,9 @@ succeeds, so a fetch followed by a refused install leaves no standing network
 authorization. The URL in a grant target drops credentials and the query; a
 query string is represented by an opaque fingerprint (`#q=<16 hex>`), so
 `?token=a` and `?token=b` are different grants and consent for one never
-fetches the other. `rig revoke --grants <file> --plugin-id <marketplace:entry>
---target <target> --capability network [--scope <s>]` revokes one record by
-target. When a floating `ref` (for example `main`)
+fetches the other. `dsh-anyplugin revoke --grants <file> --plugin-id
+<marketplace:entry> --target <target> --capability network [--scope <s>]`
+revokes one record by target. When a floating `ref` (for example `main`)
 resolves to a new commit, or a tarball's bytes change, the install refuses with
 `network-pin-moved` naming both the recorded and the resolved identity before
 anything new is installed, and exits 1; passing `--yes` accepts the new pin,
@@ -393,8 +412,8 @@ enabled layer mentions stays inert. `install` enables it at `--scope` in the
 same run; `enable` and `disable` edit one existing layer:
 
 ```bash
-npm run rig -- enable claude-code:my-plugin --scope project
-npm run rig -- disable claude-code:my-plugin --scope project
+npx dsh-anyplugin enable claude-code:my-plugin --scope project
+npx dsh-anyplugin disable claude-code:my-plugin --scope project
 ```
 
 Without `--scope`, the command edits the narrowest layer that already mentions
@@ -404,7 +423,7 @@ command prints a warning naming that layer, because `list` reports the
 *effective* state, not the line just written:
 
 ```bash
-npm run rig -- list        # name, dialect, root, version, pin, enabled scopes, carry counts
+npx dsh-anyplugin list  # name, dialect, root, version, pin, enabled scopes, carry counts
 ```
 
 Enablement is layered, narrowest first — `local` overrides `project`, `project`
@@ -445,9 +464,9 @@ linker: a module that imports a file outside the manifest is refused
 
 Grants live in `$DSH_HOME/anyplugin/grants.yml` (canonical form, keyed by
 `plugin`, `capability`, `target`, `artifactHash`, `grantedAt`, `scope`). Grant
-issuance is `rig grant`'s job: it prints the target, mode, hash and exact
-command line — or, for a mod, the resolved entry and tree digest — before
-writing with `--yes`, and `install` never grants one for you. A hand-written
+issuance is `dsh-anyplugin grant`'s job: it prints the target, mode, hash and
+exact command line — or, for a mod, the resolved entry and tree digest —
+before writing with `--yes`, and `install` never grants one for you. A hand-written
 grant is only acceptable when you have read the entry in the refusal log and
 accept it. A grant for a different byte sequence does nothing. The hook row's
 `mods` config is written by the controller from the granted lock record; a row
@@ -475,7 +494,7 @@ are not loaded. Deleting `$DSH_HOME/anyplugin/` removes the lock, grants and
 enablement layers together.
 
 To remove **one plugin** while keeping the bundle, run
-`npm run rig -- uninstall <plugin>` (it prints the record it removes, the
+`npx dsh-anyplugin uninstall <plugin>` (it prints the record it removes, the
 scopes that still mention it, and the entry-tree group it no longer wants), or
 set `enabled: false` in the layer that enabled it. The entry disappears on the
 next reconcile — `uninstall` itself does not talk to a live loader, so it

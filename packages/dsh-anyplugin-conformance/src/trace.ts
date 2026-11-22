@@ -261,3 +261,28 @@ export function formatTraceDiff(diff: TraceDiff, options: { verbose?: boolean } 
   )
   return lines.join('\n')
 }
+
+/** One `trace` run: the rendered diff plus the exit decision. */
+export interface TraceRun {
+  text: string
+  ok: boolean
+}
+
+/**
+ * The `trace` command body. It lives here, next to the differ, because the
+ * published CLI keeps this module out of its eager graph: `rig.ts` only names
+ * the loader, never `diffTraces` (check:pack asserts that).
+ */
+export function runTraceDiff(
+  leftPath: string,
+  rightPath: string,
+  options: NormalizeOptions & { verbose?: boolean } = {},
+): TraceRun {
+  const left = normalizeTrace(readTraceFile(leftPath), options)
+  const right = normalizeTrace(readTraceFile(rightPath), options)
+  const diff = diffTraces(left, right)
+  return {
+    text: formatTraceDiff(diff, options),
+    ok: diff.summary.differing === 0 && diff.summary.onlyLeft === 0 && diff.summary.onlyRight === 0,
+  }
+}

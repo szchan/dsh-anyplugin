@@ -13,6 +13,9 @@
     "dsh": "0.2.2-rc.2 || 0.2.2-rc.5"
   },
   "main": "./lib/index.js",
+  "bin": {
+    "dsh-anyplugin": "./lib/cli.js"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./materialize/agents": "./lib/materialize/agents.js",
@@ -46,6 +49,7 @@
     "fetch:mod": "node scripts/fetch-mod.mjs",
     "gen:types": "node scripts/gen-mod-types.mjs",
     "test": "node --experimental-vm-modules --test \"packages/**/*.test.mjs\" \"scripts/**/*.test.mjs\"",
+    "pretest": "npm run build",
     "extract:hooks": "node scripts/extract-hook-payloads.mjs",
     "check:arch": "node scripts/check-architecture.mjs",
     "gh-bot": "node scripts/gh-bot.mjs",

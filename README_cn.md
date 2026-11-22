@@ -117,6 +117,10 @@ dsh plugin --profile <profile> add dsh-anyplugin
 `$DSH_HOME/anyplugin/installs.yml`，把已安装的插件协调进 loader。它不写
 profile 配置，也不生成代码。
 
+把插件写进该 lock 用的是同一个包里发布的 CLI：
+`npx dsh-anyplugin install <plugin-dir>`（先加 `--dry-run` 看计划）；
+命令和 flag 见 [INSTALL.md](INSTALL.md) 第 2 节。
+
 ### 运行要求
 
 - **Node.js ≥ 22.14**；DSH `0.2.2-rc.2 || 0.2.2-rc.5`；Claude Code `2.1.329`。

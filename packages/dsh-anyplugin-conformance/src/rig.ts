@@ -24,15 +24,13 @@
  */
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { readCodexPlugin } from '../../dsh-anyplugin-dialect-codex/src/index.ts'
 import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import type { ClaudePluginIr } from '../../dsh-anyplugin-ir/src/index.ts'
-import { diffInventories, normalizeInventory, type Inventory } from './inventory.ts'
-import { probeWithClaude, resolvePluginName } from './oracles/claude.ts'
-import { readInventoryFile } from './oracles/file.ts'
+import type { Inventory } from './inventory.ts'
 import {
   InstallCliError,
   formatInstall,
@@ -65,7 +63,7 @@ import {
   type GrantRecord,
   type Grants,
 } from '../../dsh-anyplugin-trust/src/index.ts'
-import { diffTraces, formatTraceDiff, normalizeTrace, readTraceFile } from './trace.ts'
+import { PROGRAM } from './program.ts'
 
 interface Args {
   command: string
@@ -122,30 +120,31 @@ function requiredOptions(args: Args, ...names: string[]): string[] {
   })
 }
 
-const USAGE = `usage:
-  rig capture --plugin <dir> [--out <file>] [--name <plugin-name>]
-  rig verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
-  rig diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
-  rig trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
-  rig report  <plugin-dir> [--json] [--grants <grants.yml>]   what the transplant would do
-  rig report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
-  rig grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
-  rig revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
-  rig revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
-  rig install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--drop-mods] [--dry-run] [--json]
-  rig list    [--json]
-  rig enable  <plugin> [--scope <s>] [--dry-run] [--json]
-  rig disable <plugin> [--scope <s>] [--dry-run] [--json]
-  rig uninstall <plugin> [--dry-run] [--json]
-  rig marketplace list --from <file> [--json]
-  rig marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--yes] [--dry-run] [--json]
+/** The command surface; exported so the published bin prints the rig's own text. */
+export const USAGE = `usage:
+  ${PROGRAM} capture --plugin <dir> [--out <file>] [--name <plugin-name>]
+  ${PROGRAM} verify  --plugin <dir> --golden <file> [--allow-pin-mismatch] [--verbose]
+  ${PROGRAM} diff    --expected <file> --actual <file> [--allow-pin-mismatch] [--verbose]
+  ${PROGRAM} trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
+  ${PROGRAM} report  <plugin-dir> [--json] [--grants <grants.yml>]   what the transplant would do
+  ${PROGRAM} report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
+  ${PROGRAM} grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
+  ${PROGRAM} revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
+  ${PROGRAM} revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
+  ${PROGRAM} install <plugin-dir> [--scope <s>] [--dialect <d>] [--name <n>] [--force] [--allow-empty] [--drop-mods] [--dry-run] [--json]
+  ${PROGRAM} list    [--json]
+  ${PROGRAM} enable  <plugin> [--scope <s>] [--dry-run] [--json]
+  ${PROGRAM} disable <plugin> [--scope <s>] [--dry-run] [--json]
+  ${PROGRAM} uninstall <plugin> [--dry-run] [--json]
+  ${PROGRAM} marketplace list --from <file> [--json]
+  ${PROGRAM} marketplace install <entry> --from <file> [--scope <s>] [--dialect <d>] [--force] [--allow-empty] [--yes] [--dry-run] [--json]
 
   marketplace reads a Claude (.claude-plugin/marketplace.json) or Codex
   (.agents/plugins/marketplace.json) catalog without touching the network for
   \`list\`. \`list\` prints each entry's name, description, source kind and
   policy, and names every malformed entry instead of failing the file.
   \`install\` resolves a "./" local source inside the catalog's root and then
-  runs the same install as \`rig install <dir>\`: one lock record, one
+  runs the same install as \`${PROGRAM} install <dir>\`: one lock record, one
   enablement decision, the same refusals and the same --dry-run. A \`url\`,
   \`git-subdir\` or \`npm\` entry is fetched into
   <lock-dir>/marketplace-cache/<marketplace>/<entry>@<resolved>/ only with
@@ -244,6 +243,32 @@ function readPlugin(pluginDir: string): ClaudePluginIr {
 }
 
 /**
+ * Load a module that only exists in a checkout. The Claude oracle, the golden
+ * inventory reader and the trace differ serve the conformance gates; none of
+ * the lifecycle commands needs them, so the published `bin` must not bundle
+ * them (they would make the CLI carry a Claude probe and an upstream differ).
+ *
+ * The specifier is a literal inside a loader function on purpose: the build
+ * only reaches it from the commands below, so `lib/cli.js` can keep these
+ * modules out of its eager graph. In `lib/cli.js` the relative path does not
+ * exist either way, so the refusal below names the command and the checkout
+ * instead of leaking a bare ERR_MODULE_NOT_FOUND from the installed package.
+ */
+async function loadRepoModule<T>(label: string, loader: () => Promise<T>, command: string): Promise<T> {
+  try {
+    return await loader()
+  } catch (error: unknown) {
+    const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined
+    if (code === 'ERR_MODULE_NOT_FOUND') {
+      throw new Error(
+        `${command} needs the repository checkout: ${label} is a conformance-gate module and is not shipped in the published bin (run \`npm run rig -- ${command} ...\` from a clone)`,
+      )
+    }
+    throw error
+  }
+}
+
+/**
  * `--config` re-points the lock (grants and data follow it); `--project`
  * chooses the workspace whose scope layers are read and written. Both are
  * explicit — the lifecycle commands never infer a project from a plugin path.
@@ -338,7 +363,7 @@ function onePositional(args: Args, name: string): string {
   return first
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
   const allowPinMismatch = args.options.get('allow-pin-mismatch') === true
@@ -373,7 +398,7 @@ async function main(argv: string[]): Promise<number> {
     // Pass-through by design: `report` reads a plugin directory, not the lock.
     // Say so, so a preview cannot be read as the controller's install decision.
     const preview =
-      'preview only: rig report does not read installs.yml, so "not recorded" is not enforced here (the controller decides at boot)'
+      `preview only: ${PROGRAM} report does not read installs.yml, so "not recorded" is not enforced here (the controller decides at boot)`
     console.log(
       args.options.get('json') === true
         ? JSON.stringify({ preview, ...report }, null, 2)
@@ -396,7 +421,7 @@ async function main(argv: string[]): Promise<number> {
     if (args.command === 'grant') {
       const [pluginDir] = requiredOptions(args, 'plugin')
       if (capabilityOption === 'network') {
-        throw new Error(`a network grant is recorded by \`rig marketplace install --yes\`, not by \`rig grant\`\n${USAGE}`)
+        throw new Error(`a network grant is recorded by \`${PROGRAM} marketplace install --yes\`, not by \`${PROGRAM} grant\`\n${USAGE}`)
       }
       if (capabilityOption !== undefined && capabilityOption !== 'exec') {
         throw new Error(`--capability must be "exec" or "network"\n${USAGE}`)
@@ -452,6 +477,8 @@ async function main(argv: string[]): Promise<number> {
 
   if (args.command === 'capture') {
     const [pluginDir] = requiredOptions(args, 'plugin')
+    const { probeWithClaude } = await loadRepoModule('oracles/claude.ts', () => import('./oracles/claude.ts'), 'capture')
+    const { normalizeInventory } = await loadRepoModule('inventory.ts', () => import('./inventory.ts'), 'capture')
     const nameOption = args.options.get('name')
     const probe = await probeWithClaude({
       pluginDir,
@@ -475,6 +502,9 @@ async function main(argv: string[]): Promise<number> {
 
   if (args.command === 'verify') {
     const [pluginDir, golden] = requiredOptions(args, 'plugin', 'golden')
+    const { readInventoryFile } = await loadRepoModule('oracles/file.ts', () => import('./oracles/file.ts'), 'verify')
+    const { probeWithClaude } = await loadRepoModule('oracles/claude.ts', () => import('./oracles/claude.ts'), 'verify')
+    const { normalizeInventory, diffInventories } = await loadRepoModule('inventory.ts', () => import('./inventory.ts'), 'verify')
     const expected = await readInventoryFile(golden)
     const probe = await probeWithClaude({ pluginDir })
     const actual = normalizeInventory({ ...probe.inventory, pin: probe.pin })
@@ -485,6 +515,8 @@ async function main(argv: string[]): Promise<number> {
 
   if (args.command === 'diff') {
     const [expectedPath, actualPath] = requiredOptions(args, 'expected', 'actual')
+    const { readInventoryFile } = await loadRepoModule('oracles/file.ts', () => import('./oracles/file.ts'), 'diff')
+    const { diffInventories } = await loadRepoModule('inventory.ts', () => import('./inventory.ts'), 'diff')
     const report = diffInventories(await readInventoryFile(expectedPath), await readInventoryFile(actualPath), {
       allowPinMismatch,
     })
@@ -494,13 +526,12 @@ async function main(argv: string[]): Promise<number> {
 
   if (args.command === 'trace') {
     const [leftPath, rightPath] = requiredOptions(args, 'left', 'right')
+    const { runTraceDiff } = await loadRepoModule('trace.ts', () => import('./trace.ts'), 'trace')
     const root = args.options.get('root')
-    const options = typeof root === 'string' ? { root } : {}
-    const left = normalizeTrace(readTraceFile(leftPath), options)
-    const right = normalizeTrace(readTraceFile(rightPath), options)
-    const diff = diffTraces(left, right)
-    console.log(formatTraceDiff(diff, { verbose }))
-    return diff.summary.differing === 0 && diff.summary.onlyLeft === 0 && diff.summary.onlyRight === 0 ? 0 : 1
+    const options = { ...(typeof root === 'string' ? { root } : {}), verbose }
+    const run = runTraceDiff(leftPath, rightPath, options)
+    console.log(run.text)
+    return run.ok ? 0 : 1
   }
 
   if (args.command === 'install') {
@@ -1652,13 +1683,32 @@ export function formatRevoke(run: RevokeRun): string {
   return lines.join('\n').trimEnd()
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2))
-    .then((code) => {
-      process.exitCode = code
-    })
-    .catch((error: unknown) => {
-      console.error(error instanceof Error ? error.message : String(error))
-      process.exitCode = 2
-    })
+/**
+ * Run one command line and return the exit code. This is the callable entry the
+ * published bin imports; the error path is the rig's own, so a failing command
+ * exits 2 with a message rather than a stack trace.
+ */
+export async function runCli(argv: string[]): Promise<number> {
+  try {
+    return await main(argv)
+  } catch (error: unknown) {
+    console.error(error instanceof Error ? error.message : String(error))
+    return 2
+  }
+}
+
+// The published `lib/cli.js` is this module bundled behind its own front door
+// (`cli.ts` handles `--help` and then calls `runCli`). In that bundle
+// `process.argv[1]` *is* `lib/cli.js`, so an unwrapped self-run check would run
+// the command a second time; the source-file name keeps the auto-run to the
+// file Node actually executed from the checkout.
+const invoked = process.argv[1]
+if (
+  invoked !== undefined &&
+  basename(invoked) === 'rig.ts' &&
+  import.meta.url === pathToFileURL(invoked).href
+) {
+  runCli(process.argv.slice(2)).then((code) => {
+    process.exitCode = code
+  })
 }

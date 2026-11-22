@@ -21,10 +21,21 @@ import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { GATE_MODULES, lintShippedLib } from './shipped-gates.mjs'
+
 const root = fileURLToPath(new URL('..', import.meta.url))
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const failures = []
 const notes = []
+
+/**
+ * The packaged artifact's own budget. D46 asserts the 128 KiB *kernel* ceiling;
+ * this one bounds the tarball the registry serves, so growth is a visible
+ * decision. The deduped controller+CLI build measures ~174.3 KiB; 180 KiB
+ * leaves room for a doc paragraph without inviting drift. Raise it only with a
+ * decision entry.
+ */
+const TARBALL_CEILING_BYTES = 180 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }
@@ -62,6 +73,11 @@ try {
     const tarball = join(packDir, packed.filename)
     check(existsSync(tarball), `npm pack did not leave ${tarball}`)
     notes.push(`${packed.entryCount} entries, ${(packed.size / 1024).toFixed(0)} KiB`)
+    check(
+      packed.size <= TARBALL_CEILING_BYTES,
+      `the tarball is ${packed.size} bytes, above the ${TARBALL_CEILING_BYTES}-byte ceiling; decide before it grows`,
+    )
+    notes.push(`tarball: ${(packed.size / 1024).toFixed(1)} KiB / ceiling ${TARBALL_CEILING_BYTES / 1024} KiB`)
 
     const tree = join(packDir, 'unpacked')
     mkdirSync(tree, { recursive: true })
@@ -112,12 +128,68 @@ try {
     }
     notes.push(`${Object.keys(manifest.exports ?? {}).length} exports, ${materialize.length} materializer subpaths`)
 
+    // 1b. The published bin. One command, one file, and it must start from the
+    //     extracted copy with no environment — `--help` is how a user checks an
+    //     install before any DSH profile exists.
+    const bins = manifest.bin !== null && typeof manifest.bin === 'object' ? Object.entries(manifest.bin) : []
+    check(
+      bins.length === 1 && bins[0][0] === 'dsh-anyplugin' && bins[0][1] === './lib/cli.js',
+      `bin is ${JSON.stringify(manifest.bin)}, expected exactly {"dsh-anyplugin": "./lib/cli.js"}`,
+    )
+    check(has('lib/cli.js'), 'the tarball has no lib/cli.js — the declared bin does not ship')
+    if (has('lib/cli.js')) {
+      const cliSource = readFileSync(join(tree, 'lib', 'cli.js'), 'utf8')
+      check(cliSource.startsWith('#!/usr/bin/env node\n'), 'lib/cli.js has no node shebang; an installed bin cannot execute')
+      const binEnv = { ...process.env }
+      for (const key of Object.keys(binEnv)) {
+        // A value in this shell must not be what makes the command start: the
+        // assertion is "works on a machine with no DSH install".
+        if (key === 'CLAUDE_BIN' || key.startsWith('DSH_') || key.startsWith('ANYPLUGIN_')) delete binEnv[key]
+      }
+      binEnv.HOME = join(packDir, 'bin-home')
+      binEnv.USERPROFILE = binEnv.HOME
+      mkdirSync(binEnv.HOME, { recursive: true })
+      try {
+        const help = execFileSync(process.execPath, [join(tree, 'lib', 'cli.js'), '--help'], {
+          cwd: tree,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: binEnv,
+          timeout: 60_000,
+        })
+        check(help.includes('install <plugin-dir>'), 'lib/cli.js --help does not print the install command')
+        check(help.includes('marketplace install'), 'lib/cli.js --help does not print the marketplace commands')
+        notes.push('bin: node lib/cli.js --help exits 0 with no DSH environment')
+      } catch (error) {
+        failures.push(`lib/cli.js --help failed without a DSH environment:\n${(error.stdout || '') + (error.stderr || '')}`)
+      }
+    }
+
     // 2. No TypeScript in lib, and no source tree in the tarball at all.
     const libFiles = [...files].filter((path) => path.startsWith('lib/'))
     check(libFiles.length > 0, 'the tarball contains no lib/ files')
     check(!libFiles.some((path) => path.endsWith('.ts') || path.endsWith('.tsx')), 'lib/ contains TypeScript sources')
     check(![...files].some((path) => path.startsWith('src/')), 'the tarball ships src/ — the dev entry must stay out')
     check(![...files].some((path) => path.startsWith('packages/')), 'the tarball ships workspace packages/')
+
+    // 2b. The conformance gates never ship. The shipped commands install, list,
+    //     enable, disable, uninstall, report, grant, revoke and the marketplace
+    //     never reach the Claude oracle, the golden-inventory reader or the
+    //     trace differ; those are lazy modules left external. Scan every shipped
+    //     lib file, chunks included, because a static import can land there
+    //     instead of in the entry, and require the CLI to keep one literal lazy
+    //     import per module so a bundled copy also removes a green check.
+    //     `SourceTextModule` is allowed only in the kernel entry: D30 needs the
+    //     flag there and nowhere else.
+    const shippedJs = libFiles
+      .filter((file) => file.endsWith('.js'))
+      .map((path) => ({ path, source: readFileSync(join(tree, path), 'utf8') }))
+    const gateFailures = lintShippedLib(shippedJs)
+    for (const failure of gateFailures) failures.push(failure)
+    if (gateFailures.length === 0) {
+      notes.push('shipped lib: no conformance-gate markers (oracle, inventory reader, trace differ)')
+      notes.push(`shipped lib: lazy gate modules present (${GATE_MODULES.length})`)
+    }
 
     // 3. Runtime imports: every bare specifier in lib must be a declared runtime
     //    dependency or peer, and the harness must never be an import.
@@ -127,13 +199,25 @@ try {
     ])
     const contents = new Map(libFiles.map((path) => [path, readFileSync(join(tree, path), 'utf8')]))
     const imported = new Set()
+    // Anchored to an import/export statement or an `import(...)` call: esbuild
+    // emits one statement per line, while bundled code legitimately contains
+    // the word `from` in other places (`const from = args.options.get("from")`
+    // in the CLI). An unanchored `\bfrom\s*["']` reads those as imports and
+    // fails a healthy tarball.
+    const importPatterns = [
+      /^[ \t]*(?:import|export)\b[^\n]*?\bfrom\s*["']([^"']+)["']/gm,
+      /^[ \t]*import\s*["']([^"']+)["']/gm,
+      /(?:^|[^\w$.])import\s*\(\s*["']([^"']+)["']\s*\)/g,
+    ]
     for (const [path, source] of contents) {
-      for (const match of source.matchAll(/\bfrom\s*["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)|^\s*import\s*["']([^"']+)["']/gm)) {
-        const specifier = match[1] ?? match[2] ?? match[3]
-        if (!specifier || specifier.startsWith('.') || specifier.startsWith('node:') || specifier.startsWith('file:')) continue
-        check(!specifier.startsWith('@deepseek-ai/'), `lib/${path.slice(4)} imports the harness package ${specifier}`)
-        check(declared.has(packageName(specifier)), `lib/${path.slice(4)} imports ${specifier}, which is not declared`)
-        imported.add(packageName(specifier))
+      for (const pattern of importPatterns) {
+        for (const match of source.matchAll(pattern)) {
+          const specifier = match[1]
+          if (!specifier || specifier.startsWith('.') || specifier.startsWith('node:') || specifier.startsWith('file:')) continue
+          check(!specifier.startsWith('@deepseek-ai/'), `lib/${path.slice(4)} imports the harness package ${specifier}`)
+          check(declared.has(packageName(specifier)), `lib/${path.slice(4)} imports ${specifier}, which is not declared`)
+          imported.add(packageName(specifier))
+        }
       }
     }
     // A dependency loaded through a variable specifier (the MCP SDK is one) is
