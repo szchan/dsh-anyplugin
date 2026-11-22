@@ -1651,30 +1651,40 @@ writing nothing; `guard:status` re-composes and compares (ignoring the state
 line), so a stale block is visible without loading the profile.
 
 The block's `worktrees` entry is a **pattern derived from the discovered ticket
-worktrees** (`/tmp/anyplugin-wt/ticket-*`), not a snapshot of the paths that
-existed when the install ran: a worktree the master creates afterwards is
-admitted without reinstalling, and the pattern stays narrower than the parent
-directory, because one `*` substitutes exactly one directory name under the
-shared stem. When the discovered paths do not share a parent and a name stem,
-the block keeps the exact list and a new worktree is not admitted until the next
-install. `guard:status` reuses the installed pattern when composing, and it
-distinguishes `not-installed` from `installed-with-stale-paths`: a literal path
-in the block that no longer exists is reported by name, because the freshly
-composed block would silently drop it.
+directories** (`/tmp/anyplugin-wt/ticket-*`), not a snapshot of the paths that
+existed when the install ran: a directory matching the pattern is admitted
+without reinstalling, and the pattern stays narrower than the parent directory,
+because one `*` substitutes exactly one directory name under the shared stem.
+The pattern is a **namespace matcher, not git-worktree attestation**: a
+directory a human or script creates under the shared stem is confinable even if
+git never registered it as a worktree. A literal `*` in a discovered path is
+refused at install and status rather than escaped: the block grammar reserves
+`*` for the one trailing wildcard, and a literal read back as a pattern would
+confine a sibling the plan never named. When the discovered paths do not share a
+parent and a name stem, the block keeps the exact list; then a single
+out-of-pattern ticket worktree makes the next install drop the pattern for
+*every* future worktree until the next install. `guard:status` reuses the
+installed pattern when composing, and it distinguishes `not-installed` from
+`installed-with-stale-paths`: a literal path in the block that no longer exists
+is reported by name, because the freshly composed block would silently drop it.
 
 The installer's root is the repository's **main checkout**, not the caller's:
-the parent of `git rev-parse --path-format=absolute --git-common-dir` for the
-cwd's repository, falling back to the checkout the script lives in when the cwd
-is not inside one. A linked worktree is disposable, so the block must not name
-it — removing the worktree after a merge would make the composition point at a
-source path that no longer exists. A real install from a linked worktree is
-still refused before anything is written, because git shares one hooks
-directory with the main checkout (the message names the worktree). `--worktree`
-names an extra worktree to include, or the one to put first in the printed
-table; it does not move the root. `--dry-run` writes nothing and works from
-anywhere, and it is the check that names the main checkout from a review
-worktree. This is what keeps a review worktree from installing a hook into the
-checkout it is reviewing.
+when `git rev-parse --path-format=absolute --git-dir` and `--git-common-dir`
+name the same path (an ordinary checkout, a submodule, `--separate-git-dir`)
+the root is the working tree from `--show-toplevel`; when they differ the common
+dir is `<main>/.git` and its parent is the root; anything else falls back to the
+checkout the script lives in. The guard's git calls use `--path-format=absolute`
+and therefore require git ≥ 2.31. A linked worktree is disposable, so the block
+must not name it — removing the worktree after a merge would make the
+composition point at a source path that no longer exists. A real install (or
+uninstall) from a linked worktree is still refused before anything is written,
+because git shares one hooks directory with the main checkout (the message
+names the worktree, and the uninstall remedy is the main checkout, not a dry
+run). `--worktree` names an extra worktree to include, or the one to put first
+in the printed table; it does not move the root. `--dry-run` writes nothing and
+works from anywhere, and it is the check that names the main checkout from a
+review worktree. This is what keeps a review worktree from installing a hook
+into the checkout it is reviewing.
 
 ### Why dynamic packages cannot be the reconcile substrate
 

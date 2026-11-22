@@ -38,6 +38,7 @@ import {
   runTable,
   uninstallText,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
+import { isWorktreeGlob } from '../packages/dsh-anyplugin-guard/src/policy.ts'
 import { configuredHooksPath, hookTargets, installPrePushHook, prePushStatus, readPrePushHook, removePrePushHook, writePrePushHook } from './guard-hooks.mjs'
 
 const scriptRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -107,7 +108,9 @@ const root = mainCheckout(invocationRoot) ?? invocationRoot
 if (!options.dryRun && isLinkedWorktree(invocationRoot)) {
   console.error(
     `guard:install: ${invocationRoot} is a linked worktree, and git shares one hooks directory with the main checkout. ` +
-      'Run from the main checkout or a scratch clone, or use --dry-run (which writes nothing).',
+      (options.uninstall
+        ? `Run the uninstall from the main checkout (${root}) or a scratch clone; --dry-run cannot uninstall anything.`
+        : 'Run from the main checkout or a scratch clone, or use --dry-run (which writes nothing).'),
   )
   process.exit(1)
 }
@@ -134,9 +137,15 @@ const gitWorktrees = readGitWorktrees(root)
 const known = new Set(gitWorktrees.map((entry) => resolve(entry.path)))
 const synthetic = options.worktrees.filter((entry) => !known.has(resolve(entry.path)))
 const worktrees = [...gitWorktrees, ...synthetic]
-const composition = composeGuard({ repoRoot: root, worktrees, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
+let composition
+try {
+  composition = composeGuard({ repoRoot: root, worktrees, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
+} catch (error) {
+  printError(error)
+  process.exit(1)
+}
 const configured = composition.config.worktrees ?? []
-const pattern = configured.find((entry) => entry.includes('*'))
+const pattern = configured.find((entry) => isWorktreeGlob(entry))
 // The table needs a real worktree path to anchor on; the policy may carry a
 // glob, which is a matcher, not a directory.
 const discovered = composition.worktrees.filter(

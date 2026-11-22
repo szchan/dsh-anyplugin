@@ -429,6 +429,8 @@ function guardEvidence() {
     status: report.status ?? (result.ok ? 'current' : 'error'),
     sourceExists: report.sourceExists ?? false,
     worktrees: report.worktrees?.length ?? 0,
+    installedWorktrees: report.installedWorktrees?.length ?? 0,
+    stalePaths: report.stalePaths ?? [],
     protectedRoots: report.protectedRoots ?? [],
     hooks: (report.hooks ?? []).map((hook) => ({ file: hook.file, status: hook.status })),
     duplicateId: report.duplicateId ?? false,
@@ -562,7 +564,7 @@ function digest(evidence) {
   lines.push('## Mechanisms')
   const guard = evidence.guard
   lines.push(guard.available
-    ? `- guard: **${guard.status}**; source ${guard.sourceExists ? 'present' : 'missing'}; worktrees ${guard.worktrees}; hooks ${guard.hooks.map((hook) => `${hook.file} ${hook.status}`).join(', ') || 'none'}`
+    ? `- guard: **${guard.status}**; source ${guard.sourceExists ? 'present' : 'missing'}; worktrees ${guard.worktrees} desired / ${guard.installedWorktrees} installed${guard.stalePaths.length === 0 ? '' : ` (stale: ${guard.stalePaths.join(', ')})`}; hooks ${guard.hooks.map((hook) => `${hook.file} ${hook.status}`).join(', ') || 'none'}`
     : '- guard: unavailable (scripts/guard-status.mjs missing)')
   const schedules = evidence.schedules
   lines.push(schedules.available

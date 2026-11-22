@@ -147,39 +147,39 @@ export function isInside(root: string, target: string): boolean {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
-/** True when a configured worktree entry is a `*` pattern instead of one path. */
+/**
+ * True when a configured worktree entry is a pattern instead of one path.
+ *
+ * The grammar is deliberately narrow: exactly one `*`, and only as the last
+ * character (the install derives `<parent>/<stem>*`). A `*` anywhere else is a
+ * literal character in a directory name, not an operator. Treating it as one
+ * would turn a checkout called `star*` into a wildcard and confine a sibling
+ * the plan never named. The installer refuses such paths because the entry it
+ * writes could not be read back unambiguously.
+ */
 export function isWorktreeGlob(entry: string): boolean {
-  return entry.includes('*')
-}
-
-function globSegment(pattern: string, segment: string): boolean {
-  const source = pattern
-    .split('*')
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
-    .join('[^/]*')
-  return new RegExp(`^${source}$`, 'u').test(segment)
+  return entry.endsWith('*') && entry.indexOf('*') === entry.length - 1
 }
 
 /**
  * The worktree a configured entry places `target` in, or undefined.
  *
- * An exact entry keeps the target inside it. A glob entry (`/tmp/wt/ticket-*`)
- * substitutes one directory name per `*` and returns the **concrete** root it
- * matched, never the pattern: the brief records a path, and the confinement
- * anchors on that path, so a glob only widens which roots a worker may own —
- * it does not widen where a write may land once a root is recorded.
+ * An exact entry keeps the target inside it. A pattern (`/tmp/wt/ticket-*`)
+ * substitutes one directory name at its trailing `*` and returns the
+ * **concrete** root it matched, never the pattern: the brief records a path,
+ * and the confinement anchors on that path, so a pattern only widens which
+ * roots a worker may own — it does not widen where a write may land once a
+ * root is recorded.
  */
 export function matchWorktree(entry: string, target: string): string | undefined {
   const pattern = resolve(entry)
   const path = resolve(target)
   if (!isWorktreeGlob(pattern)) return isInside(pattern, path) ? pattern : undefined
-  const patternSegments = pattern.split('/').filter((segment) => segment.length > 0)
-  const pathSegments = path.split('/').filter((segment) => segment.length > 0)
-  if (pathSegments.length < patternSegments.length) return undefined
-  for (let index = 0; index < patternSegments.length; index += 1) {
-    if (!globSegment(patternSegments[index], pathSegments[index])) return undefined
-  }
-  return `/${pathSegments.slice(0, patternSegments.length).join('/')}`
+  const prefix = pattern.slice(0, -1)
+  if (!path.startsWith(prefix)) return undefined
+  const name = path.slice(prefix.length).split('/')[0]
+  if (name.length === 0) return undefined
+  return `${prefix}${name}`
 }
 
 /**
@@ -275,7 +275,7 @@ function confinement(target: string, worktree: string | undefined, policy: Resol
   if (worktree === undefined) {
     return deny(
       'write-outside-worktree',
-      `refusing to write ${target}: no worktree is recorded for this agent; use an explicit absolute path under your own worktree, and ask the master to include the path in the spawn prompt if it was omitted`,
+      `refusing to write ${target}: no worktree is recorded for this agent; use an explicit absolute path under a worktree the installed policy admits, and run \`npm run guard:install\` from the main checkout if that path is outside the installed pattern`,
     )
   }
   if (!isInside(realTarget(worktree), real)) {

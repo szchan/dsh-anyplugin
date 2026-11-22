@@ -94,29 +94,45 @@ export function readRatchet(repoRoot: string): Ratchet {
   }
 }
 
-/**
- * The checkout that owns the repository's `.git`, from any worktree of it.
- *
- * A linked worktree's `--show-toplevel` is the worktree itself, and its `.git`
- * is a file that points at the main checkout's `worktrees/<name>`. The parent
- * of `--git-common-dir` is the path every worktree of the repository shares
- * and the one that survives deleting any single worktree — so it, not the
- * caller's cwd, is what the installed block must name.
- */
-export function mainCheckout(start: string): string | undefined {
+function gitValue(start: string, args: string[]): string | undefined {
   try {
-    const common = execFileSync('git', ['-C', start, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    const output = execFileSync('git', ['-C', start, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
-    return common.length === 0 ? undefined : dirname(common)
+    return output.length === 0 ? undefined : output
   } catch {
     return undefined
   }
 }
 
+/**
+ * The checkout that owns the repository's `.git`, from any worktree of it.
+ *
+ * The derivation is the mod host's (`vcs.detect`, bridge.ts): when the git dir
+ * and the common dir are the same path, the checkout owns itself — that covers
+ * the ordinary main checkout, a submodule (its git dir is the superproject's
+ * `.git/modules/<name>`) and `git init --separate-git-dir` (both point at the
+ * external dir). Only when they differ is the checkout a linked worktree: its
+ * common dir is `<main>/.git`, whose parent survives deleting any single
+ * worktree. Anything else is not a layout we can name safely, and the caller
+ * falls back to the invocation root.
+ *
+ * Uses `--path-format=absolute`, which needs git ≥ 2.31 (the guard hook and
+ * audit scripts made the same requirement first).
+ */
+export function mainCheckout(start: string): string | undefined {
+  const gitDir = gitValue(start, ['rev-parse', '--path-format=absolute', '--git-dir'])
+  const commonDir = gitValue(start, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (gitDir === undefined || commonDir === undefined) return undefined
+  if (gitDir === commonDir) return gitValue(start, ['rev-parse', '--show-toplevel'])
+  if (basename(commonDir) === '.git') return dirname(commonDir)
+  return undefined
+}
+
 /** `git worktree list --porcelain`, with the checkout that owns `.git` marked. */
-export function readGitWorktrees(repoRoot: string): Worktree[] {  const output = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })
+export function readGitWorktrees(repoRoot: string): Worktree[] {
+  const output = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })
   const worktrees: Worktree[] = []
   for (const line of output.split('\n')) {
     if (line.startsWith('worktree ')) worktrees.push({ path: resolve(line.slice('worktree '.length).trim()) })
@@ -124,18 +140,22 @@ export function readGitWorktrees(repoRoot: string): Worktree[] {  const output =
       worktrees[worktrees.length - 1].branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//u, '')
     }
   }
-  // Porcelain order is lexical, not "main first"; the common dir is the only
-  // reliable answer, and it also tells a linked worktree from the checkout the
-  // repository owns.
-  try {
-    const common = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf8',
-    }).trim()
-    const owner = dirname(common)
-    for (const entry of worktrees) entry.main = entry.path === owner
-  } catch {
-    // A layout without a common dir is not a worktree checkout; leave `main` unset.
+  // Porcelain order is lexical, not "main first"; the owning checkout is the
+  // only reliable answer. It is not always `dirname(commonDir)`: a submodule
+  // and a `--separate-git-dir` checkout point both dirs at themselves, so the
+  // shared derivation in `mainCheckout` is what marks the main entry.
+  const owner = mainCheckout(repoRoot)
+  if (owner !== undefined) {
+    // Git reports the git directory itself as the main "worktree" in a
+    // submodule and in a `--separate-git-dir` checkout. The working tree is
+    // the owner, and that is the path a worker can be confined to.
+    const gitDir = gitValue(repoRoot, ['rev-parse', '--path-format=absolute', '--git-dir'])
+    const commonDir = gitValue(repoRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    for (const entry of worktrees) {
+      if (entry.path === gitDir || entry.path === commonDir) entry.path = owner
+    }
   }
+  for (const entry of worktrees) entry.main = owner !== undefined && entry.path === owner
   return worktrees
 }
 
@@ -182,6 +202,26 @@ export function readWorktrees(block: string): string[] {
 }
 
 /**
+ * Refuse a worktree path that contains `*`.
+ *
+ * The block's grammar reads a trailing `*` as the one-directory wildcard. A
+ * literal `*` in a checkout path would therefore be written as a pattern whose
+ * parent also contains `*`, and `matchWorktree` would confine a sibling such as
+ * `.../starX/wt/ticket-1` — one the plan never named. Plain quoting cannot tell
+ * the two apart on the way back in, so the install fails closed with the path
+ * in the message instead of writing an ambiguous entry.
+ */
+function assertRepresentableWorktrees(paths: string[]): void {
+  for (const path of paths) {
+    if (!path.includes('*')) continue
+    throw new Error(
+      `guard: the worktree path ${path} contains "*", and the managed block reserves "*" for one trailing directory-name wildcard; ` +
+        'a literal "*" would be read back as a pattern and confine a sibling the plan never named. Rename the checkout path to remove "*".',
+    )
+  }
+}
+
+/**
  * The `*` pattern that covers a set of ticket worktrees, or undefined.
  *
  * The install used to write the list it discovered: a worktree created after
@@ -193,6 +233,7 @@ export function readWorktrees(block: string): string[] {
  */
 export function deriveWorktreeGlob(paths: string[]): string | undefined {
   if (paths.length === 0) return undefined
+  assertRepresentableWorktrees(paths)
   const resolved = paths.map((path) => resolve(path))
   const parent = dirname(resolved[0])
   if (!resolved.every((path) => dirname(path) === parent)) return undefined
@@ -384,6 +425,10 @@ export function composeGuard(options: {
     .filter((entry) => entry.main !== true && entry.branch?.startsWith('ticket/') === true)
     .sort((left, right) => (left.path === preferred ? -1 : right.path === preferred ? 1 : 0))
   const ticketPaths = ticketWorktrees.map((entry) => entry.path)
+  // Also checked here, not only in the derivation: status composes with the
+  // pattern already in the block, so a live worktree with a literal `*` must
+  // fail before it can be appended as an exact entry.
+  assertRepresentableWorktrees(ticketPaths)
   const glob = options.worktreeGlob === undefined ? deriveWorktreeGlob(ticketPaths) : resolve(options.worktreeGlob)
   const configured =
     glob === undefined ? ticketPaths : [glob, ...ticketPaths.filter((path) => matchWorktree(glob, path) !== path)]

@@ -92,12 +92,27 @@ try {
 const listedWorktrees = installed.present ? readWorktrees(installed.block) : []
 const listedGlob = listedWorktrees.find((entry) => isWorktreeGlob(entry))
 const stalePaths = listedWorktrees.filter((entry) => !isWorktreeGlob(entry) && !existsSync(entry))
-const composition = composeGuard({
-  repoRoot: root,
-  worktrees,
-  ...(extraWorktrees[0] === undefined ? {} : { preferredWorktree: extraWorktrees[0].path }),
-  ...(listedGlob === undefined ? {} : { worktreeGlob: listedGlob }),
-})
+let composition
+try {
+  composition = composeGuard({
+    repoRoot: root,
+    worktrees,
+    ...(extraWorktrees[0] === undefined ? {} : { preferredWorktree: extraWorktrees[0].path }),
+    ...(listedGlob === undefined ? {} : { worktreeGlob: listedGlob }),
+  })
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error)
+  const reason = message.startsWith('guard:') ? message : `guard:status: ${message}`
+  if (json) {
+    console.log(JSON.stringify({ profileDir, patchFile, status: 'refused', reason }, null, 2))
+  } else {
+    console.log(`guard: profile ${profileDir}`)
+    console.log(`guard: patch   ${patchFile}${fileExists ? '' : ' (missing)'}`)
+    console.log('guard: status  refused')
+    console.error(reason)
+  }
+  process.exit(1)
+}
 const sourceExists = existsSync(composition.source)
 // The state line records what the file looked like before install; it is not
 // part of what the tree composes, so it is ignored when comparing.
@@ -136,6 +151,7 @@ const report = {
   source: composition.source,
   sourceExists,
   worktrees: composition.config.worktrees ?? [],
+  installedWorktrees: listedWorktrees,
   stalePaths,
   protectedRoots: composition.config.protectedRoots ?? [],
   duplicateId: duplicate,
@@ -152,7 +168,8 @@ if (json) {
   console.log(`guard: patch   ${patchFile}${fileExists ? '' : ' (missing)'}`)
   console.log(`guard: status  ${status}`)
   console.log(`guard: source  ${composition.source}${sourceExists ? '' : ' (missing)'}`)
-  console.log(`guard: worktrees ${report.worktrees.length === 0 ? 'none' : report.worktrees.join(', ')}`)
+  console.log(`guard: worktrees ${report.worktrees.length === 0 ? 'none' : report.worktrees.join(', ')} (desired)`)
+  console.log(`guard: installed worktrees ${listedWorktrees.length === 0 ? 'none' : listedWorktrees.join(', ')}`)
   for (const path of stalePaths) {
     console.log(`guard: stale worktree ${path} (listed in the block, no longer exists)`)
   }

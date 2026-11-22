@@ -69,14 +69,21 @@ cd "$dir"
 
 The shared parent and the `ticket-<n>` stem matter to the guard:
 `npm run guard:install` writes one pattern (`$root/ticket-*`), not a snapshot of
-the worktrees that existed when it ran, so the next ticket worktree is admitted
-without a reinstall. Install once from the main checkout — a real install from a
-ticket worktree is refused, because git shares one hooks directory with the main
+the worktrees that existed when it ran, so a directory matching it is admitted
+without a reinstall — including a worktree the master creates later. The pattern
+is a namespace matcher, not a git-worktree attestation: any directory named
+`ticket-*` under `$root` is confinable even if git never created it as a
+worktree. Install once from the main checkout — a real install from a ticket
+worktree is refused, because git shares one hooks directory with the main
 checkout. `npm run guard:install -- --dry-run` from anywhere composes the block
 and names the main checkout; `npm run guard:status` reports `not-installed`,
 `current`, `stale` or `installed-with-stale-paths` (a literal path in the block
-no longer exists, and the line names it). A worktree whose path does not share
-that parent and stem is not covered until the next install; review and verify
+no longer exists, and the line names it), and prints the desired and installed
+worktree lists separately. A directory whose path does not share that parent and
+stem is not covered until the next install. If any discovered ticket worktree is
+outside the shared parent and stem, the block keeps the exact list instead of a
+pattern; one out-of-pattern worktree then makes the next install drop the
+pattern for every future worktree until the next install. Review and verify
 worktrees are deliberately not confinable.
 
 The master creates the worktree and hands the worker its exact path — a worker
