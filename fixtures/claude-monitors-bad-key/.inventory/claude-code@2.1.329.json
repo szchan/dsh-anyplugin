@@ -1,0 +1,28 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "monitors-bad-key",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-monitors-bad-key"
+  },
+  "components": [
+    {
+      "surface": "skills",
+      "name": "innocent"
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.329"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 28
+    },
+    "perComponent": {
+      "innocent": {
+        "value": 30
+      }
+    }
+  }
+}

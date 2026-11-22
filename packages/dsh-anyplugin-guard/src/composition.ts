@@ -42,9 +42,9 @@ export const BLOCK_END = '# <<< dsh-anyplugin guard'
 const REVIEWED_HEAD = '0123456789abcdef0123456789abcdef01234567'
 
 export interface Ratchet {
-  /** `25 declared / 24 matched / 0 missing / 1 refused`, verbatim from docs/FEATURES.md. */
+  /** `27 declared / 26 matched / 0 missing / 1 refused`, verbatim from docs/FEATURES.md. */
   totals: string
-  /** `11 fixtures`: the fixture directories `EXPECTED_ROWS` owns, derived from the test. */
+  /** `13 fixtures`: the fixture directories `EXPECTED_ROWS` owns, derived from the test. */
   fixtures?: string
   /** Rows the coverage test declares as missing or refused. */
   open: string[]

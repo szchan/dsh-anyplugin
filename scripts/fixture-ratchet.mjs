@@ -39,6 +39,10 @@ export function expectedRowFixtures(source) {
  */
 export const FIXTURE_EXCLUSIONS = {
   'claude-hooks-fanout': 'hook fan-out and matcher ordering: packages/dsh-anyplugin-conformance/test/hooks.test.mjs',
+  'claude-monitors-bad-when-enum': 'file-shaped monitors rejection with no sibling component to inventory (Skills (0)), owned by the unsupported-row tests: packages/dsh-anyplugin-dialect-claude-code/test/monitors.test.mjs',
+  'claude-monitors-errors':
+    'captured client error-text corpus for the monitors dialect, not a plugin: packages/dsh-anyplugin-dialect-claude-code/test/monitors.test.mjs',
+  'claude-monitors-bad-when-short': 'file-shaped monitors rejection with no sibling component to inventory (Skills (0)), owned by the unsupported-row tests: packages/dsh-anyplugin-dialect-claude-code/test/monitors.test.mjs',
   'claude-output-styles': 'output-style activation carry: packages/dsh-anyplugin-conformance/test/output-styles-carry.test.mjs',
   'claude-output-styles-activation': 'output-style activation at agent start: packages/dsh-anyplugin-conformance/test/output-styles-activation.test.mjs',
   'codex-portable': 'the codex dialect fixture: packages/dsh-anyplugin-conformance/test/codex.test.mjs',

@@ -1,0 +1,1 @@
+❯ inline[0]: ✘ Failed to load plugin: Plugin manifest-when-enum has an invalid manifest file at <plugin>/.claude-plugin/plugin.json. Validation errors: monitors.0.when: Invalid string: must start with "on-skill-invoke:", monitors.0.when: on-skill-invoke: must specify a skill name

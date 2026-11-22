@@ -1,0 +1,1 @@
+Error: monitors load failed from <plugin>/monitors/monitors.json: [ { ”code”: ”unrecognized_keys”, ”keys”: [ ”trigger” ], ”path”: [ 0 ], ”message”: ”Unrecognized key: \”trigger\”” } ]

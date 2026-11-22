@@ -1,0 +1,29 @@
+{
+  "$schema": "dsh-anyplugin/inventory@1",
+  "plugin": {
+    "name": "monitors-valid",
+    "version": "0.0.1",
+    "source": "plugin-dir:fixtures/claude-monitors-valid"
+  },
+  "components": [
+    {
+      "surface": "skills",
+      "name": "greet"
+    }
+  ],
+  "pin": {
+    "tool": "claude-code",
+    "version": "2.1.329"
+  },
+  "tokens": {
+    "alwaysOn": {
+      "value": 11
+    },
+    "perComponent": {
+      "greet": {
+        "value": 20,
+        "atMost": true
+      }
+    }
+  }
+}

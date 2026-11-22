@@ -1,0 +1,5 @@
+{
+  "name": "monitors-valid",
+  "description": "Conformance fixture: one valid monitor declaration and the skill it is gated on",
+  "version": "0.0.1"
+}

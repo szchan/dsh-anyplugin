@@ -174,8 +174,8 @@ test(
           worktrees: [dataDir],
           protectedRoots: [],
           brief: {
-            ratchet: ['25 declared / 24 matched / 0 missing / 1 refused'],
-            fixtures: '11 fixtures',
+            ratchet: ['27 declared / 26 matched / 0 missing / 1 refused'],
+            fixtures: '13 fixtures',
             open: ['mcpServers:a-server-name-that-is-long-enough:refused'],
           },
         },
@@ -222,7 +222,7 @@ test(
       assert.equal(briefMessages.length, 1, 'the first child request carries the brief exactly once')
       assert.match(briefMessages[0].id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u)
       assert.equal(briefMessages[0].source?.kind, 'user', 'the loop reads message.source.kind; the brief is a user source')
-      assert.match(briefMessages[0].content.map((block) => block.text ?? '').join('\n'), /25 declared \/ 24 matched/u)
+      assert.match(briefMessages[0].content.map((block) => block.text ?? '').join('\n'), /27 declared \/ 26 matched/u)
       assert.ok(requests.length >= 3, `the denied tool was not run; the child took another model step (saw ${requests.length})`)
       const toolResults = (requests[2]?.messages ?? []).flatMap((message) =>
         Array.isArray(message.content)

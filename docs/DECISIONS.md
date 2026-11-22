@@ -2921,3 +2921,57 @@ outside the repository and a fresh checkout recreates it. The guard's push rule
 is `dormant` until the pre-push hook is installed (F1/F2), and the merge-head pin
 (#163) and structured denial log (#164) remain open. The first baseline is
 `docs/audits/2026-11-22.md`.
+
+## D64 — A monitors declaration the client rejects is loaded with an error, not fatal
+
+**Status:** ratified 2026-11-22 (#159, S22).
+
+At `claude-code@2.1.329` the client's verdict on a `monitors` declaration depends
+on **where the declaration lives**, not only on its shape, and this layer mirrors
+that split instead of averaging it:
+
+- A **manifest-shaped** violation — an invalid entry in the inline `monitors`
+  array, a `monitors` value that is not an array, or a path string that does not
+  start with `"./"` — makes the manifest invalid: the plugin is not loaded and
+  `plugin details` does not list it. We keep the fatal `CompileReport` path and
+  emit nothing.
+- A **file-shaped** violation — bad JSON or an invalid entry in
+  `monitors/monitors.json` (or in a `"./"`-declared file), a duplicate monitor
+  name, or a `"./"` target that is missing, is not a regular file, or is
+  unreadable — is printed by `claude plugin list` as `Status: ✘ loaded with
+  errors`, while the plugin stays registered and `plugin details` still serves
+  its other components (`fixtures/claude-monitors-bad-key` lists
+  `Skills (1) innocent`). We therefore compile the plugin, emit its siblings,
+  and carry the declaration as one `unsupported` row. The marketplace load path
+  printed `Status: ✘ failed to load` for the same declarations; the two paths
+  diverge at this pin, this layer mirrors the directory path that
+  `rig install <dir>` corresponds to, and the carried reason states the
+  divergence.
+
+Precedence and validation: the manifest `monitors` key (array or `"./"`-relative
+path) overrides `monitors/monitors.json` entirely; a missing file, a plain
+`monitors` file, or ENOENT/ENOTDIR counts as no declaration; names are unique and
+case-sensitive; `name`, `command` and `description` are non-empty strings; `when`
+is `always` or `on-skill-invoke:<name>` with a non-empty name; unknown keys are
+rejected. A valid declaration stays one `planned` row and is carried, never
+materialized (D37, S22: the client validates it and never runs it headless).
+
+Every quoted client string, including the `plugin list` status, comes from
+`MONITOR_CLIENT_TEXT`, generated from `fixtures/claude-monitors-errors/observed/`
+by `scripts/capture-monitor-errors.mjs` at the pin. File-shaped shapes also
+capture the `Status: ✘ loaded with errors` line; manifest-shaped shapes print no
+status line, so none is invented or quoted for them. The tests compare the
+emitted row with the captured files exactly, including the client's typographic
+quotes, and reject our own fs codes and Node position details. `capture-monitor-errors.mjs
+--check` rebuilds the corpus and diffs it byte-for-byte inside `npm run verify`,
+so a pin bump that rewords the client reddens the gate with the changed file's
+name and produces a reviewable corpus diff instead of a silent drift.
+
+**Consequences.** A rejected declaration no longer fails a plugin the client
+still serves; the price is that "the plugin loaded" and "its monitors work" are
+now separate claims, and only the first is observable. R14 checks that the named
+owner test file exists, not that the test reads the fixture — deleting
+`monitors.test.mjs` produces the expected violations, but the link is
+file-existence, not semantics. The runtime notification channel a monitor would
+feed is still open in `docs/TODO.md`; that is a product decision, not a fidelity
+gap, because there is no observable spawn target at the pin.
