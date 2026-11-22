@@ -1,20 +1,16 @@
 name: verify
 
 on:
-  pull_request:
+  # Push only. A commit can carry at most one check named `verify`, and branch
+  # protection reads that name; a `pull_request` trigger for the same commit
+  # produced a second run under the same name and blocked the merge with one of
+  # them still pending. External PRs are read, then re-pushed onto one of our
+  # branches — that push is what produces the required check (docs/TRIAGE.md).
   push:
-    # Any branch, not just main: an agent pushes and CI is the verifier
-    # (D67/#175). A PR then only adds review, not a second verification.
     branches: ["**"]
 
-# Two events can fire for one commit (a branch push, then the PR that branch
-# opens). Branch protection requires a context named exactly `verify`; two runs
-# of the same suite under that name leave one of them pending and block the
-# merge forever. So same-repo PRs do not run here at all (their push already
-# did), and a fork PR runs as `verify-pr`, which is informational — an external
-# PR is put on a branch of ours before it is merged, which produces `verify`.
 concurrency:
-  group: verify-${{ github.event_name }}-${{ github.ref }}
+  group: verify-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -27,10 +23,7 @@ jobs:
   # must not prevent the other from running. The pinned Claude Code CLI is
   # fetched once and serves the upstream half of every run.
   verify:
-    name: ${{ github.event_name == 'pull_request' && 'verify-pr' || 'verify' }}
-    if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name != github.repository
+    name: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
