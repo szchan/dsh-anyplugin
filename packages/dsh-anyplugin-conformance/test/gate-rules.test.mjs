@@ -335,3 +335,34 @@ test('R15: every non-decisions doc currently owns its counts', () => {
   }
   assert.deepEqual(failures, [])
 })
+
+test('a translated README quotes the same ratchet and the same suite count', () => {
+  // R15 reads English count claims (`32 declared`); a translation carries its
+  // numbers in its own nouns (`声明 32 · 匹配 31`), so a stale translation is
+  // invisible to it — README_cn.md said 27/26 and 969 while README.md said
+  // 32/31 and 979 (#203). This test binds both READMEs to the same owner.
+  const root = fileURLToPath(new URL('../../../', import.meta.url))
+  const read = (name) => readFileSync(join(root, name), 'utf8')
+  const owner = read('packages/dsh-anyplugin-conformance/test/coverage.test.mjs')
+  const constant = /export const EXPECTED_COUNTS = \{([^}]*)\}/u.exec(owner)
+  assert.ok(constant, 'coverage.test.mjs still exports EXPECTED_COUNTS')
+  const expected = Object.fromEntries(
+    [...constant[1].matchAll(/(\w+):\s*(\d+)/gu)].map((match) => [match[1], Number(match[2])]),
+  )
+  const ratchet = [expected.declared, expected.matched, expected.missing, expected.refused]
+
+  const en = read('README.md')
+  const cn = read('README_cn.md')
+  const english = /(\d+) declared · (\d+) matched ·\s*\n?\s*(\d+) missing · (\d+) refused/u.exec(en)
+  assert.ok(english, 'README.md states the ratchet in the canonical form')
+  assert.deepEqual(english.slice(1).map(Number), ratchet, 'README.md agrees with EXPECTED_COUNTS')
+  const chinese = /声明 (\d+) · 匹配 (\d+) ·\s*\n?\s*缺失 (\d+) · 拒绝 (\d+)/u.exec(cn)
+  assert.ok(chinese, 'README_cn.md states the ratchet in the canonical form')
+  assert.deepEqual(chinese.slice(1).map(Number), ratchet, 'README_cn.md agrees with EXPECTED_COUNTS')
+
+  const englishTests = /and (\d+) tests/u.exec(en)
+  const chineseTests = /以及 (\d+) 个测试/u.exec(cn)
+  assert.ok(englishTests, 'README.md quotes a suite count')
+  assert.ok(chineseTests, 'README_cn.md quotes a suite count')
+  assert.equal(chineseTests[1], englishTests[1], 'both READMEs quote the same suite count')
+})
