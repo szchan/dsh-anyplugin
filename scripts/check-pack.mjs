@@ -33,9 +33,10 @@ const notes = []
  * this one bounds the tarball the registry serves, so growth is a visible
  * decision. The deduped controller+CLI build measures ~174.3 KiB; 180 KiB
  * leaves room for a doc paragraph without inviting drift. Raise it only with a
- * decision entry.
+ * decision entry. The D65 proposal raises it from 180 KiB to 184 KiB: the shipped CLI carries
+ * the Codex marketplace reader, which measures 181.9 KiB compressed.
  */
-const TARBALL_CEILING_BYTES = 180 * 1024
+const TARBALL_CEILING_BYTES = 184 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }
