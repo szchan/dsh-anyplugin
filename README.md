@@ -98,7 +98,7 @@ surface for. These stay **typed refusals** (a recorded reason, never a silent
 
 ### Repository evidence (unchanged by this release)
 
-- against DSH `0.2.2-rc.5` and Claude Code `2.1.329`: 27 declared · 26 matched ·
+- against DSH `0.2.2-rc.5` and Claude Code `2.1.329`: 32 declared · 31 matched ·
   0 missing · 1 refused (the refused row is `claude-mcp-budget`, an MCP server
   name the DSH seam refuses);
 - Codex portable plugins run their own end-to-end fixture (`fixtures/codex-portable`,
