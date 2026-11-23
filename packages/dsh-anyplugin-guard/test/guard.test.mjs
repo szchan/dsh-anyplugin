@@ -29,6 +29,7 @@ import {
   runTable,
   uninstallText,
 } from '../src/composition.ts'
+import { guardWorktrees, parseBlock, sameValue } from '../src/block.ts'
 import { currentBranch, isMainRef } from '../src/git.ts'
 import { chooseWorktree, messageText, renderBrief } from '../src/brief.ts'
 import { insideGitDirectory, isWorktreeGlob, judgeCall, matchWorktree, resolvePolicy } from '../src/policy.ts'
@@ -1709,6 +1710,254 @@ test('guard:status refuses a duplicate id outside the block and a lone end marke
     assert.doesNotMatch(marker.stderr, /\n\s+at /u, 'a broken profile is a clean refusal, not a stack')
   } finally {
     rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('the block reader proves a folded scalar equal and refuses what it cannot read', () => {
+  const source = join(repo, 'packages/dsh-anyplugin-guard/src/index.ts')
+  const block = renderBlock(source, config)
+  const rendered = parseBlock(block)
+  assert.equal(rendered.ok, true, rendered.ok ? '' : rendered.reason)
+  assert.deepEqual(guardWorktrees(rendered.value), config.worktrees)
+
+  const foldName = (text, separator) => {
+    const line = text.split('\n').find((entry) => entry.startsWith('      name: '))
+    const name = JSON.parse(line.slice('      name: '.length))
+    const cut = name.indexOf('index.ts')
+    assert.notEqual(cut, -1, 'the composed block quotes the source path')
+    return text.replace(line, '      name: "' + name.slice(0, cut) + separator + name.slice(cut) + '"')
+  }
+
+  // A backslash continuation removes the break, so the folded value is the
+  // single-line one the tree wrote.
+  const escaped = parseBlock(foldName(block, '\\\n        '))
+  assert.equal(escaped.ok, true, escaped.ok ? '' : escaped.reason)
+  assert.equal(sameValue(escaped.value, rendered.value), true, 'a backslash continuation folds away the break')
+
+  // The same fold, with one character changed in the continuation, is a
+  // different path: value comparison must see it.
+  const tampered = parseBlock(foldName(block, '\\\n        ').replace('index.ts"', 'index.mjs"'))
+  assert.equal(tampered.ok, true, tampered.ok ? '' : tampered.reason)
+  assert.equal(sameValue(tampered.value, rendered.value), false, 'a changed continuation is a changed value')
+
+  // A bare line break folds to one space, so it only preserves a scalar that
+  // already has that space.
+  const foldedSpace = parseBlock('ratchet:\n  - "32 declared / 31\n    matched"\n')
+  assert.equal(foldedSpace.ok, true, foldedSpace.ok ? '' : foldedSpace.reason)
+  assert.equal(foldedSpace.ok && sameValue(foldedSpace.value, { ratchet: ['32 declared / 31 matched'] }), true)
+
+  const duplicateKey = parseBlock('name: "one"\nname: "two"\n')
+  assert.equal(duplicateKey.ok, false)
+  assert.match(duplicateKey.ok ? '' : duplicateKey.reason, /duplicate mapping key/u)
+
+  const flow = parseBlock('worktrees: [unterminated\n')
+  assert.equal(flow.ok, false)
+  assert.match(flow.ok ? '' : flow.reason, /flow sequences are not read/u)
+
+  const anchored = parseBlock('worktrees: &anchor []\n')
+  assert.equal(anchored.ok, false)
+  assert.match(anchored.ok ? '' : anchored.reason, /anchors, aliases and tags are not read/u)
+})
+
+test('the block reader types plain scalars the way the loader does, and folds whitespace the way YAML does', () => {
+  // FAIL-OPEN regression (F20 follow-up): a fold that leaves literal spaces
+  // before the escaped break changes the value the loader sees. The reader used
+  // to trim them and call the block current.
+  const spaced = parseBlock('name: "src/ind   \\\n        ex.ts"\n')
+  assert.equal(spaced.ok, true, spaced.ok ? '' : spaced.reason)
+  assert.deepEqual({ ...spaced.value }, { name: 'src/ind   ex.ts' }, 'spaces before an escaped break are content')
+
+  const tabbed = parseBlock('name: "src/ind\t\\\n        ex.ts"\n')
+  assert.equal(tabbed.ok, true, tabbed.ok ? '' : tabbed.reason)
+  assert.deepEqual({ ...tabbed.value }, { name: 'src/ind\tex.ts' })
+
+  const escapedSpaceBreak = parseBlock('name: "src/ind\\ \\\n        ex.ts"\n')
+  assert.equal(escapedSpaceBreak.ok, true, escapedSpaceBreak.ok ? '' : escapedSpaceBreak.reason)
+  assert.deepEqual({ ...escapedSpaceBreak.value }, { name: 'src/ind ex.ts' }, 'an escaped space stays one space')
+
+  const escapedSpaceFold = parseBlock('name: "src/ind\\ \n        ex.ts"\n')
+  assert.equal(escapedSpaceFold.ok, true, escapedSpaceFold.ok ? '' : escapedSpaceFold.reason)
+  assert.deepEqual({ ...escapedSpaceFold.value }, { name: 'src/ind  ex.ts' }, 'a bare fold adds a space next to an escaped one')
+
+  // A *bare* break drops the raw whitespace that sits before it, and a fold
+  // discards the continuation's leading whitespace including a tab. Both are
+  // js-yaml's reading (`"x  \n  y"` is `x y`, `"x\` + LF + TAB + `y"` is `xy`),
+  // and both are pinned here so a lenient reader cannot pass.
+  const bareTrailing = parseBlock('name: "src/ind   \n        ex.ts"\n')
+  assert.equal(bareTrailing.ok, true, bareTrailing.ok ? '' : bareTrailing.reason)
+  assert.deepEqual({ ...bareTrailing.value }, { name: 'src/ind ex.ts' }, 'a bare break drops raw trailing whitespace')
+
+  const bareTrailingTab = parseBlock('name: "src/ind\t\n        ex.ts"\n')
+  assert.equal(bareTrailingTab.ok, true, bareTrailingTab.ok ? '' : bareTrailingTab.reason)
+  assert.deepEqual({ ...bareTrailingTab.value }, { name: 'src/ind ex.ts' }, 'a bare break drops a raw trailing tab')
+
+  const tabContinuation = parseBlock('name: "src/index.ts\\\n\tex.mjs"\n')
+  assert.equal(tabContinuation.ok, true, tabContinuation.ok ? '' : tabContinuation.reason)
+  assert.deepEqual({ ...tabContinuation.value }, { name: 'src/index.tsex.mjs' }, 'a fold skips a leading tab in the continuation')
+
+  // The whole leading run is indentation, spaces and tabs interleaved: skipping
+  // only a tab run would keep the spaces that follow the tab as content.
+  const tabThenSpaces = parseBlock('name: "x\\\n\t  y"\n')
+  assert.equal(tabThenSpaces.ok, true, tabThenSpaces.ok ? '' : tabThenSpaces.reason)
+  assert.deepEqual({ ...tabThenSpaces.value }, { name: 'xy' }, 'a fold skips tabs and the spaces after them')
+
+  const bareTabThenSpaces = parseBlock('name: "x \n\t  y"\n')
+  assert.equal(bareTabThenSpaces.ok, true, bareTabThenSpaces.ok ? '' : bareTabThenSpaces.reason)
+  assert.deepEqual({ ...bareTabThenSpaces.value }, { name: 'x y' }, 'a bare break drops raw whitespace before the indentation')
+
+  const tabSpaceTab = parseBlock('name: "x\\\n\t \ty"\n')
+  assert.equal(tabSpaceTab.ok, true, tabSpaceTab.ok ? '' : tabSpaceTab.reason)
+  assert.deepEqual({ ...tabSpaceTab.value }, { name: 'xy' }, 'an interleaved tab/space run is all indentation')
+
+  // Plain scalars are typed by the YAML schema, so `TRUE` is a boolean and
+  // `0x10` is 16: reading them as strings would make two different loader
+  // documents compare equal.
+  assert.deepEqual(parseBlock('a: TRUE\n').ok ? { ...parseBlock('a: TRUE\n').value } : undefined, { a: true })
+  assert.deepEqual(parseBlock('a: Null\n').ok ? { ...parseBlock('a: Null\n').value } : undefined, { a: null })
+  assert.deepEqual(parseBlock('a: 0x10\n').ok ? { ...parseBlock('a: 0x10\n').value } : undefined, { a: 16 })
+  assert.deepEqual(parseBlock('a: 012\n').ok ? { ...parseBlock('a: 012\n').value } : undefined, { a: 12 })
+  assert.deepEqual(parseBlock('a: .5\n').ok ? { ...parseBlock('a: .5\n').value } : undefined, { a: 0.5 })
+  assert.deepEqual(parseBlock('a: +1\n').ok ? { ...parseBlock('a: +1\n').value } : undefined, { a: 1 })
+  assert.deepEqual(parseBlock('a: 1_000\n').ok ? { ...parseBlock('a: 1_000\n').value } : undefined, { a: '1_000' })
+  assert.deepEqual(parseBlock('a: yes\n').ok ? { ...parseBlock('a: yes\n').value } : undefined, { a: 'yes' })
+
+  // Values the loader would throw on are refused, so the comparison is stale
+  // rather than "equal".
+  const mappingLike = parseBlock('a: foo: bar\n')
+  assert.equal(mappingLike.ok, false)
+  assert.match(mappingLike.ok ? '' : mappingLike.reason, /plain value "foo: bar" is not read/u)
+  const sequenceLike = parseBlock('a: - b\n')
+  assert.equal(sequenceLike.ok, false)
+  assert.match(sequenceLike.ok ? '' : sequenceLike.reason, /plain value "- b" is not read/u)
+
+  // The loader's schema types `.inf` / `.NaN` as non-finite numbers; the block
+  // cannot mean them, and a JSON report cannot round-trip them, so they are
+  // refused (stale, never current).
+  const infinite = parseBlock('a: .inf\n')
+  assert.equal(infinite.ok, false)
+  assert.match(infinite.ok ? '' : infinite.reason, /is not a finite number; quote it/u)
+  const notANumber = parseBlock('a: -.NaN\n')
+  assert.equal(notANumber.ok, false)
+  assert.match(notANumber.ok ? '' : notANumber.reason, /is not a finite number; quote it/u)
+
+  // A numeric form that overflows a double is a string to the loader (its float
+  // resolver requires a finite parse) and infinite to `Number`, so the reader
+  // must refuse it rather than call it a number.
+  for (const text of ['1e999', '-1e999', '1e309', '1.0e999']) {
+    const overflow = parseBlock(`a: ${text}\n`)
+    assert.equal(overflow.ok, false, `${text} must be refused`)
+    assert.match(overflow.ok ? '' : overflow.reason, /is not a finite number; quote it/u)
+  }
+  const finiteFloat = parseBlock('a: 1e308\n')
+  assert.equal(finiteFloat.ok, true)
+  assert.deepEqual({ ...finiteFloat.value }, { a: 1e308 })
+
+  // `guardWorktrees` selects the guard's own insert row, not the first one, and
+  // a malformed config is "unknown", never a guess (m3-drop-id-check mutation).
+  const foreignFirst = parseBlock(
+    '- insert:\n    - id: "someone-else"\n      config:\n        worktrees:\n          - "/nope"\n    - id: "anyplugin-guard"\n      config:\n        worktrees:\n          - "/tmp/anyplugin-wt/ticket-*"\n',
+  )
+  assert.equal(foreignFirst.ok, true, foreignFirst.ok ? '' : foreignFirst.reason)
+  assert.deepEqual(guardWorktrees(foreignFirst.value), ['/tmp/anyplugin-wt/ticket-*'])
+  const malformedWorktrees = parseBlock('- insert:\n    - id: "anyplugin-guard"\n      config:\n        worktrees: 5\n')
+  assert.equal(malformedWorktrees.ok, true, malformedWorktrees.ok ? '' : malformedWorktrees.reason)
+  assert.equal(guardWorktrees(malformedWorktrees.value), undefined)
+})
+
+test('guard:status reads a folded block as current, and still refuses a changed, a duplicated or an unreadable one', () => {
+  const scratch = scratchCheckout()
+  const profile = mkdtempSync(join(tmpdir(), 'guard-status-values-'))
+  const patch = join(profile, 'cordis.patch.yml')
+  const status = (args = []) =>
+    spawnSync(
+      process.execPath,
+      [join(scratch, 'scripts/guard-status.mjs'), '--profile-dir', profile, ...args],
+      { cwd: scratch, encoding: 'utf8' },
+    )
+  const report = () => JSON.parse(status(['--json']).stdout)
+  const installed = () => readFileSync(patch, 'utf8')
+  const install = () =>
+    spawnSync(process.execPath, [join(scratch, 'scripts/guard-install.mjs'), '--profile-dir', profile], {
+      cwd: scratch,
+      encoding: 'utf8',
+    })
+  // The F20 shape: the profile writer folds the long double-quoted name scalar
+  // with a backslash continuation and reseats the end marker behind a blank
+  // line. No value changes.
+  const fold = (text) => {
+    const line = text.split('\n').find((entry) => entry.startsWith('      name: '))
+    const name = JSON.parse(line.slice('      name: '.length))
+    const cut = name.indexOf('/src/ind') + '/src/ind'.length
+    assert.ok(cut >= '/src/ind'.length, 'the installed block quotes the source path')
+    return text
+      .replace(line, '      name: "' + name.slice(0, cut) + '\\\n        ' + name.slice(cut) + '"')
+      .replace(BLOCK_END, `\n${BLOCK_END}`)
+  }
+  try {
+    const first = install()
+    assert.equal(first.status, 0, first.stdout + first.stderr)
+    const baseline = status()
+    assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr)
+    assert.match(baseline.stdout, /guard: status {2}current/u)
+
+    const foldedText = fold(installed())
+    writeFileSync(patch, foldedText)
+    const folded = status()
+    assert.equal(folded.status, 0, folded.stdout + folded.stderr)
+    assert.match(folded.stdout, /guard: status {2}current/u)
+    assert.doesNotMatch(folded.stdout, /first difference/u)
+    assert.match(folded.stdout, /only its serialisation differs/u)
+    const foldedReport = report()
+    assert.equal(foldedReport.status, 'current')
+    assert.equal(foldedReport.difference, undefined)
+    assert.equal(foldedReport.reserialised, true)
+    assert.deepEqual(foldedReport.installedWorktrees, foldedReport.worktrees)
+
+    // A value changed inside the folded scalar is a real difference.
+    writeFileSync(patch, foldedText.replace('ex.ts"', 'index.ts"'))
+    const changed = status()
+    assert.equal(changed.status, 1)
+    assert.match(changed.stdout, /guard: status {2}stale/u)
+    assert.match(changed.stdout, /first difference/u)
+    const changedReport = report()
+    assert.equal(changedReport.status, 'stale')
+    assert.equal(typeof changedReport.difference.line, 'number')
+    assert.equal(changedReport.blockError, undefined)
+
+    const second = install()
+    assert.equal(second.status, 0, second.stdout + second.stderr)
+    const canonical = installed()
+    assert.match(status().stdout, /guard: status {2}current/u)
+
+    // A plain different value, with no folding involved.
+    writeFileSync(patch, canonical.replace('- "apply_patch"', '- "apply_patch2"'))
+    const plain = status()
+    assert.equal(plain.status, 1)
+    assert.match(plain.stdout, /guard: status {2}stale/u)
+    assert.equal(typeof report().difference.line, 'number')
+
+    // Two copies of the managed block are a duplicate entry, not a stale one.
+    writeFileSync(patch, canonical + canonical)
+    const duplicated = status()
+    assert.equal(duplicated.status, 1)
+    assert.match(duplicated.stdout, /duplicate - id/u)
+    assert.equal(report().duplicateId, true)
+
+    // A block that does not parse is not provably equal: stale, with a reason,
+    // never current.
+    writeFileSync(patch, canonical.replace(/^      name: ".*"$/mu, '      name: "unterminated'))
+    const unreadable = status()
+    assert.equal(unreadable.status, 1)
+    assert.match(unreadable.stdout, /guard: status {2}stale/u)
+    assert.match(unreadable.stdout, /cannot be read as YAML/u)
+    assert.doesNotMatch(unreadable.stdout, /guard: status {2}current/u)
+    const unreadableReport = report()
+    assert.equal(unreadableReport.status, 'stale')
+    assert.match(unreadableReport.blockError, /cannot be read as YAML/u)
+    assert.equal(unreadableReport.difference, undefined)
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
   }
 })
 

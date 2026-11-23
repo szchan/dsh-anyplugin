@@ -10,6 +10,12 @@
 // the block names the main checkout (issue #166), so that is what it must be
 // compared with.
 //
+// The installed block and the composed one are compared as parsed YAML values,
+// not as text. The profile writer may fold a long quoted scalar or reseat a
+// comment without changing what the loader applies; byte comparison read that
+// harmless rewrite as a stale install (F20). A side that does not parse is not
+// provably equal, so it is reported stale with the reason.
+//
 //   npm run guard:status [-- --profile-dir <dir>] [--json]
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -25,6 +31,7 @@ import {
   readGitWorktrees,
   readWorktrees,
 } from '../packages/dsh-anyplugin-guard/src/composition.ts'
+import { guardWorktrees, parseBlock, sameValue } from '../packages/dsh-anyplugin-guard/src/block.ts'
 import { isWorktreeGlob } from '../packages/dsh-anyplugin-guard/src/policy.ts'
 import { configuredHooksPath, hookTargets, prePushStatus } from './guard-hooks.mjs'
 
@@ -85,11 +92,17 @@ try {
   console.error(message.startsWith('guard:') ? message : `guard:status: ${message}`)
   process.exit(1)
 }
+// The state line records what the file looked like before install; it is not
+// part of the policy, so it is trivia to the parser.
+const parsedInstalled = installed.present ? parseBlock(installed.block) : undefined
 // A pattern in the block is the policy's matcher, not a discovered path:
 // reusing it keeps the block current as ticket worktrees come and go. A
 // literal path that is gone, by contrast, is invisible in a diff — the live
-// list no longer contains it — so it is reported by name instead.
-const listedWorktrees = installed.present ? readWorktrees(installed.block) : []
+// list no longer contains it — so it is reported by name instead. When the
+// block parses, its values are the policy; the textual read is the fallback
+// for a block the parser cannot account for (and that block is stale anyway).
+const parsedWorktrees = parsedInstalled?.ok ? guardWorktrees(parsedInstalled.value) : undefined
+const listedWorktrees = installed.present ? (parsedWorktrees ?? readWorktrees(installed.block)) : []
 const listedGlob = listedWorktrees.find((entry) => isWorktreeGlob(entry))
 const stalePaths = listedWorktrees.filter((entry) => !isWorktreeGlob(entry) && !existsSync(entry))
 let composition
@@ -115,9 +128,35 @@ try {
 }
 const sourceExists = existsSync(composition.source)
 // The state line records what the file looked like before install; it is not
-// part of what the tree composes, so it is ignored when comparing.
+// part of what the tree composes, so it is ignored when reporting a
+// difference. The two blocks are compared as parsed YAML values: the profile
+// writer may refold a long quoted scalar or reseat a comment without changing
+// what the loader applies, and byte equality would read that as a stale
+// install (F20). A side that does not parse is not provably equal — it stays
+// stale, and the reason is printed.
 const comparable = (block) => block.split('\n').filter((line) => !line.startsWith('# dsh-anyplugin guard state:')).join('\n')
-const difference = installed.present ? firstDifference(comparable(installed.block), composition.block) : undefined
+const textForm = (block) =>
+  block
+    .split('\n')
+    .filter((line) => !line.startsWith('# dsh-anyplugin guard state:') && line.trim() !== '')
+    .join('\n')
+const composedBlock = parseBlock(composition.block)
+let blockError
+let difference
+let reserialised = false
+if (installed.present) {
+  if (!parsedInstalled.ok) {
+    blockError = `the installed block cannot be read as YAML (${parsedInstalled.reason})`
+  } else if (!composedBlock.ok) {
+    blockError = `the block this tree writes cannot be read as YAML (${composedBlock.reason})`
+  } else if (!sameValue(parsedInstalled.value, composedBlock.value)) {
+    difference = firstDifference(comparable(installed.block), composition.block)
+  } else {
+    // Values are equal; note when only the serialisation moved, so a folded
+    // block is visibly read rather than silently accepted.
+    reserialised = textForm(installed.block) !== textForm(composition.block)
+  }
+}
 // A duplicate `- id:` outside the block is a second entry, not a stale one.
 const outside = installed.present ? text.replace(installed.block, '') : text
 const duplicate = duplicateGuardId(outside)
@@ -135,7 +174,7 @@ const hookNote =
     : (composition.config.worktrees ?? []).length === 0
       ? `no ticket worktrees configured; hook ${prePushStatus(hookLocation) === 'missing' ? 'expected' : 'installed'} at ${hookLocation}`
       : undefined
-const current = installed.present && difference === undefined && !duplicate
+const current = installed.present && blockError === undefined && difference === undefined && !duplicate
 const status = !installed.present
   ? 'not-installed'
   : stalePaths.length > 0
@@ -159,6 +198,8 @@ const report = {
   ...(hooksPath === undefined ? {} : { hooksPath }),
   ...(hookNote === undefined ? {} : { hookNote }),
   ...(difference === undefined ? {} : { difference }),
+  ...(blockError === undefined ? {} : { blockError }),
+  ...(reserialised ? { reserialised: true } : {}),
 }
 
 if (json) {
@@ -177,11 +218,16 @@ if (json) {
   for (const hook of hookStates) console.log(`guard: hook ${hook.file} ${hook.status}`)
   if (hookNote !== undefined) console.log(`guard: ${hookNote}`)
   if (duplicate) console.log('guard: duplicate - id: "anyplugin-guard" outside the managed block; remove it first')
+  if (blockError !== undefined) console.log(`guard: ${blockError}`)
   if (difference !== undefined) {
     console.log(`guard: first difference at line ${difference.line}`)
     console.log(`  installed: ${difference.installed}`)
     console.log(`  current:   ${difference.current}`)
     console.log('guard: run `npm run guard:install` to rewrite the block')
+  }
+  if (blockError !== undefined) console.log('guard: run `npm run guard:install` to rewrite the block')
+  if (reserialised) {
+    console.log("guard: the installed block holds this tree's values; only its serialisation differs (the profile may refold a scalar), and the loader reads it the same")
   }
   if (status === 'installed-with-stale-paths') {
     console.log('guard: run `npm run guard:install` to drop the stale paths and rewrite the block')
