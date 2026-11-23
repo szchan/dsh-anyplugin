@@ -3682,8 +3682,9 @@ Three rules follow:
    `scripts/triage-rules.test.mjs` pins both directions, using the real #177
    body.
 2. **The queue is GitHub, not `docs/TODO.md`.** `npm run inbox`
-   (`scripts/triage.mjs --waiting`) lists resume rows and blocked escalations
-   and **exits 1** when a substantive maintainer comment is unanswered, so
+   (`scripts/triage.mjs --waiting`) lists resume rows, blocked escalations and
+   brand-new maintainer asks, and **exits 1** when a maintainer comment has no
+   agent answer or a maintainer opened an issue nothing has picked up, so
    "queue empty" cannot be reported without reading it. `AGENTS.md` §5 makes it
    the first command of a round.
 3. **The wait is observable.** `.github/workflows/inbox.yml` runs the same
