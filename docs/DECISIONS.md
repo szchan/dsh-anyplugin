@@ -3786,3 +3786,80 @@ counted as blocked — fails at least one test. `docs/TRIAGE.md` §2 (the sectio
 list and *Agent findings are not maintainer asks*), §6's inbox subsection,
 `docs/WORKFLOW.md` §Roles, and the `AGENTS.md` §5 inbox paragraph state the
 classes.
+
+## D78 — The suite, the build, the pack check and the spikes are refused locally by name
+
+**Decided 2026-11-22** (#175, maintainer-ratified). #175 moved the gate to CI
+and trimmed local work to the static checks, but the rule lived only in prose:
+an agent that ran `npm test` anyway paid no price, and three parallel sessions
+had already saturated a 12-core machine (`load average 20.6`, #189). The guard
+now enforces the split at the tool call:
+
+1. **Refused by name, all roles.** The scripts `test`, `verify`, `build`,
+   `check:pack`, `perf`, `bench` and `spike:*` are denied as
+   `local-verify-refused`, however they are reached: `npm|pnpm|yarn test|t|tst`,
+   `run|rum|urn <script>`, package-manager flag forms (`--prefix . run verify`,
+   `-w x run test`, `--filter pkg run verify` — the flag's value is not the
+   verb), `node --test`, `node --run <script>`,
+   `node scripts/gate-slot.mjs`, a known test runner or `npm` behind
+   `npx`/`npm exec|x`/`pnpm exec`/`yarn exec`, `bun test` and
+   `bun run <script>`, and a bare runner (`vitest`, `jest`, `mocha`, `ava`,
+   `tap`, `uvu`, `c8`, `nyc`, or the `node_modules/.bin/` path).
+   A launcher is not an exemption: `npx`, `npm exec|x`, `pnpm`/`yarn`
+   `exec|dlx`, `yarn workspace|workspaces` and `bun x` hand off to a command,
+   and the guard re-judges that target with this whole policy, not with the
+   CI-only rule alone (#226). A launcher's own flags and their values are
+   skipped only when they are inert (`-p typescript tsc`, `--cwd . tsc`); a flag
+   whose value node or the shell executes is folded into the judged command:
+   `--node-arg` and `--node-options` values are placed before the target, so
+   `npx --node-arg --test node` is judged as `node --test`, and `--shell` is
+   accepted only as a bare known shell — a shell with its own flags or an
+   unknown program is refused as a layer the reader cannot model. A launcher's
+   `-c`/`--call` string is split by the same quote-aware list splitter, and
+   every segment in it is judged by this policy. The deny names the rule the
+   handed-off command broke — `interpreter-exec`, `local-verify-refused`,
+   `sudo-refused`, `git-push-main`, `gh-pr-merge-worker`,
+   `write-outside-worktree` — so standing one launcher away does not turn a deny
+   into an allow. Launcher chains are followed at most four deep: a fifth
+   launcher is `shell-unmodelled`, and a chain whose inner command already
+   breaks another rule is denied by that rule first (`npx npx npx npx npm test`
+   is `local-verify-refused`, not a depth refusal), which bounds the recursion.
+   The reader is a small modelled subset, not a shell: grouping and
+   substitutions (`( )` `{ }` backticks, `$`), control keywords
+   (`if/for/while/until/case/!`) and assignment prefixes are refused as
+   unmodelled. Wrappers are not a hiding place either: on a direct command line
+   the reader strips the ones it models (`env`, `command`, `nice`, `timeout`,
+   `xargs`) and judges the command they run, so `env -i npm test` is still the
+   suite, while `sudo` has its own rule; inside a `-c` string a wrapper word the
+   list reader cannot place is refused as unmodelled. The message names the
+   script and points at `npm run ci`. Matching is on the script or a known
+   runner, not the binary: `npm run check`, `check:arch`, `check:features`,
+   `check:decisions`, `check:audit`, `ci`, `inbox`, `guard:status` and
+   `verify:release` stay allowed, because they read files or the network and
+   spawn no test boot.
+2. **One deliberate escape hatch, root only.** `ANYPLUGIN_LOCAL_VERIFY=1` — and
+   only `=1`; `=0`, `=false`, `=00` and the bare name do not open the door — may
+   prefix one command segment, and the guard counts: a call that prefixes two
+   CI-only segments is refused. A launcher prefix passes the hatch to the
+   command the launcher hands off to, so
+   `ANYPLUGIN_LOCAL_VERIFY=1 npx -c "npm test"` is one deliberate run while a
+   second command in that `-c` string is still refused. The prefix is visible in
+   the transcript, so an audit can count it, and a worker's prefix is still
+   denied. A flake the reviewer reported is reproduced through this hatch, not
+   by loosening the rule.
+3. **A redirect or a pipeline is not an exemption.** `npm test 2>&1 | tail` is
+   still the suite; the rule matches the segment, not its stdio.
+4. **The brief tells workers the same thing.** `renderBrief` says to push and
+   let CI run the suite, the build, the pack check and the perf gate, and to let
+   the verify workflow run the spikes it owns — the other spikes do not run in
+   CI — so the rule and the handed instructions agree.
+
+The guard is not containment: `env` indirection reaches any command, a shell
+script's body is refused for workers but run for the root, and a script the
+reader does not model is still allowed — by path rather than by script name
+(`node scripts/build.mjs`, `node scripts/check-pack.mjs`, `node scripts/perf.mjs`)
+or behind make (`make test`). Those names are the residue, not an oversight, and
+so are Bun's space-separated value flags (`bun --env-file .env test`) and
+`env --split-string='npm test'`, whose value is one token the reader takes for a
+flag rather than a command. The named spellings above are the ones an agent
+actually types; the residue is a convention gap for honest mistakes, not a
