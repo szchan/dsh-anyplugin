@@ -68,7 +68,7 @@ Consequence, stated so nobody is surprised: a new issue waits for the next pull 
 up to one scheduling interval — before it is labelled. It is never lost, and it
 never interrupts a worker mid-branch.
 
-The queue has these sections, in priority order:
+The queue prints these sections in this order:
 
 1. **Maintainer asks (new)** — `from-maintainer` threads whose last human message
    is newer than the last agent message. These outrank everything.
@@ -97,6 +97,11 @@ The queue has these sections, in priority order:
 9. **Pull requests** — every open PR, with its `verify` status and whether an
    agent has reviewed at the current head.
 
+Order here is display priority, not classifier precedence: the classifier
+early-returns, so an issue already closed by an open PR is listed under *In
+review* even when it is a maintainer ask, and a `ticket/in-progress` issue is
+listed under *In progress* even when it also carries `maintainer-question`.
+
 A new issue or PR is labelled `needs-triage` by `.github/workflows/intake.yml`
 the moment it opens, so nothing sits unlabelled waiting for the poll. The label
 is the only thing that workflow does; it never checks out the contribution.
@@ -107,7 +112,8 @@ The architecture reviewer (D82) files through the bot, and the bot is ours:
 `roleOf` reads it as a maintainer, so before the class a finding was printed in
 no section at all, and after a maintainer comment it read as a maintainer reply.
 The class is the **author plus the title prefix** the D82 reviewer's prompt
-fixes:
+fixes (`docs/WORKFLOW.md` §Roles states the contract; the scheduled prompt
+carries the same command):
 
 - **author is `szchan-bot`** and the **title starts `arch:`** (case-insensitive).
   A maintainer issue titled `arch:` is still a maintainer ask: identity is the

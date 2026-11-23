@@ -127,9 +127,9 @@ maintainer answers with no agent reply and the maintainer-opened issues nothing
 has picked up, and exits 1 when there is one (2 when a thread could not be
 read). A `Seen.` receipt is not an answer (D79) — never judge a thread by its
 last comment. Agent findings (the architecture reviewer's bot-filed `arch:`
-issues, D82) are listed separately as *agent findings to review*: they are agent
-output and need review/merge, not an answer, so they do not raise the exit code
-(D83).
+issues, D82) are listed separately as `agent finding to review` rows: they are
+agent output and need review/merge, not an answer, so they do not raise the exit
+code (D83).
 
 `verify:release` is the post-publish probe from `docs/RELEASING.md` — a
 maintainer step, not a gate: it needs the network and a version the registry

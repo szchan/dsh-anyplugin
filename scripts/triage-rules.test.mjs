@@ -224,3 +224,29 @@ test('the inbox exit contract counts asks, answers and unreadable threads', () =
   assert.equal(inboxVerdict(sections('Maintainer answers (resume)'), [{ number: 2, message: 'EOF' }]).exitCode, 2)
   assert.equal(inboxVerdict({}).summary, 'inbox: 0 thread(s) waiting, 0 escalation(s) open, 0 agent finding(s) to review, 0 thread(s) unreadable')
 })
+
+test('the finding title contract is trimmed, anchored and colon-literal', () => {
+  const finding = (title) => isAgentFinding(issue({ title, author: { login: 'szchan-bot' } }), options)
+  // A pasted title can carry whitespace; it must still be a finding.
+  assert.equal(finding('  arch: padded title  '), true)
+  assert.equal(finding('\tarch: tabbed\n'), true)
+  // Near-misses are not findings: the colon is literal and the prefix anchored.
+  assert.equal(finding('arch : spaced colon'), false)
+  assert.equal(finding('archived: old finding'), false)
+  assert.equal(finding('architecture: design note'), false)
+  assert.equal(finding('x arch: not at the start'), false)
+})
+
+test('findings and blocked are disjoint (D83)', () => {
+  // A finding is agent output, not an escalation. Counting it as blocked would
+  // make the round-start exit code claim a human is waiting when none is.
+  const verdict = inboxVerdict({
+    'Agent findings (review)': [{ number: 20, title: 'arch: finding' }],
+    'Blocked on a human': [{ number: 10, title: 'ask' }],
+  })
+  assert.equal(verdict.findings.length, 1)
+  assert.equal(verdict.blocked.length, 1)
+  assert.equal(verdict.waiting.length, 0)
+  assert.equal(verdict.exitCode, 0)
+  assert.match(verdict.summary, /1 agent finding\(s\) to review/)
+})
