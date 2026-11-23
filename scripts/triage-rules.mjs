@@ -129,6 +129,27 @@ export const classifyIssue = (issue, comments, options) => {
 /** PRs are a flat list; the role is the only classification. */
 export const roleOfPullRequest = (pr, options) => (isOurs(pr.author?.login, options) ? 'maintainer' : 'external')
 
+export const PRIORITY_LABEL = 'priority/now'
+
+/**
+ * A maintainer's "do this next" mark, and only a maintainer's.
+ *
+ * The labels array alone is not evidence: the bot's token can label too, and
+ * every agent writes as the bot. So the last labelled/unlabelled event for this
+ * label must be `labeled`, and its actor must be a maintainer (not the bot, not
+ * a GitHub App). The timeline is the only place the actor is recorded.
+ */
+export const isPriority = (node, events, options) => {
+  if (!hasLabel(node, PRIORITY_LABEL)) return false
+  const relevant = (events ?? [])
+    .filter((event) => (event.event === 'labeled' || event.event === 'unlabeled') && event.label === PRIORITY_LABEL)
+    .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')))
+  const last = relevant.at(-1)
+  if (last === undefined || last.event !== 'labeled') return false
+  const actor = last.actor ?? ''
+  return options.maintainers.includes(actor) && actor !== options.botLogin && !actor.endsWith('[bot]')
+}
+
 /**
  * What `npm run inbox` says and returns.
  *
@@ -139,9 +160,16 @@ export const roleOfPullRequest = (pr, options) => (isOurs(pr.author?.login, opti
  */
 export const inboxVerdict = (sections, failures = []) => {
   const tag = (name) => (sections[name] ?? []).map((item) => ({ ...item, section: name }))
-  const resume = tag('Maintainer answers (resume)')
-  const asks = tag('Maintainer asks (new)')
-  const blocked = tag('Blocked on a human')
+  // A priority row was moved out of its section, so the section name it was
+  // printed under is not the one that decides whether it is waiting on a human.
+  // Count it by `originally`, and keep that as `section` for the caller's label.
+  const priority = tag('Priority (jump the queue)').map((item) => ({
+    ...item,
+    section: item.originally ?? 'Priority (jump the queue)',
+  }))
+  const resume = [...tag('Maintainer answers (resume)'), ...priority.filter((item) => item.section === 'Maintainer answers (resume)')]
+  const asks = [...tag('Maintainer asks (new)'), ...priority.filter((item) => item.section === 'Maintainer asks (new)')]
+  const blocked = [...tag('Blocked on a human'), ...priority.filter((item) => item.section === 'Blocked on a human')]
   const findings = tag('Agent findings (review)')
   const waiting = [...asks, ...resume]
   return {
