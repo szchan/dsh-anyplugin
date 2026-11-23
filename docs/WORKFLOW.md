@@ -292,7 +292,10 @@ after the verdict stops the run instead of being integrated silently.
    `check:decisions`. Never the suite locally (D78).
 6. **Refresh the body.** Read the current body with
    `npm run -s gh-bot -- pr view <n> --json body`, then post the file with
-   `npm run -s gh-bot -- pr edit <n> --body-file <file>`. The runner updates
+   `npm run -s gh-bot -- api -X PATCH repos/szchan/dsh-anyplugin/pulls/<n> -F body=@<file>`.
+   `gh-bot pr edit` is not usable: it runs a GraphQL query for project fields
+   that the bot token (scopes `repo` + `workflow`) cannot read, and fails with
+   `read:org` errors before writing anything. The runner updates
    facts only: the head and the `verify` run where the body records evidence, and
    `git diff --stat origin/main...HEAD` where it lists the change. A body whose
    `## Why` or claim table is missing, or contradicts the diff, is a
