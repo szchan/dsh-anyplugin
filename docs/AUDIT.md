@@ -218,6 +218,7 @@ adds measurable caps:
 | integration runner | merges `origin/main` into a ticket branch, pushes that branch, polls CI, assembles PR bodies, cleans worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, or one that touches `main` |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
+| architecture reviewer | one daily pass reading the design against the tree; finding issues and docs-only PRs | merge, approve or close its own issue/PR, push `main`, feature code, ticket branches, `docs/DECISIONS.md`, `docs/FEATURES.md` coverage rows or totals, a contract change in `docs/ARCHITECTURE.md` §0/§2/§7 without a decision | an issue without file:line at a commit; a run that edits code, merges, or moves coverage/contract |
 | auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, approve, merge, close an issue or PR; it proposes a decision and the master writes it | an audit PR the auditor approved, merged, or closed itself |
 
 The auditor's "no approve, no merge, no close" rule is a convention first: the
