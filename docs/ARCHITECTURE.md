@@ -131,6 +131,7 @@ that does not exist yet is under **Not yet built**, not in this table.
 | `dsh-anyplugin-command-template` | Claude command expansion (`$ARGUMENTS`, `$1..$9`, the trailer) as a pure function |
 | `dsh-anyplugin-trust` | exec classify/authorize/gate + the canonical `grants.yml` store (D25) |
 | `dsh-anyplugin-emit` | IR → `EntryTree` patch; emission is data |
+| `dsh-anyplugin-guard` | the agent-session policy on the DSH host; one package, `inject: ['tools']`, app-level and per-agent listeners over the two seams (D78) |
 | `dsh-anyplugin-install` | install lock + scope replay → loader entries; idempotent reconcile; the panel's server half (`src/panel.ts`) and its `dsh.client` source (D77) |
 | `dsh-anyplugin-dialect-claude-code` | `.claude-plugin/` → IR, at a pinned host version |
 | `dsh-anyplugin-dialect-codex` | Agent Plugins 1.0.0 / `.codex-plugin/` → IR (today's portable reader) |
@@ -833,8 +834,8 @@ The
 adapter does not derive a tier from the event name: the host seats a plugin,
 and `user` is only the fallback when a caller has no seating, never `core`
 (d.ts:9899 at the 2.1.329 pin). Unmapped engine-native events (56, including the refused
-`tool.check`) and classic events S9 leaves unprobed or refutes (17) stay on the
-adapter's `unmapped` list with that reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
+`tool.check`), classic events S9 leaves unprobed or refutes (12), and op hooks
+with no host point (75) stay on the adapter's `unmapped` list with that reason; the ticket's guessed names (`post.tool.use`, `turn.stop`, …) are
 reported as absent from the pin and point at their real spelling rather than
 being aliased.
 
