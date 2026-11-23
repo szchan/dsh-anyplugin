@@ -28,6 +28,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import readline from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { mainCheckout } from './audit-checkout.mjs'
+import { parseProbeTimeout } from './guard-probe-timeout.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const argv = process.argv.slice(2)
@@ -435,14 +436,14 @@ async function sessionEvidence() {
 // in the line — the digest reports "cannot tell", it never fails on it.
 
 const GUARD_STATUS_SCRIPT = join(root, 'scripts', 'guard-status.mjs')
-const GUARD_PROBE_TIMEOUT_MS = 25_000
 
 // The timeout is injectable for the same reason the runner is: the timeout
 // branch is part of the contract (it must produce `unavailable`, never a
-// failure), and a test cannot wait 25 s to prove it.
+// failure), and a test cannot wait 25 s to prove it. The strict parse lives in
+// `guard-probe-timeout.mjs` so it can be unit-tested without running this
+// script's main body.
 function guardProbeTimeoutMs() {
-  const override = Number(process.env.DSH_ANYPLUGIN_GUARD_PROBE_TIMEOUT_MS)
-  return Number.isInteger(override) && override > 0 ? override : GUARD_PROBE_TIMEOUT_MS
+  return parseProbeTimeout(process.env.DSH_ANYPLUGIN_GUARD_PROBE_TIMEOUT_MS)
 }
 
 function guardProbeCommand() {
@@ -646,10 +647,11 @@ function githubEvidence() {
 
 /**
  * The guard's install state in one line the auditor cannot miss. It must
- * distinguish `current`, `not-installed`, `installed-with-stale-paths`,
- * `duplicate` and `unavailable` without opening the JSON. `duplicate` is
- * derived: guard-status reports it as a boolean beside a `stale` block rather
- * than as its own status, and the reader's status stays in the JSON.
+ * distinguish the six states — `current`, `not-installed`,
+ * `installed-with-stale-paths`, `stale`, `refused` and `unavailable` — without
+ * opening the JSON. `duplicate` is derived: guard-status reports it as a
+ * boolean beside a `stale` block rather than as its own status, and the
+ * reader's status stays in the JSON.
  */
 function guardDigestLine(guard) {
   if (guard.status === 'unavailable') {
