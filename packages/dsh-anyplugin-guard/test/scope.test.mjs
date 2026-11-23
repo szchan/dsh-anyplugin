@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -158,4 +158,22 @@ test('a subdirectory of a review worktree is inside, and a relative gitdir resol
   assert.equal(inTerritory(review, policy), true, 'a review root is a working tree')
   assert.equal(inTerritory(join(review, 'packages'), policy), true, 'its subdirectory is inside it')
   assert.equal(inTerritory(join(dir, 'elsewhere'), policy), false, 'a sibling is not')
+})
+
+test('a symlinked worktree entry is inside after canonicalization', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'guard-ctrl-'))
+  try {
+    const ticket = join(dir, 'ticket-1999')
+    mkdirSync(ticket)
+    const link = join(dir, 'ticket-link')
+    symlinkSync(ticket, link)
+    const policy = resolvePolicy({ worktrees: [link], protectedRoots: [join(dir, 'repo')] })
+    // The entry is canonicalized before matching: a policy that lists a link
+    // admits the directory it points at, and the link itself (reviewer #230).
+    assert.equal(inTerritory(link, policy), true, 'the entry cwd is inside')
+    assert.equal(inTerritory(ticket, policy), true, 'the target it names is inside')
+    assert.equal(inTerritory(join(dir, 'ticket-2000'), policy), false, 'a sibling is not')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
