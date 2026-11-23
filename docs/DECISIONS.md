@@ -3448,3 +3448,69 @@ contract's own terms and is corrected here:
 
 D74's class, anchors and evidence stand; only the GA framing and the ordering
 of the remaining work are superseded.
+
+---
+
+## D77 — One package, one install: the panel ships inside `dsh-anyplugin`
+
+**Decided 2026-11-22**, with `#224` (from `#170`). Supersedes D61's
+"separately published optional package" sentence and D62 item 1 plus the parts
+of D62's consequences about a second bundle, a second `cordis.patch.yml`, the
+`check:ui` 64 KiB ceiling, and the `packages/dsh-anyplugin-ui/test/mutations.mjs`
+path. D62 items 2–5 stand unchanged.
+
+The maintainer rejected the two-package split: a user who installs
+`dsh-anyplugin` must get the panel. The panel was never separately publishable
+anyway (D62 made it `private`), and its 64 KiB budget only existed because the
+root tarball was capped for the kernel, not because the panel needed its own
+artifact.
+
+**Decided.**
+
+1. **One artifact, one version.** The panel is internal source of the install
+   package, not a package: `packages/dsh-anyplugin-install/src/panel.ts` is the
+   server half and `packages/dsh-anyplugin-install/src/client/panel.js` is the
+   browser half. `scripts/build.mjs` bundles the server half into `lib/index.js`
+   and emits the browser half as `lib/client.js`. There is no
+   `dsh-anyplugin-ui` manifest, version, patch file, tarball, publish step or
+   workspace entry.
+2. **One row, one client row.** `cordis.patch.yml` still inserts exactly one
+   loader row, `id: dsh-anyplugin`. The root manifest declares
+   `dsh.client = { platform: "web" }` and `exports["./client"]`, and the bundle
+   registers itself as `dsh-anyplugin`. This is forced by the host:
+   dsh-client-modules keys graph rows by the manifest name and refuses two
+   active Loader sources for one package, while a subpath-shaped loader name
+   composes no client row at all. The controller mounts the panel with
+   `ctx.inject(['webServer'], …)` *before* the missing-lock early return, so a
+   fresh profile can install its first plugin from the panel; a profile with no
+   web server simply leaves the child inactive.
+3. **The ceiling is a build constraint owned by `check:pack`.** The root
+   tarball ceiling in `scripts/check-pack.mjs` covers both halves. `check:pack`
+   asserts the `dsh.client` declaration, `exports["./client"]`, the presence of
+   `lib/client.js`, its `window.__ModuleLoader__.load({ id: 'dsh-anyplugin' })`
+   registration and `settings.section`, the `/anyplugin/installs` route in
+   `lib/index.js`, and that no shipped file still names `dsh-anyplugin-ui`.
+   `pack:ui`/`check:ui` do not exist; the publish workflow publishes one
+   package. This decision authorizes raising the root ceiling for the panel;
+   the measured byte count lives in the `check-pack` comment and in PR `#224`,
+   not in this entry, so the number cannot drift from the script. Any future
+   raise still needs its own decision — D62's "a ceiling is not raised to fit a
+   feature" rule stands for everything except this moved boundary.
+4. **The install writer is unchanged.** The panel still reaches
+   `dsh-anyplugin/install` (D61) through the package's own exports map and never
+   becomes a second writer over `installs.yml`. The mutation audit moves to
+   `packages/dsh-anyplugin-install/test/panel-mutations.mjs`; its eleven
+   single-property breaks still have to redden `test/panel.test.mjs`.
+
+**Why.** One install is the product claim; a second package made the panel an
+opt-in artifact with its own release problem, while the host gives exactly one
+client row per package name. The two halves already shared one install writer,
+one lock and one test box, so the package boundary bought nothing the tarball
+ceiling could not express.
+
+**Consequences.** `npm pack` on the root package now carries the panel entry
+and its assets; the tarball is larger by the measured amount in
+`docs/ARCHITECTURE.md` §2. The panel cannot be updated independently of the
+loader — the bundle id *is* the package name — so panel changes are package
+changes. A future external panel would have to be a different package with a
+different row id, not a second install of this one.

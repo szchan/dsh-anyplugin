@@ -131,7 +131,7 @@ that does not exist yet is under **Not yet built**, not in this table.
 | `dsh-anyplugin-command-template` | Claude command expansion (`$ARGUMENTS`, `$1..$9`, the trailer) as a pure function |
 | `dsh-anyplugin-trust` | exec classify/authorize/gate + the canonical `grants.yml` store (D25) |
 | `dsh-anyplugin-emit` | IR → `EntryTree` patch; emission is data |
-| `dsh-anyplugin-install` | install lock + scope replay → loader entries; idempotent reconcile |
+| `dsh-anyplugin-install` | install lock + scope replay → loader entries; idempotent reconcile; the panel's server half (`src/panel.ts`) and its `dsh.client` source (D77) |
 | `dsh-anyplugin-dialect-claude-code` | `.claude-plugin/` → IR, at a pinned host version |
 | `dsh-anyplugin-dialect-codex` | Agent Plugins 1.0.0 / `.codex-plugin/` → IR (today's portable reader) |
 | `dsh-anyplugin-materialize-skill` | IR → the skill registry |
@@ -141,12 +141,11 @@ that does not exist yet is under **Not yet built**, not in this table.
 | `dsh-anyplugin-materialize-agents` | one model-facing tool per agent file; the child is started through `ctx.subagents` (S10) |
 | `dsh-anyplugin-materialize-output-style` | IR → the selected style body at `agent/created`, through `agent.ctx.systemPrompt.section`; profile-wide, one selection at a time (ticket #77) |
 | `dsh-anyplugin-conformance` | fixtures + record/replay diff (first-class, not an afterthought) |
-| `dsh-anyplugin-ui` | the optional panel: two routes over the install lock plus a prebuilt `dsh.client` bundle; its own artifact, not part of the root tarball (issue #147) |
 
-**Not yet built.** The original map also named `dsh-anyplugin-ui` with a wider
-client half (an install list *and* the fidelity report and trust grants); the
-install list now ships as `packages/dsh-anyplugin-ui` (§2, "The optional
-panel"), while the report and grant surfaces remain unbuilt.
+**Not yet built.** The original map named a wider panel client (an install list
+*and* the fidelity report and trust grants); the install list now ships inside
+the root package (§2, "The panel", D77), while the report and grant surfaces
+remain unbuilt.
 `dsh-anyplugin-dialect-portable`
 (the shared `agent-plugins.org` reader; `dsh-anyplugin-dialect-codex` reads that
 shape itself today), and
@@ -162,11 +161,10 @@ reconcile lives in `dsh-anyplugin-install`.
 
 ### The published package
 
-The root package is `dsh-anyplugin` (0.3.0). D61 adds the programmatic
-`./install` subpath the optional panel uses; D61 also names the panel a
-separately published optional artifact, so the root tarball stays the compile
-path and the panel has its own artifact and budget (see "The optional panel"
-below).
+The root package is `dsh-anyplugin` (0.3.0) and it is the only install (D77).
+D61 adds the programmatic `./install` subpath the panel calls; the panel itself
+is not a package — its server half is bundled into `lib/index.js`, its client
+half into `lib/client.js`, and the root tarball carries both.
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).
@@ -177,57 +175,62 @@ consumer's Node; that build is packaging, not code generation — the compiler
 still emits a pure-data `EntryTree` (`D1`), and nothing is written or evaluated
 at install time.
 
-`exports` publishes only what a patch row, the reconciler or the panel can name:
-`.` (the controller), `./install` (the programmatic installer, D61) and
+`exports` publishes only what a patch row, the reconciler, the panel client or
+the panel server can name:
+`.` (the controller and panel server half), `./install` (the programmatic
+installer, D61), `./client` (the prebuilt `dsh.client` bundle, D77) and
 `./materialize/{skill,mcp,hook,agents,output-style}`.
 The other runtime modules are bundled into those entries rather than published
 as separate subpaths, and the reconciler names materializers by published
 subpath (never by file URL), so the tarball can move without rewriting config.
-`cordis.patch.yml` inserts exactly one row; every other entry is created at
-runtime from `installs.yml`.
+The panel's server half imports `dsh-anyplugin/install` through the package's
+own name; the manifest's `exports` map is what makes that self-reference
+resolve. `cordis.patch.yml` inserts exactly one row; every other entry is
+created at runtime from `installs.yml`.
 
-### The optional panel (issue #147)
+### The panel (issue #147)
 
-The UI half is `packages/dsh-anyplugin-ui`, a separate artifact on purpose: the
-root tarball's 184 KiB budget (D65 supersedes the earlier number; enforced by
-`check:pack`) cannot carry a browser bundle. It has two
-halves that meet at a JSON route, not at a build step:
+The panel is one client entry inside the root package (D77), not a second
+package or a separate tarball. It has two halves that meet at a JSON route, not
+at a build step:
 
-- **server**: `apply(ctx)` registers `GET /anyplugin/installs` (a `webServer`
-  resource) and `POST /anyplugin/install` (a full-lifecycle handler). The list
-  re-reads `installs.yml` and the enablement layers on every request through
-  `listPlugins`. The mutation calls `dsh-anyplugin/install` — the same
-  `installPlugin` the CLI calls (D49) — so the manifest, version, compile and
-  grant checks are the CLI's. The client's path is the only field read; scope
-  and grants from the client are ignored, and a refusal is the CLI's typed
-  `{code, reason}` with HTTP 400. Both routes are loopback-only: the
-  normalized `Host` (port and one trailing dot removed) must be `127.0.0.1`,
-  `localhost` or `::1`, because after DNS rebinding a browser's `Host` is the
-  attacker's name and an `Origin`/`Host` comparison would be self-satisfying;
-  a deliberate non-loopback bind must name the host in the plugin's
-  `allowedHosts` config. The mutation additionally needs `application/json`
-  (415 otherwise — `text/plain` is CORS-safelisted), refuses a foreign
-  `Origin` or cross-site `Sec-Fetch-Site` (403), and caps the body at 64 KiB by
-  streaming the bytes and cancelling early (413, with `Connection: close`).
-  `projectDir`
-  defaults to the server process's `cwd`; a web server started outside the
-  workspace must pass it in the plugin config or the project enablement layer
-  is read from the wrong tree.
-- **client**: `src/client/index.js` is built by `scripts/build.mjs` into
-  `lib/client.js`, a `window.__ModuleLoader__.load({ id: 'dsh-anyplugin-ui',
-  factory })` bundle. It imports `react` from the host module table and
-  renders into the `settings.section` slot. S21 (§10) proves the host
-  composes the boot row and serves that shape without a harness rebuild at
-  both pins; registration and rendering were exercised against stubs, not a
-  real browser.
+- **server**: `src/panel.ts`, imported by the controller. `apply` calls
+  `ctx.inject(['webServer'], …)` before the lock check, so the panel mounts
+  whenever the profile has a web server and a fresh profile (no `installs.yml`
+  yet) can install its first plugin from it; a headless profile never
+  activates the injection. It registers `GET /anyplugin/installs` (a
+  `webServer` resource) and `POST /anyplugin/install` (a full-lifecycle
+  handler). The list re-reads `installs.yml` and the enablement layers on every
+  request through `listPlugins`. The mutation calls `dsh-anyplugin/install` —
+  the same `installPlugin` the CLI calls (D49) — so the manifest, version,
+  compile and grant checks are the CLI's. The client's path is the only field
+  read; scope and grants from the client are ignored, and a refusal is the
+  CLI's typed `{code, reason}` with HTTP 400. Both routes are loopback-only:
+  the normalized `Host` (port and one trailing dot removed) must be
+  `127.0.0.1`, `localhost` or `::1`, because after DNS rebinding a browser's
+  `Host` is the attacker's name and an `Origin`/`Host` comparison would be
+  self-satisfying; a deliberate non-loopback bind must name the host in the
+  plugin's `allowedHosts` config. The mutation additionally needs
+  `application/json` (415 otherwise — `text/plain` is CORS-safelisted), refuses
+  a foreign `Origin` or cross-site `Sec-Fetch-Site` (403), and caps the body at
+  64 KiB by streaming the bytes and cancelling early (413, with
+  `Connection: close`). `projectDir` defaults to the server process's `cwd`; a
+  web server started outside the workspace must pass it in the plugin config or
+  the project enablement layer is read from the wrong tree.
+- **client**: `src/client/panel.js` is built by `scripts/build.mjs` into
+  `lib/client.js`, a `window.__ModuleLoader__.load({ id: 'dsh-anyplugin',
+  factory })` bundle. The id is the package name, which is the row id
+  client-modules keys on; the manifest declares `dsh.client` and
+  `exports["./client"]`. It imports `react` from the host module table and
+  renders into the `settings.section` slot. S21 (§10) proves the host composes
+  the boot row and serves that shape without a harness rebuild at both pins;
+  registration and rendering were exercised against stubs, not a real browser.
 
-A profile opts in by adding `dsh-anyplugin-ui` to `dsh.profile.bundles`; the
-package README carries the two lines. The repository manifest keeps
-`exports["."] = "./src/index.ts"` for R7, so `npm run pack:ui` stages `lib/` and
-points `exports["."]` at the prebuilt `./lib/index.js` before packing; the panel
-test runs the copied package in that publish-time shape. `npm run check:ui`
-enforces the panel's own 64 KiB tarball ceiling (D59 governs the root tarball
-only) and the artifact's file list.
+There is nothing to opt into beyond installing `dsh-anyplugin`: the row that
+reconciles the lock is the row that mounts the panel. The root tarball ceiling
+covers both halves; `check:pack` fails if `lib/client.js`, the
+`window.__ModuleLoader__.load({ id: 'dsh-anyplugin' … })` registration, the
+`dsh.client` field or the `./client` export is missing.
 
 ## 3. AgentPlugin IR
 

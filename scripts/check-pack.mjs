@@ -36,9 +36,12 @@ const notes = []
  * decision entry. D65 raised it from 180 KiB to 184 KiB: the shipped CLI carries the Codex
  * marketplace reader, which measures 181.9 KiB compressed. D71 raises it to 188 KiB: routing
  * the five S23 classic events adds record translation to the shipped hook materializer, and
- * the tarball measures 190257 bytes.
+ * the tarball measures 190257 bytes. D77 ships the panel in the same tarball: its server half
+ * is bundled into lib/index.js and its client bundle becomes lib/client.js, so the ceiling moves
+ * with it instead of a second package carrying its own 64 KiB budget. The measured number is in
+ * the note below and in PR #224.
  */
-const TARBALL_CEILING_BYTES = 188 * 1024
+const TARBALL_CEILING_BYTES = 208 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }
@@ -201,7 +204,31 @@ try {
       ...Object.entries(manifest.peerDependencies ?? {}),
     ])
     const contents = new Map(libFiles.map((path) => [path, readFileSync(join(tree, path), 'utf8')]))
+
+    // 2a. The panel ships in the same artifact (D77). Its client half is a
+    //     dsh.client bundle whose registration id must be the package name:
+    //     dsh-client-modules keys graph rows by the manifest name, so the row
+    //     the loader creates and the bundle the browser loads must agree.
+    check(manifest.dsh?.client?.platform === 'web', 'package.json declares no dsh.client platform — the panel bundle cannot compose')
+    check(manifest.exports?.['./client'] === './lib/client.js', 'exports["./client"] does not point at ./lib/client.js')
+    check(has('lib/client.js'), 'the tarball has no lib/client.js — the panel client bundle did not ship')
+    const clientSource = contents.get('lib/client.js') ?? ''
+    check(clientSource.includes('window.__ModuleLoader__.load('), 'lib/client.js is not a client-modules bundle')
+    check(/id:\s*['"]dsh-anyplugin['"]/.test(clientSource), 'lib/client.js does not register the dsh-anyplugin client row')
+    check(clientSource.includes('settings.section'), 'lib/client.js does not register the panel slot')
+    const indexSource = contents.get('lib/index.js') ?? ''
+    check(indexSource.includes('/anyplugin/installs'), 'lib/index.js does not carry the panel read route')
+    check(indexSource.includes('dsh-anyplugin/install'), 'lib/index.js does not reach the install writer through ./install')
+    // The deleted package must not survive as a string: a stale id would make
+    // the bundle look for a row that is never composed.
+    for (const [path, source] of contents) {
+      check(!source.includes('dsh-anyplugin-ui'), `lib/${path.slice(4)} still names the removed dsh-anyplugin-ui package`)
+    }
+    notes.push('panel: lib/client.js is the dsh-anyplugin dsh.client bundle; routes live in lib/index.js')
     const imported = new Set()
+    // The panel reaches its own package's ./install export by name (D61/D77);
+    // that is a legal self-reference through the exports map, not a dependency.
+    const selfReferences = new Set()
     // Anchored to an import/export statement or an `import(...)` call: esbuild
     // emits one statement per line, while bundled code legitimately contains
     // the word `from` in other places (`const from = args.options.get("from")`
@@ -218,8 +245,13 @@ try {
           const specifier = match[1]
           if (!specifier || specifier.startsWith('.') || specifier.startsWith('node:') || specifier.startsWith('file:')) continue
           check(!specifier.startsWith('@deepseek-ai/'), `lib/${path.slice(4)} imports the harness package ${specifier}`)
-          check(declared.has(packageName(specifier)), `lib/${path.slice(4)} imports ${specifier}, which is not declared`)
-          imported.add(packageName(specifier))
+          const name = packageName(specifier)
+          if (name === manifest.name) {
+            selfReferences.add(specifier)
+            continue
+          }
+          check(declared.has(name), `lib/${path.slice(4)} imports ${specifier}, which is not declared`)
+          imported.add(name)
         }
       }
     }
@@ -232,6 +264,7 @@ try {
         `dependency ${name} is declared but never referenced by the built entries`,
       )
     }
+    if (selfReferences.size > 0) notes.push(`self-references through exports: ${[...selfReferences].sort().join(', ')}`)
     notes.push(`declared runtime deps: ${[...declared.keys()].sort().join(', ')}; ${imported.size} statically imported`)
 
     // 4. The shipped runtime set is exact, and it is the real kernel. v0.2
