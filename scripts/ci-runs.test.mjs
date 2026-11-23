@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { headOnOrigin, selectRun, waitForConclusion, waitForRun } from './ci-runs.mjs'
+import { headOnOrigin, newerPushRun, selectRun, waitForConclusion, waitForRun } from './ci-runs.mjs'
 
 const HEAD = '0123456789abcdef0123456789abcdef01234567'
 const OTHER = 'fedcba9876543210fedcba9876543210fedcba98'
@@ -203,4 +203,29 @@ test('headOnOrigin does not run git for a non-sha or on an unreadable ref list',
     }),
     true,
   )
+})
+
+test('selectRun returns a completed cancelled push run: it is the run for the head, just not a verdict (#278)', () => {
+  const cancelled = run({ databaseId: 71, conclusion: 'cancelled' })
+  assert.equal(selectRun([cancelled], HEAD), cancelled)
+})
+
+test('newerPushRun names the newest push run whose head is not the watched one (#278)', () => {
+  const list = [
+    run({ databaseId: 81, headSha: OTHER }),
+    run({ databaseId: 80, headSha: OTHER }),
+    run({ databaseId: 79, headSha: HEAD, conclusion: 'cancelled' }),
+  ]
+  assert.equal(newerPushRun(list, HEAD)?.databaseId, 81)
+  assert.equal(newerPushRun([run({ databaseId: 79, headSha: HEAD })], HEAD), undefined)
+  assert.equal(newerPushRun([], HEAD), undefined)
+  assert.equal(newerPushRun(undefined, HEAD), undefined)
+})
+
+test('newerPushRun ignores pull_request runs, even for a different head (#278)', () => {
+  const list = [
+    run({ databaseId: 91, headSha: OTHER, event: 'pull_request' }),
+    run({ databaseId: 90, headSha: OTHER, event: 'push' }),
+  ]
+  assert.equal(newerPushRun(list, HEAD)?.databaseId, 90)
 })
