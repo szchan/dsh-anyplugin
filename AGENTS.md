@@ -26,7 +26,7 @@ loader. Two subsystems share one spine:
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
-| `docs/WORKFLOW.md` §Roles | Who may do what, including the two scheduled reviewers and their caps. |
+| `docs/WORKFLOW.md` §Roles, `docs/AUDIT.md` §7 | Who may do what, including the two scheduled roles (auditor and architecture reviewer) and their caps. |
 | `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
 | `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S20) and what a spike must prove. |

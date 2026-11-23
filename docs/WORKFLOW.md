@@ -41,15 +41,15 @@ improvement is. It loads `.dsh/skills/dsh-anyplugin/SKILL.md`, reads
 `docs/TODO.md` against the package map and the seams the code actually uses,
 and then files **issues**, not code fixes: one issue per finding, naming the
 commit it was read at, the file and line, the contract sentence it contradicts,
-and the smallest change that would close it. A docs-only correction may go out
+and the smallest change that would close it. It searches open issues first and
+comments new evidence on the existing issue instead of re-filing it. A docs-only correction may go out
 as a PR instead of an issue for that finding, through the normal flow (CI green,
 reviewer verdict, master merges); anything touching code is a ticket. Its
 evidence bar is the audit's finding bar, tightened: a path and a line at a
 commit, not a path or a count (`docs/AUDIT.md` §5). It is triggered by the
 session scheduler, not by CI; the task lives in `~/.dsh/storages/schedule.json`
 and is recreated with `schedule_create` (see `docs/AUDIT.md` §2 for the same
-operation for the auditor). CI cannot read design intent. It is
-triggered by the session scheduler, not by CI: CI cannot read design intent.
+operation for the auditor). CI cannot read design intent.
 
 ### Identity
 
