@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -151,9 +152,16 @@ const gitWorktrees = readGitWorktrees(root)
 const known = new Set(gitWorktrees.map((entry) => resolve(entry.path)))
 const synthetic = options.worktrees.filter((entry) => !known.has(resolve(entry.path)))
 const worktrees = [...gitWorktrees, ...synthetic]
+// A fresh install discovers no ticket worktree, and a policy with no pattern
+// would refuse the first worktree an agent creates until a reinstall (reviewer
+// #230). The documented root already exists (docs/WORKFLOW.md:69); write its
+// ticket namespace now, so the first worktree is covered without a reinstall.
+const ticketKnown = gitWorktrees.some((entry) => entry.main !== true && entry.branch?.startsWith('ticket/') === true)
+const worktreeRoot = process.env.ANYPLUGIN_WORKTREE_ROOT ?? join(tmpdir(), 'anyplugin-wt')
+const defaultGlob = ticketKnown ? {} : { worktreeGlob: join(worktreeRoot, 'ticket-*') }
 let composition
 try {
-  composition = composeGuard({ repoRoot: root, worktrees, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
+  composition = composeGuard({ repoRoot: root, worktrees, ...defaultGlob, ...(options.worktrees[0] === undefined ? {} : { preferredWorktree: options.worktrees[0].path }) })
 } catch (error) {
   printError(error)
   process.exit(1)

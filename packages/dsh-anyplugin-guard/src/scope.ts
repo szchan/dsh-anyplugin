@@ -11,9 +11,10 @@
  * checkout (and its `.git`), `worktrees` names the ticket worktrees, exact
  * paths or `<stem>-*` namespaces. No new configuration is invented here.
  */
-import { resolve, sep } from 'node:path'
+import { readFileSync, statSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 
-import type { ResolvedPolicy } from './policy.ts'
+import { realTarget, type ResolvedPolicy } from './policy.ts'
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 
@@ -35,15 +36,53 @@ export const territoryRoots = (policy: ResolvedPolicy): string[] =>
   policy.protectedRoots.filter((root) => !root.endsWith(`${sep}.git`))
 
 /**
+ * The git directory a working tree points at, or undefined.
+ *
+ * The main checkout has a directory `.git`; a linked worktree (a review or
+ * verify tree as much as a ticket tree) has a file `gitdir: <common>/worktrees/
+ * <name>`. A session started at a review worktree is still working on this
+ * repository and must be *judged* — its cwd is not a licence to skip the rules
+ * (reviewer finding on #230). Write permission is a separate list, so a review
+ * worktree stays unwritable.
+ */
+const gitPointer = (path: string): string | undefined => {
+  const pointer = join(path, '.git')
+  let stat
+  try {
+    stat = statSync(pointer)
+  } catch {
+    return undefined
+  }
+  if (stat.isDirectory()) return realTarget(pointer)
+  if (!stat.isFile()) return undefined
+  try {
+    const match = /^gitdir:\s*(.+)$/mu.exec(readFileSync(pointer, 'utf8'))
+    return match === null ? undefined : realTarget(match[1].trim())
+  } catch {
+    return undefined
+  }
+}
+
+/** True when `path` is a working tree of the protected repository (any branch). */
+const isRepositoryWorktree = (path: string, policy: ResolvedPolicy): boolean => {
+  const directory = gitPointer(path)
+  if (directory === undefined) return false
+  return policy.gitDirectories.some((common) => within(directory, realTarget(common)))
+}
+
+/**
  * `undefined` means the territory is unconfigured (a hand-written config or a
  * test): behave globally, because silently switching an unconfigured guard off
  * is the worse failure. With a territory configured, a session whose cwd is
- * unknown is treated as outside it — the guard does not guess.
+ * unknown is treated as outside it — the guard does not guess. Paths are
+ * compared canonically: a symlink to the checkout is the checkout.
  */
 export const inTerritory = (cwd: string | undefined, policy: ResolvedPolicy): boolean => {
   const roots = territoryRoots(policy)
   if (roots.length === 0 && policy.worktrees.length === 0) return true
   if (cwd === undefined) return false
-  const path = resolve(cwd)
-  return roots.some((root) => within(path, root)) || policy.worktrees.some((entry) => matchesPattern(path, entry))
+  const path = realTarget(cwd)
+  if (roots.some((root) => within(path, realTarget(root)))) return true
+  if (policy.worktrees.some((entry) => matchesPattern(path, entry))) return true
+  return isRepositoryWorktree(path, policy)
 }

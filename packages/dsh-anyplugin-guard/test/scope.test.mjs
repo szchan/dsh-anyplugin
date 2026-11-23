@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -70,7 +70,7 @@ test('outside the territory the guard does not judge, brief or record', async ()
   )
   assert.deepEqual(outcome, { kind: 'accept' }, 'the call is not judged outside the territory')
   assert.equal(ran, 1)
-  assert.equal(existsSync(join(dir, 'guard-denials.jsonl')), false, 'an inert guard writes no evidence')
+  assert.deepEqual(readdirSync(dir), [], 'an inert guard writes no evidence at all')
 
   const step = await listeners.get('agent/pre-step')[0](
     { agent: { session: { header: { id: 'w', cwd: '/home/someone/other-project', origin: 'subagent' } } } },
@@ -97,4 +97,47 @@ test('a session inside a ticket worktree is still governed', async () => {
   const rows = readFileSync(join(dir, 'guard-denials.jsonl'), 'utf8').trim().split('\n')
   assert.equal(rows.length, 1)
   assert.equal(JSON.parse(rows[0]).cwd, checkout)
+})
+
+test('a review worktree of the protected repository is judged, not inert', () => {
+  // A session started at a review worktree works on this repository; skipping
+  // it would let `gh pr merge` and writes through unjudged (reviewer #230).
+  const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-scope-review-'))
+  try {
+    const common = join(scratch, 'main', '.git')
+    mkdirSync(join(common, 'worktrees', 'review-230'), { recursive: true })
+    const review = join(scratch, 'review-230')
+    mkdirSync(review)
+    writeFileSync(join(review, '.git'), `gitdir: ${join(common, 'worktrees', 'review-230')}\n`)
+    const local = resolvePolicy({
+      worktrees: [join(scratch, 'main', 'ticket-*')],
+      protectedRoots: [join(scratch, 'main'), common],
+      gitDirectories: [common],
+    })
+    assert.equal(inTerritory(review, local), true)
+    // A different repository's worktree is still outside.
+    const other = join(scratch, 'other')
+    mkdirSync(other)
+    writeFileSync(join(other, '.git'), `gitdir: ${join(scratch, 'elsewhere', 'worktrees', 'x')}\n`)
+    assert.equal(inTerritory(other, local), false)
+    // Write permission is a separate list: the review tree is judged, not writable.
+    assert.deepEqual(local.worktrees, [join(scratch, 'main', 'ticket-*')])
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('a symlink to the checkout is the checkout', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-scope-link-'))
+  try {
+    const main = join(scratch, 'main')
+    mkdirSync(main)
+    const link = join(scratch, 'link')
+    symlinkSync(main, link)
+    const local = resolvePolicy({ worktrees: [], protectedRoots: [main] })
+    assert.equal(inTerritory(main, local), true)
+    assert.equal(inTerritory(link, local), true)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
 })
