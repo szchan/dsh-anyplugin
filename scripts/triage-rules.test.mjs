@@ -105,18 +105,22 @@ test('the receipt matcher does not swallow a real agent answer', () => {
   assert.equal(isReceipt({ body: 'seen. the master acts on this at its next turn boundary' }), true)
 })
 
-test('a maintainer-authored escalation whose only later comment is a receipt is still blocked', () => {
-  // A receipt is not an answer: if it counted as the agent's reply the thread
-  // would fall through to "resume" and the inbox would report work nobody did.
+test('a receipt after a maintainer answer does not close the row', () => {
+  // This is the shape that distinguishes the fix: if a receipt counted as the
+  // agent's reply, agentAfterMaintainer would be true and the row would read
+  // "blocked" even though the maintainer answered after the agent's question
+  // (reviewer #228: the earlier case could not tell the two apart).
   const verdict = classifyIssue(
     issue({ author: { login: 'szchan-bot' }, labels: labels('maintainer-question') }),
     [
-      comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> may I change the gate?'),
-      comment('szchan-bot', '2026-11-22T08:01:00Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary.'),
+      comment('szchan', '2026-11-22T08:00:00Z', 'may I change the gate?'),
+      comment('szchan-bot', '2026-11-22T08:10:00Z', '<!-- dsh-anyplugin-agent --> which file?'),
+      comment('szchan', '2026-11-22T08:20:00Z', 'src/x.ts, please'),
+      comment('szchan-bot', '2026-11-22T08:30:00Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary.'),
     ],
     options,
   )
-  assert.equal(verdict.section, 'Blocked on a human')
+  assert.equal(verdict.section, 'Maintainer answers (resume)')
 })
 
 test('a maintainer reply followed by a bystander does not resume, and the speaker is external', () => {
