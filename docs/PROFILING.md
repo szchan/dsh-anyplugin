@@ -37,9 +37,9 @@ The fixed limits are:
 | probe | measurement | limit |
 | --- | --- | --- |
 | P1 cold mod load | median of the paired head/base ratios | `<= 1.50x` |
-| P2 empty-profile boot (per declared pin) | head median | `<= 3000 ms` |
-| P2 one-plugin boot (per declared pin) | head median / head empty median | `<= 2.00x` |
-| P3 pre-execute fan-out | head median, microseconds per dispatch | `<= 50.0 us` |
+| P2 empty-profile boot (per declared pin) | head median | `< 3000 ms` |
+| P2 one-plugin boot (per declared pin) | head median / head empty median | `< 2.00x` |
+| P3 pre-execute fan-out | head median, microseconds per dispatch | `< 50.0 us` |
 | P4 compile | median of the paired head/base ratios | `<= 1.50x` |
 | P5 tarball/unpacked/kernel/RSS | recorded only | never gates |
 
@@ -57,8 +57,9 @@ implied to have been checked.
 
 `npm run perf` on a workstation is **local-only for debugging and never a
 merge gate**. `npm run verify` does not read perf; the `perf` workflow is its
-own check. It runs on `push` and — while the PR is a same-repository one — `pull_request`,
-so one commit can produce two `perf` runs; do not add it to the required checks
+own check. It runs on `push` and on `pull_request` to `main` (fork PRs included, via
+`refs/pull/N/head` in the base repository), so one commit can produce two
+`perf` runs; do not add it to the required checks
 until those triggers are
 collapsed to one run per commit — a second check under the same name leaves the
 other pending and blocks the merge (the failure `verify` already had before it
