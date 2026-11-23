@@ -79,7 +79,8 @@
     "check:ui": "node scripts/check-ui-pack.mjs",
     "perf": "node scripts/perf.mjs",
     "ci": "node scripts/ci.mjs",
-    "verify:release": "node scripts/verify-release.mjs"
+    "verify:release": "node scripts/verify-release.mjs",
+    "inbox": "node scripts/triage.mjs --waiting"
   },
   "dependencies": {
     "@babel/core": "7.29.13",

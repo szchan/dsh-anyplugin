@@ -1,0 +1,30 @@
+name: inbox
+
+# The 2026-11-22 miss (F19): the maintainer answered #170/#175/#177, the intake
+# path posted a Seen. receipt, and the next round reported "queue empty" from
+# docs/TODO.md. The rule that came out of it — a round starts with the inbox,
+# and a receipt is not an answer — is enforced by scripts/triage-rules.mjs and
+# this job. A failing run is the alarm: it means a human wrote after the agent's
+# last substantive comment and nothing has replied (D79).
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  inbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Who is waiting on us
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAINTAINER_LOGINS: szchan
+        run: node scripts/triage.mjs --waiting

@@ -7,11 +7,13 @@
 //
 //   npm run triage            # markdown queue
 //   npm run triage -- --json  # same data, machine-readable
+//   npm run inbox             # exits 1 when a human is waiting on the agent
 import { execFileSync } from 'node:child_process'
 
 import { AGENT_MARK, BOT_LOGIN, classifyIssue, hasLabel, labelsOf, roleOf, roleOfPullRequest } from './triage-rules.mjs'
 
 const json = process.argv.includes('--json')
+const waiting = process.argv.includes('--waiting')
 
 const gh = (args) => {
   try {
@@ -127,6 +129,20 @@ for (const pr of prs) {
 }
 
 const total = Object.values(sections).reduce((sum, list) => sum + list.length, 0)
+
+// `npm run inbox` is the round-start view: a maintainer has the last word on
+// an open thread (a receipt does not count as an answer, scripts/triage-rules),
+// so a reply may be waiting. It exits 1 so a session that ignores the output
+// cannot report "queue empty" — the exact failure that let #170/#175/#177 sit
+// for a day.
+if (waiting) {
+  const resume = sections['Maintainer answers (resume)'] ?? []
+  const blocked = sections['Blocked on a human'] ?? []
+  process.stdout.write(`inbox: ${resume.length} answer(s) waiting, ${blocked.length} escalation(s) open\n`)
+  for (const item of resume) process.stdout.write(`  reply to #${item.number} ${item.title}\n`)
+  for (const item of blocked) process.stdout.write(`  still blocked on a human: #${item.number} ${item.title}\n`)
+  process.exit(resume.length > 0 ? 1 : 0)
+}
 
 if (json) {
   process.stdout.write(`${JSON.stringify({ maintainers, total, sections }, null, 2)}\n`)

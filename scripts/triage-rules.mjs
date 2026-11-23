@@ -26,7 +26,19 @@ export const roleOf = (node, options) => {
 const isAgentComment = (comment, options) =>
   comment.author?.login === options.botLogin || (comment.body ?? '').includes(AGENT_MARK)
 
+// A receipt is "I have seen your message", not an answer. The intake path
+// posts one the moment a session picks the thread up, and counting it as a
+// reply makes a maintainer's unanswered question look answered — that is how
+// #170/#175/#177 sat for a day (D79).
+export const isReceipt = (comment) =>
+  /^\s*(<!--\s*dsh-anyplugin-agent\s*-->\s*)?Seen\./u.test(comment.body ?? '')
+
+const isAgentReply = (comment, options) => isAgentComment(comment, options) && !isReceipt(comment)
+
 export const lastAgentComment = (list, options) => [...list].reverse().find((comment) => isAgentComment(comment, options))
+
+/** The last agent comment that answered something, receipts excluded. */
+export const lastAgentReply = (list, options) => [...list].reverse().find((comment) => isAgentReply(comment, options))
 
 export const lastNonAgentComment = (list, options) =>
   [...list].reverse().find((comment) => !isAgentComment(comment, options))
@@ -41,14 +53,15 @@ export const classifyIssue = (issue, comments, options) => {
 
   const who = roleOf(issue, options)
   const agent = lastAgentComment(comments, options)
+  const reply = lastAgentReply(comments, options)
   const human = lastNonAgentComment(comments, options)
-  const agentAfterHuman = agent !== undefined && (human === undefined || agent.createdAt > human.createdAt)
-  const lastSpeaker = agent === undefined ? (human === undefined ? 'none' : 'maintainer') : agentAfterHuman ? 'agent' : 'maintainer'
+  const agentAfterHuman = reply !== undefined && (human === undefined || reply.createdAt > human.createdAt)
+  const lastSpeaker = reply === undefined ? (human === undefined ? 'none' : 'maintainer') : agentAfterHuman ? 'agent' : 'maintainer'
 
   // An escalation (docs/TRIAGE.md §6) is blocked on the human *while the agent
   // has the last word*: it asked, and nothing can move until the answer comes.
   // The opposite ordering is "Maintainer answers (resume)".
-  if (hasLabel(issue, 'maintainer-question') && agent !== undefined && agentAfterHuman) {
+  if (hasLabel(issue, 'maintainer-question') && agent !== undefined && (agentAfterHuman || reply === undefined)) {
     return { section: 'Blocked on a human', lastSpeaker }
   }
   if (who === 'maintainer') {

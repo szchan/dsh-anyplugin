@@ -3448,3 +3448,34 @@ contract's own terms and is corrected here:
 
 D74's class, anchors and evidence stand; only the GA framing and the ordering
 of the remaining work are superseded.
+
+## D79 — A receipt is not an answer, and a round starts with the inbox
+
+**Decided 2026-11-22** (F19, maintainer-observed). On 2026-11-22 the maintainer
+answered #170, #175 and #177 between 12:25 and 12:31 UTC. The intake path posted
+its `Seen. The master acts on this at its next turn boundary` receipt at 12:45.
+Every later read of those threads treated them as answered, because the receipt
+was the last comment — one round went further and reported an empty queue from
+`docs/TODO.md` without asking the tracker at all. The work sat for about
+fourteen hours.
+
+The failure is not "nobody was told"; it is that the tooling counted an
+acknowledgement as a reply and the loop had no step that forced the question.
+Three rules follow:
+
+1. **A receipt is not a reply.** `scripts/triage-rules.mjs` classifies an agent
+   comment whose body opens with `Seen.` as an acknowledgement:
+   `lastAgentReply` skips it, so a maintainer comment followed by a receipt is a
+   resume row, not a closed thread. `scripts/triage-rules.test.mjs` pins the
+   exact shape from #177.
+2. **The queue is GitHub, not `docs/TODO.md`.** `npm run inbox`
+   (`scripts/triage.mjs --waiting`) lists resume rows and blocked escalations
+   and **exits 1** when a substantive maintainer comment is unanswered, so
+   "queue empty" cannot be reported without reading it. `AGENTS.md` §5 makes it
+   the first command of a round.
+3. **The wait is observable.** `.github/workflows/inbox.yml` runs the same
+   command daily with `MAINTAINER_LOGINS=szchan`; a waiting reply fails a run
+   instead of sitting in a thread. The audit ledger records the miss as F19.
+
+A thread is read by author and time, never by `.comments[-1]`: the last comment
+is the one most likely to be our own receipt.

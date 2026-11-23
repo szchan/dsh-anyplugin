@@ -27,6 +27,34 @@ test('a maintainer reply after the escalation resumes work', () => {
   assert.equal(verdict.section, 'Maintainer answers (resume)')
 })
 
+test('a receipt after a maintainer reply does not count as the agent answering (#170/#175/#177)', () => {
+  // The intake path posts "Seen." the moment the thread is picked up. Counting
+  // it as a reply made an unanswered question look answered for a day.
+  const verdict = classifyIssue(
+    issue({ labels: labels('maintainer-question') }),
+    [
+      comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> asking'),
+      comment('szchan', '2026-11-22T12:31:05Z', 'accepted, implement it'),
+      comment('szchan-bot', '2026-11-22T12:45:39Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary; this note exists so the thread has an owner.'),
+    ],
+    options,
+  )
+  assert.equal(verdict.section, 'Maintainer answers (resume)')
+  assert.equal(verdict.lastSpeaker, 'maintainer')
+})
+
+test('a receipt after the agent asked still leaves the escalation blocked', () => {
+  const verdict = classifyIssue(
+    issue({ labels: labels('maintainer-question') }),
+    [
+      comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> may I change the gate?'),
+      comment('szchan-bot', '2026-11-22T08:01:00Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary.'),
+    ],
+    options,
+  )
+  assert.equal(verdict.section, 'Blocked on a human')
+})
+
 test('a maintainer issue with no agent comment is a new ask', () => {
   assert.equal(classifyIssue(issue(), [], options).section, 'Maintainer asks (new)')
 })

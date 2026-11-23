@@ -187,6 +187,18 @@ queue is for the four things only a human holds: credentials, billing, rights,
 and irreversibility. "I am not sure" is not one of them — research it, test it,
 and write down what you chose.
 
+### The inbox, and what a receipt means
+
+A round begins with `npm run inbox` (`scripts/triage.mjs --waiting`). It lists
+threads where the maintainer has the last *substantive* word and exits 1 when
+there is one, so a session cannot report an empty queue without reading it.
+
+The intake path posts a `Seen.` receipt when a session picks a thread up. A
+receipt says "an owner exists", not "the answer landed": `scripts/triage-rules.mjs`
+excludes it from `lastAgentReply`, and a maintainer reply before a receipt is
+still a resume row (D79). Reading a thread as `.comments[-1]` is how #170/#175/#177
+sat for a day with the agent believing it was waiting.
+
 **Chat is not a channel.** A question asked in a session message is a question
 asked into a room nobody is watching. If an agent believes a call is the
 maintainer's — permissions, policy, a shape that forecloses other work — it
