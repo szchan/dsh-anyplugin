@@ -426,6 +426,10 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
     // directory. Archiving it runs reclamation, whose scheduled and settled
     // cleanup records must produce exactly one handler line.
     const worktreeAgent = await ctx.agentLoop.create('anyplugin-seams-worktree', { provider: 'fake', model: 'fake-1' })
+    // This set records nothing: the agent has no header cwd, so the service
+    // reads its configured default (workDir) as the previous directory and
+    // commit() returns early. The agent's first record comes from the ensure
+    // inside createCheckout, which initialises the projection.
     await ctx.workingDirectory.set(worktreeAgent, workDir)
     const branch = `seams-worktree-${Date.now().toString(36)}`
     const checkout = await ctx.worktrees.create(worktreeAgent, { name: branch })
@@ -483,13 +487,34 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
     // keeps must be the new directory, so the seam's meaning is asserted on the
     // record this probe itself produced last.
     await ctx.workingDirectory.set(stopAgent, elsewhere)
-    await until(() => {
-      try {
-        return JSON.parse(readFileSync(join(dataDir, 'payloads', 'CwdChanged.json'), 'utf8')).cwd === elsewhere
-      } catch {
-        return false
-      }
-    }, 10_000, 'the last CwdChanged payload')
+
+    // The script writes the payload first and the log line last, so a payload
+    // read racing the line would count four lines that all exist and one that
+    // is still being written. Wait for the completion marker, and let a timeout
+    // carry the trail: the count assertion is never reached when the line
+    // never lands, which is exactly the case a diagnostic must serve.
+    const cwdTrail = () => {
+      const trail = join(dataDir, 'payloads', 'CwdChanged.jsonl')
+      if (!safeExists(trail)) return []
+      return readFileSync(trail, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => {
+          // A killed or full disk leaves a partial last line; the trail exists
+          // to be printed by the timeout, so it must not throw on the way out.
+          try {
+            const payload = JSON.parse(line)
+            return { cwd: payload.cwd, session: payload.session_id }
+          } catch {
+            return { cwd: '<unparsable CwdChanged.jsonl line>', session: null }
+          }
+        })
+    }
+    try {
+      await untilLine('CwdChanged', 5)
+    } catch (error) {
+      throw new Error(`${error.message}; recorded: ${JSON.stringify(cwdTrail())}`)
+    }
 
     const lines = readFileSync(eventsLog, 'utf8').trim().split('\n')
     const count = (name) => lines.filter((line) => line === name).length
@@ -498,6 +523,7 @@ export async function probeSeams({ harnessDir, entry, dataDir, timeoutMs = 120_0
       lines,
       count,
       payload,
+      cwdTrail,
       settingsEvents,
       preSteps,
       postExecute,
@@ -551,7 +577,7 @@ if (isEntry) {
         assert.ok(entry !== undefined, 'the fixture emitted a plugin entry')
 
         const observed = await probeSeams({ harnessDir: harness.harnessDir, entry, dataDir })
-        const { count, payload, lines } = observed
+        const { count, payload, lines, cwdTrail } = observed
 
         // The four listener seams, one line per operation on this turn. The
         // mutation counters below are the same turn without the filter, so the
@@ -613,11 +639,16 @@ if (isEntry) {
         assert.equal(payload('PermissionDenied').outcome, 'rejected')
         assert.equal(payload('PermissionDenied').hook_event_name, 'PermissionDenied')
 
-        // Five sets happen on the run: the root leaves the repo, the worktree
-        // agent is created in the process cwd, enters the repo, createCheckout
-        // enters the checkout, and the final set below moves the stop-failure
-        // agent. The last payload is that final set, so its meaning is checked.
-        assert.equal(count('CwdChanged'), 5)
+        // Five records happen on the run, and only three of them come from a
+        // set(): the root leaves the repo; createCheckout initialises the
+        // worktree agent's projection (an ensure — the set above targets the
+        // service's own default, so it would record nothing even with a null
+        // projection) and then enters the checkout (a set); the stop-failure
+        // agent's first prompt assembly initialises its projection (an ensure,
+        // also in workDir, which is why the trail keeps the session id), and
+        // the final set after StopFailure moves it to elsewhere. The probe
+        // waits for the fifth line, the fixture's completion marker.
+        assert.equal(count('CwdChanged'), 5, `the recorded transitions: ${JSON.stringify(cwdTrail())}`)
         assert.equal(payload('CwdChanged').cwd, observed.elsewhere)
         assert.equal(payload('CwdChanged').hook_event_name, 'CwdChanged')
 

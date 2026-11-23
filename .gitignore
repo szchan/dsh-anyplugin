@@ -1,9 +1,9 @@
 node_modules/
 .npm-cache/
 # pinned DSH harnesses fetched by scripts/fetch-harness.mjs
-.harness/
+.harness
 # pinned Claude Code CLI fetched by scripts/fetch-claude.mjs
-.claude-code/
+.claude-code
 dist/
 # built package entries (npm run build); packed by npm, never committed
 lib/
