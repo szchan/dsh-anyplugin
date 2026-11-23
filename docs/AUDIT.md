@@ -224,7 +224,7 @@ adds measurable caps:
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
 | master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
-| integration runner | merges `origin/main` into a ticket branch, pushes that branch, polls CI, assembles PR bodies, cleans worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, or one that touches `main` |
+| integration runner | one dispatched PR, as written in `docs/WORKFLOW.md` §The integration runner: merging `origin/main` into a ticket branch, pushing that branch, polling CI by sha, assembling the PR body, cleaning worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, touches `main`, or grows into a second master session (it exists to keep the root's window small, D73) |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
 | architecture reviewer | one daily pass reading the design against the tree; finding issues and docs-only PRs | merge, approve or close its own issue/PR, push `main`, feature code, ticket branches, `docs/DECISIONS.md`, `docs/FEATURES.md` coverage rows or totals, a contract change in `docs/ARCHITECTURE.md` §0/§2/§7 without a decision | an issue without file:line at a commit; a run that edits code, merges, or moves coverage/contract |
@@ -244,7 +244,8 @@ largest sessions with their `cwd`; a pass that sees a root session above the
 cap says so in `## Findings` and proposes a split (a scheduled audit session, a
 narrower ticket, or an integration runner that polls CI and updates branches —
 never a session that merges; merge authority with the pinned head stays in the
-master, D73). The master alarm is evaluated on the window the pass reports
+master, D73; the written role is `docs/WORKFLOW.md` §The integration runner).
+The master alarm is evaluated on the window the pass reports
 (one day for the daily pass); the lifetime count stays printed but is context,
 not the verdict: a lead that runs for a month always exceeds a lifetime cap.
 
@@ -577,11 +578,11 @@ edit.
       "mechanism": "reviewer",
       "status": "reviewed",
       "artifact": "docs/AUDIT.md",
-      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199: an integrator session owns merge mechanics and PR-body assembly; the root keeps dispatch, decisions, and verdicts.",
+      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199 and written down in D73: an integration runner child (`integrator-*`) owns CI polling, `origin/main` merges into the ticket branch, the push of that branch, PR-body assembly and worktree cleanup; the root keeps dispatch, decisions, verdicts and the one pinned merge call. The role is written in docs/WORKFLOW.md §Roles and §The integration runner, and the role table above names it.",
       "evidence": [
         "2026-11-22 00:20 evidence: root session-522222a9 2,470 tools, next child 1,073",
         "2026-11-22 09:00 evidence: same root 2,991 lifetime (1,112 in window), next child 1,073; split proposal #199",
-        "docs/AUDIT.md §7 role caps"
+        "2026-11-23 evidence: the written role — docs/WORKFLOW.md §Roles (row) and §The integration runner (input, steps, output, stops), named in docs/AUDIT.md §7"
       ]
     },
     {

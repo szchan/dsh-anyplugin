@@ -9,13 +9,15 @@ merge, which wastes the worker's whole branch.
 | Role | Owns | May not |
 | --- | --- | --- |
 | **master** | the ticket queue, assignments, reviews, merges, the coverage totals, `docs/DECISIONS.md`, and its own docs-only PRs | write feature code, push to `main` |
+| **integration runner** (subagent) | one dispatched PR: merging `origin/main` into its ticket branch, pushing that branch, polling `verify` by sha, updating the PR body, and cleaning up its worktree (§The integration runner) | merge, approve, push to `main`, edit code, change a decision |
 | **worker** (subagent) | one ticket, in its own worktree, on its own branch | merge, push to `main`, edit files outside its `Touches`, change a decision |
 | **reviewer** (subagent) | one verdict per PR against the rubric below | merge, edit the branch |
 | **auditor** (scheduled) | the daily pass, audit tooling, process docs, and a gate/test that is the finding's fix | feature code, ticket branches, merging |
 | **architecture reviewer** (scheduled) | one daily reading of the design against the code: what the architecture doc claims, what the tree does, and where the two diverge; files issues (or a docs-only PR) through the normal queue | merges, pushes to `main`, feature code, editing `docs/DECISIONS.md` |
 
 Only the master merges, after the review verdicts. A worker, the auditor, or the
-architecture reviewer pushes its own branch. `main` is protected: PRs only, the `verify` check must be green,
+architecture reviewer pushes its own branch; the integration runner pushes only
+the ticket branch it was dispatched with. `main` is protected: PRs only, the `verify` check must be green,
 history is linear (squash), no force pushes. Every modelled `gh pr merge` that performs a merge must
 carry `--match-head-commit <40-hex>` naming the reviewed head; the guard
 refuses an unpinned modelled merge for every role. The pin prevents omission,
@@ -24,6 +26,11 @@ the head was reviewed. A merge through another client (a script, `curl`, an
 inline interpreter, a pre-existing git/client-side alias, or a raw GraphQL call)
 is outside the guard's model. The guard rule is dormant until the
 guard is installed (F1/F2); the obligation above stands either way.
+
+The integration runner is a worker with a narrower job: it does the branch
+update and `verify` polling the master used to do by hand, then reports a head.
+It is not a second merge authority and it gives no verdict; §The integration
+runner is its written role — input, steps, output, and stop cases (D73).
 
 The auditor and the architecture reviewer are separate roles on purpose. The
 auditor reads the queue and the transcripts, writes findings, and pushes
@@ -201,6 +208,77 @@ path only: it refuses a PR whose head branch is not in this repository (a fork's
 branch is not ours to push; a fork's gate stays the maintainer's push of its head
 onto a branch here, D83) or whose base is not `main`. Run the printed merge line
 only after reading the diff; the script does not merge for you.
+
+### The integration runner
+
+The integration runner (child name `integrator-*`) is the worker that does the
+merge mechanics the master used to do by hand. The master dispatches it for one
+PR with the PR number, the 40-hex head the reviewer verdicted, and the ticket
+worktree path. It updates the branch, polls `verify`, refreshes the PR body and
+reports the head. It never merges, never approves, never pushes `main`, and
+never changes a decision; resolving an additive merge conflict in a doc is its
+only file edit. The master makes the one pinned `gh pr merge` call after the
+runner reports (D66, D73).
+
+Every command below runs from the ticket worktree: set `workdir` on the call,
+not a `cd` prefix (§Isolation).
+
+1. **Preflight.** `git rev-parse --abbrev-ref HEAD`, `git rev-parse HEAD` and
+   `git status --porcelain` must show the PR's branch, the reviewed head and an
+   empty tree. Read the PR with `npm run -s gh-bot -- pr view <n> --json
+   state,isCrossRepository,baseRefName,headRefName,headRefOid`: it must be open,
+   in this repository, based on `main`, and at that same head. Anything else
+   stops the run.
+2. **Bring `main` in.** `git fetch origin`, then
+   `git merge-base --is-ancestor origin/main HEAD`: exit 0 means nothing to
+   merge; go to step 4. Exit 1 means the branch is behind, so run
+   `npm run pr:update <n>`: it merges `origin/main`, pushes `HEAD:<branch>`,
+   waits for the new head's `verify` and, on success, prints the pinned merge
+   line. A conflict it reports was aborted by the script and pushed nothing; go
+   to step 3 only for an additive docs conflict.
+3. **Resolve only additive conflicts.** Additive means both sides' lines are
+   kept, nothing deleted or reworded. Run `git merge origin/main` yourself, edit
+   only the conflicted files under `docs/`, `git add <paths>`,
+   `git commit --no-edit`, then push once:
+   `git push origin HEAD:<branch>` (one refspec, no redirection). A conflict in
+   `docs/DECISIONS.md` is not additive — the log is append-only and numbered —
+   and a conflict outside `docs/` stops the run.
+4. **Poll the pushed head.** `git rev-parse HEAD` is the head.
+   `npm run ci -- --head <sha>` waits for that commit's push run and exits 0 only
+   on success; on red it names the failed steps as `<job> :: <step>`, and
+   `--log-failed` adds the log tail. The push run is the only evidence (D83): a
+   skipped or `pull_request` run does not count, and a run that does not appear
+   within five minutes is a stop, never a reason to merge.
+5. **Static checks.** `npm run check` — `check:arch`, `check:features`,
+   `check:decisions`. Never the suite locally (D78).
+6. **Refresh the body.** Read the current body with
+   `npm run -s gh-bot -- pr view <n> --json body`, then post the file with
+   `npm run -s gh-bot -- pr edit <n> --body-file <file>`. The runner updates
+   facts only: the head and the `verify` run where the body records evidence, and
+   `git diff --stat origin/main...HEAD` where it lists the change. A body whose
+   `## Why` or claim table is missing, or contradicts the diff, is a
+   stop-and-report, not an edit.
+
+Report to the master:
+
+- the new 40-hex head, or "nothing to push" when step 2 merged nothing;
+- the `verify` run id and its conclusion from `npm run ci`, with the failed
+  `<job> :: <step>` lines when it is red;
+- the exact merge line for that head — the one `npm run pr:update` printed, or
+  `gh pr merge <n> --squash --match-head-commit <40-hex>` when nothing was
+  pushed — only after step 5 is green. The pin names the head that was polled;
+  a head the runner pushed has no verdict yet, so the master sends it to review
+  before running the line (D66, D86).
+
+Stop and report instead of resolving: no worktree or branch, a PR at a different
+head, a dirty tree or a merge in progress, a conflict that is not an additive
+docs conflict, `verify` red, or a missing run. Name the failing command and
+quote its output; the master re-dispatches a worker or takes the conflict.
+
+After the master merges, the worktree is removed — the master removes it
+(§Isolation), and a runner kept alive for that step runs
+`git worktree remove <dir>` from the primary checkout. A leftover worktree holds
+the branch lock.
 
 ## Definition of done (a worker may not ship without all of these)
 
