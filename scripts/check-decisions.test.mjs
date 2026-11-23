@@ -109,6 +109,19 @@ test('--append-file adds one entry and the lock accepts it', () => {
   assert.equal(verify.status, 0, verify.stderr)
 })
 
+test('--append-file accepts a log whose entries end in a --- separator', () => {
+  // The real log separates entries with ---. Without trimming that separator on
+  // re-parse, every entry followed by another one looks changed and the writer
+  // refuses a legitimate append (the D78 append hit exactly this).
+  const separated = '## D1 — First\nbody one\n\n---\n\n## D2 — Second\nbody two\n\n---\n'
+  const { root } = makeRepo(separated)
+  assert.equal(run(root, '--update').status, 0)
+  const payload = payloadFor(root, '## D3 — Third\nbody three\n')
+  const result = run(root, '--append-file', payload)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /appended D3; locked 3 entries/)
+})
+
 test('--reword rewrites an entry origin/main does not carry', () => {
   const { root, git } = makeRepo(one)
   assert.equal(run(root, '--update').status, 0)
