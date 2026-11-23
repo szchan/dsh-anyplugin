@@ -427,6 +427,12 @@ test('formatTable prints the D76 failure list when a gate trips', () => {
   )
 })
 
+test('a green gate prints the gated verdict, not a ratio claim', () => {
+  const report = sampleReport()
+  report.check = { threshold: 1.5, limits: undefined, rows: gateRows(report), failures: [] }
+  assert.match(formatTable(report), /gates: all \d+ gated measurements pass \(repeat 5\)/u)
+})
+
 test('formatTable derives check rows when only the failure list was stored', () => {
   const report = sampleReport()
   report.probes.P1 = row(1, 2)

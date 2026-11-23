@@ -46,8 +46,10 @@ The fixed limits are:
 A ratio exactly at its limit passes: 1.5× is a ceiling, as `exceedsThreshold`
 has always meant. An absolute budget fails at its boundary — the ratified
 numbers read "< 3 s", "< 2× empty" and "< 50 µs" — so 3000 ms, exactly 2× and
-50 µs are red (`exceedsCap`). A missing P2 pin or an unmeasured probe is
-a **failed** row, not a skipped gate. The P2 base/head ratio is still printed,
+50 µs are red (`exceedsCap`). A pin declared in `engines.dsh` but not fetched is a **failed** row from
+`discoverPins`, and an unmeasured probe is a failed row; the workflow guard
+fails the job before measurement when one of the two hardcoded pins cannot be
+fetched. Neither layer drops the gate silently. The P2 base/head ratio is still printed,
 but it is description: its noise is why D69 did not gate it, and D76 keeps that
 objection while gating the head's absolute boot instead. The absolute caps are
 hard walls, not a noise band: a single sample at the boundary is red, and the
@@ -58,8 +60,8 @@ implied to have been checked.
 `npm run perf` on a workstation is **local-only for debugging and never a
 merge gate**. `npm run verify` does not read perf; the `perf` workflow is its
 own check. It runs on `push` and on `pull_request` to `main` (fork PRs included, via
-`refs/pull/N/head` in the base repository), so one commit can produce two
-`perf` runs; do not add it to the required checks
+`refs/pull/N/head` in the base repository). A same-repository PR therefore
+shows two `perf` runs for one commit (its push run and its PR run); do not add it to the required checks
 until those triggers are
 collapsed to one run per commit — a second check under the same name leaves the
 other pending and blocks the merge (the failure `verify` already had before it
