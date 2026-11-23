@@ -79,8 +79,14 @@ with the exact anchor so the proposal is reviewable without a checkout.
 
 ## Later
 
-- [ ] **Mod host** (D3, ARCHITECTURE §7), in dependency order: static scanner →
-      chain engine → element runtime → the remaining namespace bridges.
+- [ ] **Mod host** (D3, ARCHITECTURE §7.3) — four of that section's five items
+      are landed: the static scanner (`dsh-anyplugin-mod-scan`, D21), the chain
+      engine (D32), the element runtime's headless sink (#75, D44), and the
+      internal type subset (#144, D60). What remains is what §7.3 names as where
+      DSH fights back: the element runtime's drawing, host-owned layout, focus
+      routing and redraw throttling, and the namespace bridges beyond the
+      measured set (`fixtures/mods/coverage.json`: 13 of 24 namespaces and 67 of
+      100 methods are declared but absent, 19 of 20 render sites absent).
 - [ ] **Author-facing mod types** (ARCHITECTURE §7.3) — `planned`. The generated
       `types/mod.d.ts` is an internal shape guard, not a consumer surface.
       Shipping types needs a ratified choice: either redistribute Anthropic's
@@ -145,9 +151,10 @@ with the exact anchor so the proposal is reviewable without a checkout.
   `mod-api-ledger.test.mjs` fails on drift, and a served method removed from
   `bridge.ts` reddens it. Render sites are 1 served and 19 absent
   (`fixtures/mods/coverage.json` `totals.renderSites`), all planned except
-  `Pane` on terminal. The ledger is a denominator, not a fidelity claim. The rest of
-  the **Mod host** line (static scanner, chain engine, element runtime, remaining
-  bridges) is still Later.
+  `Pane` on terminal. The ledger is a denominator, not a fidelity claim. Of the
+  **Mod host** line, the scanner, chain engine and the headless element sink are
+  landed (see Later); drawing/layout/focus and the remaining namespace bridges
+  are not.
 - Codex install end to end (ticket #101): `compile.ts` resolves a lock row's
   `dialect` through a two-entry registry (`claude-code` → `readClaudePlugin` +
   `claude-code@2.1.329`; `codex` → `readCodexPlugin` +
