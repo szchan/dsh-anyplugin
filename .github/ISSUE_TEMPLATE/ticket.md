@@ -37,5 +37,6 @@ docs/...
 ## Proof
 
 ```
-npm run verify
+# the verify run on the PR head; push and read `npm run ci`
+npm run ci
 ```
