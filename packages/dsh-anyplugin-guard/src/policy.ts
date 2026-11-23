@@ -765,7 +765,7 @@ function confinement(target: string, worktree: string | undefined, policy: Resol
   if (worktree === undefined) {
     return deny(
       'write-outside-worktree',
-      `refusing to write ${target}: no worktree is recorded for this agent; use an explicit absolute path under a worktree the installed policy admits, and run \`npm run guard:install\` from the main checkout if that path is outside the installed pattern`,
+      `refusing to write ${target}: no worktree is recorded for this agent, and a worker writes only inside its own worktree. A seat needs a message that names an installed worktree (the spawn prompt, or a working-directory notice); if this session never received one, it cannot write anywhere and must be re-spawned with the worktree named in its prompt. If the path belongs to a worktree the installed pattern does not cover, run \`npm run guard:install\` from the main checkout`,
     )
   }
   if (!isInside(realTarget(worktree), real)) {
