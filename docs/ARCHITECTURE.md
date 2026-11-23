@@ -787,7 +787,7 @@ hook's own `updatedInput` is carried by its verdict into that same rewrite.
 
 The mapping is data in `mod-events.ts`, one row per mod event with the host
 seam and the pinned `claude-code.d.ts` line as evidence — claude-code
-2.1.322, commit `6e1e44f6433bfa17d198e932bff53373aa229eea` (the d.ts file's own
+2.1.329, commit `f9e4d1e5753ccffcffdd832f047d72be000396a6` (the d.ts file's own
 header still says 2.1.277; the commit is the pin). It is **21 live `classic.*` routes,
 the live `session.start` loader event, and the `tool.call` and `prompt.context`
 engine routes**, 24 live routes. `tool.check` is a measured refusal: it is the
