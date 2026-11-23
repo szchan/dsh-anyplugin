@@ -46,7 +46,7 @@ export function renderBrief(input: BriefInput): string {
     'Call-time rules: push only the ticket branch, never main; open a PR, never merge one; docs/DECISIONS.md is append-only through `node scripts/check-decisions.mjs --update` and the proposed entry text belongs in the PR body; do not move coverage totals; run the suite, the build, the pack check and the perf gate in CI, and let the verify workflow run the spikes it owns, by pushing — not here (D78).',
   )
   lines.push(
-    'Shell subset: one command list per call. `&&`, `||`, `|` and redirections (including `2>&1`) are modelled. Grouping, a background `&`, command substitution, backticks, unquoted `$` expansion, here-strings and running a shell script file are refused.',
+    'Shell subset: one command list per call. `&&`, `||`, `|` and redirections (including `2>&1`) are modelled. Grouping, a background `&`, command substitution, backticks, `$` expansion (quoted or not), here-strings and running a shell script file are refused. A command must be plain and statically readable: `export VAR=…` and a heredoc whose body contains a backtick are refused as unmodelled, and `"$VAR"` is refused because a double-quoted expansion hides the value. Pass env with `env KEY=value command`; `ANYPLUGIN_LOCAL_VERIFY=1` is the root-only one-segment escape (D78). If a spelling you legitimately need is refused, propose a policy entry plus a matrix test — not a retry.',
   )
   lines.push('</anyplugin-guard-brief>')
   return lines.join('\n')

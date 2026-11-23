@@ -273,6 +273,17 @@ signal, and the answer belongs in that thread.
 proceeds and records the default in the issue; only a decision that would bend §3
 waits indefinitely.
 
+**A refused shell spelling is a policy gap, not a retry.** The live guard admits
+one statically readable command list per call (D78): `export VAR=…` is refused
+as unmodelled, a heredoc whose body contains a backtick is refused, and
+`"$VAR"` is refused because a double-quoted expansion hides the value. Pass
+environment through `env KEY=value command`; `ANYPLUGIN_LOCAL_VERIFY=1` is the
+root's one-segment escape, never a worker's. If a spelling the work legitimately
+needs is refused, the fix is a policy entry plus a matrix test in the guard
+package, and the refusal is filed in the ticket that needed it — not worked
+around with a different quoting trick. The guard is inert outside this checkout
+and its ticket worktrees (D80).
+
 ## 7. What the loop guarantees
 
 - Every open issue has a state: accepted, `needs-evidence`, `invalid`, or a

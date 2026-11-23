@@ -212,8 +212,9 @@ the highest-risk gaps. Cite file:line for every row.
 - A reviewer verdict is a PR comment from the bot account, with the
   `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review. F12's
   guard rule requires `--match-head-commit <40-hex>` on every modelled merge
-  (`--help` and `--disable-auto` perform none); that is omission prevention, not review verification, and it is
-  dormant on this machine until the guard is installed (F1).
+  (`--help` and `--disable-auto` perform none); that is omission prevention, not review verification; the rule is
+  enforced on the modelled merge paths since the guard install on 2026-11-23
+  (#221, F12).
 
 ## 7. Roles, and what "too broad" means
 
@@ -222,7 +223,7 @@ adds measurable caps:
 
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
-| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (dormant until the guard is installed, F1) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
 | integration runner | merges `origin/main` into a ticket branch, pushes that branch, polls CI, assembles PR bodies, cleans worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, or one that touches `main` |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
@@ -317,7 +318,8 @@ is still true: the entry carries `owner` (who owns the risk) and `reviewBy`
 (the ISO date on which the next pass re-decides it), both required by the gate,
 and the finding appears in the report's `## Open` so the checklist and the
 ledger agree. `dormant` means the mechanism is implemented and tested but not
-active on this machine (F1); it is not a synonym for `enforced`. `documented`
+active on this machine; F1 was the last entry to hold it, until the guard
+install on 2026-11-23. It is not a synonym for `enforced`. `documented`
 is retired (D88): prose is not an action, so a finding whose only mechanism is
 documentation is `open` with a tracking issue until a lever exists, or
 `accepted` with an owner and a review date. The `updated` date moves on every
@@ -333,13 +335,14 @@ edit.
       "id": "F1",
       "title": "A push to main is refused by the guard's push whitelist",
       "mechanism": "hook",
-      "status": "dormant",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
-      "rationale": "The most expensive single mistake is a direct push to main. The rule is tested against nine push shapes, including force and multi-refspec, and applies to root and worker sessions. On 2026-11-22 the guard was implemented but not installed (no pre-push hook), so the rule is dormant, not enforced; F2 watches the installation.",
+      "rationale": "The most expensive single mistake is a direct push to main. The rule is tested against nine push shapes, including force and multi-refspec, and applies to root and worker sessions. Installed on 2026-11-23 (#221): `npm run guard:status` reports `status current`, the installed worktrees are `/tmp/anyplugin-wt/ticket-*`, and `.git/hooks/pre-push` is current, so the whitelist runs on every push from this checkout; the checkout's `.audit/guard-denials.jsonl` records live refusals under rule `git-push-shape`. Territory is D80's: this checkout and its ticket worktrees only.",
       "evidence": [
         "D47 authority table",
         "guard.test.mjs push matrix",
-        "2026-11-22 guard:status not-installed"
+        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current",
+        "2026-11-23 live evidence: .audit/guard-denials.jsonl records push-shape refusals from the installed hook"
       ],
       "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
     },
@@ -484,13 +487,13 @@ edit.
       "id": "F12",
       "title": "The master merges a head that was not the head reviewed",
       "mechanism": "hook",
-      "status": "dormant",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "tracking": "#163",
-      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Dormant on this machine because the guard is not installed (F1); enforced on the modelled gh merge paths wherever the guard is installed, proven by guard.test.mjs. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
+      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Installed on 2026-11-23 (#221): `npm run guard:status` reports `status current` with `/tmp/anyplugin-wt/ticket-*` worktrees and a current `.git/hooks/pre-push`; the same policy judged 123/123 payloads when the profile was recomposed. Enforced on the modelled gh merge paths, proven by guard.test.mjs. Territory is D80's: this checkout and its ticket worktrees only. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
       "evidence": [
         "2026-11-22 evidence: 100 PRs, 99 merged; #89 11 comments",
-        "guard:status not-installed; pre-push hook missing (F1/F2)",
+        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current, 123/123 dry-run payloads",
         "guard.test.mjs merge-pin matrix and installed-mount test; 123-row dry-run table"
       ],
       "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
@@ -542,12 +545,13 @@ edit.
       "id": "F16",
       "title": "Guard denials are not observable",
       "mechanism": "hook",
-      "status": "dormant",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "proof": "packages/dsh-anyplugin-guard/test/denials.test.mjs",
-      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), but on this machine the guard is not installed (F1): no pre-push hook, 0 installed worktrees, and no log file. Under §11 that is the definition of dormant, not enforced — the baseline's `enforced` read a merged mechanism as an active one. Activation is tracked by F1, not by a separate ticket.",
+      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), and the rule is enforced since the install on 2026-11-23 (#221): `npm run guard:status` reports `status current`, installed worktrees `/tmp/anyplugin-wt/ticket-*` and a current pre-push hook, and the log holds live rows. The first observed live refusal this session was a `shell-unmodelled` deny whose message names a double-quoted expansion; the log's first row is 2026-11-23T08:19:56.412Z under the same rule. Territory is D80's: this checkout and its ticket worktrees only.",
       "evidence": [
-        "2026-11-22 09:00 evidence: guard not-installed, 1 desired / 0 installed, pre-push missing, no .audit/guard-denials.jsonl",
+        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current; live log rows from 2026-11-23T08:19:56.412Z",
+        "2026-11-23 live evidence: .audit/guard-denials.jsonl holds rows for shell-unmodelled, write-outside-worktree, decisions-append-only, git-push-shape, git-unknown-subcommand and interpreter-write, aggregated by npm run audit:evidence; the first row is shell-unmodelled on a double-quoted expansion",
         "2026-11-22 D68: structured log merged in #181; digest counts total/by-rule/by-role and last five",
         "denials.test.mjs: one record per denial, dedupe by session+callId, four checkout layouts"
       ]
