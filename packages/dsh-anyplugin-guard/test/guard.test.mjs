@@ -1074,6 +1074,124 @@ test('a reviewer prompt that names only the branch records no worktree and write
   }
 })
 
+test('a seat that misses its first step retries and admits writes once the prompt arrives (#250)', async () => {
+  // A fresh child's first pre-step can arrive before the message that names
+  // its worktree does. Marking the attempt resolved turned that timing race
+  // into a session that could never write; the seat must keep looking.
+  const { ctx, listeners } = harness()
+  await apply(ctx, config)
+  const preStep = listeners.get('agent/pre-step')[0]
+  const tools = listeners.get('tools/pre-execute')[0]
+  const continuation = async () => ({ kind: 'enter', messages: [] })
+  const agent = { session: { header: { id: 'worker-250', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+
+  const first = await preStep({ agent, step: 1, messages: [] }, continuation)
+  assert.equal(first.messages.length, 1, 'the brief is delivered even when the seat is unknown')
+  const early = await tools(
+    { callId: 30, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(early.kind, 'deny', 'nothing is recorded yet, so nothing is writable')
+  assert.match(early.reason, /re-spawned with the worktree named in its prompt/u, 'the refusal says what to do')
+
+  const second = await preStep(
+    { agent, step: 2, messages: [{ role: 'user', content: `work in ${worktree}` }] },
+    continuation,
+  )
+  assert.equal(second.messages.length, 0, 'the brief is not repeated while the seat is retried')
+
+  const allowed = await tools(
+    { callId: 31, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(allowed.kind, 'accept')
+  const outside = await tools(
+    { callId: 32, name: 'write', arguments: { file_path: '/work/wt/ticket-9999/src/x.ts', content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(outside.kind, 'deny')
+  assert.match(outside.reason, /only inside its worktree/u)
+})
+
+test('a seat is never derived from the header cwd, which a child copies from its parent (#250)', async () => {
+  // `dsh-session` freezes the header and `dsh-subagent` copies the parent's
+  // cwd into a child, so a child spawned elsewhere carries its parent's cwd.
+  // Seating from it would lock the child to the parent's worktree; the spawn
+  // cwd reaches it only as a working-directory notice in its messages.
+  const elsewhere = '/work/wt/ticket-9997'
+  const policy = { ...config, worktrees: [worktree, elsewhere] }
+  const { ctx, listeners } = harness()
+  await apply(ctx, policy)
+  const agent = { session: { header: { id: 'worker-252', cwd: worktree, origin: 'subagent', parentSession: 'root-1' } } }
+  const tools = listeners.get('tools/pre-execute')[0]
+  const preStep = listeners.get('agent/pre-step')[0]
+  // The #250 ordering: the first pre-step carries nothing yet, and the child's
+  // header cwd is the parent's worktree. A cwd seat here would accept a write
+  // into the parent's worktree.
+  await preStep({ agent, step: 1, messages: [] }, async () => ({ kind: 'enter', messages: [] }))
+  for (const path of [`${worktree}/src/y.ts`, `${elsewhere}/src/y.ts`]) {
+    const denied = await tools(
+      { callId: 40, name: 'write', arguments: { file_path: path, content: 'y' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+    assert.equal(denied.kind, 'deny', `${path} is not writable before a seat exists`)
+  }
+  // A later step naming the child's real worktree seats it there, not at the
+  // parent's cwd worktree.
+  await preStep(
+    { agent, step: 2, messages: [{ role: 'user', content: `your worktree is ${elsewhere}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const allowed = await tools(
+    { callId: 41, name: 'write', arguments: { file_path: `${elsewhere}/src/y.ts`, content: 'y' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(allowed.kind, 'accept')
+  const parentWorktree = await tools(
+    { callId: 42, name: 'write', arguments: { file_path: `${worktree}/src/y.ts`, content: 'y' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(parentWorktree.kind, 'deny', 'the seat is the named worktree, not the parent cwd')
+  // A resolved seat never moves: a later notice naming the parent's worktree
+  // does not re-seat the child.
+  await preStep(
+    { agent, step: 3, messages: [{ role: 'user', content: `working directory changed to ${worktree}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const stillElsewhere = await tools(
+    { callId: 43, name: 'write', arguments: { file_path: `${elsewhere}/src/y.ts`, content: 'y' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(stillElsewhere.kind, 'accept')
+})
+
+test('ambiguous text seats nothing and a later unambiguous message can still seat (#250)', async () => {
+  const other = '/work/wt/ticket-9996'
+  const policy = { ...config, worktrees: [worktree, other] }
+  const { ctx, listeners } = harness()
+  await apply(ctx, policy)
+  const agent = { session: { header: { id: 'worker-253', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const preStep = listeners.get('agent/pre-step')[0]
+  await preStep(
+    { agent, step: 1, messages: [{ role: 'user', content: `maybe ${worktree}, maybe ${other}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const denied = await listeners.get('tools/pre-execute')[0](
+    { callId: 50, name: 'write', arguments: { file_path: `${worktree}/src/z.ts`, content: 'z' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(denied.kind, 'deny', 'two candidate worktrees are not a seat')
+  await preStep(
+    { agent, step: 2, messages: [{ role: 'user', content: `working directory changed to ${other}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const allowed = await listeners.get('tools/pre-execute')[0](
+    { callId: 51, name: 'write', arguments: { file_path: `${other}/src/z.ts`, content: 'z' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(allowed.kind, 'accept')
+})
+
 test('a symlink inside the worktree does not become a write into the checkout', () => {
   const data = mkdtempSync(join(tmpdir(), 'guard-symlink-'))
   try {
