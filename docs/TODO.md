@@ -74,13 +74,14 @@ with the exact anchor so the proposal is reviewable without a checkout.
       quoting the client's captured text, and a valid declaration stays
       `planned`. What remains is a product decision about the runtime channel,
       not a fidelity gap.
-- [ ] Terminal ANSI palette (F2). The Desktop bundle ships
-      `@deepseek-ai/dsh-client-ui-theme` (client bundle: `registerTheme`,
-      `registerFixed`, `palettes`; absent from the rc.5 harness) while the
-      client-plugin docs only tell plugins to consume `--dsw-alias-*` tokens —
-      so a plugin-writable palette is unproven. S24 (#216) answers that; a
-      `themes/` fixture and a materializer follow only if it is a seam.
-      Until then F2 sits outside the 100 % statement (`ARCHITECTURE.md` §0.1).
+
+- [ ] Terminal palette (F2). S24 (#216) reached `ctx.theme`: 2 of Claude's
+      72 roles map through `--dsw-alias-label-primary`/`--dsw-alias-bg-base`
+      to the terminal's computed foreground/background, 70 have no DSH terminal
+      counterpart, and the ANSI 16 are OSC 4/104-only. `themes/` stays
+      `planned` (D74, D75); the remaining work is a host ANSI-16 palette — or a
+      decision removing that sub-surface — plus a captured fixture and a
+      materializer.
 
 ## Later
 

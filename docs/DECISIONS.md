@@ -3342,3 +3342,109 @@ remedy for audit volume.
 **Evidence.** `docs/audits/2026-11-22.md` and `.audit/evidence-2026-11-22.json`
 (report output, gitignored) carry both counts; #199 carries the proposal this
 entry amends; `docs/AUDIT.md` §7 carries the role table.
+
+---
+
+## D74 — F2 is `planned`: the theme seam stops at CSS aliases and the ANSI 16 are the host gap
+
+**Decided 2026-11-22** (#216, S24). The last open question in
+`ARCHITECTURE.md` §0's F2 row was whether a plugin — not the host bootstrap —
+can register a terminal palette and express every colour in a Claude
+`themes/<slug>.json`. S24 answers it at `0.2.2-rc.2` and `0.2.2-rc.5`: the
+plugin seam is real but partial, and the terminal's ANSI 16 remain outside it.
+F2 is a scheduled slot, not an `unsupported` surface.
+
+1. **The plugin theme seam is real, and it is alias CSS.** The pinned theme
+   package's README documents “A composition can register a third-party theme
+   id with alias-token overrides through `ctx.theme`”; `ThemeRuntime.register`
+   accepts a `ThemeDefinition` and `apply` provides the service.
+   `ThemeTokens` is `Record<string, string>`; the 14 inspector tokens are a
+   curated list, not a registration limit. `ThemeDefinition.tokens` are
+   “Alias-layer overrides applied as inline CSS variables over the base
+   palette”. The S24 runtime probe registers a theme including a new
+   `--dsw-alias-s24-probe` token, activates it, and reads the CSS tokens back
+   from the active snapshot.
+2. **Two of Claude's 72 roles reach the terminal through that seam.**
+   `text` maps to `--dsw-alias-label-primary` and `background` to
+   `--dsw-alias-bg-base`. `dsh-client-ui-layout/src/client/theme-presenter.ts:85-89`
+   writes every active token to `document.body`;
+   `dsh-client-ui-sidebar-terminal/src/client/terminal.module.css:1-4` consumes
+   the two aliases; `terminal.tsx:142` passes the computed
+   `style.backgroundColor`/`style.color` to xterm. That is a real, observable
+   destination for 2 of 72 roles.
+3. **The terminal has no ANSI-16 palette input; that is the named host gap.**
+   The anchor is
+   `@deepseek-ai/dsh-client-ui-sidebar-terminal/src/client/terminal-theme.ts:57-64`:
+   `update(background: string, foreground: string)` sets only background,
+   foreground, cursor, cursor-accent and selection fields. ANSI 16 are written
+   only from `this.indexed` (`:72-79`), which only the xterm OSC 4 handler
+   fills and OSC 104 clears/deletes. The other 70 roles have no DSH terminal
+   counterpart, and `ansi:<name>`/`ansi256(n)` values have no host palette.
+   There is no direct ANSI-16/palette output API; the only palette writer is
+   OSC 4/104. F2 cannot be complete until DSH exposes a palette channel, or a
+   decision formally removes this sub-surface from the declared set.
+4. **The class is `planned`; no `unsupported` or `derived` escape.**
+   `readOptionalSurfaces` keeps `themes` as one `planned` row, with
+   `THEME_REASON` naming the 2-role mapping, the 70 unserved roles, the
+   `ansi:*` values with no host palette, and the OSC-only ANSI 16. The row
+   stays one row; it is not split per sub-surface. The v0.4 roadmap keeps the
+   F2 slot, narrowed to mapping the two alias roles while the ANSI-16 host gap
+   remains. `engines.dsh` stays `"0.2.2-rc.2 || 0.2.2-rc.5"`: both pins have
+   the same partial seam and no version-specific channel, so there is nothing
+   to gate on.
+5. **No fixture, no materializer yet.** The pinned CLI has no non-interactive
+   `theme` command or `--theme` flag; `/theme` is TUI-only. No
+   `themes/<slug>.json` was captured or invented. A fixture and a materializer
+   follow when the terminal exposes a palette; a captured file alone would
+   reach only the two CSS roles.
+
+**Consequences.** F2 stays outside the 100 % statement as a `planned` row, and
+the declared surface does not count the 70 unserved roles as matched. The
+roadmap keeps the F2 slot, and `docs/FEATURES.md` §7 names the partial seam and
+the ANSI-16 anchor. The dialect test pins the `planned` class and the 2/70/ANSI
+reason. The ANSI-16 half is the named host gap and the GA condition: F2 becomes
+complete only when DSH exposes a palette channel or a decision formally removes
+that sub-surface from the declared set. A future plugin-writable palette must
+reopen this decision rather than silently turning F2 into `complete`.
+
+**Evidence.** `spikes/s24-theme-seam/run.mjs` (65 assertions, both pins) and
+`spikes/s24-theme-seam/README.md`; CI runs `npm run spike:s24` at rc.5 and
+rc.2. The spike enumerates the real theme bundle's exports/prototype, executes
+the real `TerminalTheme` with a fake xterm parser, reads the layout presenter
+and terminal CSS, and checks the pinned Claude binary's six bases and 72 roles.
+It exits non-zero on a palette mutation: a `registerTerminalPalette` prototype
+member reddens two assertions, and a `palette` field plus ANSI write reddens
+four. `scripts/fetch-harness.mjs` now includes `dsh-client-ui-theme`,
+`dsh-client-ui-layout` and `dsh-client-ui-sidebar-terminal` for S24.
+
+---
+
+## D75 — F2's closure condition is not a GA condition, and the two halves close separately
+
+**Decided 2026-11-22** (#218 review). D74's consequences call the ANSI-16
+half "the named host gap and the GA condition". That reading is wrong on the
+contract's own terms and is corrected here:
+
+1. **It is not a GA condition.** §0.2's GA condition is an empty
+   `unsupported` set. F2 is `planned` and sits outside the 100 % statement
+   (§0.3), and D74 adds no `unsupported` row, so F2 neither blocks nor unblocks
+   GA. The sentence is "the condition for F2 to become complete", not a GA
+   gate.
+2. **The two halves close on different work.** The two alias roles
+   (`text` → `--dsw-alias-label-primary`, `background` → `--dsw-alias-bg-base`)
+   need a captured `themes/` fixture and a materializer, and that work does not
+   depend on the ANSI-16 gap — it is the v0.4 F2 slot. The other 70 roles and
+   the 16 ANSI slots need a host palette channel, or a decision that formally
+   removes that sub-surface from the declared surface. Waiting for the palette
+   before carrying the two mapped roles would stall work the host can already
+   hold.
+3. **The spike grew to 68 assertions.** A plugin never constructs the runtime
+   itself; it receives whatever `apply()` provided, so prototype and own-key
+   checks miss a member attached to the instance after `ctx.provide`. The spike
+   now inspects the real `apply()` body: it must provide the constructed
+   runtime itself, add no member to it, and name no palette/ANSI API. A
+   service-level `theme.registerTerminalPalette = …` mutation now exits 1 with
+   two failures.
+
+D74's class, anchors and evidence stand; only the GA framing and the ordering
+of the remaining work are superseded.

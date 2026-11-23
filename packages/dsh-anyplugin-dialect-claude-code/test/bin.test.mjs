@@ -64,7 +64,7 @@ test('a plugin without bin/ gets no bin row', () => {
   }
 })
 
-test('themes/workflows/monitors/.lsp.json are read without .mcp.json, before style rows', () => {
+test('themes/workflows/monitors/.lsp.json stay planned, before style rows', () => {
   const dir = mkdtempSync(join(tmpdir(), 'anyplugin-surfaces-dialect-'))
   try {
     writePlugin(dir)
@@ -85,6 +85,13 @@ test('themes/workflows/monitors/.lsp.json are read without .mcp.json, before sty
     for (const entry of ir.pending.filter((row) => surfaces.includes(row.surface))) {
       assert.equal(entry.annotation.fidelity, 'planned')
     }
+    const theme = ir.pending.find((entry) => entry.surface === 'themes')
+    assert.ok(theme, 'themes/ must be carried as a planned row')
+    assert.equal(theme.annotation.fidelity, 'planned')
+    assert.match(theme.annotation.reason, /2 of Claude's 72/u)
+    assert.match(theme.annotation.reason, /70 have no DSH terminal counterpart/u)
+    assert.match(theme.annotation.reason, /ANSI 16 are OSC 4\/104-only/u)
+    assert.equal(ir.unsupported.some((entry) => entry.surface === 'themes'), false)
     const n = ir.pending.length
     assert.equal(ir.pending[n - 1]?.surface, 'outputStyles')
     assert.deepEqual(validateIr(ir), [])
