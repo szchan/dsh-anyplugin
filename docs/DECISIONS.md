@@ -3728,3 +3728,61 @@ it. Deliberately not claimed: that the queue routes agent-filed issues
 correctly — `roleOf` reads the bot as a maintainer today, so those issues need a
 routing class or an explicit master triage; that is a follow-up, named rather
 than hidden.
+
+## D85 — Agent-filed findings are their own queue class
+
+**Decided 2026-11-22** (#234, D82 follow-up). D82's consequences named the gap:
+`roleOf` reads the bot as a maintainer, so the architecture reviewer's issues
+"need a routing class or an explicit master triage". The reviewer files through
+the bot with `--title "arch: <finding>"`, so without the class the queue cannot
+tell an agent finding (needs review/merge) from a maintainer request (needs an
+answer): at `e310841` a bot-filed `arch:` issue with no comments classified to
+`{section: null}` and was printed in no section, and a maintainer comment on it
+made it look like a maintainer reply.
+
+1. **Predicate: author is the bot AND the title starts `arch:`.** The title
+   prefix is the contract the reviewer's scheduled prompt fixes
+   (`--title "arch: <finding>"`); its in-repo home is `docs/WORKFLOW.md` §Roles,
+   summarised in `docs/TRIAGE.md` §2. It files with the existing `area/*` labels
+   only, so no label exists to mark the class and the reviewer needs no change.
+   The author half is load-bearing: a maintainer issue titled `arch:` remains a
+   maintainer ask, because identity is the account (`docs/TRIAGE.md` §1), not
+   the wording. Matching is on the trimmed title, case-insensitive, with the
+   colon literal and the prefix anchored, so a capitalised prefix does not hide
+   a finding while `archived:`, `architecture:` or `arch :` do not create one.
+   `isAgentFinding` owns the predicate.
+2. **One class, two views.** `classifyIssue` returns the section
+   `Agent findings (review)` before the `who === 'maintainer'` branch; `npm run
+   triage` prints it as its own section and `roleOfIssue` reports the author
+   class as `agent`, so the line does not claim the maintainer wrote the issue.
+   `inboxVerdict` carries the findings separately; `npm run inbox` lists them as
+   `agent finding to review`.
+3. **The exit contract does not change.** Findings need review/merge, not an
+   answer: a finding alone exits 0. Exit 1 still means a maintainer answer or a
+   new maintainer ask waits, exit 2 still means a thread could not be read.
+4. **The class never swallows a human reply.** The finding branch returns the
+   resume row itself when a maintainer comment follows the finding's last agent
+   word: it is `Maintainer answers (resume)` (exit 1), and a later agent reply
+   closes the row like any other thread.
+
+**Not claimed.** That an arbitrary bot-filed issue (a follow-up ticket, a
+`[HUMAN]` escalation) is routed as anything but today's behaviour: the class is
+the architecture reviewer's `arch:` findings, not "everything the bot wrote". A
+future explicit `agent-finding` label would revisit the predicate, not the
+class.
+
+**Evidence.** Probe at `e310841`: a bot-filed `arch:` issue classified
+`{section: null}`, and after a maintainer comment it became `Maintainer answers
+(resume)`. `scripts/triage-rules.test.mjs` pins the finding, the maintainer
+resume on a finding, the maintainer-filed `arch:` ask, the plain-bot issue,
+`roleOfIssue`, the inbox exit codes, and the title contract's trim, anchor and
+colon-literal cases (`arch :`, `archived:`, `architecture:` must not match);
+`scripts/triage.test.mjs` runs the queue against a fake `gh` and pins the section
+name, the `agent` role and the `agent finding to review` line. Removing the
+`if (isAgentFinding(...))` branch makes the finding tests fail, and each of the
+five wiring mutations the reviewer named — `roleOf` instead of `roleOfIssue`,
+the findings print loop, `.trim()`, the anchored colon-literal regex, findings
+counted as blocked — fails at least one test. `docs/TRIAGE.md` §2 (the section
+list and *Agent findings are not maintainer asks*), §6's inbox subsection,
+`docs/WORKFLOW.md` §Roles, and the `AGENTS.md` §5 inbox paragraph state the
+classes.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { classifyIssue, inboxVerdict, isOurs, isReceipt, roleOf, roleOfPullRequest } from './triage-rules.mjs'
+import { classifyIssue, inboxVerdict, isAgentFinding, isOurs, isReceipt, roleOf, roleOfIssue, roleOfPullRequest } from './triage-rules.mjs'
 
 const options = { maintainers: ['szchan'], botLogin: 'szchan-bot' }
 const issue = (extra = {}) => ({ number: 1, title: 'x', author: { login: 'szchan' }, labels: [], ...extra })
@@ -57,6 +57,63 @@ test('a receipt after the agent asked still leaves the escalation blocked', () =
 
 test('a maintainer issue with no agent comment is a new ask', () => {
   assert.equal(classifyIssue(issue(), [], options).section, 'Maintainer asks (new)')
+})
+
+test('a bot-filed arch: finding is an agent finding, not a maintainer ask (D85)', () => {
+  // The D82 reviewer files as the bot and `roleOf` reads the bot as a
+  // maintainer: without the class this finding was printed in no section at
+  // all, and a maintainer comment on it looked like a maintainer reply.
+  const verdict = classifyIssue(
+    issue({ author: { login: 'szchan-bot' }, title: 'arch: FEATURES row F4 points at a deleted file' }),
+    [comment('szchan-bot', '2026-11-23T07:00:00Z', '<!-- dsh-anyplugin-agent --> the row points at a deleted file')],
+    options,
+  )
+  assert.equal(verdict.section, 'Agent findings (review)')
+  assert.equal(verdict.lastSpeaker, 'agent')
+})
+
+test('the finding class does not depend on the body-first-comment injection', () => {
+  const verdict = classifyIssue(issue({ author: { login: 'szchan-bot' }, title: 'Arch: capitalised prefix still counts' }), [], options)
+  assert.equal(verdict.section, 'Agent findings (review)')
+})
+
+test('a maintainer comment on a finding still resumes work (D85)', () => {
+  const verdict = classifyIssue(
+    issue({ author: { login: 'szchan-bot' }, title: 'arch: two writers share docs/TRIAGE.md' }),
+    [comment('szchan-bot', '2026-11-23T07:00:00Z', '<!-- dsh-anyplugin-agent --> finding body'), comment('szchan', '2026-11-23T08:00:00Z', 'fix it')],
+    options,
+  )
+  assert.equal(verdict.section, 'Maintainer answers (resume)')
+  assert.equal(verdict.lastSpeaker, 'maintainer')
+})
+
+test('a finding the agent answered after the maintainer closes like any other thread', () => {
+  const verdict = classifyIssue(
+    issue({ author: { login: 'szchan-bot' }, title: 'arch: two writers share docs/TRIAGE.md' }),
+    [
+      comment('szchan', '2026-11-23T08:00:00Z', 'fix it'),
+      comment('szchan-bot', '2026-11-23T08:30:00Z', '<!-- dsh-anyplugin-agent --> fixed in ticket/234'),
+    ],
+    options,
+  )
+  assert.equal(verdict.section, null)
+})
+
+test('a maintainer issue titled arch: is still a new ask, and a plain bot issue keeps today\'s behaviour', () => {
+  // The class is author *and* title: identity is the account (TRIAGE §1), and
+  // "everything the bot wrote" is deliberately not a finding.
+  assert.equal(isAgentFinding(issue({ title: 'arch: my own note' }), options), false)
+  assert.equal(classifyIssue(issue({ title: 'arch: my own note' }), [], options).section, 'Maintainer asks (new)')
+  const plain = issue({ author: { login: 'szchan-bot' }, title: 'workflow: follow-up ticket' })
+  assert.equal(isAgentFinding(plain, options), false)
+  const verdict = classifyIssue(plain, [comment('szchan-bot', '2026-11-23T07:00:00Z', '<!-- dsh-anyplugin-agent --> follow-up ticket body')], options)
+  assert.equal(verdict.section, null)
+})
+
+test('the queue reports a finding as agent work, not a maintainer ask', () => {
+  assert.equal(roleOfIssue(issue({ author: { login: 'szchan-bot' }, title: 'arch: x' }), options), 'agent')
+  assert.equal(roleOfIssue(issue({ author: { login: 'szchan-bot' }, title: 'workflow: y' }), options), 'maintainer')
+  assert.equal(roleOfIssue(issue(), options), 'maintainer')
 })
 
 test('a ticket in progress with no PR is in flight, even when labelled from-maintainer', () => {
@@ -158,6 +215,38 @@ test('the inbox exit contract counts asks, answers and unreadable threads', () =
   assert.equal(inboxVerdict(sections('Maintainer asks (new)')).exitCode, 1)
   assert.equal(inboxVerdict(sections('Maintainer answers (resume)')).exitCode, 1)
   assert.equal(inboxVerdict(sections('Blocked on a human')).exitCode, 0)
+  // A finding needs review/merge, not an answer: it is reported but does not
+  // raise the round-start exit code (D85).
+  const findings = inboxVerdict(sections('Agent findings (review)'))
+  assert.equal(findings.exitCode, 0)
+  assert.equal(findings.findings.length, 1)
+  assert.equal(inboxVerdict(sections('Agent findings (review)'), [{ number: 2, message: 'EOF' }]).exitCode, 2)
   assert.equal(inboxVerdict(sections('Maintainer answers (resume)'), [{ number: 2, message: 'EOF' }]).exitCode, 2)
-  assert.equal(inboxVerdict({}).summary, 'inbox: 0 thread(s) waiting, 0 escalation(s) open, 0 thread(s) unreadable')
+  assert.equal(inboxVerdict({}).summary, 'inbox: 0 thread(s) waiting, 0 escalation(s) open, 0 agent finding(s) to review, 0 thread(s) unreadable')
+})
+
+test('the finding title contract is trimmed, anchored and colon-literal', () => {
+  const finding = (title) => isAgentFinding(issue({ title, author: { login: 'szchan-bot' } }), options)
+  // A pasted title can carry whitespace; it must still be a finding.
+  assert.equal(finding('  arch: padded title  '), true)
+  assert.equal(finding('\tarch: tabbed\n'), true)
+  // Near-misses are not findings: the colon is literal and the prefix anchored.
+  assert.equal(finding('arch : spaced colon'), false)
+  assert.equal(finding('archived: old finding'), false)
+  assert.equal(finding('architecture: design note'), false)
+  assert.equal(finding('x arch: not at the start'), false)
+})
+
+test('findings and blocked are disjoint (D85)', () => {
+  // A finding is agent output, not an escalation. Counting it as blocked would
+  // make the round-start exit code claim a human is waiting when none is.
+  const verdict = inboxVerdict({
+    'Agent findings (review)': [{ number: 20, title: 'arch: finding' }],
+    'Blocked on a human': [{ number: 10, title: 'ask' }],
+  })
+  assert.equal(verdict.findings.length, 1)
+  assert.equal(verdict.blocked.length, 1)
+  assert.equal(verdict.waiting.length, 0)
+  assert.equal(verdict.exitCode, 0)
+  assert.match(verdict.summary, /1 agent finding\(s\) to review/)
 })

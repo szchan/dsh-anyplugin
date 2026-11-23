@@ -68,28 +68,67 @@ Consequence, stated so nobody is surprised: a new issue waits for the next pull 
 up to one scheduling interval — before it is labelled. It is never lost, and it
 never interrupts a worker mid-branch.
 
-The queue has six sections:
+The queue prints these sections in this order:
 
-1. **Maintainer asks** — `from-maintainer` threads whose last human message is
-   newer than the last agent message. These outrank everything.
-2. **Maintainer answers** — `maintainer-question` threads where the human replied.
-   The waiting agent resumes; nobody else takes the ticket.
-3. **In review** — issues that an open PR already closes (`Closes #N` in the PR
-   body). Listed so the ticket is visibly in flight, never left in a queue: an
-   ask that already has a PR invites a second worker to claim the same ticket.
-4. **In progress** — issues labelled `ticket/in-progress` that have no PR yet.
-   Claimed work is in flight even when there is nothing to review; without this
-   the queue undercounts WIP and the next round dispatches a second worker onto
-   a moving ticket.
-5. **External reports** — `external` issues with no agent triage yet. Each gets
-   one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
+1. **Maintainer asks (new)** — `from-maintainer` threads whose last human message
+   is newer than the last agent message. These outrank everything.
+2. **Maintainer answers (resume)** — `maintainer-question` threads where the human
+   replied. The waiting agent resumes; nobody else takes the ticket.
+3. **Blocked on a human** — `maintainer-question` threads where the agent asked
+   last (§6). Nothing moves until a maintainer answers.
+4. **Agent findings (review)** — issues the architecture reviewer (D82) filed
+   through the bot with an `arch:` title. They are agent output: they need a
+   review/merge decision, not an answer. A maintainer's later comment on one
+   turns it into a **Maintainer answers** row, so the class never hides a human
+   reply (D85).
+5. **In review (PR open)** — issues that an open PR already closes (`Closes #N`
+   in the PR body). Listed so the ticket is visibly in flight, never left in a
+   queue: an ask that already has a PR invites a second worker to claim the same
+   ticket.
+6. **In progress (no PR yet)** — issues labelled `ticket/in-progress` that have
+   no PR yet. Claimed work is in flight even when there is nothing to review;
+   without this the queue undercounts WIP and the next round dispatches a second
+   worker onto a moving ticket.
+7. **External, untriaged** — `external` issues with no agent triage yet. Each
+   gets one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
    `needs-evidence` with the exact questions, or `invalid` with the reason.
-6. **PRs** — every open PR, with its `verify` status and whether an agent has
-   reviewed at the current head.
+8. **External, awaiting evidence** — `needs-evidence` issues where the agent
+   asked last: the reporter's answer is what unblocks them.
+9. **Pull requests** — every open PR, with its `verify` status and whether an
+   agent has reviewed at the current head.
+
+Order here is display priority, not classifier precedence: the classifier
+early-returns, so an issue already closed by an open PR is listed under *In
+review* even when it is a maintainer ask, and a `ticket/in-progress` issue is
+listed under *In progress* even when it also carries `maintainer-question`.
 
 A new issue or PR is labelled `needs-triage` by `.github/workflows/intake.yml`
 the moment it opens, so nothing sits unlabelled waiting for the poll. The label
 is the only thing that workflow does; it never checks out the contribution.
+
+### Agent findings are not maintainer asks
+
+The architecture reviewer (D82) files through the bot, and the bot is ours:
+`roleOf` reads it as a maintainer, so before the class a finding was printed in
+no section at all, and after a maintainer comment it read as a maintainer reply.
+The class is the **author plus the title prefix** the D82 reviewer's prompt
+fixes (`docs/WORKFLOW.md` §Roles states the contract; the scheduled prompt
+carries the same command):
+
+- **author is `szchan-bot`** and the **title starts `arch:`** (case-insensitive).
+  A maintainer issue titled `arch:` is still a maintainer ask: identity is the
+  account, not the wording (§1). A bot-filed issue without the prefix keeps
+  today's behaviour — the class is the reviewer's contract, not "everything the
+  bot wrote".
+- The title is the only marker the reviewer emits — it files with the existing
+  `area/*` labels only — so no label is added or required. If role filing ever
+  gains an explicit `agent-finding` label, the predicate changes and D85 is
+  superseded.
+
+A finding is *agent output*: it needs a review/merge decision, not an answer.
+`npm run inbox` lists it as `agent finding to review` and does not raise the
+exit code (D85) — a finding alone exits 0; 1 still means a maintainer answer or
+a new ask waits, 2 still means a thread could not be read.
 
 ### A pull request, in three shapes
 
@@ -196,7 +235,10 @@ when there is one, so a session cannot report an empty queue without reading it.
 Exit 2 means a thread could not be read: an unreadable tracker is not an empty
 one, and the round must fix the read before concluding nobody is waiting.
 Only a login in `MAINTAINER_LOGINS` can move a row: a bystander's comment on a
-bot escalation is a report, not an answer.
+bot escalation is a report, not an answer. Agent findings (the architecture
+reviewer's bot-filed `arch:` issues) are listed separately as `agent finding to
+review`: they need review/merge, not an answer, and they do not raise the exit
+code (D85).
 
 The intake path posts a `Seen.` receipt when a session picks a thread up. A
 receipt says "an owner exists", not "the answer landed": `scripts/triage-rules.mjs`

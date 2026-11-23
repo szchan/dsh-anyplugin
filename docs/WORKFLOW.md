@@ -41,7 +41,10 @@ improvement is. It loads `.dsh/skills/dsh-anyplugin/SKILL.md`, reads
 `docs/TODO.md` against the package map and the seams the code actually uses,
 and then files **issues**, not code fixes: one issue per finding, naming the
 commit it was read at, the file and line, the contract sentence it contradicts,
-and the smallest change that would close it. It searches open issues first and
+and the smallest change that would close it. It files each finding through
+the bot with the title `arch: <finding>` and one existing `area/*` label —
+never a new label — so the queue routes it as an agent finding without reading
+prose (`docs/TRIAGE.md` §2, D85). It searches open issues first and
 comments new evidence on the existing issue instead of re-filing it. A docs-only correction may go out
 as a PR instead of an issue for that finding, through the normal flow (CI green,
 reviewer verdict, master merges); anything touching code is a ticket. Its
