@@ -30,8 +30,10 @@ auditor reads the queue and the transcripts, writes findings, and pushes
 mechanism fixes; the architecture reviewer reads the design docs against the
 tree, files issues, and does not implement a ticket or merge. A mechanism PR gets two independent verdicts (F17) and the
 master merges it; an unresolved `weaker`/`not proven` verdict is a merge veto
-for the master. That veto is policy, not a guard check: no gate reads PR
-comments yet. `docs/AUDIT.md` §7 has the caps and the alarm thresholds.
+for the master. A `not proven` verdict is re-run on the head and updated before
+the veto applies (see §Review rubric, D86). That veto is policy, not a guard
+check: no gate reads PR comments yet. `docs/AUDIT.md` §7 has the caps and the
+alarm thresholds.
 
 The architecture reviewer is not the auditor. The auditor asks whether the
 _process_ produced a bad change; the architecture reviewer asks whether the
@@ -227,6 +229,22 @@ The reviewer answers each line, then states **approve** or **request changes**:
 6. **Docs** — decision entry, architecture update, TODO burn-down.
 7. **Noise** — unrelated formatting, debug leftovers, a second way to do
    something the repo already does one way.
+
+### Re-running a `not proven` verdict
+
+A `not proven` verdict is not the last word on a claim. The reviewer records the
+command that would settle the claim as one verbatim line, re-runs that exact
+command against the head under review — the command as written, not a
+paraphrase of what it does — and posts the updated verdict as a follow-up
+comment before the master merges. The re-run settles the claim as `proven`; or
+as `weaker`, when the command settles a weaker property than the claim says; or
+it leaves the claim `not proven`. The vocabulary stays those three words: a
+re-run does not add a fourth state and does not add a claim.
+
+A claim that is still `not proven` after the re-run keeps the PR out of the
+merge queue: the master bounces it with the reason and does not merge around an
+unresolved verdict. This step is policy, not a gate (D86): no gate reads PR
+comments, and the merge pin names the head that must carry the updated verdict.
 
 The master reads the verdict and the diff stat, not the whole diff, and merges
 or bounces. Two bounces on the same ticket means the ticket was underspecified:
