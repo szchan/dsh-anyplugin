@@ -43,16 +43,22 @@ The fixed limits are:
 | P4 compile | median of the paired head/base ratios | `<= 1.50x` |
 | P5 tarball/unpacked/kernel/RSS | recorded only | never gates |
 
-A value exactly at a limit passes; the limits are ceilings, as the existing
-`exceedsThreshold` has always been. A missing P2 pin or an unmeasured probe is
+A ratio exactly at its limit passes: 1.5× is a ceiling, as `exceedsThreshold`
+has always meant. An absolute budget fails at its boundary — the ratified
+numbers read "< 3 s", "< 2× empty" and "< 50 µs" — so 3000 ms, exactly 2× and
+50 µs are red (`exceedsCap`). A missing P2 pin or an unmeasured probe is
 a **failed** row, not a skipped gate. The P2 base/head ratio is still printed,
 but it is description: its noise is why D69 did not gate it, and D76 keeps that
 objection while gating the head's absolute boot instead.
 
 `npm run perf` on a workstation is **local-only for debugging and never a
 merge gate**. `npm run verify` does not read perf; the `perf` workflow is its
-own check. Whether a red `perf` blocks a merge is branch protection's decision,
-and the merge command stays human.
+own check. It runs on both `push` and `pull_request`, so one commit produces two
+`perf` runs; do not add it to the required checks until those triggers are
+collapsed to one run per commit — a second check under the same name leaves the
+other pending and blocks the merge (the failure `verify` already had before it
+went push-only). Whether a red `perf` blocks a merge is branch protection's
+decision, and the merge command stays human.
 
 ## Reading the artifact
 
@@ -173,9 +179,11 @@ The base is measured in a detached `git worktree` at the base commit:
    `[base, head]` and `[head, base]`. Each side keeps its own module graph and
    its own `vm` contexts; because the two halves of a pair are adjacent in
    time, a drift in the host's load cancels inside the pair instead of being
-   reported as a ratio. P2 does the same in one child per pin: it boots the
-   base side and the head side as a pair, alternating which side goes first,
-   and reports the median of the per-pair ratios;
+   reported as a ratio. P2 boots the base side and the head side as a pair, alternating which side
+   goes first, and reports the median of the per-pair ratios; one probe child
+   serves every declared pin in turn, so a failure on the first pin stops the
+   rest, and the peak RSS is the maximum across pins rather than a per-pin
+   number;
 6. the worktree and the scratch home are removed in a `finally`.
 
 Everything the runner needs for itself — worktree creation, dependency sharing,
@@ -227,7 +235,8 @@ alternating. The reported base/head ratio for each profile is the median of its
 per-pair ratios; the per-side medians are descriptive.
 
 The D76 gates are on the **head** side of those medians: the empty boot must be
-at or below 3000 ms, and the one-plugin boot at or below 2x the empty boot.
+strictly below 3000 ms, and the one-plugin boot strictly below 2x the empty
+boot; the boundary value fails.
 The base/head P2 ratio stays in the table but does not gate.
 
 After the stopwatch closes, P2 asserts the profile shape:
@@ -281,7 +290,7 @@ keeps that ratio descriptive and gates the head's absolute boot instead.
 
 Every sample is 2,000 dispatches; the reported number is **microseconds per
 dispatch**, and the probe asserts the exact trace and a `continue` decision
-after each sample. The gate is the head median at or below **50 us per
+after each sample. The gate is the head median strictly below **50 us per
 dispatch** (the observed value is roughly 8–10 us). The base/head ratio is
 printed as description; the absolute cap is the gate. The dispatch is
 in-process: no host, no CLI, no IPC.

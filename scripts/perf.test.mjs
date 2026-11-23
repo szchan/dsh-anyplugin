@@ -26,6 +26,7 @@ import {
   PerfError,
   REPORT_SCHEMA,
   coreReportRow,
+  exceedsCap,
   exceedsThreshold,
   formatGateTable,
   formatTable,
@@ -138,6 +139,66 @@ test('the threshold is a ceiling: equality is inside it', () => {
   assert.equal(exceedsThreshold(1.5, 1.5), false)
   assert.equal(exceedsThreshold(1.5001, 1.5), true)
   assert.equal(exceedsThreshold(0.99, 1.5), false)
+})
+
+test('perfEnvProblems names every missing variable at once', () => {
+  const problems = perfEnvProblems({})
+  for (const name of ENV_VARS) {
+    assert.ok(problems.includes(`${name} is not set`), `the report must name ${name}`)
+  }
+  assert.equal(problems.length, ENV_VARS.length)
+})
+
+test('perfEnvProblems rejects a harness dir that is not a fetched install root', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-perf-test-'))
+  try {
+    const problems = perfEnvProblems({ DSH_HARNESS_DIR: join(scratch, 'not-a-harness') })
+    assert.ok(problems.some((problem) => problem.includes('DSH_HARNESS_DIR')))
+    assert.ok(problems.some((problem) => problem.includes('not a directory')))
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('perfEnvProblems accepts a complete environment and requirePerfEnv returns it', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-perf-test-'))
+  try {
+    const harnessDir = join(scratch, 'harness')
+    mkdirSync(join(harnessDir, 'node_modules', '@deepseek-ai'), { recursive: true })
+    const claudeBin = join(scratch, 'claude')
+    writeFileSync(claudeBin, '#!/bin/sh\n')
+    chmodSync(claudeBin, 0o755)
+    const modsTree = join(scratch, 'mods')
+    mkdirSync(join(modsTree, 'mods'), { recursive: true })
+    const modTree = join(modsTree, 'mods', 'diff', 'hooks')
+    mkdirSync(modTree, { recursive: true })
+    writeFileSync(join(modTree, 'register.ts'), '')
+
+    const env = {
+      DSH_HARNESS_DIR: harnessDir,
+      DSH_HARNESS_VERSION: '0.2.2-rc.5',
+      CLAUDE_BIN: claudeBin,
+      ANYPLUGIN_MODS_TREE: modsTree,
+      ANYPLUGIN_MOD_TREE: modTree,
+    }
+    assert.deepEqual(perfEnvProblems(env), [])
+    assert.deepEqual(requirePerfEnv(env), {
+      harnessDir,
+      harnessVersion: '0.2.2-rc.5',
+      claudeBin,
+      modsTree,
+      modTree,
+    })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('requirePerfEnv throws one PerfError that lists every problem', () => {
+  assert.throws(
+    () => requirePerfEnv({}),
+    (error) => error instanceof PerfError && ENV_VARS.every((name) => error.message.includes(name)),
+  )
 })
 
 test('parseArgs defaults match the documented contract', () => {
@@ -502,4 +563,40 @@ test('pairRatios pairs sample i with sample i and refuses different counts', () 
   assert.throws(() => pairRatios([], []), PerfError)
   assert.throws(() => pairRatios([100], [120, 40]), PerfError)
   assert.throws(() => pairRatios([0], [120]), PerfError)
+})
+
+test('an absolute budget fails at its boundary, a ratio does not', () => {
+  // The ratified numbers read "< 3 s", "< 2x empty" and "< 50 us"; a comparison
+  // that passes at equality is a wider gate than the number approved.
+  const edge = sampleReport()
+  edge.probes.P3 = row(8, 50, { unit: 'us' })
+  edge.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 20), empty: row(10, 10) }]
+  assert.deepEqual(gateFailures(edge), [
+    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 20.0 ms > 2.00x empty (10.0 ms) (repeat 5)',
+    'P3 pre-execute fan-out: 50.0 us > 50.0 us (repeat 5)',
+  ])
+
+  const emptyEdge = sampleReport()
+  emptyEdge.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 345), empty: row(10, 3000) }]
+  assert.deepEqual(gateFailures(emptyEdge), [
+    'P2 empty boot @ dsh 0.2.2-rc.5: 3000.0 ms > 3000 ms (repeat 5)',
+  ])
+
+  const justUnder = sampleReport()
+  justUnder.probes.P3 = row(8, 49.9, { unit: 'us' })
+  justUnder.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 344), empty: row(10, 2999.9) }]
+  assert.deepEqual(gateFailures(justUnder), [])
+
+  // A ratio threshold is inclusive: exactly 1.5x is inside the ceiling.
+  const ratio = sampleReport()
+  ratio.probes.P1 = row(100, 150)
+  assert.deepEqual(gateFailures(ratio), [])
+})
+
+test('--ci refuses a repeat count below the five-pair claim', () => {
+  assert.throws(() => parseArgs(['--ci', '--repeat', '1']), /--ci needs --repeat >= 5/)
+  assert.throws(() => parseArgs(['--repeat', '4', '--ci']), /--ci needs --repeat >= 5/)
+  assert.equal(parseArgs(['--ci', '--repeat', '5']).repeat, 5)
+  // Outside CI mode a short run is a sample, not a gate claim.
+  assert.equal(parseArgs(['--repeat', '1', '--check']).repeat, 1)
 })

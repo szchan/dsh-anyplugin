@@ -89,6 +89,9 @@ export const ENV_VARS = Object.freeze([
 
 export const DEFAULT_BASE = 'origin/main'
 export const DEFAULT_REPEAT = 5
+
+/** The pair count the gate's claim is defined on (D76). */
+const GATE_REPEAT = 5
 export const DEFAULT_THRESHOLD = 1.5
 export const REPORT_SCHEMA = 'dsh-anyplugin/perf@1'
 
@@ -179,11 +182,22 @@ export class PerfError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * Strictly greater: a ratio exactly at the threshold is inside it. The
- * threshold is a ceiling for a *regression*, and equality is not a regression.
+ * Strictly greater: a ratio exactly at the threshold is inside it. A ratio
+ * threshold is a ceiling for a *regression*, and measuring exactly the
+ * pre-registered value is not a regression.
  */
 export function exceedsThreshold(ratio, threshold) {
   return ratio > threshold
+}
+
+/**
+ * At or above: an absolute budget is a wall, not a ratio. The ratified caps
+ * read "< 3 s", "< 2x empty", "< 50 us", so the boundary value itself fails —
+ * otherwise the gate is wider than the number the maintainer approved
+ * (reviewer finding on #231).
+ */
+export function exceedsCap(value, cap) {
+  return value >= cap
 }
 
 /** Median of the timed samples. Empty input is a harness bug, not a zero. */
@@ -312,7 +326,7 @@ export function gateRows(report, limits = GATE_LIMITS) {
       const emptyBase = measuredBase(empty)
       const emptyHead = measuredMedian(empty)
       const emptyRatio = finiteRatio(empty?.ratio)
-      const emptyOk = emptyHead !== null && !exceedsThreshold(emptyHead, limits.p2EmptyMs)
+      const emptyOk = emptyHead !== null && !exceedsCap(emptyHead, limits.p2EmptyMs)
       rows.push(
         gateRow(
           'P2',
@@ -337,7 +351,7 @@ export function gateRows(report, limits = GATE_LIMITS) {
       let oneDetail = null
       if (emptyHead === null) oneDetail = 'empty boot not measured'
       else if (oneHead === null) oneDetail = 'not measured'
-      else oneOk = !exceedsThreshold(oneHead, multiplier * emptyHead)
+      else oneOk = !exceedsCap(oneHead, multiplier * emptyHead)
       const oneLimit = emptyHead === null ? null : multiplier * emptyHead
       const oneLimitText =
         emptyHead === null
@@ -365,7 +379,7 @@ export function gateRows(report, limits = GATE_LIMITS) {
   const p3Base = measuredBase(p3)
   const p3Head = measuredMedian(p3)
   const p3Ratio = finiteRatio(p3?.ratio)
-  const p3Ok = p3Head !== null && !exceedsThreshold(p3Head, limits.p3Micros)
+  const p3Ok = p3Head !== null && !exceedsCap(p3Head, limits.p3Micros)
   rows.push(
     gateRow(
       'P3',
@@ -551,6 +565,11 @@ export function parseArgs(argv) {
         if (!Number.isInteger(repeat) || repeat < 1 || repeat > MAX_REPEAT) {
           throw new PerfError(`perf: --repeat must be an integer from 1 to ${MAX_REPEAT}, got ${JSON.stringify(value)}`)
         }
+        if (options.ci && repeat < GATE_REPEAT) {
+          // --ci is the workflow mode; its claim is the median of five pairs.
+          // A one-line workflow edit must not turn the gate into one sample.
+          throw new PerfError(`perf: --ci needs --repeat >= ${GATE_REPEAT} (the median of ${GATE_REPEAT} pairs is the claim), got ${repeat}`)
+        }
         options.repeat = repeat
         break
       }
@@ -613,6 +632,11 @@ export function parseArgs(argv) {
   }
   if (options.ci && options.jsonOut === null) options.jsonOut = CI_ARTIFACT
   if (options.quiet) options.json = true
+  // Flag order must not matter: `--repeat 1 --ci` is the same request as
+  // `--ci --repeat 1`.
+  if (options.ci && options.repeat < GATE_REPEAT) {
+    throw new PerfError(`perf: --ci needs --repeat >= ${GATE_REPEAT} (the median of ${GATE_REPEAT} pairs is the claim), got ${options.repeat}`)
+  }
   return options
 }
 

@@ -3470,14 +3470,16 @@ The fixed limits are `GATE_LIMITS` in `scripts/perf.mjs`:
    at or below 1.5×. A value exactly at 1.5× passes, as for the existing
    `exceedsThreshold` ceiling.
 2. **P2 boot + reconcile** — for each pin declared in `engines.dsh`, the head
-   empty-profile boot must be at or below 3000 ms absolute, and the head
-   one-plugin boot must be at or below 2× the head empty-profile median. The
+   empty-profile boot must be strictly below 3000 ms absolute, and the head
+   one-plugin boot strictly below 2× the head empty-profile median. An
+   absolute budget fails at its boundary — unlike the 1.5× ratios, where
+   equality is inside the ceiling. The
    empty profile is a home with no `anyplugin/installs.yml`; the controller
    mounts no plugin group and logs that it has nothing to reconcile. The
    P2 base/head ratio stays in the table as description but does not gate:
    D69 rule 3's boot-noise objection is about that ratio, and it is why the
    cap is on head milliseconds and a head-local multiplier instead.
-3. **P3 pre-execute fan-out** — the head median must be at or below 50 µs per
+3. **P3 pre-execute fan-out** — the head median must be strictly below 50 µs per
    dispatch (2,000 dispatches per sample). This is an absolute budget on our
    own loop, not a base comparison.
 4. **P4 compile** — the median of the per-pair head/base ratios must be at or
