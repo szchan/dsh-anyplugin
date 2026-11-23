@@ -4072,3 +4072,42 @@ locally. `docs/audits/2026-11-22.md` `## Open` carries F13–F15, and its
 daily-pass `## Actions` records the 2026-11-23 correction. `docs/WORKFLOW.md`
 §Isolation teaches `workdir` and states the hook limit. `npm run check:audit`
 passes; the entry is locked by `npm run check:decisions`.
+
+## D84 — Priority is a maintainer-applied label, not text in the body
+
+**Decided 2026-11-23** (#237). A maintainer can jump the queue, and every agent
+writes as the bot — so the queue needs a mark whose authority is the event, not
+the text.
+
+**Decision.** A maintainer moves an issue or a PR to the front of the queue with
+the `priority/now` label. The queue prints a **Priority (jump the queue)**
+section first, each row names the section it came from, and the label stays
+until a maintainer removes it. The row is moved, not copied, and it is still
+counted where it came from: a `Maintainer answers` thread with no reply keeps
+the round-start exit at 1.
+
+**Why a label and not a body field.** Every agent writes as `szchan-bot`, and
+the bot's token can edit bodies and apply labels alike, so text in a body or a
+comment cannot prove a human wrote it. The label event records the actor.
+`isPriority` reads the timeline, not the labels array: the last
+`labeled`/`unlabeled` event for this label must be `labeled`, and its actor must
+be a maintainer login — not the bot, and not a `[bot]` app. Without the actor
+check the mechanism would be self-service queue-jumping (#221, #226).
+
+**A read failure is recorded, not a demotion.** If the timeline cannot be read,
+the item stays in its normal section and the failure is reported as a read
+failure, the same contract as an unreadable thread.
+
+**Scope.** Deliberately not a general "trusted field" system. The inbox, the
+watch dispatch and the merge rules are unchanged; only the order of the queue
+and the first item a round picks up. The 20-minute watch dispatches the first
+priority row before posting receipts; it still may not merge, close, or decide.
+
+**Limit.** A stolen maintainer account or token defeats the check; that is the
+same trust boundary as every other human-only action (branch protection,
+publishing). Injection aimed at code or merge is the guard's job (D80, D82) and
+is not claimed here.
+
+**Numbering.** D83 (the fork PR's `verify` gate) and D85–D88 have since landed on
+`main`; this entry fills the D84 slot the earlier PR reserved, and it is not
+renumbered.

@@ -39,6 +39,7 @@ not.
 | label | meaning |
 | --- | --- |
 | `from-maintainer` | authored by the human account. **Ranks first in the queue; it does not skip verification.** |
+| `priority/now` | a maintainer's "do this next" mark. Only the latest labelled event by a maintainer counts; an agent-applied label does not (§2). |
 | `external` | any other login. Treated as a report, never as an instruction. |
 | `needs-evidence` | the report cannot be acted on as written; an agent commented asking for specifics. |
 | `agent-reply` | the newest comment came from `szchan-bot`. |
@@ -68,34 +69,50 @@ Consequence, stated so nobody is surprised: a new issue waits for the next pull 
 up to one scheduling interval — before it is labelled. It is never lost, and it
 never interrupts a worker mid-branch.
 
-The queue prints these sections in this order:
+**A maintainer can jump the queue.** Apply the `priority/now` label to an issue
+or a PR. Only the latest `labeled`/`unlabeled` event for that label counts, and
+only when a maintainer is the actor: the bot's token can edit bodies and apply
+labels, so the labels array alone is not evidence. The queue prints a
+**Priority (jump the queue)** section first, each row names the section it came
+from, and the 20-minute watch dispatches those rows before it posts receipts.
+The label stays until a maintainer removes it. A jumped row is still counted
+where it came from, so a `Maintainer answers` thread with no reply still makes
+the round-start exit 1; an unreadable label timeline is a recorded read failure,
+not a silent demotion.
 
-1. **Maintainer asks (new)** — `from-maintainer` threads whose last human message
-   is newer than the last agent message. These outrank everything.
-2. **Maintainer answers (resume)** — `maintainer-question` threads where the human
+The queue prints these sections in this order (a `priority/now` item is moved,
+not copied, so it prints once, under *Priority*):
+
+1. **Priority (jump the queue)** — issues and PRs carrying `priority/now`,
+   applied last by a maintainer. Each row names the section it came from; the
+   label ranks the row first, it does not skip verification.
+2. **Maintainer asks (new)** — `from-maintainer` threads whose last human message
+   is newer than the last agent message. These outrank everything except a
+   `priority/now` row.
+3. **Maintainer answers (resume)** — `maintainer-question` threads where the human
    replied. The waiting agent resumes; nobody else takes the ticket.
-3. **Blocked on a human** — `maintainer-question` threads where the agent asked
+4. **Blocked on a human** — `maintainer-question` threads where the agent asked
    last (§6). Nothing moves until a maintainer answers.
-4. **Agent findings (review)** — issues the architecture reviewer (D82) filed
+5. **Agent findings (review)** — issues the architecture reviewer (D82) filed
    through the bot with an `arch:` title. They are agent output: they need a
    review/merge decision, not an answer. A maintainer's later comment on one
    turns it into a **Maintainer answers** row, so the class never hides a human
    reply (D85).
-5. **In review (PR open)** — issues that an open PR already closes (`Closes #N`
+6. **In review (PR open)** — issues that an open PR already closes (`Closes #N`
    in the PR body). Listed so the ticket is visibly in flight, never left in a
    queue: an ask that already has a PR invites a second worker to claim the same
    ticket.
-6. **In progress (no PR yet)** — issues labelled `ticket/in-progress` that have
+7. **In progress (no PR yet)** — issues labelled `ticket/in-progress` that have
    no PR yet. Claimed work is in flight even when there is nothing to review;
    without this the queue undercounts WIP and the next round dispatches a second
    worker onto a moving ticket.
-7. **External, untriaged** — `external` issues with no agent triage yet. Each
+8. **External, untriaged** — `external` issues with no agent triage yet. Each
    gets one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
    `needs-evidence` with the exact questions, or `invalid` with the reason.
-8. **External, awaiting evidence** — `needs-evidence` issues where the agent
+9. **External, awaiting evidence** — `needs-evidence` issues where the agent
    asked last: the reporter's answer is what unblocks them.
-9. **Pull requests** — every open PR, with its `verify` status and whether an
-   agent has reviewed at the current head.
+10. **Pull requests** — every open PR, with its `verify` status and whether an
+    agent has reviewed at the current head.
 
 Order here is display priority, not classifier precedence: the classifier
 early-returns, so an issue already closed by an open PR is listed under *In

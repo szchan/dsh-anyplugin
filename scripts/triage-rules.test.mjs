@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { classifyIssue, inboxVerdict, isAgentFinding, isOurs, isReceipt, roleOf, roleOfIssue, roleOfPullRequest } from './triage-rules.mjs'
+import { classifyIssue, inboxVerdict, isAgentFinding, isOurs, isPriority, isReceipt, PRIORITY_LABEL, roleOf, roleOfIssue, roleOfPullRequest } from './triage-rules.mjs'
 
 const options = { maintainers: ['szchan'], botLogin: 'szchan-bot' }
 const issue = (extra = {}) => ({ number: 1, title: 'x', author: { login: 'szchan' }, labels: [], ...extra })
@@ -249,4 +249,39 @@ test('findings and blocked are disjoint (D85)', () => {
   assert.equal(verdict.waiting.length, 0)
   assert.equal(verdict.exitCode, 0)
   assert.match(verdict.summary, /1 agent finding\(s\) to review/)
+})
+
+test('a priority label counts only when a maintainer applied it last', () => {
+  const events = (...list) =>
+    list.map(([event, actor, createdAt = '2026-11-22T08:00:00Z']) => ({ event, label: PRIORITY_LABEL, actor, createdAt }))
+  const marked = issue({ labels: labels(PRIORITY_LABEL) })
+  assert.equal(isPriority(marked, events(['labeled', 'szchan']), options), true)
+  // The bot's token can label; every agent writes as the bot, so this must not count.
+  assert.equal(isPriority(marked, events(['labeled', 'szchan-bot']), options), false)
+  // A maintainer label that a bot removed is no longer a priority.
+  assert.equal(
+    isPriority(
+      marked,
+      events(['labeled', 'szchan', '2026-11-22T08:00:00Z'], ['unlabeled', 'szchan-bot', '2026-11-22T09:00:00Z']),
+      options,
+    ),
+    false,
+  )
+  // GitHub App labels are not maintainers even if a login list was widened.
+  assert.equal(isPriority(marked, events(['labeled', 'github-actions[bot]']), options), false)
+  // A non-maintainer cannot jump the queue.
+  assert.equal(isPriority(marked, events(['labeled', 'someone']), options), false)
+  // No label on the node, and no events, both mean not priority.
+  assert.equal(isPriority(issue(), events(['labeled', 'szchan']), options), false)
+  assert.equal(isPriority(marked, [], options), false)
+})
+
+test('a priority row still counts as waiting in the inbox, by where it came from', () => {
+  const sections = {
+    'Priority (jump the queue)': [{ number: 1, title: 'x', originally: 'Maintainer answers (resume)' }],
+  }
+  const verdict = inboxVerdict(sections)
+  assert.equal(verdict.exitCode, 1)
+  assert.equal(verdict.waiting[0].section, 'Maintainer answers (resume)')
+  assert.equal(verdict.summary, 'inbox: 1 thread(s) waiting, 0 escalation(s) open, 0 agent finding(s) to review, 0 thread(s) unreadable')
 })
