@@ -79,12 +79,12 @@ try {
   if (packed) {
     const tarball = join(packDir, packed.filename)
     check(existsSync(tarball), `npm pack did not leave ${tarball}`)
-    notes.push(`${packed.entryCount} entries, ${(packed.size / 1024).toFixed(0)} KiB`)
+    notes.push(`${packed.entryCount} entries, ${packed.size} bytes`)
     check(
       packed.size <= TARBALL_CEILING_BYTES,
       `the tarball is ${packed.size} bytes, above the ${TARBALL_CEILING_BYTES}-byte ceiling; decide before it grows`,
     )
-    notes.push(`tarball: ${(packed.size / 1024).toFixed(1)} KiB / ceiling ${TARBALL_CEILING_BYTES / 1024} KiB`)
+    notes.push(`tarball: ${packed.size} bytes (${(packed.size / 1024).toFixed(1)} KiB) / ceiling ${TARBALL_CEILING_BYTES} bytes`)
 
     const tree = join(packDir, 'unpacked')
     mkdirSync(tree, { recursive: true })
@@ -217,18 +217,24 @@ try {
     check(clientSource.includes('window.__ModuleLoader__.load('), 'lib/client.js is not a client-modules bundle')
     check(/id:\s*['"]dsh-anyplugin['"]/.test(clientSource), 'lib/client.js does not register the dsh-anyplugin client row')
     check(clientSource.includes('settings.section'), 'lib/client.js does not register the panel slot')
-    // The split build may place the controller's shared chunk beside
-    // lib/index.js, so the route and the writer reference are asserted over the
-    // whole shipped lib, not one file.
-    const serverSources = [...contents.values()].join("\n")
-    check(serverSources.includes('/anyplugin/installs'), 'the shipped lib has no panel read route')
-    check(serverSources.includes('dsh-anyplugin/install'), 'the shipped lib does not reach the install writer through ./install')
-    // The deleted package must not survive as a string: a stale id would make
-    // the bundle look for a row that is never composed.
-    for (const [path, source] of contents) {
-      check(!source.includes('dsh-anyplugin-ui'), `lib/${path.slice(4)} still names the removed dsh-anyplugin-ui package`)
+    // The server half may be split into shared chunks beside lib/index.js, so
+    // the route and the writer reference are asserted over every server chunk —
+    // but not over lib/client.js, whose own `/anyplugin/installs` fetch would
+    // otherwise satisfy the read-route check with no server at all (they are
+    // different halves of the feature and must be proven separately).
+    const isClient = (path) => /^lib\/client(\.|-|\/)/u.test(path)
+    const serverSources = [...contents].filter(([path]) => !isClient(path)).map(([, source]) => source).join('\n')
+    check(serverSources.includes('dsh-anyplugin: panel routes'), 'the shipped server has no panel route registration')
+    check(serverSources.includes('/anyplugin/installs'), 'the shipped server has no panel read route')
+    check(serverSources.includes('dsh-anyplugin/install'), 'the shipped server does not reach the install writer through ./install')
+    // The deleted package must not survive as a string anywhere in the
+    // artifact: a stale id would make the bundle look for a row that is never
+    // composed, and a stale README would keep telling users to install it.
+    for (const path of files) {
+      const source = readFileSync(join(tree, path), 'utf8')
+      check(!source.includes('dsh-anyplugin-ui'), `${path} still names the removed dsh-anyplugin-ui package`)
     }
-    notes.push('panel: lib/client.js is the dsh-anyplugin dsh.client bundle; routes live in lib/index.js')
+    notes.push('panel: lib/client.js is the dsh-anyplugin dsh.client bundle; the server registers its routes in lib/index.js')
     const imported = new Set()
     // The panel reaches its own package's ./install export by name (D61/D77);
     // that is a legal self-reference through the exports map, not a dependency.

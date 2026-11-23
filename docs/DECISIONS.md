@@ -3514,3 +3514,33 @@ and its assets; the tarball is larger by the measured amount in
 loader — the bundle id *is* the package name — so panel changes are package
 changes. A future external panel would have to be a different package with a
 different row id, not a second install of this one.
+
+## D81 — The panel's pack gate proves the server, and D61's subpath clause
+
+D77 shipped the panel inside `dsh-anyplugin`, and the review found the pack gate
+proving less than the decision said. Three corrections, ratified separately
+because D77 is append-only:
+
+1. **The route check reads server chunks only.** `check:pack` joined every
+   `lib/` file, so `lib/client.js`'s own `/anyplugin/installs` fetch satisfied
+   the "the server serves the panel" assertion even with the server route
+   deleted. The check now excludes the client bundle (`lib/client.js` and any
+   `lib/client-*`/`lib/client/` chunk), requires the server's route-registration
+   label, and still requires the `dsh-anyplugin/install` reference. The client
+   half stays proven by its own assertions (`dsh.client`, the bundle's
+   registration id, `settings.section`).
+2. **D61's "no other subpath is added" sentence is superseded as far as
+   `exports["./client"]`.** That subpath is the client half of the same
+   package, not a second bundle; D61's other guarantees (path-only install
+   input, loopback-only serving, no foreign code imported by the server) stand.
+3. **The artifact is scanned whole, and its size is printed in bytes.**
+   `check:pack` now looks for the removed `dsh-anyplugin-ui` name in every
+   shipped file, not just `lib/`, and prints the tarball size in bytes next to
+   the KiB reading, so D77's "the measured byte count lives in the script" is a
+   fact a reader can check without a failing run.
+
+Evidence: `scripts/check-pack.mjs` (the `isClient` exclusion, the whole-tree
+scan, `notes.push` with bytes); `packages/dsh-anyplugin-install/test/panel.test.mjs`
+now states what the mount test proves (the controller asks for `webServer` and
+the panel registers both routes in the pin's documented `register` shape; no
+test boots a real web server).

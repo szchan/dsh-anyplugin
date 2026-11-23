@@ -561,8 +561,12 @@ test('the controller mounts the panel before it checks for a lock', async () => 
   try {
     const panel = await loadPanel(box)
     const config = { installs: join(box.home, 'anyplugin', 'installs.yml'), home: box.home, projectDir: box.project }
-    // A bare probe: the controller's own inject callback is what applies the
-    // panel, so applying it here first would register the routes twice.
+    // A bare probe shaped like the pin's `webServer` service: the controller's
+    // own inject callback is what applies the panel, so applying it here first
+    // would register the routes twice. No test boots a real web server (the
+    // harness tree is never started with one), so this asserts the controller
+    // asks for ['webServer'] and that the panel registers the two routes in
+    // the documented `register({ kind, path, resource | handler })` shape.
     const mounted = mountServer(() => {}, config)
     let asked
     await panel.apply(
