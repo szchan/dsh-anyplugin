@@ -175,7 +175,7 @@ if (waiting) {
   }
   for (const item of verdict.blocked) process.stdout.write(`  still blocked on a human: #${item.number} ${item.title}\n`)
   // A finding is agent output, not a human waiting: it needs review/merge, so
-  // it is listed for the review pass and does not raise the exit code (D83).
+  // it is listed for the review pass and does not raise the exit code (D85).
   for (const item of verdict.findings) process.stdout.write(`  agent finding to review: #${item.number} ${item.title}\n`)
   for (const failure of verdict.failures) {
     const what = failure.number === 0 ? 'pull requests' : `thread #${failure.number}`

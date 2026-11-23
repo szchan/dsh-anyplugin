@@ -3729,7 +3729,7 @@ correctly — `roleOf` reads the bot as a maintainer today, so those issues need
 routing class or an explicit master triage; that is a follow-up, named rather
 than hidden.
 
-## D83 — Agent-filed findings are their own queue class
+## D85 — Agent-filed findings are their own queue class
 
 **Decided 2026-11-22** (#234, D82 follow-up). D82's consequences named the gap:
 `roleOf` reads the bot as a maintainer, so the architecture reviewer's issues

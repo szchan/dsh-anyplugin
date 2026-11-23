@@ -28,7 +28,7 @@ export const roleOf = (node, options) => {
 // the queue cannot tell a finding (needs review/merge) from a maintainer
 // request (needs an answer). The title prefix is the reviewer's own contract;
 // the author half is load-bearing because a maintainer issue titled `arch:`
-// stays a maintainer ask (D83).
+// stays a maintainer ask (D85).
 export const AGENT_FINDING_TITLE = /^arch:/iu
 
 /** Bot-authored and titled `arch:`: agent output, not a question to answer. */
@@ -106,7 +106,7 @@ export const classifyIssue = (issue, comments, options) => {
     if (human === undefined || agentAfterMaintainer) return { section: 'Blocked on a human', lastSpeaker }
     return { section: 'Maintainer answers (resume)', lastSpeaker }
   }
-  // An agent-filed finding (D83) is agent output, not a maintainer question:
+  // An agent-filed finding (D85) is agent output, not a maintainer question:
   // it is queued for review with nobody waiting on a human. A maintainer's
   // later comment still resumes it like any other agent thread.
   if (isAgentFinding(issue, options)) {
@@ -135,7 +135,7 @@ export const roleOfPullRequest = (pr, options) => (isOurs(pr.author?.login, opti
  * 0 — nothing waits; 1 — a maintainer has the last substantive word (a reply or
  * a new ask); 2 — the tracker could not be read, so "nothing waits" would be a
  * lie. Receipts are not answers (D79). Agent findings are listed but do not
- * wait on a human: they need review/merge, not an answer (D83).
+ * wait on a human: they need review/merge, not an answer (D85).
  */
 export const inboxVerdict = (sections, failures = []) => {
   const tag = (name) => (sections[name] ?? []).map((item) => ({ ...item, section: name }))

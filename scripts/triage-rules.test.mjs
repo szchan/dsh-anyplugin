@@ -59,7 +59,7 @@ test('a maintainer issue with no agent comment is a new ask', () => {
   assert.equal(classifyIssue(issue(), [], options).section, 'Maintainer asks (new)')
 })
 
-test('a bot-filed arch: finding is an agent finding, not a maintainer ask (D83)', () => {
+test('a bot-filed arch: finding is an agent finding, not a maintainer ask (D85)', () => {
   // The D82 reviewer files as the bot and `roleOf` reads the bot as a
   // maintainer: without the class this finding was printed in no section at
   // all, and a maintainer comment on it looked like a maintainer reply.
@@ -77,7 +77,7 @@ test('the finding class does not depend on the body-first-comment injection', ()
   assert.equal(verdict.section, 'Agent findings (review)')
 })
 
-test('a maintainer comment on a finding still resumes work (D83)', () => {
+test('a maintainer comment on a finding still resumes work (D85)', () => {
   const verdict = classifyIssue(
     issue({ author: { login: 'szchan-bot' }, title: 'arch: two writers share docs/TRIAGE.md' }),
     [comment('szchan-bot', '2026-11-23T07:00:00Z', '<!-- dsh-anyplugin-agent --> finding body'), comment('szchan', '2026-11-23T08:00:00Z', 'fix it')],
@@ -216,7 +216,7 @@ test('the inbox exit contract counts asks, answers and unreadable threads', () =
   assert.equal(inboxVerdict(sections('Maintainer answers (resume)')).exitCode, 1)
   assert.equal(inboxVerdict(sections('Blocked on a human')).exitCode, 0)
   // A finding needs review/merge, not an answer: it is reported but does not
-  // raise the round-start exit code (D83).
+  // raise the round-start exit code (D85).
   const findings = inboxVerdict(sections('Agent findings (review)'))
   assert.equal(findings.exitCode, 0)
   assert.equal(findings.findings.length, 1)
@@ -237,7 +237,7 @@ test('the finding title contract is trimmed, anchored and colon-literal', () => 
   assert.equal(finding('x arch: not at the start'), false)
 })
 
-test('findings and blocked are disjoint (D83)', () => {
+test('findings and blocked are disjoint (D85)', () => {
   // A finding is agent output, not an escalation. Counting it as blocked would
   // make the round-start exit code claim a human is waiting when none is.
   const verdict = inboxVerdict({

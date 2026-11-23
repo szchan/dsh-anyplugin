@@ -2,7 +2,7 @@
 // are unit-tested in triage-rules.test.mjs; this file pins that scripts/triage.mjs
 // actually routes a bot-filed `arch:` issue into its own section, reports the
 // author class as `agent`, and lists it in the inbox without raising the exit
-// code (D83). A real `gh` would hit the network, so the test puts a fake `gh` at
+// code (D85). A real `gh` would hit the network, so the test puts a fake `gh` at
 // the head of PATH and lets the script call it like the real one.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'

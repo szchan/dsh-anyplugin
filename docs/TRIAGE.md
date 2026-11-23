@@ -80,7 +80,7 @@ The queue prints these sections in this order:
    through the bot with an `arch:` title. They are agent output: they need a
    review/merge decision, not an answer. A maintainer's later comment on one
    turns it into a **Maintainer answers** row, so the class never hides a human
-   reply (D83).
+   reply (D85).
 5. **In review (PR open)** — issues that an open PR already closes (`Closes #N`
    in the PR body). Listed so the ticket is visibly in flight, never left in a
    queue: an ask that already has a PR invites a second worker to claim the same
@@ -122,12 +122,12 @@ carries the same command):
   bot wrote".
 - The title is the only marker the reviewer emits — it files with the existing
   `area/*` labels only — so no label is added or required. If role filing ever
-  gains an explicit `agent-finding` label, the predicate changes and D83 is
+  gains an explicit `agent-finding` label, the predicate changes and D85 is
   superseded.
 
 A finding is *agent output*: it needs a review/merge decision, not an answer.
 `npm run inbox` lists it as `agent finding to review` and does not raise the
-exit code (D83) — a finding alone exits 0; 1 still means a maintainer answer or
+exit code (D85) — a finding alone exits 0; 1 still means a maintainer answer or
 a new ask waits, 2 still means a thread could not be read.
 
 ### A pull request, in three shapes
@@ -238,7 +238,7 @@ Only a login in `MAINTAINER_LOGINS` can move a row: a bystander's comment on a
 bot escalation is a report, not an answer. Agent findings (the architecture
 reviewer's bot-filed `arch:` issues) are listed separately as `agent finding to
 review`: they need review/merge, not an answer, and they do not raise the exit
-code (D83).
+code (D85).
 
 The intake path posts a `Seen.` receipt when a session picks a thread up. A
 receipt says "an owner exists", not "the answer landed": `scripts/triage-rules.mjs`

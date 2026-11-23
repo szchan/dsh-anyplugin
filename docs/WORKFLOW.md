@@ -44,7 +44,7 @@ commit it was read at, the file and line, the contract sentence it contradicts,
 and the smallest change that would close it. It files each finding through
 the bot with the title `arch: <finding>` and one existing `area/*` label —
 never a new label — so the queue routes it as an agent finding without reading
-prose (`docs/TRIAGE.md` §2, D83). It searches open issues first and
+prose (`docs/TRIAGE.md` §2, D85). It searches open issues first and
 comments new evidence on the existing issue instead of re-filing it. A docs-only correction may go out
 as a PR instead of an issue for that finding, through the normal flow (CI green,
 reviewer verdict, master merges); anything touching code is a ticket. Its
