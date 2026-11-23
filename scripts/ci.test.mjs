@@ -80,3 +80,51 @@ test('a head that was never pushed fails fast with the push hint and asks GitHub
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a cancelled run is named as cancelled, never as a failure with failed steps (#278)', () => {
+  const { root, repo } = setupRepo()
+  try {
+    const head = git(repo, ['rev-parse', 'HEAD']).trim()
+    const newer = 'b'.repeat(40)
+    const ghLog = installFakeGh(root, {
+      // The completed push run for this head was superseded: nothing failed,
+      // and there is no failed log to read.
+      runs: [{ databaseId: 55, event: 'push', status: 'completed', conclusion: 'cancelled', headSha: 'HEAD' }],
+      views: { 55: { status: 'completed', conclusion: 'cancelled' } },
+      branchRuns: [
+        { databaseId: 56, event: 'push', status: 'completed', conclusion: 'success', headSha: newer },
+        { databaseId: 55, event: 'push', status: 'completed', conclusion: 'cancelled', headSha: head },
+      ],
+    })
+    const cap = capture()
+    const code = withRepo(repo, () => main([], cap.io, { appearTimeoutS: 1, pollMs: 20 }))
+    assert.equal(code, 1)
+    assert.match(cap.stdout(), /ci: run 55 was cancelled/)
+    assert.match(cap.stdout(), /a newer push run 56 exists/)
+    assert.doesNotMatch(cap.stdout(), /failed steps/)
+    assert.doesNotMatch(cap.stdout(), /failed\) log/)
+    assert.doesNotMatch(ghLog(), /--log-failed/, 'a cancelled run has no failed log to fetch')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a cancelled run with no newer push run says how to ask for a verdict (#278)', () => {
+  const { root, repo } = setupRepo()
+  try {
+    installFakeGh(root, {
+      runs: [{ databaseId: 57, event: 'push', status: 'completed', conclusion: 'cancelled', headSha: 'HEAD' }],
+      views: { 57: { status: 'completed', conclusion: 'cancelled' } },
+      branchRuns: [],
+    })
+    const cap = capture()
+    const code = withRepo(repo, () => main([], cap.io, { appearTimeoutS: 1, pollMs: 20 }))
+    assert.equal(code, 1)
+    assert.match(cap.stdout(), /ci: run 57 was cancelled/)
+    assert.match(cap.stdout(), /push a new head/)
+    assert.doesNotMatch(cap.stdout(), /newer push run/)
+    assert.doesNotMatch(cap.stdout(), /failed steps/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

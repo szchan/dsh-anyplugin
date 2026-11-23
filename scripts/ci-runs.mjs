@@ -123,6 +123,28 @@ export function listRuns(head) {
   ])
 }
 
+/**
+ * The newest push runs for `branch`, newest first. Used only to explain a
+ * cancelled run: a cancelled head was usually superseded by a newer push, and
+ * naming that run is the difference between "no verdict" and "red".
+ */
+export function listBranchRuns(branch) {
+  return ghJson([
+    'run', 'list', '--workflow', WORKFLOW, '--branch', branch, '--limit', '10',
+    '--json', 'databaseId,status,conclusion,createdAt,headSha,event', ...repoArgs(),
+  ])
+}
+
+/**
+ * The newest push run for the branch whose head is not `head`, if any: evidence
+ * that `head` was superseded. Returns `undefined` when every push run is for
+ * `head` or the list is empty; never throws (a cancelled run's explanation is
+ * a convenience, not a gate).
+ */
+export function newerPushRun(runs, head) {
+  return (runs ?? []).find((run) => run.event === 'push' && run.headSha !== head)
+}
+
 export function viewRun(runId) {
   return ghJson(['run', 'view', String(runId), '--json', 'status,conclusion', ...repoArgs()])
 }
