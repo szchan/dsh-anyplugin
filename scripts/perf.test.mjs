@@ -1,8 +1,9 @@
 /**
  * Unit tests for the parts of `perf.mjs` that own a contract rather than a
- * timing: the median, the ratio direction, the CLI, the environment check and
- * the table's honesty about a pin it could not measure. The probes themselves
- * are integration work and are exercised by `npm run perf`, not here.
+ * timing: the median, the ratio direction, the CLI, the environment check, the
+ * D76 gate rows and the table's honesty about a pin it could not measure. The
+ * probes themselves are integration work and are exercised by `npm run perf`,
+ * not here.
  *
  * These tests are deliberately env-free: every helper takes its input, so a
  * missing DSH_HARNESS_DIR cannot make the suite skip a real assertion.
@@ -15,16 +16,21 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import {
+  ARTIFACT_RETENTION_DAYS,
+  CI_ARTIFACT,
   DEFAULT_BASE,
   DEFAULT_REPEAT,
   DEFAULT_THRESHOLD,
   ENV_VARS,
+  GATE_LIMITS,
   PerfError,
   REPORT_SCHEMA,
-  checkFailures,
   coreReportRow,
   exceedsThreshold,
+  formatGateTable,
   formatTable,
+  gateFailures,
+  gateRows,
   headOverBase,
   median,
   pairBootLog,
@@ -32,9 +38,48 @@ import {
   parseArgs,
   perfEnvProblems,
   pinReportRow,
-  sampleBootPairs,
   requirePerfEnv,
+  sampleBootPairs,
+  sampleBootProfiles,
 } from './perf.mjs'
+
+/** A report row with only the fields the gate and table readers need. */
+function row(base, head, extra = {}) {
+  return {
+    unit: 'ms',
+    base: { median: base },
+    head: { median: head },
+    ratio: head / base,
+    ...extra,
+  }
+}
+
+/** A complete, all-green report. Tests mutate the probe they are about. */
+function sampleReport(overrides = {}) {
+  return {
+    schema: REPORT_SCHEMA,
+    base: { commit: 'a'.repeat(40), ref: 'origin/main' },
+    head: { commit: 'b'.repeat(40) },
+    node: 'v24.22.2',
+    repeat: 5,
+    gateLimits: GATE_LIMITS,
+    probes: {
+      P1: row(200, 220),
+      P2: [{ version: '0.2.2-rc.5', ...row(30, 33), empty: row(20, 21) }],
+      P3: row(8, 8.8, { unit: 'us' }),
+      P4: row(100, 101, { comparable: true, plugins: { base: 21, head: 21 } }),
+    },
+    p5: {
+      tarballBytes: 186325,
+      unpackedBytes: 749068,
+      kernelBytes: 115532,
+      bootPeakRssKiB: 131000,
+    },
+    check: null,
+    notes: [],
+    ...overrides,
+  }
+}
 
 test('ENV_VARS is the suite’s five, and only those', () => {
   assert.deepEqual([...ENV_VARS], [
@@ -48,6 +93,18 @@ test('ENV_VARS is the suite’s five, and only those', () => {
 
 test('the report schema names itself', () => {
   assert.equal(REPORT_SCHEMA, 'dsh-anyplugin/perf@1')
+})
+
+test('the D76 limits and artifact name are pinned in one place', () => {
+  assert.deepEqual(GATE_LIMITS, {
+    ratio: 1.5,
+    p2EmptyMs: 3000,
+    p2PluginOverEmpty: 2,
+    p3Micros: 50,
+    p4Ratio: 1.5,
+  })
+  assert.equal(CI_ARTIFACT, 'perf.json')
+  assert.equal(ARTIFACT_RETENTION_DAYS, 30)
 })
 
 test('median is order-independent and averages the middle pair', () => {
@@ -91,6 +148,8 @@ test('parseArgs defaults match the documented contract', () => {
   assert.equal(options.json, false)
   assert.equal(options.quiet, false)
   assert.equal(options.check, false)
+  assert.equal(options.ci, false)
+  assert.equal(options.jsonOut, null)
   assert.equal(options.help, false)
   assert.equal(options.probe, null)
 })
@@ -123,6 +182,23 @@ test('--threshold without --check is an error, not an ignored flag', () => {
   assert.throws(() => parseArgs(['--threshold', '2']), PerfError)
 })
 
+test('--ci turns on the fixed gate set and defaults the artifact to perf.json', () => {
+  const ci = parseArgs(['--ci'])
+  assert.equal(ci.ci, true)
+  assert.equal(ci.check, true)
+  assert.equal(ci.jsonOut, 'perf.json')
+  assert.equal(ci.json, false, '--ci prints the table for the workflow log')
+  assert.equal(parseArgs(['--ci', '--json-out', 'out.json']).jsonOut, 'out.json')
+  assert.equal(parseArgs(['--check', '--json-out', 'out.json']).jsonOut, 'out.json')
+})
+
+test('--ci refuses a threshold: the CI limits are ratified, not tunable', () => {
+  assert.throws(
+    () => parseArgs(['--ci', '--threshold', '2']),
+    (error) => error instanceof PerfError && /ratified D76/.test(error.message),
+  )
+})
+
 test('parseArgs rejects out-of-range and malformed values', () => {
   assert.throws(() => parseArgs(['--repeat', '0']), PerfError)
   assert.throws(() => parseArgs(['--repeat', '101']), PerfError)
@@ -130,6 +206,8 @@ test('parseArgs rejects out-of-range and malformed values', () => {
   assert.throws(() => parseArgs(['--threshold', '0']), PerfError)
   assert.throws(() => parseArgs(['--threshold', 'NaN']), PerfError)
   assert.throws(() => parseArgs(['--base', '']), PerfError)
+  assert.throws(() => parseArgs(['--json-out']), PerfError)
+  assert.throws(() => parseArgs(['--json-out=']), PerfError)
   assert.throws(() => parseArgs(['stray']), PerfError)
   assert.throws(() => parseArgs(['--nope']), PerfError)
 })
@@ -146,162 +224,154 @@ test('parseArgs accepts the internal probe flags, and only their values', () => 
   assert.throws(() => parseArgs(['--pins', 'not json']), PerfError)
 })
 
-test('checkFailures gates P1, P3 and P4, and never P2 or P5', () => {
-  const report = {
-    probes: {
-      P1: { ratio: 1.2 },
-      P3: { ratio: 1.51 },
-      P4: { ratio: 1.0, comparable: true },
-      P2: [
-        { pin: '0.2.2-rc.2', ratio: 1.02 },
-        { pin: '0.2.2-rc.5', ratio: 1.6 },
-      ],
-    },
-    p5: { tarballBytes: 1 },
-  }
-  assert.deepEqual(checkFailures(report, 1.5), ['P3 1.51x'])
-  assert.deepEqual(checkFailures(report, 2), [])
+test('gateRows builds P1, two P2 rows per pin, P3, P4, and four P5 records', () => {
+  const rows = gateRows(sampleReport())
+  assert.deepEqual(rows.map((entry) => entry.probe), ['P1', 'P2', 'P2', 'P3', 'P4', 'P5', 'P5', 'P5', 'P5'])
+  assert.equal(rows.filter((entry) => entry.verdict === 'FAIL').length, 0)
+  assert.equal(rows.filter((entry) => entry.verdict === 'record').length, 4)
+  const empty = rows.find((entry) => entry.metric.startsWith('P2 empty boot'))
+  assert.equal(empty.verdict, 'pass')
+  assert.equal(empty.limitText, '3000 ms')
+  const one = rows.find((entry) => entry.metric.startsWith('P2 one-plugin boot'))
+  assert.equal(one.verdict, 'pass')
+  assert.equal(one.limitKind, 'multiplier')
+  assert.match(one.limitText, /^2\.00x empty \(21\.0 ms\)$/)
+  const p3 = rows.find((entry) => entry.probe === 'P3')
+  assert.equal(p3.limitText, '50.0 us')
+  const p5 = rows.filter((entry) => entry.probe === 'P5')
+  assert.ok(p5.every((entry) => entry.verdict === 'record' && entry.limitText === 'record only'))
 })
 
-test('checkFailures names an unmeasured probe and a P4 that mixed plugin sets', () => {
-  const report = {
-    probes: {
-      P1: { ratio: null },
-      P3: { ratio: 1 },
-      P4: { ratio: 1.1, comparable: false },
-      P2: [{ pin: '0.2.2-rc.2', ratio: null }],
-    },
-  }
-  assert.deepEqual(checkFailures(report, 1.5), [
-    'P1 not measured',
-    'P4 not comparable (base and head compiled different plugin sets)',
+test('gateRows fails a P1 or P4 ratio above the ceiling, and names the repeat', () => {
+  const p1 = sampleReport()
+  p1.probes.P1 = row(100, 160)
+  assert.deepEqual(gateFailures(p1), ['P1 cold mod load: 1.60x > 1.50x (repeat 5)'])
+
+  const p4 = sampleReport()
+  p4.probes.P4 = row(100, 151, { comparable: true, plugins: { base: 21, head: 21 } })
+  assert.deepEqual(gateFailures(p4), ['P4 compile (7 upstream + fixtures): 1.51x > 1.50x (repeat 5)'])
+})
+
+test('gateRows fails P3 on the absolute cap and P2 on either cap', () => {
+  const report = sampleReport()
+  report.probes.P3 = row(8, 51, { unit: 'us' })
+  report.probes.P2 = [
+    // 650 > 2 x 250: the one-plugin cap trips even though 650/300 is 2.17x.
+    { version: '0.2.2-rc.5', ...row(300, 650), empty: row(200, 250) },
+    // The empty profile's own 3 s cap trips; the one-plugin side is fine.
+    { version: '0.2.2-rc.2', ...row(300, 310), empty: row(200, 3010) },
+  ]
+  assert.deepEqual(gateFailures(report), [
+    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 650.0 ms > 2.00x empty (250.0 ms) (repeat 5)',
+    'P2 empty boot @ dsh 0.2.2-rc.2: 3010.0 ms > 3000 ms (repeat 5)',
+    'P3 pre-execute fan-out: 51.0 us > 50.0 us (repeat 5)',
   ])
 })
 
-test('perfEnvProblems names every missing variable at once', () => {
-  const problems = perfEnvProblems({})
-  for (const name of ENV_VARS) {
-    assert.ok(problems.includes(`${name} is not set`), `the report must name ${name}`)
-  }
-  assert.equal(problems.length, ENV_VARS.length)
+test('a P2 one-plugin/empty multiplier is the gate, not the base/head ratio', () => {
+  const report = sampleReport()
+  report.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 189), empty: row(10, 10) }]
+  // 18.9x is the descriptive base/head ratio; the gate is 189 ms against
+  // 2 x 10 ms, and the failure says so rather than calling the ratio the cap.
+  assert.deepEqual(gateFailures(report), [
+    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 189.0 ms > 2.00x empty (10.0 ms) (repeat 5)',
+  ])
 })
 
-test('perfEnvProblems rejects a harness dir that is not a fetched install root', () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-perf-test-'))
-  try {
-    const problems = perfEnvProblems({ DSH_HARNESS_DIR: join(scratch, 'not-a-harness') })
-    assert.ok(problems.some((problem) => problem.includes('DSH_HARNESS_DIR')))
-    assert.ok(problems.some((problem) => problem.includes('not a directory')))
-  } finally {
-    rmSync(scratch, { recursive: true, force: true })
-  }
+test('P4 with different plugin sets fails as not comparable', () => {
+  const report = sampleReport()
+  report.probes.P4 = row(100, 100, { comparable: false, plugins: { base: 20, head: 21 } })
+  assert.deepEqual(gateFailures(report), [
+    'P4 compile (7 upstream + fixtures): not comparable (base and head compiled different plugin sets) (repeat 5)',
+  ])
 })
 
-test('perfEnvProblems accepts a complete environment and requirePerfEnv returns it', () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'anyplugin-perf-test-'))
-  try {
-    const harnessDir = join(scratch, 'harness')
-    mkdirSync(join(harnessDir, 'node_modules', '@deepseek-ai'), { recursive: true })
-    const claudeBin = join(scratch, 'claude')
-    writeFileSync(claudeBin, '#!/bin/sh\n')
-    chmodSync(claudeBin, 0o755)
-    const modsTree = join(scratch, 'mods')
-    mkdirSync(join(modsTree, 'mods'), { recursive: true })
-    const modTree = join(modsTree, 'mods', 'diff', 'hooks')
-    mkdirSync(modTree, { recursive: true })
-    writeFileSync(join(modTree, 'register.ts'), '')
-
-    const env = {
-      DSH_HARNESS_DIR: harnessDir,
-      DSH_HARNESS_VERSION: '0.2.2-rc.5',
-      CLAUDE_BIN: claudeBin,
-      ANYPLUGIN_MODS_TREE: modsTree,
-      ANYPLUGIN_MOD_TREE: modTree,
-    }
-    assert.deepEqual(perfEnvProblems(env), [])
-    assert.deepEqual(requirePerfEnv(env), {
-      harnessDir,
-      harnessVersion: '0.2.2-rc.5',
-      claudeBin,
-      modsTree,
-      modTree,
-    })
-  } finally {
-    rmSync(scratch, { recursive: true, force: true })
-  }
+test('a missing measurement is a failed row, never a vanished gate', () => {
+  const report = sampleReport()
+  report.probes.P1 = { base: null, head: null, ratio: null }
+  report.probes.P2 = []
+  report.probes.P3 = { unit: 'us', base: null, head: null, ratio: null }
+  report.probes.P4 = { unit: 'ms', base: null, head: null, ratio: null, comparable: true }
+  const failures = gateFailures(report)
+  assert.equal(failures.length, 4, 'P1, P2, P3 and P4 each still produce a failure')
+  assert.ok(failures.includes('P1 cold mod load: not measured (repeat 5)'))
+  assert.ok(failures.includes('P2 boot + reconcile: not measured (repeat 5)'))
+  assert.ok(failures.includes('P3 pre-execute fan-out: not measured (repeat 5)'))
+  assert.ok(failures.includes('P4 compile (7 upstream + fixtures): not measured (repeat 5)'))
 })
 
-test('requirePerfEnv throws one PerfError that lists every problem', () => {
-  assert.throws(
-    () => requirePerfEnv({}),
-    (error) => error instanceof PerfError && ENV_VARS.every((name) => error.message.includes(name)),
-  )
-})
-
-test('formatTable shows base, head and ratio, and marks P5 informational', () => {
-  const report = {
-    base: { commit: 'a'.repeat(40), ref: 'origin/main' },
-    head: { commit: 'b'.repeat(40) },
-    node: 'v24.22.2',
-    repeat: 5,
-    probes: {
-      P1: { unit: 'ms', base: { median: 200 }, head: { median: 220 }, ratio: 1.1 },
-      P2: [
-        { pin: '0.2.2-rc.2', unit: 'ms', base: { median: 30 }, head: { median: 33 }, ratio: 1.1 },
-        { pin: '0.2.2-rc.5', unit: 'ms', base: null, head: null, ratio: null },
-      ],
-      P3: { unit: 'us', base: { median: 8 }, head: { median: 8.8 }, ratio: 1.1 },
-      P4: {
-        unit: 'ms',
-        base: { median: 100 },
-        head: { median: 101 },
-        ratio: 1.01,
-        comparable: true,
-        plugins: { base: 21, head: 21 },
-      },
-    },
-    p5: { tarballBytes: 186325, unpackedBytes: 749068, kernelBytes: 115532, bootPeakRssKiB: 131000 },
-    check: null,
-    notes: [],
-  }
-  const table = formatTable(report)
-  assert.match(table, /ratio = median of per-pair head\/base/)
-  assert.match(table, /gated by --check: P1, P3, P4 · informational: P2 \(boot timing\), P5/u)
-  assert.match(table, /P1\s+cold mod load: diff \(loadMod \+ evaluate\)\s+200\.0 ms\s+220\.0 ms\s+1\.10x/u)
-  assert.match(table, /P4\s+compile: 21 plugins \(read\+gate\+emit\)\s+100\.0 ms\s+101\.0 ms\s+1\.01x/u)
-  assert.match(table, /P5  informational — never gated, head only/u)
-  assert.match(table, /tarball\s+186,325 bytes/u)
-  assert.match(table, /boot peak RSS\s+131,000 KiB/u)
-  assert.match(table, /P2\s+boot \+ reconcile @ dsh 0\.2\.2-rc\.5\s+-\s+-\s+-/u)
+test('formatGateTable prints metric, base, head, ratio, limit and verdict', () => {
+  const table = formatGateTable(sampleReport())
+  assert.match(table, /^dsh-anyplugin perf gates — base aaaaaaaa \(origin\/main\) -> head bbbbbbbb · repeat 5$/mu)
+  assert.match(table, /metric\s+base\s+head\s+ratio\s+limit\s+verdict/u)
+  assert.match(table, /P1 cold mod load\s+200\.0 ms\s+220\.0 ms\s+1\.10x\s+1\.50x\s+pass/u)
+  assert.match(table, /P2 empty boot @ dsh 0\.2\.2-rc\.5\s+20\.0 ms\s+21\.0 ms\s+1\.05x\s+3000 ms\s+pass/u)
+  assert.match(table, /P2 one-plugin boot @ dsh 0\.2\.2-rc\.5.*2\.00x empty \(21\.0 ms\)\s+pass/u)
+  assert.match(table, /P3 pre-execute fan-out\s+8\.00 us\s+8\.80 us\s+1\.10x\s+50\.0 us\s+pass/u)
+  assert.match(table, /P4 compile \(7 upstream \+ fixtures\)\s+100\.0 ms\s+101\.0 ms\s+1\.01x\s+1\.50x\s+pass/u)
+  assert.match(table, /P5 tarball bytes\s+-\s+186,325 B\s+-\s+record only\s+record/u)
+  assert.match(table, /P5 boot peak RSS\s+-\s+131,000 KiB\s+-\s+record only\s+record/u)
   assert.doesNotMatch(table, /NaN|undefined/u)
 })
 
-test('formatTable prints a check verdict, including the failure list', () => {
-  const report = {
-    base: { commit: 'a'.repeat(40), ref: 'HEAD~1' },
-    head: { commit: 'b'.repeat(40) },
-    node: 'v24.22.2',
-    repeat: 3,
-    probes: {
-      P1: { unit: 'ms', base: { median: 1 }, head: { median: 2 }, ratio: 2 },
-      P2: [],
-      P3: { unit: 'us', base: { median: 1 }, head: { median: 1 }, ratio: 1 },
-      P4: {
-        unit: 'ms',
-        base: { median: 1 },
-        head: { median: 1 },
-        ratio: 1,
-        comparable: true,
-        plugins: { base: 21, head: 21 },
-      },
-    },
-    p5: {},
-    check: { threshold: 1.5, failures: ['P1 2.00x'] },
-    notes: [],
-  }
-  assert.match(formatTable(report), /--check: 1 above 1\.5x — P1 2\.00x/u)
+test('formatGateTable shows FAIL and the measured limit for a red row', () => {
+  const report = sampleReport()
+  report.probes.P3 = row(8, 60, { unit: 'us' })
+  const table = formatGateTable(report)
+  assert.match(table, /P3 pre-execute fan-out\s+8\.00 us\s+60\.00 us\s+7\.50x\s+50\.0 us\s+FAIL/u)
 })
 
+test('formatTable shows base, head and ratio, and records P5 without gating it', () => {
+  const table = formatTable(sampleReport())
+  assert.match(table, /ratio = median of per-pair head\/base/)
+  assert.match(table, /P2 5 paired boots per profile\/side/)
+  assert.match(
+    table,
+    /gated \(D76\): P1 ratio <= 1\.5x · P2 empty <= 3000 ms and one-plugin <= 2x empty · P3 <= 50 us\/dispatch · P4 ratio <= 1\.5x/u,
+  )
+  assert.match(table, /recorded, never gated: P5/u)
+  assert.match(table, /P1\s+cold mod load: diff \(loadMod \+ evaluate\)\s+200\.0 ms\s+220\.0 ms\s+1\.10x/u)
+  assert.match(table, /P2\s+empty boot \(no lock\) @ dsh 0\.2\.2-rc\.5\s+20\.0 ms\s+21\.0 ms\s+1\.05x/u)
+  assert.match(table, /P2\s+one-plugin boot \+ reconcile @ dsh 0\.2\.2-rc\.5\s+30\.0 ms\s+33\.0 ms\s+1\.10x/u)
+  assert.match(table, /P4\s+compile: 21 plugins \(read\+gate\+emit\)\s+100\.0 ms\s+101\.0 ms\s+1\.01x/u)
+  assert.match(table, /P5  head only/u)
+  assert.match(table, /tarball\s+186,325 bytes/u)
+  assert.match(table, /boot peak RSS\s+131,000 KiB/u)
+  assert.doesNotMatch(table, /gates:/u)
+  assert.doesNotMatch(table, /NaN|undefined/u)
+})
+
+test('formatTable marks a pin it could not measure instead of inventing a number', () => {
+  const report = sampleReport()
+  report.probes.P2.push({ version: '0.2.2-rc.2', pin: '0.2.2-rc.2', base: null, head: null, ratio: null })
+  const table = formatTable(report)
+  assert.match(table, /P2\s+empty boot \(no lock\) @ dsh 0\.2\.2-rc\.2\s+-\s+-\s+-/u)
+  assert.match(table, /P2\s+one-plugin boot \+ reconcile @ dsh 0\.2\.2-rc\.2\s+-\s+-\s+-/u)
+  assert.doesNotMatch(table, /NaN|undefined/u)
+})
+
+test('formatTable prints the D76 failure list when a gate trips', () => {
+  const report = sampleReport()
+  report.probes.P1 = row(100, 200)
+  report.check = {
+    threshold: 1.5,
+    limits: GATE_LIMITS,
+    rows: gateRows(report),
+    failures: gateFailures(report),
+  }
+  const table = formatTable(report)
+  assert.match(
+    table,
+    /gates: 1 failed \(repeat 5\) — P1 cold mod load: 2\.00x > 1\.50x \(repeat 5\)/u,
+  )
+})
+
+test('formatTable derives check rows when only the failure list was stored', () => {
+  const report = sampleReport()
+  report.probes.P1 = row(1, 2)
+  report.check = { threshold: 1.5, failures: ['P1 cold mod load: 2.00x > 1.50x (repeat 5)'] }
+  assert.match(formatTable(report), /gates: 1 failed/u)
+})
 
 test('boot samples are paired in time: one base and one head per repeat, adjacent', async () => {
   const calls = []
@@ -330,6 +400,38 @@ test('boot samples are paired in time: one base and one head per repeat, adjacen
   }
 })
 
+test('the two-profile schedule interleaves empty and one-plugin boots', async () => {
+  const calls = []
+  const logs = await sampleBootProfiles({
+    repeat: 2,
+    profiles: ['empty', 'one'],
+    run: async ({ profile, side, pair, warmup }) => {
+      calls.push(warmup ? `${profile}:${side}:warmup` : `${profile}:${side}:${pair}`)
+      return side === 'base' ? 10 : 20
+    },
+  })
+  assert.deepEqual(calls, [
+    'empty:base:warmup',
+    'empty:head:warmup',
+    'one:base:warmup',
+    'one:head:warmup',
+    'empty:base:0',
+    'empty:head:0',
+    'one:base:0',
+    'one:head:0',
+    'one:head:1',
+    'one:base:1',
+    'empty:head:1',
+    'empty:base:1',
+  ])
+  for (const profile of ['empty', 'one']) {
+    const paired = pairBootLog(logs[profile])
+    assert.deepEqual(paired.base, [10, 10])
+    assert.deepEqual(paired.head, [20, 20])
+    assert.deepEqual(paired.ratios, [2, 2])
+  }
+})
+
 test('pairBootLog refuses block-merged samples and takes the median of per-pair ratios', () => {
   const alternating = [
     { pair: 0, side: 'base', elapsed: 100 },
@@ -354,7 +456,6 @@ test('pairBootLog refuses block-merged samples and takes the median of per-pair 
   assert.throws(() => pairBootLog([{ pair: 0, side: 'base', elapsed: 100 }]), PerfError)
 })
 
-
 test('the reported ratio is the pair median, not the ratio of the two side medians', () => {
   // Pairs are (100, 250) and (300, 150): ratios [2.5, 0.5] -> median 1.5.
   // The side medians are both 200, so a row that regressed to
@@ -372,6 +473,7 @@ test('the reported ratio is the pair median, not the ratio of the two side media
   const pin = pinReportRow({
     pin: '0.2.2-rc.5',
     samples: { base: baseSamples, head: headSamples },
+    emptySamples: { base: [100, 300], head: [150, 150] },
     hostPath: 'scope-link',
     moduleUrl: 'file:///tmp/base/lib/index.js',
   })
@@ -379,29 +481,20 @@ test('the reported ratio is the pair median, not the ratio of the two side media
   assert.deepEqual(pin.pairs, [2.5, 0.5])
   assert.equal(pin.base.median, 200)
   assert.equal(pin.head.median, 200)
+  assert.equal(pin.empty.ratio, 1)
+  assert.deepEqual(pin.empty.pairs, [1.5, 0.5])
+  assert.equal(pin.empty.base.median, 200)
+  assert.equal(pin.empty.head.median, 150)
 })
 
-test('a P2 far outside the threshold stays outside --check, and the verdict says so', () => {
-  const report = {
-    base: { commit: 'a'.repeat(40), ref: 'HEAD~1' },
-    head: { commit: 'b'.repeat(40) },
-    node: 'v24.22.2',
-    repeat: 5,
-    probes: {
-      P1: { unit: 'ms', base: { median: 100 }, head: { median: 101 }, ratio: 1.01 },
-      P2: [{ pin: '0.2.2-rc.5', unit: 'ms', base: { median: 10 }, head: { median: 189 }, ratio: 18.9 }],
-      P3: { unit: 'us', base: { median: 10 }, head: { median: 10 }, ratio: 1 },
-      P4: { unit: 'ms', base: { median: 100 }, head: { median: 100 }, ratio: 1, comparable: true, plugins: { base: 21, head: 21 } },
-    },
-    p5: {},
-    check: { threshold: 1.2, failures: [] },
-    notes: [],
-  }
-  // No failure means the CLI exits 0; P2's 18.9x is printed but never read.
-  assert.deepEqual(checkFailures(report, 1.2), [])
-  const table = formatTable(report)
-  assert.match(table, /18\.90x/u)
-  assert.match(table, /--check: all gated ratios within 1\.2x — P2 is informational and was not checked/u)
+test('pinReportRow omits the empty row when no empty samples were measured', () => {
+  const pin = pinReportRow({
+    pin: '0.2.2-rc.5',
+    samples: { base: [100], head: [110] },
+    hostPath: 'scope-link',
+    moduleUrl: 'file:///tmp/base/lib/index.js',
+  })
+  assert.equal(pin.empty, undefined)
 })
 
 test('pairRatios pairs sample i with sample i and refuses different counts', () => {
