@@ -1347,6 +1347,69 @@ test('a worktree created after install writes without a reinstall, and a sibling
   }
 })
 
+test('a fresh install with no ticket worktree records the documented namespace, and the first one writes', () => {
+  const scratch = scratchCheckout()
+  const profile = mkdtempSync(join(tmpdir(), 'guard-fresh-'))
+  const parent = mkdtempSync(join(tmpdir(), 'guard-fresh-wt-'))
+  try {
+    execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    // No ticket worktree exists yet. A policy with no pattern would refuse the
+    // first one an agent creates until a reinstall (reviewer #230, MUST 1).
+    const install = spawnSync(
+      process.execPath,
+      [join(scratch, 'scripts/guard-install.mjs'), '--profile-dir', profile],
+      { cwd: scratch, encoding: 'utf8', env: { ...process.env, ANYPLUGIN_WORKTREE_ROOT: parent } },
+    )
+    assert.equal(install.status, 0, install.stdout + install.stderr)
+    const block = readBlock(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')).block
+    assert.deepEqual(readWorktrees(block), [join(parent, 'ticket-*')], 'the documented namespace, written before any worktree exists')
+
+    const later = join(parent, 'ticket-1999')
+    execFileSync('git', ['-C', scratch, 'worktree', 'add', '-q', '-b', 'ticket/1999', later])
+    const chosen = chooseWorktree({ text: `work in ${later} (ticket/1999)`, worktrees: readWorktrees(block) })
+    assert.equal(chosen, later)
+    const policy = resolvePolicy({ worktrees: readWorktrees(block), protectedRoots: [scratch] })
+    const call = {
+      tool: 'write',
+      args: { file_path: join(later, 'src/x.ts'), content: 'x' },
+      agent: { id: 'fresh-worker', cwd: scratch, worker: true },
+      worktree: chosen,
+    }
+    assert.equal(
+      judgeCall(call, policy, { branch: () => 'ticket/1999' }).kind,
+      'allow',
+      'the first worktree after a fresh install writes without a reinstall',
+    )
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('an install with no override records /tmp/anyplugin-wt, the root the docs name', () => {
+  const scratch = scratchCheckout()
+  const profile = mkdtempSync(join(tmpdir(), 'guard-default-'))
+  try {
+    execFileSync('git', ['-C', scratch, '-c', 'user.email=guard@example.invalid', '-c', 'user.name=guard', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    const env = { ...process.env }
+    delete env.ANYPLUGIN_WORKTREE_ROOT
+    const install = spawnSync(
+      process.execPath,
+      [join(scratch, 'scripts/guard-install.mjs'), '--profile-dir', profile],
+      { cwd: scratch, encoding: 'utf8', env },
+    )
+    assert.equal(install.status, 0, install.stdout + install.stderr)
+    const block = readBlock(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')).block
+    // os.tmpdir() is /var/folders/... on macOS, where the docs' /tmp path would
+    // be admitted for judging and denied for writes (reviewer #230, MUST 2).
+    assert.deepEqual(readWorktrees(block), ['/tmp/anyplugin-wt/ticket-*'])
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
 test('guard:status separates not-installed from a block that lists a worktree which is gone', () => {
   const scratch = scratchCheckout()
   const profile = mkdtempSync(join(tmpdir(), 'guard-stale-'))

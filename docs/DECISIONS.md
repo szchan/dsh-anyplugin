@@ -3462,14 +3462,18 @@ is not a layer anyone keeps installed.
    paths, or `<stem>-*` namespaces) and `gitDirectories` (the common dir).
    Any *working tree of this repository* is inside the territory — a review or
    verify worktree as much as a ticket one — because its `.git` points into
-   that common dir. Write permission stays the ticket list: a review tree is
-   judged and unwritable. A fresh install with no ticket worktree writes the
+   that common dir, and a directory inside a working tree is inside that tree
+   (a subdirectory has no .git of its own; the nearest one above it decides).
+   Write permission stays the ticket list: a review tree is judged and
+   unwritable. A fresh install with no ticket worktree writes the
    documented namespace (`$ANYPLUGIN_WORKTREE_ROOT/ticket-*`, default
    `/tmp/anyplugin-wt/ticket-*`) so the first worktree needs no reinstall.
 2. **Inert outside.** For a session whose canonical `header.cwd` is outside
    the territory, both seams call `next()` before judging: no denial, no brief,
    no denial record. A symlink is resolved first, so a link into the checkout is
-   the checkout. Delegation is not modelled: a child started with a chosen
+   the checkout, and a relative `gitdir:` pointer resolves against the
+   working tree's own directory (git 2.56 `--relative-paths`). Delegation is
+   not modelled: a child started with a chosen
    `cwd` is judged by that path, and a child pointed outside is outside. The guard does not *observe* other projects either — a
    dormant mechanism that still logs is a surveillance tool, not a guard.
 3. **Unknown cwd is outside.** With a territory configured, a session without

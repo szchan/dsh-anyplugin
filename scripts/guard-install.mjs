@@ -18,7 +18,6 @@
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -157,7 +156,10 @@ const worktrees = [...gitWorktrees, ...synthetic]
 // #230). The documented root already exists (docs/WORKFLOW.md:69); write its
 // ticket namespace now, so the first worktree is covered without a reinstall.
 const ticketKnown = gitWorktrees.some((entry) => entry.main !== true && entry.branch?.startsWith('ticket/') === true)
-const worktreeRoot = process.env.ANYPLUGIN_WORKTREE_ROOT ?? join(tmpdir(), 'anyplugin-wt')
+// The documented root, not `os.tmpdir()`: docs/WORKFLOW.md and D80 both name
+// /tmp/anyplugin-wt, and a macOS $TMPDIR would admit the worktree for judging
+// while denying writes to it (reviewer #230, MUST 2).
+const worktreeRoot = process.env.ANYPLUGIN_WORKTREE_ROOT ?? '/tmp/anyplugin-wt'
 const defaultGlob = ticketKnown ? {} : { worktreeGlob: join(worktreeRoot, 'ticket-*') }
 let composition
 try {
