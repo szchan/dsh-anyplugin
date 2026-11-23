@@ -3,6 +3,11 @@
 // importing it, because the audit's contract is its digest and its evidence
 // JSON — the two things an auditor sees.
 //
+// F2 is the other half of the same surface: the digest must name the guard's
+// install state, and CI has no Desktop profile to ask. The probe's seam is
+// DSH_ANYPLUGIN_GUARD_STATUS_RUNNER, so the guard cases below run a fixture
+// that takes `--json` and prints a report — never this machine's profile.
+//
 // The log fixture is asserted to be a regular file immediately before each
 // spawn, and a child that reports it absent while the fixture still exists
 // fails with the child's environment and the file's stat. Those diagnostics are
@@ -50,13 +55,44 @@ function harness() {
   return { ctx, listeners, disposers }
 }
 
-function runAudit(dir, args = []) {
+function runAudit(dir, args = [], env = {}) {
   return spawnSync(process.execPath, [script, '--no-sessions', ...args], {
     cwd: root,
     encoding: 'utf8',
     timeout: 120_000,
-    env: { ...process.env, DSH_ANYPLUGIN_AUDIT_DIR: dir },
+    env: { ...process.env, DSH_ANYPLUGIN_AUDIT_DIR: dir, ...env },
   })
+}
+
+// A stand-in for scripts/guard-status.mjs: executable, takes `--json`, prints a
+// report. `raw` bypasses JSON encoding so a malformed line can be proven
+// unparsable, and a nonzero exitCode proves the reader's "not current" signal is
+// data rather than a probe failure.
+function guardRunner(name, { report, raw, exitCode = 0 }) {
+  const dir = mkdtempSync(join(tmpdir(), `guard-status-${name}-`))
+  const file = join(dir, 'guard-status.mjs')
+  const body = raw ?? JSON.stringify(report)
+  writeFileSync(file, `#!${process.execPath}\nconsole.log(${JSON.stringify(body)})\nprocess.exitCode = ${exitCode}\n`)
+  chmodSync(file, 0o755)
+  return file
+}
+
+// The shape scripts/guard-status.mjs prints; the digest line is built from it.
+function guardReport(overrides = {}) {
+  return {
+    profileDir: '/home/auditor/.dsh/profiles/desktop',
+    patchFile: '/home/auditor/.dsh/profiles/desktop/installs.yml',
+    status: 'current',
+    source: '/work/repo/packages/dsh-anyplugin-guard/src/index.ts',
+    sourceExists: true,
+    worktrees: ['/tmp/anyplugin-wt/ticket-*'],
+    installedWorktrees: ['/tmp/anyplugin-wt/ticket-*'],
+    stalePaths: [],
+    protectedRoots: ['/work/repo'],
+    duplicateId: false,
+    hooks: [{ file: '/work/repo/.git/hooks/pre-push', status: 'current' }],
+    ...overrides,
+  }
 }
 
 function evidenceFile(dir) {
@@ -224,4 +260,112 @@ test('an unreadable log is reported as unreadable, not as absent', () => {
   const evidence = JSON.parse(runAudit(dir, ['--days', '1', '--json']).stdout)
   assert.equal(evidence.guardDenials.available, false)
   assert.ok(evidence.guardDenials.error, 'the read error is kept for the digest')
+})
+
+test('the digest reports a current guard from the parsed report', () => {
+  const dir = audit('guard-current')
+  const runner = guardRunner('current', { report: guardReport() })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /^- guard: \*\*current\*\*; source present; worktrees 1 desired \/ 1 installed; hooks pre-push current$/mu)
+
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'current')
+  assert.equal(evidence.guard.sourceExists, true)
+  assert.deepEqual(evidence.guard.stalePaths, [])
+  assert.equal(evidence.guard.duplicateId, false)
+})
+
+test('a nonzero guard-status exit with a valid report is not-installed, not unavailable', () => {
+  const dir = audit('guard-not-installed')
+  const runner = guardRunner('not-installed', {
+    exitCode: 1,
+    report: guardReport({
+      status: 'not-installed',
+      installedWorktrees: [],
+      hooks: [{ file: '/work/repo/.git/hooks/pre-push', status: 'missing' }],
+    }),
+  })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, 'a not-current guard must not fail the digest')
+  assert.match(result.stdout, /^- guard: \*\*not-installed\*\*; source present; worktrees 1 desired \/ 0 installed; hooks pre-push missing$/mu)
+
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'not-installed')
+  assert.ok(!('error' in evidence.guard), 'a parsed report is not an unavailable probe')
+})
+
+test('installed-with-stale-paths names the stale path in the digest', () => {
+  const dir = audit('guard-stale')
+  const runner = guardRunner('stale', {
+    report: guardReport({
+      status: 'installed-with-stale-paths',
+      stalePaths: ['/tmp/anyplugin-wt/ticket-142'],
+      installedWorktrees: [],
+    }),
+  })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*installed-with-stale-paths\*\*; source present; worktrees 1 desired \/ 0 installed; stale paths: \/tmp\/anyplugin-wt\/ticket-142; hooks pre-push current$/mu,
+  )
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.deepEqual(evidence.guard.stalePaths, ['/tmp/anyplugin-wt/ticket-142'])
+})
+
+test('a duplicate guard id is reported as duplicate in the digest', () => {
+  const dir = audit('guard-duplicate')
+  const runner = guardRunner('duplicate', { report: guardReport({ status: 'stale', duplicateId: true }) })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*duplicate\*\*; source present; worktrees 1 desired \/ 1 installed; a second anyplugin-guard id sits outside the managed block; hooks pre-push current$/mu,
+  )
+  // The derived word is for the digest; the reader's own status stays in the JSON.
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.duplicateId, true)
+  assert.equal(evidence.guard.status, 'stale')
+})
+
+test('a guard probe that cannot be spawned is unavailable, and the digest still exits 0', () => {
+  const dir = audit('guard-spawn')
+  const base = mkdtempSync(join(tmpdir(), 'guard-missing-'))
+  const runner = join(base, 'missing', 'guard-status.mjs')
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, 'an unavailable probe must not fail the digest')
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*unavailable\*\*: the probe could not be spawned \(ENOENT\); install state unknown, not current$/mu,
+  )
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'unavailable')
+  assert.match(evidence.guard.error, /ENOENT/u)
+})
+
+test('unparsable guard-status output is unavailable with the reason, not a crash', () => {
+  const dir = audit('guard-unparsable')
+  const runner = guardRunner('unparsable', { raw: 'guard-status: not json', exitCode: 1 })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, 'an unparsable report must not fail the digest')
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*unavailable\*\*: unparsable guard-status output \(exit 1\); install state unknown, not current$/mu,
+  )
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'unavailable')
+  assert.match(evidence.guard.error, /unparsable guard-status output/u)
 })

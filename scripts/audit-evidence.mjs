@@ -86,6 +86,9 @@ function run(command, args, options = {}) {
     status: result.status,
     stdout: (result.stdout ?? '').trim(),
     stderr: (result.stderr ?? '').trim(),
+    // A spawn failure or timeout has no status; the probe reports it as
+    // `unavailable` instead of letting it look like a nonzero exit.
+    error: result.error === undefined ? '' : String(result.error.code ?? result.error.message ?? result.error),
   }
 }
 
@@ -419,29 +422,59 @@ async function sessionEvidence() {
 // ---------------------------------------------------------------------------
 // Installed mechanisms: the guard and the schedule are process contracts too,
 // and both can silently stop being active.
+//
+// The guard probe is the one evidence source whose answer depends on this
+// machine's Desktop profile — CI has none. `scripts/guard-status.mjs` is a
+// reader (it never writes the profile) and prints its JSON report even when it
+// exits 1 for a not-current block, so the exit code is data, not failure: a
+// parsed report is reported as it is, and only a probe that cannot produce a
+// report at all is `unavailable`. `DSH_ANYPLUGIN_GUARD_STATUS_RUNNER` is the
+// injectable runner seam: a test points it at a fixture that takes `--json` and
+// prints the report, so the state vocabulary is proven without a live profile.
+// A spawn error, timeout or unparsable stdout is `unavailable` with its reason
+// in the line — the digest reports "cannot tell", it never fails on it.
+
+const GUARD_STATUS_SCRIPT = join(root, 'scripts', 'guard-status.mjs')
+const GUARD_PROBE_TIMEOUT_MS = 25_000
+
+function guardProbeCommand() {
+  const override = process.env.DSH_ANYPLUGIN_GUARD_STATUS_RUNNER
+  if (typeof override === 'string' && override.trim() !== '') {
+    return { command: override.trim(), args: ['--json'] }
+  }
+  return { command: process.execPath, args: [GUARD_STATUS_SCRIPT, '--json'] }
+}
+
+function guardUnavailable(error) {
+  return { status: 'unavailable', error }
+}
 
 function guardEvidence() {
-  const script = join(root, 'scripts', 'guard-status.mjs')
-  if (!existsSync(script)) return { available: false }
-  const result = run(process.execPath, [script, '--json'], { timeout: 25_000 })
-  let report = {}
+  const { command, args } = guardProbeCommand()
+  if (command === process.execPath && !existsSync(GUARD_STATUS_SCRIPT)) {
+    return guardUnavailable('scripts/guard-status.mjs is missing')
+  }
+  const result = run(command, args, { timeout: GUARD_PROBE_TIMEOUT_MS })
+  if (result.error !== '') {
+    const why =
+      result.error === 'ETIMEDOUT'
+        ? `the probe timed out after ${GUARD_PROBE_TIMEOUT_MS} ms`
+        : `the probe could not be spawned (${result.error})`
+    return guardUnavailable(why)
+  }
+  let report
   try {
     report = JSON.parse(result.stdout)
   } catch {
-    report = {}
+    const detail = result.stderr === '' ? '' : `: ${result.stderr.split('\n')[0].slice(0, 160)}`
+    return guardUnavailable(`unparsable guard-status output (exit ${result.status ?? 'none'})${detail}`)
   }
-  return {
-    available: true,
-    status: report.status ?? (result.ok ? 'current' : 'error'),
-    sourceExists: report.sourceExists ?? false,
-    worktrees: report.worktrees?.length ?? 0,
-    installedWorktrees: report.installedWorktrees?.length ?? 0,
-    stalePaths: report.stalePaths ?? [],
-    protectedRoots: report.protectedRoots ?? [],
-    hooks: (report.hooks ?? []).map((hook) => ({ file: hook.file, status: hook.status })),
-    duplicateId: report.duplicateId ?? false,
-    note: result.ok ? '' : result.stderr.slice(0, 400),
+  // Exit 1 is the reader's "not current" signal and still carries a report, so
+  // it must not become `unavailable`; only output without a status is unreadable.
+  if (typeof report !== 'object' || report === null || Array.isArray(report) || typeof report.status !== 'string') {
+    return guardUnavailable('guard-status output has no status field')
   }
+  return report
 }
 
 // The guard appends one JSON line per refusal to `.audit/guard-denials.jsonl`
@@ -602,6 +635,28 @@ function githubEvidence() {
 // The digest. It is deliberately short: the auditor opens the JSON when a line
 // needs a number the digest omitted.
 
+/**
+ * The guard's install state in one line the auditor cannot miss. It must
+ * distinguish `current`, `not-installed`, `installed-with-stale-paths`,
+ * `duplicate` and `unavailable` without opening the JSON. `duplicate` is
+ * derived: guard-status reports it as a boolean beside a `stale` block rather
+ * than as its own status, and the reader's status stays in the JSON.
+ */
+function guardDigestLine(guard) {
+  if (guard.status === 'unavailable') {
+    return `- guard: **unavailable**: ${guard.error}; install state unknown, not current`
+  }
+  const state = guard.duplicateId === true ? 'duplicate' : guard.status
+  const parts = [`source ${guard.sourceExists === true ? 'present' : 'missing'}`]
+  parts.push(`worktrees ${guard.worktrees?.length ?? 0} desired / ${guard.installedWorktrees?.length ?? 0} installed`)
+  if ((guard.stalePaths ?? []).length > 0) parts.push(`stale paths: ${guard.stalePaths.join(', ')}`)
+  if (guard.duplicateId === true) parts.push('a second anyplugin-guard id sits outside the managed block')
+  if (guard.difference !== undefined) parts.push(`the installed block differs from the tree at line ${guard.difference.line}`)
+  const hooks = (guard.hooks ?? []).map((hook) => `${basename(hook.file)} ${hook.status}`).join(', ')
+  parts.push(`hooks ${hooks === '' ? 'none' : hooks}`)
+  return `- guard: **${state}**; ${parts.join('; ')}`
+}
+
 function digest(evidence) {
   const lines = []
   lines.push(`# Process evidence — ${today} (last ${days} days)`)
@@ -638,10 +693,7 @@ function digest(evidence) {
   }
   lines.push('')
   lines.push('## Mechanisms')
-  const guard = evidence.guard
-  lines.push(guard.available
-    ? `- guard: **${guard.status}**; source ${guard.sourceExists ? 'present' : 'missing'}; worktrees ${guard.worktrees} desired / ${guard.installedWorktrees} installed${guard.stalePaths.length === 0 ? '' : ` (stale: ${guard.stalePaths.join(', ')})`}; hooks ${guard.hooks.map((hook) => `${hook.file} ${hook.status}`).join(', ') || 'none'}`
-    : '- guard: unavailable (scripts/guard-status.mjs missing)')
+  lines.push(guardDigestLine(evidence.guard))
   const denials = evidence.guardDenials
   if (!denials.available) {
     lines.push(denials.error
