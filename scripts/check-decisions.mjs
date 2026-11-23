@@ -175,7 +175,10 @@ if (appendFile !== undefined || rewordId !== undefined) {
   // Everything outside the touched entry must still hash the same; otherwise the
   // writer would be a back door for the in-place edits the gate forbids.
   const before = new Map(entries.map((entry) => [entry.id, digest(entry)]))
-  const refreshed = parseEntries(nextText)
+  // The re-parse must trim the separator the same way the baseline did, or every
+  // entry followed by another one appears to change and the writer refuses a
+  // legitimate append (D78 was the case that found this).
+  const refreshed = parseEntries(nextText).map(trimTail)
   for (const entry of refreshed) {
     if (entry.id === id) continue
     if (before.get(entry.id) !== digest(entry)) {
