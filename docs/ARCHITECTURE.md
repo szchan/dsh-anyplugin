@@ -17,7 +17,7 @@
 | **D** Control flow | allow / deny / block decisions (`exit 2`, `decision:"block"`, `continue:false`, permission results) | equivalent |
 | **E** Trust | approval prompts, grant records, scope of effect | equivalent |
 | **F1** Output style | `output-styles/*.md` | **carried** byte-identical as IR data; activation `equivalent` through the agent-scoped prompt seam (S11) on top-level agents and forks, selected by the profile activation record or `force-for-plugin`; the human `/<plugin>:<name>` half stays `planned` — D10's alias, and no `plugin details` inventory at 2.1.322 |
-| **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | **outside the 100 % statement**: `themes/` is carried as one `planned` row (`readOptionalSurfaces`, D75). S24 reached the documented `ctx.theme` registration at `0.2.2-rc.2` and `0.2.2-rc.5`: a plugin can register alias-layer CSS tokens, and 2 of Claude's 72 roles reach the terminal through `--dsw-alias-label-primary`/`--dsw-alias-bg-base` → the layout presenter's `document.body` variables → the terminal's computed foreground/background. The other 70 roles have no DSH terminal counterpart, and the ANSI 16 are written only by OSC 4/104 (`terminal-theme.ts:72-79`); `terminal.tsx:142` feeds xterm only the computed CSS background/colour plus font size/family. The ANSI-16 palette is the named host gap; no `themes/` fixture and no materializer exist yet |
+| **F2** Terminal palette | `themes/<slug>.json` → terminal panel ANSI | **outside the 100 % statement**: `themes/` is carried as one `planned` row (`readOptionalSurfaces`, D74). S24 reached the documented `ctx.theme` registration at `0.2.2-rc.2` and `0.2.2-rc.5`: a plugin can register alias-layer CSS tokens, and 2 of Claude's 72 roles reach the terminal through `--dsw-alias-label-primary`/`--dsw-alias-bg-base` → the layout presenter's `document.body` variables → the terminal's computed foreground/background. The other 70 roles have no DSH terminal counterpart, and the ANSI 16 are written only by OSC 4/104 (`terminal-theme.ts:72-79`); `terminal.tsx:142` feeds xterm only the computed CSS background/colour plus font size/family. The ANSI-16 palette is the named host gap; no `themes/` fixture and no materializer exist yet |
 | **F3** GUI chrome | cards, overlays, charts, shadows | **derived** — not in the denominator; Claude has no such artifact to translate |
 | **F4** Assets | icons / complete SVGs | byte-identical |
 
@@ -39,7 +39,7 @@ be `planned` without a roadmap entry; a node may never silently change class.
 > For a pinned `claude-code-plugin@<version>`, over the declared fixture set,
 > A/B/C/F1/F4 are byte-identical, D/E are equivalent, and the `unsupported` set
 > is empty. F2 is declared `planned` and sits outside this statement until a
-> `themes/` fixture and a materializer exist (S24, D75); its named host gap is
+> `themes/` fixture and a materializer exist (S24, D74); its named host gap is
 > the ANSI-16 terminal palette. F3 is declared derived. Anything else is a diff,
 > and a diff is a bug.
 
@@ -152,7 +152,7 @@ shape itself today), and
 `dsh-anyplugin-materialize-{bin,theme,monitor,workflow}`. A `themes/` directory is
 one `planned` row with no materializer yet: its client theme surface is alias
 CSS only, 2 roles reach the terminal's computed foreground/background, and the
-ANSI 16 are OSC-only (S24, #216, D75); output styles are carried as IR data
+ANSI 16 are OSC-only (S24, #216, D74); output styles are carried as IR data
 but do have one — `dsh-anyplugin-materialize-output-style` applies the selected
 body through the agent-scoped prompt seam (S11). The host-controller surface the old row
 called `dsh-anyplugin` — the `anyplugin` command family and an API for the UI —
@@ -1490,7 +1490,7 @@ run degraded *by design*.
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
 | shell env PATH | managed-env `register()` accepts a `PATH` key (S19: it does not) | `bin` planned: no managed-env contribution; only a divergent per-call `tools/pre-execute` rewrite |
 | notification channel | present | `monitor` unsupported |
-| theme `ctx.theme` | present | alias-token CSS themes; the terminal consumes two mapped roles (fg/bg); no ANSI-16 palette (F2 `planned`, D75) |
+| theme `ctx.theme` | present | alias-token CSS themes; the terminal consumes two mapped roles (fg/bg); no ANSI-16 palette (F2 `planned`, D74) |
 | dynamic package runner | present | `planned`/`mod` unavailable as well |
 
 ### The repository guard: a consumer of the two seams
@@ -3019,7 +3019,7 @@ with values validated as `rgb()`, `#rgb`/`#rrggbb`, `ansi256(n)` or
 express every declared colour yet, but it has a real partial seam:
 `readOptionalSurfaces` keeps `themes` as one `planned` row, whose reason
 names 2 roles through foreground/background, 70 roles with no terminal
-counterpart, and the OSC-only ANSI 16. D75 records the class and the host gap.
+counterpart, and the OSC-only ANSI 16. D74 records the class and the host gap.
 No `themes/` fixture was captured or invented: the pinned CLI has no
 `theme` subcommand or `--theme` flag, `/theme` is TUI-only, and a file would
 still have only the two-role landing surface. The theme, layout and terminal
@@ -3062,7 +3062,7 @@ path was not exercised.
 | v0.7 | Claude mod API adapter; symbol coverage tracked from the pinned `.d.ts`; `.tsx` and `Client` resolved |
 | v1.0 | full A–F contract green on the fixture set, mod coverage complete per declaration, pinned source versions, CI conformance |
 
-F2 (terminal palette) is a `planned` roadmap slot: S24/D75 map 2 of Claude's
+F2 (terminal palette) is a `planned` roadmap slot: S24/D74 map 2 of Claude's
 72 roles through CSS, and the ANSI-16 palette is the named host gap. It leaves
 `planned` only when the terminal exposes a palette or a decision removes that
 sub-surface from the declared set.
@@ -3073,7 +3073,7 @@ kernel would have to be rewritten — and would make mods structurally impossibl
 
 ## 13. Open questions
 
-> F2's terminal-palette question is answered by S24 (§10) and D75: the plugin
+> F2's terminal-palette question is answered by S24 (§10) and D74: the plugin
 > CSS theme seam is real, 2 of 72 roles reach the terminal, and the ANSI-16
 > palette is the named host gap. F2 remains `planned`, so this is not an open
 > probe; the remaining work is a host seam and a fixture/materializer.

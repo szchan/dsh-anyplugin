@@ -1796,10 +1796,10 @@ function monitorsRow(sourcePath: string): IrUnmaterialized {
  * 70 roles have no DSH terminal counterpart, and `ansi:<name>`/`ansi256(n)`
  * values have no host palette: the terminal's ANSI 16 are written only from
  * the OSC 4/104 parser map. That is a partial seam with a named host gap, so
- * this is a scheduled slot (D75), not a refusal.
+ * this is a scheduled slot (D74), not a refusal.
  */
 const THEME_REASON =
-  "Terminal colour palettes are partial: 2 of Claude's 72 named roles map through --dsw-alias-label-primary/--dsw-alias-bg-base to the terminal's computed foreground/background; 70 have no DSH terminal counterpart, ansi:<name>/ansi256(n) values have no host palette, and ANSI 16 are OSC 4/104-only (S24, #216, D75)."
+  "Terminal colour palettes are partial: 2 of Claude's 72 named roles map through --dsw-alias-label-primary/--dsw-alias-bg-base to the terminal's computed foreground/background; 70 have no DSH terminal counterpart, ansi:<name>/ansi256(n) values have no host palette, and ANSI 16 are OSC 4/104-only (S24, #216, D74)."
 
 /**
  * Surfaces that exist only as a fixed file or a directory and have no

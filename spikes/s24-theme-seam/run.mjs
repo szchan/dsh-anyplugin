@@ -590,4 +590,4 @@ if (failed.length > 0) {
   process.exit(1)
 }
 console.log(`\nS24 PASS: ${checks.length} assertions.`)
-console.log('ANSWER: no plugin-registerable ANSI palette. A plugin can register alias-token CSS themes through ctx.theme; 2 of Claude\'s 72 roles reach the terminal through computed foreground/background, 70 have no DSH terminal counterpart, and the ANSI 16 are written only by OSC 4/104. F2 stays planned, with the ANSI-16 palette as the named host gap (D75).')
+console.log('ANSWER: no plugin-registerable ANSI palette. A plugin can register alias-token CSS themes through ctx.theme; 2 of Claude\'s 72 roles reach the terminal through computed foreground/background, 70 have no DSH terminal counterpart, and the ANSI 16 are written only by OSC 4/104. F2 stays planned, with the ANSI-16 palette as the named host gap (D74).')

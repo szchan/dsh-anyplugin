@@ -12,7 +12,7 @@ roles reach the terminal through it: `text` → `--dsw-alias-label-primary` and
 `document.body` and read back by the terminal as computed foreground/background.
 The other 70 roles have no DSH terminal counterpart, and the terminal's ANSI 16
 are written only from xterm OSC 4/104. F2 stays `planned`; the ANSI-16 palette
-is the named host gap (D75).
+is the named host gap (D74).
 
 Pins: DSH Desktop `0.2.2-rc.2` and fetched `0.2.2-rc.5`; Claude Code
 `2.1.329`.
@@ -131,7 +131,7 @@ A mutation that adds `ThemeRuntime.prototype.registerTerminalPalette` reddens
 two assertions; a mutation that adds a `palette` field plus an ANSI write to
 `TerminalTheme` reddens four. Both mutations were applied to the fetched
 `0.2.2-rc.5` tree and the spike exited `1`; PR #218 records the output. This is
-why D75 may claim the spike fails on a palette channel.
+why D74 may claim the spike fails on a palette channel.
 
 ## Fixture
 
@@ -165,7 +165,7 @@ only because Node refuses type-stripped imports from `node_modules`.
 
 F2 is `planned`, not `unsupported`: the plugin theme API exists, two roles have
 a real DSH destination, and the v0.4 roadmap keeps the slot. The ANSI-16
-sub-surface is the named host gap. D75 says F2 cannot be complete until DSH
+sub-surface is the named host gap. D74 says F2 cannot be complete until DSH
 exposes a palette channel or a decision formally removes that sub-surface from
 the declared set; no “every declared colour” bar is invented. A fixture and a
 materializer follow when that host gap closes.

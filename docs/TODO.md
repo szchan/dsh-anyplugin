@@ -79,7 +79,7 @@ with the exact anchor so the proposal is reviewable without a checkout.
       72 roles map through `--dsw-alias-label-primary`/`--dsw-alias-bg-base`
       to the terminal's computed foreground/background, 70 have no DSH terminal
       counterpart, and the ANSI 16 are OSC 4/104-only. `themes/` stays
-      `planned` (D75); the remaining work is a host ANSI-16 palette — or a
+      `planned` (D74); the remaining work is a host ANSI-16 palette — or a
       decision removing that sub-surface — plus a captured fixture and a
       materializer.
 
