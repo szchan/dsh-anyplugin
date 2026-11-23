@@ -296,6 +296,15 @@ function stripComment(text: string): string {
   return text
 }
 
+// js-yaml's number resolvers keep a scalar as a string when `parseInt`/`parseFloat`
+// is not finite (`1e999`, a hex literal too long for a double), so the reader
+// must not type it as a number: `Infinity` also serialises as `null` in a JSON
+// report, the same reason `.inf` is refused below.
+function numberOrRefuse(value: number, text: string, line: number): number {
+  if (!Number.isFinite(value)) fail(line, `plain value ${JSON.stringify(text)} is not a finite number; quote it`)
+  return value
+}
+
 function resolvePlain(text: string, line: number): unknown {
   // The loader resolves plain scalars with a YAML schema, so a plain scalar is
   // only "the same value" as another when both sides type it the same way. The
@@ -305,11 +314,11 @@ function resolvePlain(text: string, line: number): unknown {
   if (/^(?:true|True|TRUE)$/u.test(text)) return true
   if (/^(?:false|False|FALSE)$/u.test(text)) return false
   if (/^(?:null|Null|NULL|~)$/u.test(text)) return null
-  if (/^[-+]?0x[0-9a-fA-F]+$/u.test(text)) return Number.parseInt(text, 16)
-  if (/^[-+]?0o[0-7]+$/u.test(text)) return Number.parseInt(text.replace(/^[-+]?0o/u, ''), 8) * (text.startsWith('-') ? -1 : 1)
-  if (/^[-+]?0b[01]+$/u.test(text)) return Number.parseInt(text.replace(/^[-+]?0b/u, ''), 2) * (text.startsWith('-') ? -1 : 1)
-  if (/^[-+]?[0-9]+$/u.test(text)) return Number(text)
-  if (/^(?:[-+]?[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u.test(text)) return Number(text)
+  if (/^[-+]?0x[0-9a-fA-F]+$/u.test(text)) return numberOrRefuse(Number.parseInt(text, 16), text, line)
+  if (/^[-+]?0o[0-7]+$/u.test(text)) return numberOrRefuse(Number.parseInt(text.replace(/^[-+]?0o/u, ''), 8) * (text.startsWith('-') ? -1 : 1), text, line)
+  if (/^[-+]?0b[01]+$/u.test(text)) return numberOrRefuse(Number.parseInt(text.replace(/^[-+]?0b/u, ''), 2) * (text.startsWith('-') ? -1 : 1), text, line)
+  if (/^[-+]?[0-9]+$/u.test(text)) return numberOrRefuse(Number(text), text, line)
+  if (/^(?:[-+]?[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u.test(text)) return numberOrRefuse(Number(text), text, line)
   // A plain scalar the reader cannot type confidently is refused: the loader
   // may throw on it (`foo: bar`, `- b`) or type it as something we do not model
   // (`.inf`, `.NaN` — the loader's schema reads them as non-finite numbers,
@@ -419,11 +428,14 @@ function parseQuoted(document: Document, line: number, column: number, quote: st
     value += escapedBreak ? pending : ' '
     pending = ''
     current = next
-    // A fold discards the continuation's leading whitespace. js-yaml treats a
-    // leading tab the same way (`"x\` + LF + TAB + `y"` is `xy`), so a tab can
-    // never be content at the start of a folded line (F20 follow-up).
-    position = indentOf(continuation)
-    while (continuation[position] === '\t') position += 1
+    // A fold discards the continuation's leading whitespace, whichever way it
+    // is written: js-yaml's `skipSeparationSpace` skips the whole run of spaces
+    // and tabs after a break (`"x\` + LF + TAB + spaces + `y"` is `xy`), so no
+    // leading whitespace can be content at the start of a folded line. Skipping
+    // only the space indent and then a tab run would keep spaces that follow the
+    // tab (F20 round-2 re-check).
+    position = 0
+    while (continuation[position] === ' ' || continuation[position] === '\t') position += 1
     document.index = Math.max(document.index, current)
   }
 }

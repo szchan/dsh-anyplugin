@@ -4229,7 +4229,9 @@ value. #268 was a false `stale` for exactly that reason.
    `0x10`/`0o12`/`0b101`/`012`/`+1`/`.5` numbers); a plain scalar the loader
    would reject (`foo: bar`, `- b`) is refused, and so is one the loader types
    as a non-finite number (`.inf`, `.nan`), because the block cannot mean it and
-   a JSON report cannot round-trip it. #274 review showed both lenient readings
+   a JSON report cannot round-trip it; a numeric spelling that overflows a double
+   (`1e999`) is refused for the same reason, although the loader keeps it as a
+   string. #274 review showed both lenient readings
    produced a false `current`, and its round-2 re-check found the two accepted
    inputs this paragraph now covers.
 5. **A serialisation that differs while the values match is reported.** Status

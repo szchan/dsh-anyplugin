@@ -1795,6 +1795,20 @@ test('the block reader types plain scalars the way the loader does, and folds wh
   assert.equal(tabContinuation.ok, true, tabContinuation.ok ? '' : tabContinuation.reason)
   assert.deepEqual({ ...tabContinuation.value }, { name: 'src/index.tsex.mjs' }, 'a fold skips a leading tab in the continuation')
 
+  // The whole leading run is indentation, spaces and tabs interleaved: skipping
+  // only a tab run would keep the spaces that follow the tab as content.
+  const tabThenSpaces = parseBlock('name: "x\\\n\t  y"\n')
+  assert.equal(tabThenSpaces.ok, true, tabThenSpaces.ok ? '' : tabThenSpaces.reason)
+  assert.deepEqual({ ...tabThenSpaces.value }, { name: 'xy' }, 'a fold skips tabs and the spaces after them')
+
+  const bareTabThenSpaces = parseBlock('name: "x \n\t  y"\n')
+  assert.equal(bareTabThenSpaces.ok, true, bareTabThenSpaces.ok ? '' : bareTabThenSpaces.reason)
+  assert.deepEqual({ ...bareTabThenSpaces.value }, { name: 'x y' }, 'a bare break drops raw whitespace before the indentation')
+
+  const tabSpaceTab = parseBlock('name: "x\\\n\t \ty"\n')
+  assert.equal(tabSpaceTab.ok, true, tabSpaceTab.ok ? '' : tabSpaceTab.reason)
+  assert.deepEqual({ ...tabSpaceTab.value }, { name: 'xy' }, 'an interleaved tab/space run is all indentation')
+
   // Plain scalars are typed by the YAML schema, so `TRUE` is a boolean and
   // `0x10` is 16: reading them as strings would make two different loader
   // documents compare equal.
@@ -1825,6 +1839,18 @@ test('the block reader types plain scalars the way the loader does, and folds wh
   const notANumber = parseBlock('a: -.NaN\n')
   assert.equal(notANumber.ok, false)
   assert.match(notANumber.ok ? '' : notANumber.reason, /is not a finite number; quote it/u)
+
+  // A numeric form that overflows a double is a string to the loader (its float
+  // resolver requires a finite parse) and infinite to `Number`, so the reader
+  // must refuse it rather than call it a number.
+  for (const text of ['1e999', '-1e999', '1e309', '1.0e999']) {
+    const overflow = parseBlock(`a: ${text}\n`)
+    assert.equal(overflow.ok, false, `${text} must be refused`)
+    assert.match(overflow.ok ? '' : overflow.reason, /is not a finite number; quote it/u)
+  }
+  const finiteFloat = parseBlock('a: 1e308\n')
+  assert.equal(finiteFloat.ok, true)
+  assert.deepEqual({ ...finiteFloat.value }, { a: 1e308 })
 
   // `guardWorktrees` selects the guard's own insert row, not the first one, and
   // a malformed config is "unknown", never a guess (m3-drop-id-check mutation).
