@@ -37,11 +37,12 @@ const notes = []
  * marketplace reader, which measures 181.9 KiB compressed. D71 raises it to 188 KiB: routing
  * the five S23 classic events adds record translation to the shipped hook materializer, and
  * the tarball measures 190257 bytes. D77 ships the panel in the same tarball: its server half
- * is bundled into lib/index.js and its client bundle becomes lib/client.js, so the ceiling moves
- * with it instead of a second package carrying its own 64 KiB budget. The measured number is in
- * the note below and in PR #224.
+ * is bundled into lib/index.js and its client bundle becomes lib/client.js, and the packed size
+ * measures 191.2 KiB in CI check:pack (+5.4 KiB on D71). The ceiling moves to 193 KiB — the
+ * measured cost plus one doc paragraph of headroom — instead of a second package carrying its
+ * own 64 KiB budget.
  */
-const TARBALL_CEILING_BYTES = 208 * 1024
+const TARBALL_CEILING_BYTES = 193 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }

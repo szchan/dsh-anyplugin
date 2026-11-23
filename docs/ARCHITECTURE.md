@@ -165,6 +165,8 @@ The root package is `dsh-anyplugin` (0.3.0) and it is the only install (D77).
 D61 adds the programmatic `./install` subpath the panel calls; the panel itself
 is not a package — its server half is bundled into `lib/index.js`, its client
 half into `lib/client.js`, and the root tarball carries both.
+The panel moves the packed size from D71's 190,257 bytes to 191.2 KiB and
+`check:pack`'s ceiling from 188 KiB to 193 KiB (CI `check:pack`, D77).
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).
