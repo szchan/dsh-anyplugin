@@ -29,6 +29,7 @@ import {
   runTable,
   uninstallText,
 } from '../src/composition.ts'
+import { guardWorktrees, parseBlock, sameValue } from '../src/block.ts'
 import { currentBranch, isMainRef } from '../src/git.ts'
 import { chooseWorktree, messageText, renderBrief } from '../src/brief.ts'
 import { insideGitDirectory, isWorktreeGlob, judgeCall, matchWorktree, resolvePolicy } from '../src/policy.ts'
@@ -871,7 +872,7 @@ test('ruby and php write payloads are refused like node and python', () => {
   }
 })
 
-function harness() {
+function harness(agents) {
   const listeners = new Map()
   const disposers = []
   const ctx = {
@@ -884,6 +885,11 @@ function harness() {
     effect(register) {
       disposers.push(register())
     },
+    // The loader's service registry: a session event carries the session, so
+    // the guard resolves its id back to the live Agent object the seams use.
+    get(name) {
+      return name === 'agents' ? agents : undefined
+    },
   }
   return { ctx, listeners, disposers }
 }
@@ -893,7 +899,8 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
   await apply(ctx, config)
   assert.equal(listeners.get('tools/pre-execute')?.length, 1)
   assert.equal(listeners.get('agent/pre-step')?.length, 1)
-  assert.equal(disposers.length, 4, 'two seam mounts plus the created/disposed pair')
+  assert.equal(listeners.get('session/event')?.length, 1)
+  assert.equal(disposers.length, 5, 'three seam mounts plus the created/disposed pair')
 
   // D80: the seams read the session header, not a hand-built view.
   const runtime = (agent) => ({ session: { header: { id: agent.id, cwd: agent.cwd, ...(agent.worker ? { origin: 'subagent' } : {}) } } })
@@ -1190,6 +1197,158 @@ test('ambiguous text seats nothing and a later unambiguous message can still sea
     async () => ({ kind: 'accept' }),
   )
   assert.equal(allowed.kind, 'accept')
+})
+
+test('an unseated worker is seated by the directory change the host announces (#266)', async () => {
+  // The host appends `working-directory/change` when the worker moves itself;
+  // that announcement is structured evidence a message-text seat does not need
+  // to parse. Before it arrives the worker has no seat and writes nothing.
+  const agent = { session: { header: { id: 'worker-266', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: (id) => (id === 'worker-266' ? agent : undefined), list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = (path) =>
+    tools(
+      { callId: 60, name: 'write', arguments: { file_path: path, content: 'x' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'deny', 'nothing is recorded yet')
+
+  const change = listeners.get('session/event')[0]
+  assert.equal(typeof change, 'function')
+  await change({ header: { id: 'worker-266' } }, { type: 'assistant/message', data: { cwd: worktree } })
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'deny', 'only a directory change is a seat')
+  await change({ header: { id: 'worker-266' } }, { type: 'working-directory/change', data: { cwd: worktree } })
+
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'accept')
+  assert.equal((await write(`${repo}/src/x.ts`)).kind, 'deny', 'the checkout stays protected')
+  const outside = await write('/work/wt/ticket-9999/src/x.ts')
+  assert.equal(outside.kind, 'deny')
+  assert.match(outside.reason, /only inside its worktree/u)
+})
+
+test('a resumed session is seated by the announcement even though it never fired agent/created (#266)', async () => {
+  // A cold resume announces the same session as a NEW Agent object; the seat
+  // #250 learned from the spawn prompt lived on the previous object and the
+  // resumed log is replayed without re-publishing its notices. No
+  // `agent/created` is dispatched in this test, so a seat that depended on the
+  // per-agent mount could never exist; the session-scoped announcement is the
+  // only evidence, and it must seat the live Agent the seam carries.
+  let live = { session: { header: { id: 'worker-resumed', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: (id) => (id === 'worker-resumed' ? live : undefined), list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = () =>
+    tools(
+      { callId: 61, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent: live },
+      async () => ({ kind: 'accept' }),
+    )
+
+  assert.equal((await write()).kind, 'deny')
+  live = { session: { header: { id: 'worker-resumed', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  assert.equal((await write()).kind, 'deny', 'the resumed Agent starts unseated')
+
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-resumed' } },
+    { type: 'working-directory/change', data: { cwd: worktree } },
+  )
+  assert.equal((await write()).kind, 'accept')
+})
+
+test('a directory change into the primary checkout records no seat (#266)', async () => {
+  const agent = { session: { header: { id: 'worker-checkout', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  const change = listeners.get('session/event')[0]
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = () =>
+    tools(
+      { callId: 62, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+
+  await change({ header: { id: 'worker-checkout' } }, { type: 'working-directory/change', data: { cwd: repo } })
+  const denied = await write()
+  assert.equal(denied.kind, 'deny')
+  assert.match(denied.reason, /no worktree is recorded/u)
+
+  // Not a seat is not a failure: the announcement stays retryable, so a later
+  // real one can still seat the session.
+  await change({ header: { id: 'worker-checkout' } }, { type: 'working-directory/change', data: { cwd: worktree } })
+  assert.equal((await write()).kind, 'accept')
+})
+
+test('a directory change outside every installed worktree records no seat (#266)', async () => {
+  const agent = { session: { header: { id: 'worker-outside', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-outside' } },
+    { type: 'working-directory/change', data: { cwd: '/tmp/anyplugin-wt/not-a-ticket' } },
+  )
+  const denied = await listeners.get('tools/pre-execute')[0](
+    { callId: 63, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(denied.kind, 'deny')
+  assert.match(denied.reason, /no worktree is recorded/u)
+})
+
+test('a recorded seat does not move when a later directory change names another worktree (#266)', async () => {
+  const elsewhere = '/work/wt/ticket-9997'
+  const policy = { ...config, worktrees: [worktree, elsewhere] }
+  const agent = { session: { header: { id: 'worker-moved', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, policy)
+  const preStep = listeners.get('agent/pre-step')[0]
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = (path) =>
+    tools(
+      { callId: 64, name: 'write', arguments: { file_path: path, content: 'x' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+
+  await preStep(
+    { agent, step: 1, messages: [{ role: 'user', content: `spawned to work in ${worktree}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'accept')
+
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-moved' } },
+    { type: 'working-directory/change', data: { cwd: elsewhere } },
+  )
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'accept', 'the recorded seat never moves')
+  const moved = await write(`${elsewhere}/src/x.ts`)
+  assert.equal(moved.kind, 'deny')
+  assert.match(moved.reason, /only inside its worktree/u)
+})
+
+test('an ambiguous directory change, like ambiguous text, records no seat (#266)', async () => {
+  // The announcement is resolved by the same exactly-one rule as a message:
+  // nested entries both cover the announced path, so neither wins.
+  const nested = `${worktree}/nested`
+  const policy = { ...config, worktrees: [worktree, nested] }
+  const agent = { session: { header: { id: 'worker-ambiguous', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, policy)
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-ambiguous' } },
+    { type: 'working-directory/change', data: { cwd: nested } },
+  )
+  const denied = await listeners.get('tools/pre-execute')[0](
+    { callId: 65, name: 'write', arguments: { file_path: `${nested}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(denied.kind, 'deny')
+  assert.match(denied.reason, /no worktree is recorded/u)
 })
 
 test('a symlink inside the worktree does not become a write into the checkout', () => {
@@ -1551,6 +1710,254 @@ test('guard:status refuses a duplicate id outside the block and a lone end marke
     assert.doesNotMatch(marker.stderr, /\n\s+at /u, 'a broken profile is a clean refusal, not a stack')
   } finally {
     rmSync(data, { recursive: true, force: true })
+  }
+})
+
+test('the block reader proves a folded scalar equal and refuses what it cannot read', () => {
+  const source = join(repo, 'packages/dsh-anyplugin-guard/src/index.ts')
+  const block = renderBlock(source, config)
+  const rendered = parseBlock(block)
+  assert.equal(rendered.ok, true, rendered.ok ? '' : rendered.reason)
+  assert.deepEqual(guardWorktrees(rendered.value), config.worktrees)
+
+  const foldName = (text, separator) => {
+    const line = text.split('\n').find((entry) => entry.startsWith('      name: '))
+    const name = JSON.parse(line.slice('      name: '.length))
+    const cut = name.indexOf('index.ts')
+    assert.notEqual(cut, -1, 'the composed block quotes the source path')
+    return text.replace(line, '      name: "' + name.slice(0, cut) + separator + name.slice(cut) + '"')
+  }
+
+  // A backslash continuation removes the break, so the folded value is the
+  // single-line one the tree wrote.
+  const escaped = parseBlock(foldName(block, '\\\n        '))
+  assert.equal(escaped.ok, true, escaped.ok ? '' : escaped.reason)
+  assert.equal(sameValue(escaped.value, rendered.value), true, 'a backslash continuation folds away the break')
+
+  // The same fold, with one character changed in the continuation, is a
+  // different path: value comparison must see it.
+  const tampered = parseBlock(foldName(block, '\\\n        ').replace('index.ts"', 'index.mjs"'))
+  assert.equal(tampered.ok, true, tampered.ok ? '' : tampered.reason)
+  assert.equal(sameValue(tampered.value, rendered.value), false, 'a changed continuation is a changed value')
+
+  // A bare line break folds to one space, so it only preserves a scalar that
+  // already has that space.
+  const foldedSpace = parseBlock('ratchet:\n  - "32 declared / 31\n    matched"\n')
+  assert.equal(foldedSpace.ok, true, foldedSpace.ok ? '' : foldedSpace.reason)
+  assert.equal(foldedSpace.ok && sameValue(foldedSpace.value, { ratchet: ['32 declared / 31 matched'] }), true)
+
+  const duplicateKey = parseBlock('name: "one"\nname: "two"\n')
+  assert.equal(duplicateKey.ok, false)
+  assert.match(duplicateKey.ok ? '' : duplicateKey.reason, /duplicate mapping key/u)
+
+  const flow = parseBlock('worktrees: [unterminated\n')
+  assert.equal(flow.ok, false)
+  assert.match(flow.ok ? '' : flow.reason, /flow sequences are not read/u)
+
+  const anchored = parseBlock('worktrees: &anchor []\n')
+  assert.equal(anchored.ok, false)
+  assert.match(anchored.ok ? '' : anchored.reason, /anchors, aliases and tags are not read/u)
+})
+
+test('the block reader types plain scalars the way the loader does, and folds whitespace the way YAML does', () => {
+  // FAIL-OPEN regression (F20 follow-up): a fold that leaves literal spaces
+  // before the escaped break changes the value the loader sees. The reader used
+  // to trim them and call the block current.
+  const spaced = parseBlock('name: "src/ind   \\\n        ex.ts"\n')
+  assert.equal(spaced.ok, true, spaced.ok ? '' : spaced.reason)
+  assert.deepEqual({ ...spaced.value }, { name: 'src/ind   ex.ts' }, 'spaces before an escaped break are content')
+
+  const tabbed = parseBlock('name: "src/ind\t\\\n        ex.ts"\n')
+  assert.equal(tabbed.ok, true, tabbed.ok ? '' : tabbed.reason)
+  assert.deepEqual({ ...tabbed.value }, { name: 'src/ind\tex.ts' })
+
+  const escapedSpaceBreak = parseBlock('name: "src/ind\\ \\\n        ex.ts"\n')
+  assert.equal(escapedSpaceBreak.ok, true, escapedSpaceBreak.ok ? '' : escapedSpaceBreak.reason)
+  assert.deepEqual({ ...escapedSpaceBreak.value }, { name: 'src/ind ex.ts' }, 'an escaped space stays one space')
+
+  const escapedSpaceFold = parseBlock('name: "src/ind\\ \n        ex.ts"\n')
+  assert.equal(escapedSpaceFold.ok, true, escapedSpaceFold.ok ? '' : escapedSpaceFold.reason)
+  assert.deepEqual({ ...escapedSpaceFold.value }, { name: 'src/ind  ex.ts' }, 'a bare fold adds a space next to an escaped one')
+
+  // A *bare* break drops the raw whitespace that sits before it, and a fold
+  // discards the continuation's leading whitespace including a tab. Both are
+  // js-yaml's reading (`"x  \n  y"` is `x y`, `"x\` + LF + TAB + `y"` is `xy`),
+  // and both are pinned here so a lenient reader cannot pass.
+  const bareTrailing = parseBlock('name: "src/ind   \n        ex.ts"\n')
+  assert.equal(bareTrailing.ok, true, bareTrailing.ok ? '' : bareTrailing.reason)
+  assert.deepEqual({ ...bareTrailing.value }, { name: 'src/ind ex.ts' }, 'a bare break drops raw trailing whitespace')
+
+  const bareTrailingTab = parseBlock('name: "src/ind\t\n        ex.ts"\n')
+  assert.equal(bareTrailingTab.ok, true, bareTrailingTab.ok ? '' : bareTrailingTab.reason)
+  assert.deepEqual({ ...bareTrailingTab.value }, { name: 'src/ind ex.ts' }, 'a bare break drops a raw trailing tab')
+
+  const tabContinuation = parseBlock('name: "src/index.ts\\\n\tex.mjs"\n')
+  assert.equal(tabContinuation.ok, true, tabContinuation.ok ? '' : tabContinuation.reason)
+  assert.deepEqual({ ...tabContinuation.value }, { name: 'src/index.tsex.mjs' }, 'a fold skips a leading tab in the continuation')
+
+  // The whole leading run is indentation, spaces and tabs interleaved: skipping
+  // only a tab run would keep the spaces that follow the tab as content.
+  const tabThenSpaces = parseBlock('name: "x\\\n\t  y"\n')
+  assert.equal(tabThenSpaces.ok, true, tabThenSpaces.ok ? '' : tabThenSpaces.reason)
+  assert.deepEqual({ ...tabThenSpaces.value }, { name: 'xy' }, 'a fold skips tabs and the spaces after them')
+
+  const bareTabThenSpaces = parseBlock('name: "x \n\t  y"\n')
+  assert.equal(bareTabThenSpaces.ok, true, bareTabThenSpaces.ok ? '' : bareTabThenSpaces.reason)
+  assert.deepEqual({ ...bareTabThenSpaces.value }, { name: 'x y' }, 'a bare break drops raw whitespace before the indentation')
+
+  const tabSpaceTab = parseBlock('name: "x\\\n\t \ty"\n')
+  assert.equal(tabSpaceTab.ok, true, tabSpaceTab.ok ? '' : tabSpaceTab.reason)
+  assert.deepEqual({ ...tabSpaceTab.value }, { name: 'xy' }, 'an interleaved tab/space run is all indentation')
+
+  // Plain scalars are typed by the YAML schema, so `TRUE` is a boolean and
+  // `0x10` is 16: reading them as strings would make two different loader
+  // documents compare equal.
+  assert.deepEqual(parseBlock('a: TRUE\n').ok ? { ...parseBlock('a: TRUE\n').value } : undefined, { a: true })
+  assert.deepEqual(parseBlock('a: Null\n').ok ? { ...parseBlock('a: Null\n').value } : undefined, { a: null })
+  assert.deepEqual(parseBlock('a: 0x10\n').ok ? { ...parseBlock('a: 0x10\n').value } : undefined, { a: 16 })
+  assert.deepEqual(parseBlock('a: 012\n').ok ? { ...parseBlock('a: 012\n').value } : undefined, { a: 12 })
+  assert.deepEqual(parseBlock('a: .5\n').ok ? { ...parseBlock('a: .5\n').value } : undefined, { a: 0.5 })
+  assert.deepEqual(parseBlock('a: +1\n').ok ? { ...parseBlock('a: +1\n').value } : undefined, { a: 1 })
+  assert.deepEqual(parseBlock('a: 1_000\n').ok ? { ...parseBlock('a: 1_000\n').value } : undefined, { a: '1_000' })
+  assert.deepEqual(parseBlock('a: yes\n').ok ? { ...parseBlock('a: yes\n').value } : undefined, { a: 'yes' })
+
+  // Values the loader would throw on are refused, so the comparison is stale
+  // rather than "equal".
+  const mappingLike = parseBlock('a: foo: bar\n')
+  assert.equal(mappingLike.ok, false)
+  assert.match(mappingLike.ok ? '' : mappingLike.reason, /plain value "foo: bar" is not read/u)
+  const sequenceLike = parseBlock('a: - b\n')
+  assert.equal(sequenceLike.ok, false)
+  assert.match(sequenceLike.ok ? '' : sequenceLike.reason, /plain value "- b" is not read/u)
+
+  // The loader's schema types `.inf` / `.NaN` as non-finite numbers; the block
+  // cannot mean them, and a JSON report cannot round-trip them, so they are
+  // refused (stale, never current).
+  const infinite = parseBlock('a: .inf\n')
+  assert.equal(infinite.ok, false)
+  assert.match(infinite.ok ? '' : infinite.reason, /is not a finite number; quote it/u)
+  const notANumber = parseBlock('a: -.NaN\n')
+  assert.equal(notANumber.ok, false)
+  assert.match(notANumber.ok ? '' : notANumber.reason, /is not a finite number; quote it/u)
+
+  // A numeric form that overflows a double is a string to the loader (its float
+  // resolver requires a finite parse) and infinite to `Number`, so the reader
+  // must refuse it rather than call it a number.
+  for (const text of ['1e999', '-1e999', '1e309', '1.0e999']) {
+    const overflow = parseBlock(`a: ${text}\n`)
+    assert.equal(overflow.ok, false, `${text} must be refused`)
+    assert.match(overflow.ok ? '' : overflow.reason, /is not a finite number; quote it/u)
+  }
+  const finiteFloat = parseBlock('a: 1e308\n')
+  assert.equal(finiteFloat.ok, true)
+  assert.deepEqual({ ...finiteFloat.value }, { a: 1e308 })
+
+  // `guardWorktrees` selects the guard's own insert row, not the first one, and
+  // a malformed config is "unknown", never a guess (m3-drop-id-check mutation).
+  const foreignFirst = parseBlock(
+    '- insert:\n    - id: "someone-else"\n      config:\n        worktrees:\n          - "/nope"\n    - id: "anyplugin-guard"\n      config:\n        worktrees:\n          - "/tmp/anyplugin-wt/ticket-*"\n',
+  )
+  assert.equal(foreignFirst.ok, true, foreignFirst.ok ? '' : foreignFirst.reason)
+  assert.deepEqual(guardWorktrees(foreignFirst.value), ['/tmp/anyplugin-wt/ticket-*'])
+  const malformedWorktrees = parseBlock('- insert:\n    - id: "anyplugin-guard"\n      config:\n        worktrees: 5\n')
+  assert.equal(malformedWorktrees.ok, true, malformedWorktrees.ok ? '' : malformedWorktrees.reason)
+  assert.equal(guardWorktrees(malformedWorktrees.value), undefined)
+})
+
+test('guard:status reads a folded block as current, and still refuses a changed, a duplicated or an unreadable one', () => {
+  const scratch = scratchCheckout()
+  const profile = mkdtempSync(join(tmpdir(), 'guard-status-values-'))
+  const patch = join(profile, 'cordis.patch.yml')
+  const status = (args = []) =>
+    spawnSync(
+      process.execPath,
+      [join(scratch, 'scripts/guard-status.mjs'), '--profile-dir', profile, ...args],
+      { cwd: scratch, encoding: 'utf8' },
+    )
+  const report = () => JSON.parse(status(['--json']).stdout)
+  const installed = () => readFileSync(patch, 'utf8')
+  const install = () =>
+    spawnSync(process.execPath, [join(scratch, 'scripts/guard-install.mjs'), '--profile-dir', profile], {
+      cwd: scratch,
+      encoding: 'utf8',
+    })
+  // The F20 shape: the profile writer folds the long double-quoted name scalar
+  // with a backslash continuation and reseats the end marker behind a blank
+  // line. No value changes.
+  const fold = (text) => {
+    const line = text.split('\n').find((entry) => entry.startsWith('      name: '))
+    const name = JSON.parse(line.slice('      name: '.length))
+    const cut = name.indexOf('/src/ind') + '/src/ind'.length
+    assert.ok(cut >= '/src/ind'.length, 'the installed block quotes the source path')
+    return text
+      .replace(line, '      name: "' + name.slice(0, cut) + '\\\n        ' + name.slice(cut) + '"')
+      .replace(BLOCK_END, `\n${BLOCK_END}`)
+  }
+  try {
+    const first = install()
+    assert.equal(first.status, 0, first.stdout + first.stderr)
+    const baseline = status()
+    assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr)
+    assert.match(baseline.stdout, /guard: status {2}current/u)
+
+    const foldedText = fold(installed())
+    writeFileSync(patch, foldedText)
+    const folded = status()
+    assert.equal(folded.status, 0, folded.stdout + folded.stderr)
+    assert.match(folded.stdout, /guard: status {2}current/u)
+    assert.doesNotMatch(folded.stdout, /first difference/u)
+    assert.match(folded.stdout, /only its serialisation differs/u)
+    const foldedReport = report()
+    assert.equal(foldedReport.status, 'current')
+    assert.equal(foldedReport.difference, undefined)
+    assert.equal(foldedReport.reserialised, true)
+    assert.deepEqual(foldedReport.installedWorktrees, foldedReport.worktrees)
+
+    // A value changed inside the folded scalar is a real difference.
+    writeFileSync(patch, foldedText.replace('ex.ts"', 'index.ts"'))
+    const changed = status()
+    assert.equal(changed.status, 1)
+    assert.match(changed.stdout, /guard: status {2}stale/u)
+    assert.match(changed.stdout, /first difference/u)
+    const changedReport = report()
+    assert.equal(changedReport.status, 'stale')
+    assert.equal(typeof changedReport.difference.line, 'number')
+    assert.equal(changedReport.blockError, undefined)
+
+    const second = install()
+    assert.equal(second.status, 0, second.stdout + second.stderr)
+    const canonical = installed()
+    assert.match(status().stdout, /guard: status {2}current/u)
+
+    // A plain different value, with no folding involved.
+    writeFileSync(patch, canonical.replace('- "apply_patch"', '- "apply_patch2"'))
+    const plain = status()
+    assert.equal(plain.status, 1)
+    assert.match(plain.stdout, /guard: status {2}stale/u)
+    assert.equal(typeof report().difference.line, 'number')
+
+    // Two copies of the managed block are a duplicate entry, not a stale one.
+    writeFileSync(patch, canonical + canonical)
+    const duplicated = status()
+    assert.equal(duplicated.status, 1)
+    assert.match(duplicated.stdout, /duplicate - id/u)
+    assert.equal(report().duplicateId, true)
+
+    // A block that does not parse is not provably equal: stale, with a reason,
+    // never current.
+    writeFileSync(patch, canonical.replace(/^      name: ".*"$/mu, '      name: "unterminated'))
+    const unreadable = status()
+    assert.equal(unreadable.status, 1)
+    assert.match(unreadable.stdout, /guard: status {2}stale/u)
+    assert.match(unreadable.stdout, /cannot be read as YAML/u)
+    assert.doesNotMatch(unreadable.stdout, /guard: status {2}current/u)
+    const unreadableReport = report()
+    assert.equal(unreadableReport.status, 'stale')
+    assert.match(unreadableReport.blockError, /cannot be read as YAML/u)
+    assert.equal(unreadableReport.difference, undefined)
+  } finally {
+    rmSync(profile, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
   }
 })
 

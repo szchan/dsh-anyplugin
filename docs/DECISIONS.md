@@ -4111,3 +4111,148 @@ is not claimed here.
 **Numbering.** D83 (the fork PR's `verify` gate) and D85–D88 have since landed on
 `main`; this entry fills the D84 slot the earlier PR reserved, and it is not
 renumbered.
+
+## D89 — A worker's seat may be learned from the working-directory announcement
+
+**Decided 2026-11-23** (#266).
+
+The seat — the one worktree a worker may write in — had two sources: the
+spawn prompt's text, and since `#251` a retry at every `agent/pre-step`. Both
+read messages. A session *resumed* with a steering message has neither: the
+host creates a new `Agent` object for it, `#250` keyed the seat state by the
+Agent object, and the cold resume replays the stored log without re-publishing
+it, so the spawn prompt is never claimed again; the steering message need not
+name a path either. In #266 a resumed worker stayed unseated for every write,
+even after it had moved into its ticket worktree.
+
+The host already publishes the fact the guard needs. When a session's effective
+working directory changes, `dsh-working-directory` appends the structured
+session event `working-directory/change` (`{cwd}`; pin `0.2.2-rc.2`,
+`node_modules/@deepseek-ai/dsh-working-directory/src/index.ts:55-59`, appended at
+:217-237) alongside a prose notice. Session events are published on
+`session/event` after the append (pin `dsh-session/src/index.ts:79-84`,
+`lib/index.js:1580-1615`), and a listener on the app-level context receives them
+for child sessions — so the guard can learn the seat without a per-agent mount
+and without claiming a message.
+
+1. **The announcement is a seat source, not a cwd source.** The announced `cwd`
+   is matched through the same exactly-one-installed-worktree rule the text seat
+   uses: the primary checkout, a directory outside every installed pattern, and
+   a path matched by two entries each record no seat. The frozen session header
+   cwd is still never consulted (#250); the difference is that the announcement
+   is an explicit statement by the host about where the work is, not an
+   inherited default. An ambiguous announcement is not a best guess: it records
+   nothing.
+2. **One seat per session, and a recorded one never moves.** The first
+   announcement that resolves to exactly one worktree seats the session. A later
+   change is ignored, so a worker that moves out of its worktree still writes
+   only inside the seat it was given — the #250 property kept. An announcement
+   that resolves to nothing does not mark the session resolved, so a later
+   announcement or a later step that names the worktree can still seat it: "not
+   a seat" is not "a failed seat".
+3. **The state is keyed by the live Agent object, resolved by session id.** The
+   handler takes the id from `session.header.id`, resolves it through the agents
+   registry to the live `Agent`, and records the seat on the same `AgentState`
+   the two seams read. It therefore does not depend on `agent/created` or on a
+   replay of the spawn prompt, and it adds no second event path: one more
+   app-level mount on an existing seam, beside the two that exist.
+4. **The announcement path never writes a message.** The brief is still
+   delivered by the next pre-step and guarded by `state.briefed`, so a resumed
+   session past its first step receives no second brief for a seat learned this
+   way. Seating is state only.
+
+**Not claimed.** A resumed session that neither changes directory nor receives a
+path in a message remains unseatable: it has announced nothing, and the guard
+will not guess from the header. That session must be re-spawned with its
+worktree named, or move into it. Seats also still do not survive a disposed
+Agent: the state lives with the live agent, because there is no durable store
+and a fresh install must not trust a stale one. The new mount is inert where the
+guard is inert: confinement is still gated by the territory check on
+`header.cwd` at the tool seam (D80), so a seat learned for a session the guard
+does not police can never deny anything or write a denial record.
+
+A seat learned this way is only as good as the announcement: the host publishes
+it because the session asked to change directory, and the guard does not verify
+that the named worktree is the ticket the session was dispatched for. A session
+that moves itself into another installed worktree while still unseated is
+seated there. That is the accepted trade for mistake prevention — the
+alternative was blocking every resumed worker — but it does not turn the guard
+into containment (D80): the master's dispatch, not the seat, is what says which
+ticket a worker owns.
+
+**Evidence.** `packages/dsh-anyplugin-guard/src/index.ts` (`learnSeat`, and its
+mount on `session/event`); six apply-level tests in
+`packages/dsh-anyplugin-guard/test/guard.test.mjs`: an unseated worker is seated
+by the announcement; a resumed session whose Agent object was replaced and which
+never fired `agent/created` is seated by it; a directory change into the primary
+checkout records no seat and leaves the session retryable; a directory change
+outside every pattern records no seat; a recorded seat does not move when
+another worktree is announced; an ambiguous announcement records no seat.
+Mutation proof, each mutation reddening its named test on the single-file run:
+the event-type filter removed reddens the unseated-worker test; the registry
+lookup removed reddens three announcement tests; the `resolved` guard removed
+reddens the no-move test; the announced path seated raw reddens the three
+fail-closed tests; an unresolvable announcement marked resolved reddens the
+primary-checkout test. `node --test
+packages/dsh-anyplugin-guard/test/guard.test.mjs`: 88 passing, 0 failing.
+
+## D90 — `guard:status` compares the block by parsed value, not by bytes
+
+**Decided 2026-11-23** (#268).
+
+The installed block and the block the tree composes are the same policy only if
+their values are equal. The profile writer is not this repository: DSH rewrites
+`cordis.patch.yml` through a comment-preserving YAML document API (the loader
+parses with js-yaml `4.3.2`, `JSON_SCHEMA` extended with the `!!js` tags) and
+may fold a long double-quoted scalar or reseat a comment without changing one
+value. #268 was a false `stale` for exactly that reason.
+
+1. **Both sides are parsed and compared as values.** The managed block is YAML
+   in the JSON subset the loader accepts; the comparison covers every key and
+   sequence element on both sides, so an added or removed key is still stale.
+2. **Text equality is no longer the contract.** Byte identity was a proxy for
+   "the loader applies the same policy"; the writer defeats it without changing
+   the policy.
+3. **Unparsable is stale, never current.** A side the reader cannot account for
+   is not provably equal, so `guard:status` reports stale and prints the reason
+   (`the installed block cannot be read as YAML (...)`); "I could not read it"
+   is never "it is current".
+4. **The reader refuses what it cannot prove.** The subset parser (no new
+   dependency; D23's rationale) refuses duplicate keys, anchors, aliases, tags,
+   flow collections, block scalars and quoted scalars it cannot fold. It folds
+   a quoted scalar the way the loader does — an escaped line break removes the
+   break and the continuation's indentation (spaces and tabs; a tab can never
+   start content after a fold) while spaces before the backslash and spaces
+   decoded from `\ ` stay content; a bare break folds to one space and drops
+   only raw trailing whitespace. Plain scalars are typed the way the loader's
+   schema types them (`TRUE`/`True` booleans, `Null`/`~` null,
+   `0x10`/`0o12`/`0b101`/`012`/`+1`/`.5` numbers); a plain scalar the loader
+   would reject (`foo: bar`, `- b`) is refused, and so is one the loader types
+   as a non-finite number (`.inf`, `.nan`), because the block cannot mean it and
+   a JSON report cannot round-trip it; a numeric spelling that overflows a double
+   (`1e999`) is refused for the same reason, although the loader keeps it as a
+   string. #274 review showed both lenient readings
+   produced a false `current`, and its round-2 re-check found the two accepted
+   inputs this paragraph now covers.
+5. **A serialisation that differs while the values match is reported.** Status
+   stays `current`; the human output and JSON `reserialised: true` say so, so a
+   folded block is visibly read, not silently accepted.
+
+**Not claimed.** The reader is a subset, not a YAML implementation: a value it
+cannot parse makes the install stale with a reason even when a full parser would
+have accepted it. That is the fail-closed direction — false stale, never false
+current. The state line stays trivia because it records the pre-install file,
+not the policy.
+
+**Evidence.** The real profile's folded block reports `current` /
+`reserialised: true` where `main`'s byte comparison reported stale at line 4;
+mutated copies that the loader reads differently stay stale (folded whitespace,
+changed path, added/removed key or worktree, changed id, duplicate key/block,
+anchor, alias, tag, block scalar, flow collection, unterminated quote); the
+reader's fold and plain-scalar typing are pinned by
+`the block reader types plain scalars the way the loader does, and folds
+whitespace the way YAML does` and the status regression by `guard:status reads a
+folded block as current, and still refuses a changed, a duplicated or an
+unreadable one` in `packages/dsh-anyplugin-guard/test/guard.test.mjs` (91 guard
+tests), with `verify` on the merge head.
+

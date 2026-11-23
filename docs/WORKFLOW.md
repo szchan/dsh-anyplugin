@@ -214,37 +214,76 @@ only after reading the diff; the script does not merge for you.
 The integration runner (child name `integrator-*`) is the worker that does the
 merge mechanics the master used to do by hand. The master dispatches it for one
 PR with the PR number, the 40-hex head the reviewer verdicted, and the ticket
-worktree path. It updates the branch, polls `verify`, refreshes the PR body and
-reports the head. It never merges, never approves, never pushes `main`, and
-never changes a decision; resolving an additive merge conflict in a doc is its
-only file edit. The master makes the one pinned `gh pr merge` call after the
-runner reports (D66, D73).
+worktree path. It runs `npm run integrate -- <n> --head <40-hex>` for the
+mechanics, refreshes the PR body and reports the head. It never merges, never
+approves, never pushes `main`, and never changes a decision. `npm run integrate`
+never merges, never force-pushes, never edits code and never resolves a conflict:
+a conflict stops it, prints the conflicted paths and leaves the merge in the
+worktree for a human. The master makes the one pinned `gh pr merge` call after
+the runner reports (D66, D73).
 
 Every command below runs from the ticket worktree: set `workdir` on the call,
 not a `cd` prefix (§Isolation).
 
-1. **Preflight.** `git rev-parse --abbrev-ref HEAD`, `git rev-parse HEAD` and
-   `git status --porcelain` must show the PR's branch, the reviewed head and an
-   empty tree. Read the PR with `npm run -s gh-bot -- pr view <n> --json
-   state,isCrossRepository,baseRefName,headRefName,headRefOid`: it must be open,
-   in this repository, based on `main`, and at that same head. Anything else
-   stops the run.
-2. **Bring `main` in.** `git fetch origin`, then
+`npm run integrate -- <n> --head <40-hex>` performs steps 1–4 below and prints
+the report; steps 5 and 6 are still the runner's own work. It exits 2 when it
+refuses to start, with one actionable refusal line. It exits 1 when a step
+failed: that report names the failed step and quotes the failed command's
+output — git's own stderr where git produced one, which can be several lines —
+plus the recovery step where the script knows one. `npm run` forwards only the
+arguments after `--`, so the head follows it; `npm run integrate <n> <40-hex>`
+is the same input as a second positional argument.
+
+The head argument is the dispatched head — the sha the master dispatched and
+the reviewer verdicted. It is required: the script checks it against the PR
+head, so an integration run always names the reviewed commit, and a head pushed
+after the verdict stops the run instead of being integrated silently.
+
+1. **Preflight.** The script reads the PR with
+   `npm run -s gh-bot -- pr view <n> --json
+   state,isCrossRepository,baseRefName,headRefName,headRefOid` and refuses to
+   start — exit 2, one line — when it is not open, comes from a fork, does not
+   target `main`, or its head is not a 40-hex commit. It then compares
+   `headRefOid` with the dispatched head it was given as `--head` and refuses
+   when they differ: a head pushed after the verdict has no review, so it is not
+   integrated. It then finds the worktree that checks out the PR's head branch
+   with `git worktree list --porcelain` (`HEAD`, not the branch name alone, must
+   be the dispatched head). If there is none it prints the exact
+   `git worktree add` line the runner should have been given; the runner does
+   not invent one. The located worktree must be the ticket worktree of the PR's
+   head branch: `<root>/<branch with / replaced by ->`, with `<root>` =
+   `${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}` and branch `ticket/263`
+   meaning `/tmp/anyplugin-wt/ticket-263`. The path follows the branch, not the
+   PR number: the ticket number in it is the branch's, and the PR number can
+   differ (PR #264 runs in `ticket-263`). The primary checkout, or any other
+   linked worktree, is refused the same way: the runner never works in the
+   primary checkout (§Isolation). That refusal prints the step that can actually
+   succeed — `git worktree move <found> <expected>` for another linked worktree,
+   and for the primary checkout `git -C <primary> switch main` followed by the
+   `git worktree add <expected> <branch>` line, because git refuses to move the
+   main working tree. A worktree at another head, a merge already in progress,
+   unmerged paths or a dirty tree are refused with one line the same way.
+2. **Bring `main` in.** The script runs `git fetch origin`, then
    `git merge-base --is-ancestor origin/main HEAD`: exit 0 means nothing to
-   merge; go to step 4. Exit 1 means the branch is behind, so run
-   `npm run pr:update <n>`: it merges `origin/main`, pushes `HEAD:<branch>`,
-   waits for the new head's `verify` and, on success, prints the pinned merge
-   line. A conflict it reports was aborted by the script and pushed nothing; go
-   to step 3 only for an additive docs conflict.
+   merge; exit 1 means the branch is behind, so it merges `origin/main`, pushes
+   `HEAD:<branch>` once (one refspec, no force) and re-reads the PR head to
+   prove the push landed. A conflict is not resolved: it prints the conflicted
+   paths, leaves the merge in the worktree and pushes nothing.
 3. **Resolve only additive conflicts.** Additive means both sides' lines are
-   kept, nothing deleted or reworded. Run `git merge origin/main` yourself, edit
-   only the conflicted files under `docs/`, `git add <paths>`,
-   `git commit --no-edit`, then push once:
-   `git push origin HEAD:<branch>` (one refspec, no redirection). A conflict in
-   `docs/DECISIONS.md` is not additive — the log is append-only and numbered —
-   and a conflict outside `docs/` stops the run.
-4. **Poll the pushed head.** `git rev-parse HEAD` is the head.
-   `npm run ci -- --head <sha>` waits for that commit's push run and exits 0 only
+   kept, nothing deleted or reworded. Only after a conflict stop, the runner
+   finishes that merge by hand: edit only the conflicted files under `docs/`,
+   `git add <paths>`, `git commit --no-edit`, then push once:
+   `git push origin HEAD:<branch>` (one refspec, no redirection), and wait for
+   that pushed head's `verify` with `npm run ci -- --head <sha>`. The pushed
+   head is a new commit with no verdict: the runner reports it, and the master
+   sends it to review (D86) rather than re-running `npm run integrate` under the
+   old dispatched head — the script refuses a PR head that is not its `--head`.
+   A conflict in `docs/DECISIONS.md` is
+   not additive — the log is append-only and numbered — and a conflict outside
+   `docs/` stops the run.
+4. **Poll the pushed head.** The script runs `npm run ci -- --head <sha>` from
+   the ticket worktree for the head it just reported, which waits for that
+   commit's push run and exits 0 only
    on success; on red it names the failed steps as `<job> :: <step>`, and
    `--log-failed` adds the log tail. The push run is the only evidence (D83): a
    skipped or `pull_request` run does not count, and a run that does not appear
@@ -262,19 +301,27 @@ not a `cd` prefix (§Isolation).
    `## Why` or claim table is missing, or contradicts the diff, is a
    stop-and-report, not an edit.
 
-Report to the master:
+Report to the master (the human output is the merge line on stdout and progress
+on stderr; `--json` prints one JSON document with `reviewedHead`, `head`,
+`pushed`, `ci` and `mergeCommand` instead):
 
-- the new 40-hex head, or "nothing to push" when step 2 merged nothing;
+- the new 40-hex head, or "nothing to push" when the branch was already up to
+  date;
 - the `verify` run id and its conclusion from `npm run ci`, with the failed
   `<job> :: <step>` lines when it is red;
-- the exact merge line for that head — the one `npm run pr:update` printed, or
-  `gh pr merge <n> --squash --match-head-commit <40-hex>` when nothing was
-  pushed — only after step 5 is green. The pin names the head that was polled;
-  a head the runner pushed has no verdict yet, so the master sends it to review
-  before running the line (D66, D86).
+- the exact merge line for that head — the one `npm run integrate` printed
+  (`gh pr merge <n> --squash --match-head-commit <40-hex>`, the D66 command; the
+  master runs it through the bot as
+  `npm run -s gh-bot -- pr merge <n> --squash --match-head-commit <40-hex>`,
+  §Identity) — only after step 5 is green. The pin names the head that was
+  polled; a head the runner pushed has no verdict yet, so the master sends it to
+  review before running the line (D66, D86).
 
-Stop and report instead of resolving: no worktree or branch, a PR at a different
-head, a dirty tree or a merge in progress, a conflict that is not an additive
+Stop and report instead of resolving: no worktree or branch (the printed
+`git worktree add` line is the missing prerequisite), a PR head that is not the
+dispatched head, a branch worktree that is not the ticket worktree under
+`${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}` (the primary checkout always is
+one), a dirty tree or a merge in progress, a conflict that is not an additive
 docs conflict, `verify` red, or a missing run. Name the failing command and
 quote its output; the master re-dispatches a worker or takes the conflict.
 

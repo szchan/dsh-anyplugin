@@ -23,6 +23,8 @@ import {
   failedLog,
   failedSteps,
   headOnOrigin,
+  listBranchRuns,
+  newerPushRun,
   POLL_MS,
   waitForConclusion,
   waitForRun,
@@ -32,7 +34,9 @@ export function usage() {
   return `usage: node scripts/ci.mjs [--branch <name>] [--head <sha>] [--log-failed] [--timeout <seconds>]
 
 Waits for the verify push run on the current branch's head, then prints its
-conclusion. On failure, prints the failed steps and their log tail.
+conclusion. On failure, prints the failed steps and their log tail. A
+cancelled run (a newer push superseded the head) is reported as no verdict: no
+failed log is fetched, and the newer push run is named when one is visible.
 Exit 0 only when the run concluded success.`
 }
 
@@ -110,6 +114,27 @@ export function main(argv, io = {}, deps = {}) {
 
   say(`ci: ${run.databaseId} ${final.conclusion}`)
   if (final.conclusion === 'success') return 0
+
+  // A cancelled run is not a verdict: no step failed, there is no failed log,
+  // and the head is simply no longer the gate. Say that, and name the newer
+  // push run that superseded it when one is visible (a branch update does this
+  // on every pr:update). The exit stays non-zero: D83 wants a push run for the
+  // head, and cancelled is not green.
+  if (final.conclusion === 'cancelled') {
+    say(`ci: run ${run.databaseId} was cancelled for ${head.slice(0, 8)} — no verdict for this head`)
+    let newer
+    try {
+      newer = newerPushRun((deps.branchRuns ?? listBranchRuns)(branch), head)
+    } catch {
+      newer = undefined
+    }
+    if (newer === undefined) {
+      say('ci: push a new head (or run npm run pr:update <n> when the branch moved) so the push event can produce a verdict')
+    } else {
+      say(`ci: a newer push run ${newer.databaseId} exists for ${branch} at ${String(newer.headSha).slice(0, 8)}; watch that head (npm run ci -- --head ${newer.headSha}) or update the branch first`)
+    }
+    return 1
+  }
 
   say('--- failed steps ---')
   try {

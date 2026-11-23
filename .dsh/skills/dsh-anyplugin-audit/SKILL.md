@@ -75,9 +75,13 @@ eight largest sessions with their `cwd`, compare each root's **window** count
 (the column the digest prints) with the ~1,500 tool-call cap, and check the top
 write paths for a session writing outside its role. Print the lifetime count
 too, but do not judge on it: a lead that runs for a month always exceeds a
-lifetime cap (D73). A root over the window cap is a finding even when the work
-succeeded; name the split (a scheduled audit, a narrower ticket, or an
-integration runner that polls CI and updates branches but never merges, D73).
+lifetime cap (D73). The digest excludes a seeded fork's inherited prefix from
+`window` and `lifetime` (the `inherited` column shows what it removed) and names
+a seeded session whose cut cannot be read instead of counting it; never add a
+prefix back into a role total (F21). A root over the window cap is a finding
+even when the work succeeded; name the split (a scheduled audit, a narrower
+ticket, or an integration runner that polls CI and updates branches but never
+merges, D73).
 
 Completion: each shape is either "no instance in this window" with the search you
 ran, or a finding with a path or a count; every root over the cap has a finding
