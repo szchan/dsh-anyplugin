@@ -3,11 +3,12 @@
  * integrate — do the integration runner's steps for one pull request (#263).
  *
  * The role is written in `docs/WORKFLOW.md` §The integration runner (D73): for
- * one PR it checks the reviewed head is the PR head, brings `origin/main` into
- * the branch, pushes that one branch, waits for the pushed head's `verify` run,
- * and reports the head to the master with the pinned merge line. By hand that
- * is the twelve-poll cycle F18 measured; this script is the command the runner
- * runs instead.
+ * one PR, dispatched with the 40-hex head the reviewer verdicted, it checks that
+ * dispatched head is still the PR head, finds the ticket worktree (never the
+ * primary checkout), brings `origin/main` into the branch, pushes that one
+ * branch, waits for the pushed head's `verify` run, and reports the head to the
+ * master with the pinned merge line. By hand that is the twelve-poll cycle F18
+ * measured; this script is the command the runner runs instead.
  *
  * What it will not do: merge, approve, force-push, push `main`, edit code,
  * resolve a conflict or refresh the PR body. A merge conflict is left in the
@@ -18,56 +19,80 @@
  *
  * The decisions are exported for `scripts/integrate.test.mjs`; `run` takes its
  * git, gh and CI-wait calls from `deps`, so the tests need no network and no
- * real repository. The preflight review rule and the worktree-list parser are
- * imported from `scripts/pr-update.mjs` rather than copied: the two commands
- * must refuse the same PRs.
+ * real repository. The preflight review rule, the worktree-list parser and the
+ * D66 merge-line builder are imported from `scripts/pr-update.mjs` rather than
+ * copied: the two commands must refuse the same PRs and print the same line.
  *
- *   npm run integrate <pr-number> [--json]
+ *   npm run integrate -- <pr-number> --head <40-hex> [--json]
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { ghJson, repoArgs, sleep } from './ci-runs.mjs'
-import { BASE, DEFAULT_ROOT, parseWorktreeList, reviewPr } from './pr-update.mjs'
+import { BASE, DEFAULT_ROOT, formatMergeCommand, parseWorktreeList, reviewPr } from './pr-update.mjs'
 
 const SHA = /^[0-9a-f]{40}$/
 
 export function usage() {
-  return `usage: npm run integrate <pr-number> [--json]
+  return `usage: npm run integrate -- <pr-number> --head <40-hex> [--json]
 
-Does the integration runner's steps for one PR: preflight, find the worktree
-that checks out the PR's head branch, merge origin/main into it and push the
-branch when it is behind, wait for the pushed head's verify run, and print the
-pinned merge line for the master. It never merges, approves, force-pushes,
-pushes main, edits code, resolves a conflict or refreshes the PR body; a merge
-conflict is left in the worktree for a human. --json prints the report as one
-JSON document instead of the merge line.`
+Does the integration runner's steps for one PR, dispatched with the 40-hex head
+the reviewer verdicted: preflight (that dispatched head must still be the PR
+head), find the ticket worktree that checks out the PR's head branch, merge
+origin/main into it and push the branch when it is behind, wait for the pushed
+head's verify run, and print the pinned merge line for the master. It never
+merges, approves, force-pushes, pushes main, edits code, resolves a conflict or
+refreshes the PR body; a merge conflict is left in the worktree for a human.
+--json prints the report as one JSON document instead of the merge line.
+
+npm run forwards only the arguments after --, so the head comes after it. A
+second positional argument is accepted as the same input instead of --head.`
 }
 
-/** `[ '263' ]` -> `{ pr: 263, json: false }`; `--help` -> `{ help: true }`; anything else throws. */
+/**
+ * `[ '263', '--head', '<40-hex>' ]` -> `{ pr: 263, head, json: false }`, and
+ * `[ '263', '<40-hex>' ]` -> the same; `--help` -> `{ help: true }`; anything
+ * else throws. The head is required: it is the one the master dispatched, so
+ * there is something to compare the PR head with.
+ */
 export function parseArgs(argv) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) return { help: true }
-  const json = argv.includes('--json')
-  const rest = argv.filter((arg) => arg !== '--json')
-  const option = rest.find((arg) => arg.startsWith('-'))
-  if (option !== undefined) throw new Error(`unknown option: ${option}`)
-  if (rest.length !== 1) throw new Error('expected exactly one pull request number')
-  if (!/^[1-9]\d*$/.test(rest[0])) throw new Error(`not a pull request number: ${rest[0]}`)
-  const pr = Number(rest[0])
-  if (!Number.isSafeInteger(pr)) throw new Error(`pull request number is out of range: ${rest[0]}`)
-  return { pr, json }
+  const positionals = []
+  let head
+  let json = false
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--json') {
+      json = true
+    } else if (arg === '--head') {
+      if (head !== undefined) throw new Error('--head was given twice')
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('-')) throw new Error('--head needs a 40-hex commit: the head the master dispatched')
+      head = value
+      index += 1
+    } else if (arg.startsWith('-')) {
+      throw new Error(`unknown option: ${arg}`)
+    } else {
+      positionals.push(arg)
+    }
+  }
+  if (positionals.length === 0) throw new Error('expected a pull request number')
+  if (positionals.length > 2) throw new Error(`unexpected argument: ${positionals[2]}`)
+  if (!/^[1-9]\d*$/.test(positionals[0])) throw new Error(`not a pull request number: ${positionals[0]}`)
+  const pr = Number(positionals[0])
+  if (!Number.isSafeInteger(pr)) throw new Error(`pull request number is out of range: ${positionals[0]}`)
+  if (positionals.length === 2) {
+    if (head !== undefined) throw new Error('the dispatched head was given twice: as --head and as an argument')
+    head = positionals[1]
+  }
+  if (head === undefined) throw new Error('missing the dispatched head: pass it as --head <40-hex> or as the second argument')
+  if (!SHA.test(head)) throw new Error(`the dispatched head is not a 40-hex commit: ${head}`)
+  return { pr, head, json }
 }
 
 /** The `gh pr view` fields the preflight reads; that is exactly the ticket's list. */
 export const PREFLIGHT_FIELDS = 'state,isCrossRepository,baseRefName,headRefName,headRefOid'
-
-/** The merge line the master runs, through the bot (D66). This script only prints it. */
-export function formatMergeCommand(number, sha) {
-  if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`not a pull request number: ${number}`)
-  if (!SHA.test(sha ?? '')) throw new Error(`not a 40-hex commit: ${sha}`)
-  return `gh-bot pr merge ${number} --squash --match-head-commit ${sha}`
-}
 
 /**
  * The exact `git worktree add` line the runner should have been given for
@@ -85,14 +110,33 @@ export function formatWorktreeAdd({ branch, root = DEFAULT_ROOT, localBranch = f
 const short = (sha) => String(sha ?? 'none').slice(0, 12)
 
 /**
- * Why the located worktree is not in the state the runner was dispatched for,
- * or `undefined` when it is. The reviewed head is the commit the reviewer read:
- * the worktree must be there, with no merge in progress and an empty tree.
- * Nothing here is repaired; the reason is the output.
+ * Why the located worktree is not the ticket worktree the runner was dispatched
+ * for, or `undefined` when it is. The runner works in the linked worktree at
+ * `<root>/<branch with / as ->` and never in the primary checkout (WORKFLOW
+ * §Isolation); git lists the primary checkout first.
  */
-export function worktreeProblem({ worktree, head, run = git }) {
+export function worktreeLocationProblem({ worktree, primaryPath, branch, root = DEFAULT_ROOT }) {
+  const expected = resolve(root, String(branch).replaceAll('/', '-'))
+  const found = resolve(worktree.path)
+  if (primaryPath !== undefined && found === resolve(primaryPath)) {
+    return `the primary checkout ${worktree.path} checks out ${branch}; the integration runner works only in the ticket worktree ${expected}, never the primary checkout`
+  }
+  if (found !== expected) {
+    return `the worktree for ${branch} is ${worktree.path}, not the ticket worktree ${expected}; the integration runner works only in a linked worktree there, never the primary checkout`
+  }
+  return undefined
+}
+
+/**
+ * Why the located worktree is not in the state the runner was dispatched for,
+ * or `undefined` when it is. The dispatched head is the commit the master
+ * dispatched (the one the reviewer verdicted): the worktree must be there, with
+ * no merge in progress and an empty tree. Nothing here is repaired; the reason
+ * is the output.
+ */
+export function worktreeProblem({ worktree, head, branch, run = git }) {
   if (worktree.head !== head) {
-    return `the worktree at ${worktree.path} is at ${short(worktree.head)}, not the reviewed head ${short(head)}; re-dispatch from that head`
+    return `the worktree at ${worktree.path} is at ${short(worktree.head)}, not the dispatched head ${short(head)}; reset it with git reset --hard origin/${branch} and re-dispatch`
   }
   const quiet = (args) => run(args, worktree.path, { allowFailure: true })
   if (quiet(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']).status === 0) {
@@ -109,13 +153,14 @@ export function worktreeProblem({ worktree, head, run = git }) {
 }
 
 /**
- * Wait for `npm run ci -- --head <head>` and report its exit status. The run
- * rule (only a push run is the gate, D83) belongs to `scripts/ci.mjs`; this
- * script must not reimplement polling. The child's output is relayed to stderr
- * so stdout stays the report (the merge line, or one JSON document).
+ * Wait for `npm run ci -- --head <head>` in the ticket worktree and report its
+ * exit status. The run rule (only a push run is the gate, D83) belongs to
+ * `scripts/ci.mjs`; this script must not reimplement polling. The child's
+ * output is relayed to stderr so stdout stays the report (the merge line, or
+ * one JSON document). `spawn` is injectable so the test pins the cwd.
  */
-export function waitForCi(head, err = process.stderr) {
-  const result = spawnSync('npm', ['run', '-s', 'ci', '--', '--head', head], { encoding: 'utf8' })
+export function waitForCi(head, cwd, err = process.stderr, spawn = spawnSync) {
+  const result = spawn('npm', ['run', '-s', 'ci', '--', '--head', head], { encoding: 'utf8', cwd })
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
   if (output !== '') err.write(output.endsWith('\n') ? output : `${output}\n`)
   const exitCode = typeof result.status === 'number' ? result.status : 1
@@ -163,7 +208,7 @@ export function run(argv, io = {}, deps = {}) {
   try {
     parsed = parseArgs(argv)
   } catch (error) {
-    err.write(`integrate: ${error.message}\n${usage()}\n`)
+    err.write(`integrate: ${error.message}\n`)
     return 2
   }
   if (parsed.help) {
@@ -172,11 +217,13 @@ export function run(argv, io = {}, deps = {}) {
   }
 
   const number = parsed.pr
+  const dispatchedHead = parsed.head
   const runGit = deps.git ?? git
   const runGh = deps.gh ?? ghJson
-  const ciWait = deps.waitForCi ?? ((head) => waitForCi(head, err))
   const sleepFn = deps.sleep ?? sleep
-  const root = process.env.ANYPLUGIN_WORKTREE_ROOT ?? DEFAULT_ROOT
+  const root = deps.root ?? process.env.ANYPLUGIN_WORKTREE_ROOT ?? DEFAULT_ROOT
+  let worktreePath
+  const ciWait = deps.waitForCi ?? ((head, cwd) => waitForCi(head, cwd, err))
   const readPr = (fields) => runGh(['pr', 'view', String(number), ...repoArgs(), '--json', fields])
   const readHead = () => {
     try {
@@ -195,22 +242,32 @@ export function run(argv, io = {}, deps = {}) {
     }
     const verdict = reviewPr(pr)
     if (!verdict.ok) throw new Refusal(verdict.reason)
+    if (pr.headRefOid !== dispatchedHead) {
+      throw new Refusal(
+        `PR #${number} is at ${short(pr.headRefOid)}, not the dispatched head ${short(dispatchedHead)}; send the new head to review and re-dispatch the runner with that verdict`,
+      )
+    }
     const branch = pr.headRefName
-    const reviewedHead = pr.headRefOid
-    err.write(`integrate: PR #${number} ${branch} @ ${reviewedHead} base ${pr.baseRefName}\n`)
+    err.write(`integrate: PR #${number} ${branch} @ ${dispatchedHead} base ${pr.baseRefName} (dispatched head is the PR head)\n`)
 
     const worktrees = parseWorktreeList(runGit(['worktree', 'list', '--porcelain'], undefined).stdout)
+    const primaryPath = worktrees[0]?.path
     const worktree = worktrees.find((entry) => entry.branch === `refs/heads/${branch}`)
     if (worktree === undefined) {
       const local = runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], undefined, { allowFailure: true })
         .status === 0
-      throw new Refusal(
-        `no worktree checks out ${branch}; create it with: ${formatWorktreeAdd({ branch, root, localBranch: local })}`,
-      )
+      throw new Refusal(`no worktree checks out ${branch}; create it with: ${formatWorktreeAdd({ branch, root, localBranch: local })}`)
     }
+    const locationProblem = worktreeLocationProblem({ worktree, primaryPath, branch, root })
+    if (locationProblem !== undefined) {
+      const local = runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], undefined, { allowFailure: true })
+        .status === 0
+      throw new Refusal(`${locationProblem}; create the ticket worktree with: ${formatWorktreeAdd({ branch, root, localBranch: local })}`)
+    }
+    worktreePath = worktree.path
     err.write(`integrate: worktree ${worktree.path}\n`)
 
-    const problem = worktreeProblem({ worktree, head: reviewedHead, run: runGit })
+    const problem = worktreeProblem({ worktree, head: dispatchedHead, branch, run: runGit })
     if (problem !== undefined) throw new Refusal(problem)
 
     runGit(['fetch', 'origin'], worktree.path)
@@ -221,7 +278,7 @@ export function run(argv, io = {}, deps = {}) {
       throw new StepError('merge-base', ancestor.stderr.trim() || `git merge-base --is-ancestor exited ${ancestor.status}`)
     }
 
-    let head = reviewedHead
+    let head = dispatchedHead
     let pushed = false
     if (ancestor.status === 1) {
       err.write(`integrate: merging origin/${BASE} into ${branch} in ${worktree.path}\n`)
@@ -245,7 +302,13 @@ export function run(argv, io = {}, deps = {}) {
       // One refspec, no force: the branch is ours to push and the only commit
       // that moved it is the merge above (the role's one allowed push).
       const push = runGit(['push', 'origin', `HEAD:${branch}`], worktree.path, { allowFailure: true })
-      if (push.status !== 0) throw new StepError('push', push.stderr.trim() || push.stdout.trim() || `git push exited ${push.status}`)
+      if (push.status !== 0) {
+        const detail = push.stderr.trim() || push.stdout.trim() || `git push exited ${push.status}`
+        throw new StepError(
+          'push',
+          `${detail}; nothing was pushed — reset the worktree with git reset --hard origin/${branch} and re-dispatch from the dispatched head`,
+        )
+      }
 
       // The PR's head is the branch ref; give the API a moment in case the read
       // lands before it reflects the push.
@@ -255,7 +318,10 @@ export function run(argv, io = {}, deps = {}) {
         after = readHead()
       }
       if (after !== head) {
-        throw new StepError('push', `the PR head is still ${short(after)}, not ${short(head)}; the push did not update this PR`)
+        throw new StepError(
+          'push',
+          `the PR head is still ${short(after)}, not ${short(head)}; the push did not update this PR — reset the worktree with git reset --hard origin/${branch} and re-dispatch once the PR head reflects the push`,
+        )
       }
       pushed = true
       err.write(`integrate: pushed ${head} to ${branch}\n`)
@@ -264,7 +330,7 @@ export function run(argv, io = {}, deps = {}) {
     }
 
     err.write(`integrate: waiting for the verify run on ${head}\n`)
-    const ci = ciWait(head)
+    const ci = ciWait(head, worktree.path)
     if (ci === undefined || ci.ok !== true) {
       const exit = ci === undefined ? 'no result' : `exit ${ci.exitCode}`
       throw new StepError('ci', `verify on ${head} did not pass (${exit}); read the failure with npm run ci -- --head ${head} --log-failed`)
@@ -277,7 +343,7 @@ export function run(argv, io = {}, deps = {}) {
         branch,
         base: pr.baseRefName,
         worktree: worktree.path,
-        previousHead: reviewedHead,
+        reviewedHead: dispatchedHead,
         head,
         pushed,
         ci: { ok: true, exitCode: ci.exitCode ?? 0 },

@@ -214,31 +214,46 @@ only after reading the diff; the script does not merge for you.
 The integration runner (child name `integrator-*`) is the worker that does the
 merge mechanics the master used to do by hand. The master dispatches it for one
 PR with the PR number, the 40-hex head the reviewer verdicted, and the ticket
-worktree path. It runs `npm run integrate <n>` for the mechanics, refreshes the
-PR body and reports the head. It never merges, never approves, never pushes
-`main`, and never changes a decision. `npm run integrate` never merges, never
-force-pushes, never edits code and never resolves a conflict: a conflict stops
-it, prints the conflicted paths and leaves the merge in the worktree for a
-human. The master makes the one pinned `gh pr merge` call after the runner
-reports (D66, D73).
+worktree path. It runs `npm run integrate -- <n> --head <40-hex>` for the
+mechanics, refreshes the PR body and reports the head. It never merges, never
+approves, never pushes `main`, and never changes a decision. `npm run integrate`
+never merges, never force-pushes, never edits code and never resolves a conflict:
+a conflict stops it, prints the conflicted paths and leaves the merge in the
+worktree for a human. The master makes the one pinned `gh pr merge` call after
+the runner reports (D66, D73).
 
 Every command below runs from the ticket worktree: set `workdir` on the call,
 not a `cd` prefix (§Isolation).
 
-`npm run integrate <n>` performs steps 1–4 below and prints the report; steps 5
-and 6 are still the runner's own work. It exits 2 when it refuses to start and 1
-when a step failed, with one actionable line in both cases.
+`npm run integrate -- <n> --head <40-hex>` performs steps 1–4 below and prints
+the report; steps 5 and 6 are still the runner's own work. It exits 2 when it
+refuses to start and 1 when a step failed, with one actionable line in both
+cases. `npm run` forwards only the arguments after `--`, so the head follows it;
+`npm run integrate <n> <40-hex>` is the same input as a second positional
+argument.
+
+The head argument is the dispatched head — the sha the master dispatched and
+the reviewer verdicted. It is required: the script checks it against the PR
+head, so an integration run always names the reviewed commit, and a head pushed
+after the verdict stops the run instead of being integrated silently.
 
 1. **Preflight.** The script reads the PR with
    `npm run -s gh-bot -- pr view <n> --json
    state,isCrossRepository,baseRefName,headRefName,headRefOid` and refuses to
    start — exit 2, one line — when it is not open, comes from a fork, does not
-   target `main`, or its head is not a 40-hex commit. It then finds the worktree
-   that checks out the PR's head branch with `git worktree list --porcelain`
-   (`HEAD`, not the branch name alone, must be the PR head). If there is none it
-   prints the exact `git worktree add` line the runner should have been given;
-   the runner does not invent one. A worktree at another head, a merge already
-   in progress, unmerged paths or a dirty tree are refused the same way.
+   target `main`, or its head is not a 40-hex commit. It then compares
+   `headRefOid` with the dispatched head it was given as `--head` and refuses
+   when they differ: a head pushed after the verdict has no review, so it is not
+   integrated. It then finds the worktree that checks out the PR's head branch
+   with `git worktree list --porcelain` (`HEAD`, not the branch name alone, must
+   be the dispatched head). If there is none it prints the exact
+   `git worktree add` line the runner should have been given; the runner does
+   not invent one. A worktree that is not the ticket worktree
+   `${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}/ticket-<n>` — the primary
+   checkout, or any other linked worktree — is refused the same way: the runner
+   never works in the primary checkout (§Isolation). A worktree at another head,
+   a merge already in progress, unmerged paths or a dirty tree are refused the
+   same way.
 2. **Bring `main` in.** The script runs `git fetch origin`, then
    `git merge-base --is-ancestor origin/main HEAD`: exit 0 means nothing to
    merge; exit 1 means the branch is behind, so it merges `origin/main`, pushes
@@ -249,12 +264,17 @@ when a step failed, with one actionable line in both cases.
    kept, nothing deleted or reworded. Only after a conflict stop, the runner
    finishes that merge by hand: edit only the conflicted files under `docs/`,
    `git add <paths>`, `git commit --no-edit`, then push once:
-   `git push origin HEAD:<branch>` (one refspec, no redirection), and re-run
-   `npm run integrate <n>` for the CI wait. A conflict in `docs/DECISIONS.md` is
+   `git push origin HEAD:<branch>` (one refspec, no redirection), and wait for
+   that pushed head's `verify` with `npm run ci -- --head <sha>`. The pushed
+   head is a new commit with no verdict: the runner reports it, and the master
+   sends it to review (D86) rather than re-running `npm run integrate` under the
+   old dispatched head — the script refuses a PR head that is not its `--head`.
+   A conflict in `docs/DECISIONS.md` is
    not additive — the log is append-only and numbered — and a conflict outside
    `docs/` stops the run.
-4. **Poll the pushed head.** The script runs `npm run ci -- --head <sha>` for the
-   head it just verified, which waits for that commit's push run and exits 0 only
+4. **Poll the pushed head.** The script runs `npm run ci -- --head <sha>` from
+   the ticket worktree for the head it just reported, which waits for that
+   commit's push run and exits 0 only
    on success; on red it names the failed steps as `<job> :: <step>`, and
    `--log-failed` adds the log tail. The push run is the only evidence (D83): a
    skipped or `pull_request` run does not count, and a run that does not appear
@@ -270,24 +290,28 @@ when a step failed, with one actionable line in both cases.
    stop-and-report, not an edit.
 
 Report to the master (the human output is the merge line on stdout and progress
-on stderr; `--json` prints one JSON document with `head`, `pushed`, `ci` and
-`mergeCommand` instead):
+on stderr; `--json` prints one JSON document with `reviewedHead`, `head`,
+`pushed`, `ci` and `mergeCommand` instead):
 
 - the new 40-hex head, or "nothing to push" when the branch was already up to
   date;
 - the `verify` run id and its conclusion from `npm run ci`, with the failed
   `<job> :: <step>` lines when it is red;
 - the exact merge line for that head — the one `npm run integrate` printed
-  (`gh-bot pr merge <n> --squash --match-head-commit <40-hex>`) — only after
-  step 5 is green. The pin names the head that was polled; a head the runner
-  pushed has no verdict yet, so the master sends it to review before running the
-  line (D66, D86).
+  (`gh pr merge <n> --squash --match-head-commit <40-hex>`, the D66 command; the
+  master runs it through the bot as
+  `npm run -s gh-bot -- pr merge <n> --squash --match-head-commit <40-hex>`,
+  §Identity) — only after step 5 is green. The pin names the head that was
+  polled; a head the runner pushed has no verdict yet, so the master sends it to
+  review before running the line (D66, D86).
 
 Stop and report instead of resolving: no worktree or branch (the printed
-`git worktree add` line is the missing prerequisite), a PR at a different head,
-a dirty tree or a merge in progress, a conflict that is not an additive docs
-conflict, `verify` red, or a missing run. Name the failing command and quote its
-output; the master re-dispatches a worker or takes the conflict.
+`git worktree add` line is the missing prerequisite), a PR head that is not the
+dispatched head, a branch worktree that is not the ticket worktree under
+`${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}` (the primary checkout always is
+one), a dirty tree or a merge in progress, a conflict that is not an additive
+docs conflict, `verify` red, or a missing run. Name the failing command and
+quote its output; the master re-dispatches a worker or takes the conflict.
 
 After the master merges, the worktree is removed — the master removes it
 (§Isolation), and a runner kept alive for that step runs
