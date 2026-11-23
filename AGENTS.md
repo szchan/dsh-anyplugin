@@ -22,7 +22,7 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D74. **Do not relitigate these in code review or in a PR without a new decision entry.** |
+| `docs/DECISIONS.md` | Ratified decisions D1–D75. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
@@ -111,7 +111,7 @@ npm run verify                    # CI only (all five env vars, both pins); do n
 npm run ci                        # watch the verify run for the current branch and print the failure
 npm run check:arch                # structural rules R1–R14
 npm run check:features            # the capability map points at real files; owns R15
-npm run check:decisions           # D1–D74 append-only (--update accepts new entries only)
+npm run check:decisions           # D1–D75 append-only (--update accepts new entries only)
 npm run perf                      # our hot paths as base/head ratios (docs/PROFILING.md)
 npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
 npm run check:audit               # the audit ledger/report gate (part of verify)

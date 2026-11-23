@@ -338,6 +338,24 @@ check('no ThemeRuntime member is a palette/ANSI API',
   Object.getOwnPropertyNames(themeExports.ThemeRuntime.prototype)
     .every((name) => !/(?:palette|ansi)/iu.test(name)))
 
+// A plugin never constructs the runtime itself: it receives whatever
+// `apply()` provided. Checking the prototype is not enough, because a mutation
+// can attach a member to the instance after `provide`. Inspect the real apply
+// body: it must provide the constructed runtime itself and must not add a
+// member to it (that is the seam a palette API would arrive through).
+const applySource = themeExports.apply
+  .toString()
+  .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/gu, '')
+check('apply() provides the constructed ThemeRuntime as the `theme` service',
+  /provide\(\s*[`"']theme[`"']\s*,\s*theme\s*\)/u.test(applySource),
+  applySource.slice(0, 120))
+check('apply() adds no member to the provided theme service',
+  !/\btheme\.[A-Za-z_$][\w$]*\s*=[^=]/u.test(applySource),
+  (applySource.match(/\btheme\.[A-Za-z_$][\w$]*\s*=[^=]/u) ?? [''])[0])
+check('apply() names no palette/ANSI API',
+  !/(?:palette|ansi)/iu.test(applySource),
+  (applySource.match(/[\w$]*(?:palette|ansi)[\w$]*/iu) ?? [''])[0])
+
 const changes = []
 const ctx = {
   effect(fn) {
@@ -590,4 +608,4 @@ if (failed.length > 0) {
   process.exit(1)
 }
 console.log(`\nS24 PASS: ${checks.length} assertions.`)
-console.log('ANSWER: no plugin-registerable ANSI palette. A plugin can register alias-token CSS themes through ctx.theme; 2 of Claude\'s 72 roles reach the terminal through computed foreground/background, 70 have no DSH terminal counterpart, and the ANSI 16 are written only by OSC 4/104. F2 stays planned, with the ANSI-16 palette as the named host gap (D74).')
+console.log('ANSWER: no plugin-registerable ANSI palette. A plugin can register alias-token CSS themes through ctx.theme; 2 of Claude\'s 72 roles reach the terminal through computed foreground/background, 70 have no DSH terminal counterpart, and the ANSI 16 are written only by OSC 4/104. F2 stays planned, with the ANSI-16 palette as the named host gap (D74/D75).')

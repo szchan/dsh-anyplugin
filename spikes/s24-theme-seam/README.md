@@ -120,6 +120,9 @@ seam is partial, not absent, so the row stays `planned`.
 The spike is not a line-number snapshot. It enumerates:
 
 - the theme bundle's exports and `ThemeRuntime` prototype/own keys;
+- the **real `apply()` body**: it provides the constructed runtime itself and
+  adds no member to that service — this is the object a plugin actually
+  receives, so the prototype/own-key checks above are not enough on their own;
 - the runtime snapshot and active-theme keys;
 - the terminal bundle's exports, every `src/client` export name and
   registration call;
@@ -127,11 +130,13 @@ The spike is not a line-number snapshot. It enumerates:
   seven `update()` fields; and
 - the layout presenter and terminal CSS that carry the two mapped roles.
 
-A mutation that adds `ThemeRuntime.prototype.registerTerminalPalette` reddens
-two assertions; a mutation that adds a `palette` field plus an ANSI write to
-`TerminalTheme` reddens four. Both mutations were applied to the fetched
-`0.2.2-rc.5` tree and the spike exited `1`; PR #218 records the output. This is
-why D74 may claim the spike fails on a palette channel.
+Three mutations were applied to the fetched `0.2.2-rc.5` tree and the spike
+exited `1` each time: `ThemeRuntime.prototype.registerTerminalPalette` reddens
+two assertions; `theme.registerTerminalPalette = …` inserted after
+`ctx.provide('theme', theme)` in `apply()` reddens the two `apply()` checks;
+and a `palette` field plus an ANSI write in `TerminalTheme` reddens four. PR
+#218 records the commands and output. This is why D74 may claim the spike fails
+on a palette channel.
 
 ## Fixture
 

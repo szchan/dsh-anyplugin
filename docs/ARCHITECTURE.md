@@ -38,10 +38,11 @@ be `planned` without a roadmap entry; a node may never silently change class.
 
 > For a pinned `claude-code-plugin@<version>`, over the declared fixture set,
 > A/B/C/F1/F4 are byte-identical, D/E are equivalent, and the `unsupported` set
-> is empty. F2 is declared `planned` and sits outside this statement until a
-> `themes/` fixture and a materializer exist (S24, D74); its named host gap is
-> the ANSI-16 terminal palette. F3 is declared derived. Anything else is a diff,
-> and a diff is a bug.
+> is empty. F2 is declared `planned` and sits outside this statement until two
+> things exist: a `themes/` fixture plus a materializer for the two alias-mapped
+> roles (v0.4), and a host palette channel for the ANSI-16 half — the named host
+> gap (S24, D74/D75). F3 is declared derived. Anything else is a diff, and a diff is
+> a bug.
 
 Corollary: **100% is a claim about a pinned version**, not a permanent state.
 CI pins the source-agent version and re-runs conformance on every bump.
@@ -3019,7 +3020,7 @@ with values validated as `rgb()`, `#rgb`/`#rrggbb`, `ansi256(n)` or
 express every declared colour yet, but it has a real partial seam:
 `readOptionalSurfaces` keeps `themes` as one `planned` row, whose reason
 names 2 roles through foreground/background, 70 roles with no terminal
-counterpart, and the OSC-only ANSI 16. D74 records the class and the host gap.
+counterpart, and the OSC-only ANSI 16. D74 records the class and the host gap; D75 narrows that gap to a completion condition, not a GA gate.
 No `themes/` fixture was captured or invented: the pinned CLI has no
 `theme` subcommand or `--theme` flag, `/theme` is TUI-only, and a file would
 still have only the two-role landing surface. The theme, layout and terminal

@@ -3416,3 +3416,35 @@ It exits non-zero on a palette mutation: a `registerTerminalPalette` prototype
 member reddens two assertions, and a `palette` field plus ANSI write reddens
 four. `scripts/fetch-harness.mjs` now includes `dsh-client-ui-theme`,
 `dsh-client-ui-layout` and `dsh-client-ui-sidebar-terminal` for S24.
+
+---
+
+## D75 — F2's closure condition is not a GA condition, and the two halves close separately
+
+**Decided 2026-11-22** (#218 review). D74's consequences call the ANSI-16
+half "the named host gap and the GA condition". That reading is wrong on the
+contract's own terms and is corrected here:
+
+1. **It is not a GA condition.** §0.2's GA condition is an empty
+   `unsupported` set. F2 is `planned` and sits outside the 100 % statement
+   (§0.3), and D74 adds no `unsupported` row, so F2 neither blocks nor unblocks
+   GA. The sentence is "the condition for F2 to become complete", not a GA
+   gate.
+2. **The two halves close on different work.** The two alias roles
+   (`text` → `--dsw-alias-label-primary`, `background` → `--dsw-alias-bg-base`)
+   need a captured `themes/` fixture and a materializer, and that work does not
+   depend on the ANSI-16 gap — it is the v0.4 F2 slot. The other 70 roles and
+   the 16 ANSI slots need a host palette channel, or a decision that formally
+   removes that sub-surface from the declared surface. Waiting for the palette
+   before carrying the two mapped roles would stall work the host can already
+   hold.
+3. **The spike grew to 68 assertions.** A plugin never constructs the runtime
+   itself; it receives whatever `apply()` provided, so prototype and own-key
+   checks miss a member attached to the instance after `ctx.provide`. The spike
+   now inspects the real `apply()` body: it must provide the constructed
+   runtime itself, add no member to it, and name no palette/ANSI API. A
+   service-level `theme.registerTerminalPalette = …` mutation now exits 1 with
+   two failures.
+
+D74's class, anchors and evidence stand; only the GA framing and the ordering
+of the remaining work are superseded.
