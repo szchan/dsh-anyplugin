@@ -3656,8 +3656,6 @@ Evidence: `packages/dsh-anyplugin-guard/src/scope.ts` (unit table in
 territory is accepted with no brief and no record, one inside a real ticket
 worktree is denied and recorded.
 
----
-
 ## D79 — A receipt is not an answer, and a round starts with the inbox
 
 **Decided 2026-11-22** (F19, maintainer-observed). On 2026-11-22 the maintainer
@@ -3696,3 +3694,37 @@ Three rules follow:
 
 A thread is read by author and time, never by `.comments[-1]`: the last comment
 is the one most likely to be our own receipt.
+
+## D82 — The architecture reviewer is a scheduled role with write authority
+
+**Decision.** A second scheduled role, the *architecture reviewer*, reads the
+design against the tree every day and files what it finds. It is separate from
+the process auditor (D63) in subject and in output: the auditor asks whether the
+process produced a bad change and may push mechanism fixes; the architecture
+reviewer asks whether `docs/ARCHITECTURE.md` §0/§2/§7, `docs/FEATURES.md`,
+`docs/DECISIONS.md` and `docs/TODO.md` still describe the code, and files
+**issues** (a docs-only correction may go out as a PR instead of an issue for
+that finding).
+
+**Shape.** One pass per day, triggered by the session scheduler — CI cannot read
+design intent, and no Actions cron is claimed. The task is a persisted
+`schedule_create` entry (`~/.dsh/storages/schedule.json`), new session each
+run, working in the main checkout.
+
+**Caps.** As in `docs/AUDIT.md` §7: it may file findings and push a docs-only
+branch; it may not merge, approve or close its own issue/PR, push `main`, write
+feature code, touch ticket branches, edit `docs/DECISIONS.md`, move
+`docs/FEATURES.md` coverage rows or totals, or change a contract in
+`docs/ARCHITECTURE.md` §0/§2/§7 without a decision.
+
+**Evidence bar.** A finding names the commit it was read at, the file and the
+line, the contract sentence that contradicts the tree, and the smallest change
+that would close it. A claim without a path and a line is a topic, not a finding
+(the audit's bar, tightened).
+
+**Consequences.** The role is documented in `docs/WORKFLOW.md` §Roles; a
+mechanism PR still needs two independent verdicts (F17) and the master merges
+it. Deliberately not claimed: that the queue routes agent-filed issues
+correctly — `roleOf` reads the bot as a maintainer today, so those issues need a
+routing class or an explicit master triage; that is a follow-up, named rather
+than hidden.

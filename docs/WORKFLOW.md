@@ -12,9 +12,10 @@ merge, which wastes the worker's whole branch.
 | **worker** (subagent) | one ticket, in its own worktree, on its own branch | merge, push to `main`, edit files outside its `Touches`, change a decision |
 | **reviewer** (subagent) | one verdict per PR against the rubric below | merge, edit the branch |
 | **auditor** (scheduled) | the daily pass, audit tooling, process docs, and a gate/test that is the finding's fix | feature code, ticket branches, merging |
+| **architecture reviewer** (scheduled) | one daily reading of the design against the code: what the architecture doc claims, what the tree does, and where the two diverge; files issues (or a docs-only PR) through the normal queue | merges, pushes to `main`, feature code, editing `docs/DECISIONS.md` |
 
-Only the master merges, after the review verdicts. A worker or the auditor pushes
-its own branch. `main` is protected: PRs only, the `verify` check must be green,
+Only the master merges, after the review verdicts. A worker, the auditor, or the
+architecture reviewer pushes its own branch. `main` is protected: PRs only, the `verify` check must be green,
 history is linear (squash), no force pushes. Every modelled `gh pr merge` that performs a merge must
 carry `--match-head-commit <40-hex>` naming the reviewed head; the guard
 refuses an unpinned modelled merge for every role. The pin prevents omission,
@@ -24,12 +25,31 @@ inline interpreter, a pre-existing git/client-side alias, or a raw GraphQL call)
 is outside the guard's model. The guard rule is dormant until the
 guard is installed (F1/F2); the obligation above stands either way.
 
-The auditor is a separate role on purpose. It reads the queue and the
-transcripts, writes findings, and pushes mechanism fixes; it does not implement a
-ticket or merge. A mechanism PR gets two independent verdicts (F17) and the
+The auditor and the architecture reviewer are separate roles on purpose. The
+auditor reads the queue and the transcripts, writes findings, and pushes
+mechanism fixes; the architecture reviewer reads the design docs against the
+tree, files issues, and does not implement a ticket or merge. A mechanism PR gets two independent verdicts (F17) and the
 master merges it; an unresolved `weaker`/`not proven` verdict is a merge veto
 for the master. That veto is policy, not a guard check: no gate reads PR
 comments yet. `docs/AUDIT.md` §7 has the caps and the alarm thresholds.
+
+The architecture reviewer is not the auditor. The auditor asks whether the
+_process_ produced a bad change; the architecture reviewer asks whether the
+_design_ still describes the code and where the next structural
+improvement is. It loads `.dsh/skills/dsh-anyplugin/SKILL.md`, reads
+`docs/ARCHITECTURE.md` §0/§2/§7, `docs/FEATURES.md`, `docs/DECISIONS.md` and
+`docs/TODO.md` against the package map and the seams the code actually uses,
+and then files **issues**, not code fixes: one issue per finding, naming the
+commit it was read at, the file and line, the contract sentence it contradicts,
+and the smallest change that would close it. It searches open issues first and
+comments new evidence on the existing issue instead of re-filing it. A docs-only correction may go out
+as a PR instead of an issue for that finding, through the normal flow (CI green,
+reviewer verdict, master merges); anything touching code is a ticket. Its
+evidence bar is the audit's finding bar, tightened: a path and a line at a
+commit, not a path or a count (`docs/AUDIT.md` §5). It is triggered by the
+session scheduler, not by CI; the task lives in `~/.dsh/storages/schedule.json`
+and is recreated with `schedule_create` (see `docs/AUDIT.md` §2 for the same
+operation for the auditor). CI cannot read design intent.
 
 ### Identity
 
