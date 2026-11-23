@@ -1,11 +1,15 @@
 name: verify
 
 on:
-  # Push only. A commit can carry at most one check named `verify`, and branch
-  # protection reads that name; a `pull_request` trigger for the same commit
-  # produced a second run under the same name and blocked the merge with one of
-  # them still pending. External PRs are read, then re-pushed onto one of our
-  # branches — that push is what produces the required check (docs/TRIAGE.md).
+  # Push only, one run per push event. The gate is the push run this
+  # repository's `verify.yml` produced for the head, and reviewers count
+  # nothing else: branch protection matches a required check by context name
+  # and the app that produced it, so it cannot distinguish a run produced by
+  # this file from one a contributor's `on: pull_request` workflow produced
+  # (a fork PR can add `.github/workflows/*.yml` with a job named `verify`, and
+  # the job name is the contributor's to choose). The rule is procedural, not
+  # enforced; a fork PR therefore has no gate until a maintainer pushes its
+  # head onto a branch here. See docs/WORKFLOW.md §"A fork PR" and D83.
   push:
     branches: ["**"]
 

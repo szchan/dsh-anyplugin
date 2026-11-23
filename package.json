@@ -81,6 +81,7 @@
     "audit:evidence": "node scripts/audit-evidence.mjs",
     "perf": "node scripts/perf.mjs",
     "ci": "node scripts/ci.mjs",
+    "pr:update": "node scripts/pr-update.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "inbox": "node scripts/triage.mjs --waiting"
   },

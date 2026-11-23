@@ -23,7 +23,6 @@ loader. Two subsystems share one spine:
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
 | `docs/DECISIONS.md` | Ratified decisions D1–D85. **Do not relitigate these in code review or in a PR without a new decision entry.** |
-| `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
 | `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
 | `docs/WORKFLOW.md` §Roles, `docs/AUDIT.md` §7 | Who may do what, including the two scheduled roles (auditor and architecture reviewer) and their caps. |
@@ -110,6 +109,7 @@ npm run rig -- verify --plugin <dir> --golden <file>   # conformance rig
 npm run capture:fixtures          # re-capture goldens after a pin bump; review the diff
 npm run verify                    # CI only (all five env vars, both pins); do not run it locally
 npm run ci                        # watch the verify run for the current branch and print the failure
+npm run pr:update <n>             # merge origin/main into a PR branch, push, wait for verify, print the pinned merge line
 npm run check:arch                # structural rules R1–R14
 npm run check:features            # the capability map points at real files; owns R15
 npm run check:decisions           # D1–D85 append-only (--update accepts new entries only)
@@ -135,13 +135,31 @@ code (D85).
 maintainer step, not a gate: it needs the network and a version the registry
 already serves, so it is never part of `verify`.
 
+`npm run pr:update <n>` is the update path for a PR branch that is behind
+`main`: it merges `origin/main` into the head branch, pushes, waits for the new
+head's `verify`, and prints (never runs) the D66-pinned `gh pr merge` line. It
+automates the same-repository path only: a fork PR is refused because its branch
+is not ours to push, and a fork's gate stays the maintainer's push of its head
+onto a branch here (D83). A conflict its own merge creates aborts without
+pushing, and the abort's exit status is checked before the message claims the
+merge was aborted. Before merging it refuses a worktree whose merge is already
+in progress, whose index has unmerged paths, or which is dirty — it never aborts
+someone else's conflict.
+
 An agent never posts as `szchan`. Comments, reviews, labels and PRs go through
 `npm run gh-bot -- <gh args…>`, because the login is what stays readable after the
 fact; the `<!-- dsh-anyplugin-agent -->` marker is only a fallback (docs/TRIAGE.md §1).
 
-`verify` is the gate, and it runs **in CI**: every branch push triggers it. It
-must report **0 skipped** — a skip means an environment variable is missing, and
-on CI a skip is a failure by design (D22/D24). Do not run it, `npm test`,
+`verify` is the gate, and it runs **in CI**: every branch push triggers it, one
+run per push event, and the gate is the push run this repository's `verify.yml`
+produced for the head (D83). Branch protection matches the required context by
+name and producing app, not by workflow file, so the rule is procedural: a
+reviewer counts only that push run, and for a fork PR it is the maintainer's push
+run from pushing the head onto a branch here (rule 2). A fork PR has no gate
+until then — a `pull_request` run executes the fork's workflow file, and its
+check name is the contributor's to choose. A skipped *test* is not: the suite must
+report **0 skipped** — a skip means an environment variable is missing, and on CI a
+skip is a failure by design (D22/D24). Do not run `verify`, `npm test`,
 `npm run build`, `check:pack`, a perf run or a spike locally; push and read
 `npm run ci`. Static checks (`check:arch`, `check:features`, `check:decisions`)
 are the only local gate, because they spawn nothing. The guard enforces this

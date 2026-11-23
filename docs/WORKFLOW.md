@@ -155,12 +155,42 @@ ticket/ready ──claim──▶ ticket/in-progress ──PR──▶ ticket/re
    the diff.
 4. **Do not run the suite locally.** Push the branch: `verify` runs on every
    branch push (0.2.2-rc.5 and 0.2.2-rc.2, the pinned Claude CLI, one union
-   fetch), and `npm run ci` tells you what it said. Local runs are limited to the
-   static checks (`check:arch`, `check:features`, `check:decisions`), which read
-   files and start no child processes. This is #175: the maintainer's machine is
-   shared, and a botched local suite is a real cost.
+   fetch), one run per push event, and `npm run ci` tells you what it said. The
+   push run is the only `verify` that counts (D83): branch protection matches the
+   required context by name and producing app, not by workflow file, so a
+   reviewer counts only the push run this repository's `verify.yml` produced for
+   the head — a same-repo PR's push run, or for a fork the maintainer's push of
+   its head onto a branch here. Local runs are limited to the static checks
+   (`check:arch`, `check:features`, `check:decisions`), which read files and
+   start no child processes. This is #175: the maintainer's machine is shared,
+   and a botched local suite is a real cost.
 5. Push the branch and open the PR with the template filled in. Then stop: do
    not merge, do not push more commits unless a review asks for them.
+
+### Updating a stale PR
+
+When `main` moves and the PR branch is behind, use `npm run pr:update <n>`:
+
+1. it resolves the PR's head branch and head sha (`gh pr view`);
+2. it reuses that branch's worktree when that worktree is already at the PR
+   head, or makes a temporary one at `/tmp/anyplugin-wt/pr-<n>` (removed
+   afterwards); before merging it refuses a worktree whose merge is already in
+   progress, whose index has unmerged paths, or which has uncommitted changes,
+   and it never runs `git merge --abort` on a conflict it did not create;
+3. it merges `origin/main` — a conflict its own merge creates aborts that merge,
+   checks the abort's exit status, and pushes nothing; a conflict that was
+   already in the worktree is refused before any merge is attempted;
+4. it pushes `HEAD:<branch>` and waits for `verify` on the new head; the wait
+   counts the newest completed push run for that head and does not wait for a
+   newer run that is still in progress (`scripts/ci-runs.mjs`);
+5. on success it prints exactly
+   `gh pr merge <n> --squash --match-head-commit <40-hex>`.
+
+It never merges, approves or force-pushes, and it automates the same-repository
+path only: it refuses a PR whose head branch is not in this repository (a fork's
+branch is not ours to push; a fork's gate stays the maintainer's push of its head
+onto a branch here, D83) or whose base is not `main`. Run the printed merge line
+only after reading the diff; the script does not merge for you.
 
 ## Definition of done (a worker may not ship without all of these)
 
@@ -219,21 +249,39 @@ match the pin before the suite runs.
   money). Those are local evidence and belong in the PR body. CI green is a
   floor, not the whole claim.
 
-**A pull request can land without a `verify` run.** GitHub has been
-observed not to schedule `pull_request` workflows for a PR opened through the
-API right after its branch push: intake and the label job run, `verify` never
-appears, and the merge stays blocked waiting for a check that will not come.
-Two minutes without a `verify` row is the signal. Recovery: push an empty
-commit so the head changes (`git commit --allow-empty -m "ci: re-run verify"`)
-and wait for the new run. Never merge without the check and never bypass the
-rule; the status is the gate, the empty commit only re-asks for it.
+### A fork PR
 
-The check that branch protection reads is produced by the **push** event, which
-is why `verify` runs on every branch and there is no `pull_request` trigger: a
-second run under the same name for the same commit leaves one of them pending
-and blocks the merge. An external PR therefore shows no check until we push its
-commit onto a branch of ours. If a PR head shows no `verify` at all, the push
-run is missing, not the PR run.
+A fork PR has no gate here at all until a maintainer pushes its head onto a
+branch in this repository and that push run goes green (D83). The rule is
+procedural, not enforced: branch protection matches a required check by context
+name and the app that produced it, not by workflow file, so it cannot tell a run
+this repository's `verify.yml` produced from one a contributor's
+`on: pull_request` workflow produced. A `pull_request` run executes the workflow
+file from the PR's merge commit, which the contributor controls, and its job can
+be named anything — a check named `verify` from that run would satisfy branch
+protection without running our tests. Reviewers therefore count only the push run
+this repository's `verify.yml` produced for the head; `verify.yml` is push-only as
+defence in depth, so the accidental second context is gone too. `npm run ci`
+watches push runs only; a `pull_request` run on the same commit is never
+evidence, and reopening a fork PR fires nothing. The recovery is the maintainer's
+push of the head onto a branch here.
+
+**A PR head can be missing its `verify` run**, a same-repo PR included, if the
+branch was pushed while the workflow file was invalid. Five minutes without a
+`verify` row is the signal (`scripts/ci-runs.mjs`'s 300 s appear timeout names
+the number), and `npm run ci` fails fast with the push hint when the commit is
+not on a remote branch here instead of waiting it out. For a same-repo PR, read
+the push run for the commit (`npm run ci -- --head <sha>`). Recovery: change the
+head so the `push` event fires again — push an empty commit
+(`git commit --allow-empty -m "ci: re-run verify"`). Never merge without the
+check and never bypass the rule; the status is the gate, the empty commit only
+re-asks for it.
+
+A same-repo PR's `verify` is its push run — one run per push event. If a commit
+ever carries more than one push run, `npm run ci` reports the newest completed,
+non-skipped run and does not wait for a newer run that is still in progress. The
+`pull_request` trigger was removed because a skipped job still reports as a
+passing check of its own name and a fork could name its own job `verify` (D83).
 
 Do not "fix" a skipped test by making it not need the harness. Either it is a
 pure test (then it belongs in a pure package) or it belongs to the oracle. In CI
