@@ -3451,6 +3451,69 @@ of the remaining work are superseded.
 
 ---
 
+## D76 — Performance gates run in CI: paired ratios for P1/P4, absolute caps for P2/P3, P5 recorded
+
+**Decided 2026-11-22** (#223; supersedes D69 rules 3 and 5). A single `perf`
+job in `.github/workflows/perf.yml` runs on every branch push and on every pull
+request whose base is `main`. The job measures the head and `origin/main` on
+the **same runner** through the existing `scripts/perf.mjs --base` machinery:
+a detached worktree at the base commit, both trees built before any stopwatch,
+P1/P3/P4 imported into one child and sampled in alternating adjacent pairs, and
+P2 boots paired per pin. It uploads `perf.json` as the artifact named
+`perf.json`, retained for 30 days, and it writes that file even when a gate
+fails. The local `npm run perf` remains a debugging tool: it is not a merge
+gate, and `npm run verify` does not read perf.
+
+The fixed limits are `GATE_LIMITS` in `scripts/perf.mjs`:
+
+1. **P1 cold mod load** — the median of the per-pair head/base ratios must be
+   at or below 1.5×. A value exactly at 1.5× passes, as for the existing
+   `exceedsThreshold` ceiling.
+2. **P2 boot + reconcile** — for each pin declared in `engines.dsh`, the head
+   empty-profile boot must be strictly below 3000 ms absolute, and the head
+   one-plugin boot strictly below 2× the head empty-profile median. An
+   absolute budget fails at its boundary — unlike the 1.5× ratios, where
+   equality is inside the ceiling. The
+   empty profile is a home with no `anyplugin/installs.yml`; the controller
+   mounts no plugin group and logs that it has nothing to reconcile. The
+   P2 base/head ratio stays in the table as description but does not gate:
+   D69 rule 3's boot-noise objection is about that ratio, and it is why the
+   cap is on head milliseconds and a head-local multiplier instead.
+3. **P3 pre-execute fan-out** — the head median must be strictly below 50 µs per
+   dispatch (2,000 dispatches per sample). This is an absolute budget on our
+   own loop, not a base comparison.
+4. **P4 compile** — the median of the per-pair head/base ratios must be at or
+   below 1.5× over the seven pinned upstream plugins plus every fixture with a
+   plugin manifest. A base/head plugin-set mismatch is a failed row, not a
+   skipped gate.
+5. **P5 is recorded and never gated.** `perf.json` carries tarball bytes,
+   unpacked bytes, mods-kernel bytes and boot peak RSS. They move for reasons
+   unrelated to a hot path and are not durations; no verdict reads them.
+
+Cost is part of the design. The base tree needs its own `lib/` for P2, so the
+job pays for a second build; it does not pay for a second `npm ci` when
+`package-lock.json` is identical (the existing dependency-sharing rule), and
+it reuses `--base` instead of inventing a second measurement model. The job
+also fetches both declared pins and the pinned mod and Claude trees; the
+workflow's guard step fails the job before measurement on a missing pin, so a
+missing pin is never a silently dropped gate.
+
+A red `perf` is a **regression claim**, and the claim names the probe, the
+threshold and the repeat count. The workflow runs `--repeat 5`. The absolute
+caps are hard walls: a value at or above the cap fails, and that failure is a
+claim, not a reason to re-run. The ratio gates keep D69's `<=` at the
+threshold; only host noise on a ratio probe may be re-run once. The failure table prints metric, base, head, ratio, limit and
+verdict. The merge command stays human.
+
+**Consequences.** D69 rules 1, 2, 4 and 6 stand; rule 3's gate list and rule 5's
+"not in CI" are superseded. `--check` evaluates the same D76 gates on a
+workstation; `--ci` selects the fixed limits, writes `perf.json`, prints the
+gate table and exits 1 on a red gate; `--threshold` remains a local `--check`
+experiment and `--ci` rejects it. `docs/PROFILING.md` documents the workflow,
+the artifact and what a red gate means. `scripts/perf.test.mjs` pins the table
+
+---
+
 ## D77 — One package, one install: the panel ships inside `dsh-anyplugin`
 
 **Decided 2026-11-22**, with `#224` (from `#170`). Supersedes D61's
@@ -3546,6 +3609,52 @@ scan, `notes.push` with bytes); `packages/dsh-anyplugin-install/test/panel.test.
 now states what the mount test proves (the controller asks for `webServer` and
 the panel registers both routes in the pin's documented `register` shape; no
 test boots a real web server).
+
+---
+
+## D80 — The guard is scoped to this checkout and its ticket worktrees
+
+The guard is installed into a *user* profile, so DSH loads it for every session
+on the machine. `#221` named the consequence: the maintainer opened an
+unrelated project and the guard denied it. A layer that polices the whole host
+is not a layer anyone keeps installed.
+
+1. **Territory, not configuration.** The scope is derived from what the
+   installer already composes: `protectedRoots` (this checkout; the `.git`
+   entry is a write target, not a session cwd), `worktrees` (exact ticket
+   paths, or `<stem>-*` namespaces) and `gitDirectories` (the common dir).
+   Any *working tree of this repository* is inside the territory — a review or
+   verify worktree as much as a ticket one — because its `.git` points into
+   that common dir, and a directory inside a working tree is inside that tree
+   (a subdirectory has no .git of its own; the nearest one above it decides).
+   Write permission stays the ticket list: a review tree is judged and
+   unwritable. A fresh install with no ticket worktree writes the
+   documented namespace (`$ANYPLUGIN_WORKTREE_ROOT/ticket-*`, default
+   `/tmp/anyplugin-wt/ticket-*`) so the first worktree needs no reinstall.
+2. **Inert outside.** For a session whose canonical `header.cwd` is outside
+   the territory, both seams call `next()` before judging: no denial, no brief,
+   no denial record. A symlink is resolved first, so a link into the checkout is
+   the checkout, and a relative `gitdir:` pointer resolves against the
+   working tree's own directory (git 2.56 `--relative-paths`). Delegation is
+   not modelled: a child started with a chosen
+   `cwd` is judged by that path, and a child pointed outside is outside. The guard does not *observe* other projects either — a
+   dormant mechanism that still logs is a surveillance tool, not a guard.
+3. **Unknown cwd is outside.** With a territory configured, a session without
+   `header.cwd` is treated as outside rather than guessed at: the guard's own
+   view of a session is one path from the pin, and inventing a default would
+   police whatever directory the host happened to start in. An *unconfigured*
+   policy (a hand-written config, a unit test) keeps the previous global
+   behaviour, because silently switching an unconfigured guard off is the worse
+   failure.
+4. **Workers stay governed.** The worktree pattern is matched segment-wise
+   (`/tmp/anyplugin-wt/ticket-*` covers `/tmp/anyplugin-wt/ticket-225/…`, not
+   `/tmp/anyplugin-wt/notes`), and a worker whose cwd is a ticket worktree is
+   judged even though that path is outside the checkout.
+
+Evidence: `packages/dsh-anyplugin-guard/src/scope.ts` (unit table in
+`test/scope.test.mjs`), and two apply-level tests — one session outside the
+territory is accepted with no brief and no record, one inside a real ticket
+worktree is denied and recorded.
 
 ---
 
