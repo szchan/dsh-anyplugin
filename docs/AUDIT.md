@@ -100,10 +100,14 @@ that contains a token, an email, or a customer path.
 4. Check mechanisms: did any gate fail? Did a hook fire? Is the guard still
    installed? Is the schedule still running? A mechanism that is installed but
    never fires is either unnecessary or broken; say which.
-5. Check roles: the eight largest sessions, their `cwd`, the root/child ratio,
-   and whether a session wrote outside its role. Flag every root session above
-   the ~1,500 cap and name the split (a scheduled audit, an integrator, a
-   narrower ticket). F18 is the recorded miss.
+5. Check roles: the eight largest sessions ordered by independent **window**
+   work (the role-cap unit, D73), their `cwd`, the root/child ratio, and whether
+   a session wrote outside its role. Each row prints `window`, `lifetime` and
+   `inherited`: a seeded fork's inherited prefix is another session's work and
+   is excluded, and a seeded session whose cut cannot be read is named rather
+   than counted as independent (F21). Flag every root session above the ~1,500
+   window cap and name the split (a scheduled audit, an integrator, a narrower
+   ticket). F18 is the recorded miss.
 6. Write the report (§5), add or update ledger entries, run `npm run
    check:audit`, and open the PR in the same pass. A report-only PR is docs; a
    PR that changes a mechanism also carries the code and its test. Every
@@ -223,7 +227,7 @@ adds measurable caps:
 
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
-| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 window tool calls, or one that both authors and approves the same change |
 | integration runner | one dispatched PR, as written in `docs/WORKFLOW.md` §The integration runner: merging `origin/main` into a ticket branch, pushing that branch, polling CI by sha, assembling the PR body, cleaning worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, touches `main`, or grows into a second master session (it exists to keep the root's window small, D73) |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
@@ -240,14 +244,18 @@ conventional behavior, not a guard check, and a report must say so if it relied
 on the convention.
 
 The caps are heuristics, not gates. The evidence script reports the eight
-largest sessions with their `cwd`; a pass that sees a root session above the
-cap says so in `## Findings` and proposes a split (a scheduled audit session, a
-narrower ticket, or an integration runner that polls CI and updates branches —
-never a session that merges; merge authority with the pinned head stays in the
-master, D73; the written role is `docs/WORKFLOW.md` §The integration runner).
-The master alarm is evaluated on the window the pass reports
-(one day for the daily pass); the lifetime count stays printed but is context,
-not the verdict: a lead that runs for a month always exceeds a lifetime cap.
+largest sessions with their `cwd`, ordered by independent **window** work; a
+seeded fork's inherited prefix is excluded from the per-session counts and
+counted separately in the digest, because a copied prefix was never work that
+session did (F21). A pass that sees a root session above the cap says so in
+`## Findings` and proposes a split (a scheduled audit session, a narrower
+ticket, or an integration runner that polls CI and updates branches — never a
+session that merges; merge authority with the pinned head stays in the master,
+D73; the written role is `docs/WORKFLOW.md` §The integration runner).
+The master alarm is evaluated on the independent window work the pass reports
+(one day for the daily pass); the `lifetime` count stays printed but is context,
+not the verdict: a lead that runs for a month always exceeds a lifetime cap, and
+a seeded session whose cut cannot be read is excluded and named, never counted.
 
 ## 8. Splitting the audit
 
