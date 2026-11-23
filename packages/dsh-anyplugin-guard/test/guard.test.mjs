@@ -871,7 +871,7 @@ test('ruby and php write payloads are refused like node and python', () => {
   }
 })
 
-function harness() {
+function harness(agents) {
   const listeners = new Map()
   const disposers = []
   const ctx = {
@@ -884,6 +884,11 @@ function harness() {
     effect(register) {
       disposers.push(register())
     },
+    // The loader's service registry: a session event carries the session, so
+    // the guard resolves its id back to the live Agent object the seams use.
+    get(name) {
+      return name === 'agents' ? agents : undefined
+    },
   }
   return { ctx, listeners, disposers }
 }
@@ -893,7 +898,8 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
   await apply(ctx, config)
   assert.equal(listeners.get('tools/pre-execute')?.length, 1)
   assert.equal(listeners.get('agent/pre-step')?.length, 1)
-  assert.equal(disposers.length, 4, 'two seam mounts plus the created/disposed pair')
+  assert.equal(listeners.get('session/event')?.length, 1)
+  assert.equal(disposers.length, 5, 'three seam mounts plus the created/disposed pair')
 
   // D80: the seams read the session header, not a hand-built view.
   const runtime = (agent) => ({ session: { header: { id: agent.id, cwd: agent.cwd, ...(agent.worker ? { origin: 'subagent' } : {}) } } })
@@ -1190,6 +1196,158 @@ test('ambiguous text seats nothing and a later unambiguous message can still sea
     async () => ({ kind: 'accept' }),
   )
   assert.equal(allowed.kind, 'accept')
+})
+
+test('an unseated worker is seated by the directory change the host announces (#266)', async () => {
+  // The host appends `working-directory/change` when the worker moves itself;
+  // that announcement is structured evidence a message-text seat does not need
+  // to parse. Before it arrives the worker has no seat and writes nothing.
+  const agent = { session: { header: { id: 'worker-266', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: (id) => (id === 'worker-266' ? agent : undefined), list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = (path) =>
+    tools(
+      { callId: 60, name: 'write', arguments: { file_path: path, content: 'x' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'deny', 'nothing is recorded yet')
+
+  const change = listeners.get('session/event')[0]
+  assert.equal(typeof change, 'function')
+  await change({ header: { id: 'worker-266' } }, { type: 'assistant/message', data: { cwd: worktree } })
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'deny', 'only a directory change is a seat')
+  await change({ header: { id: 'worker-266' } }, { type: 'working-directory/change', data: { cwd: worktree } })
+
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'accept')
+  assert.equal((await write(`${repo}/src/x.ts`)).kind, 'deny', 'the checkout stays protected')
+  const outside = await write('/work/wt/ticket-9999/src/x.ts')
+  assert.equal(outside.kind, 'deny')
+  assert.match(outside.reason, /only inside its worktree/u)
+})
+
+test('a resumed session is seated by the announcement even though it never fired agent/created (#266)', async () => {
+  // A cold resume announces the same session as a NEW Agent object; the seat
+  // #250 learned from the spawn prompt lived on the previous object and the
+  // resumed log is replayed without re-publishing its notices. No
+  // `agent/created` is dispatched in this test, so a seat that depended on the
+  // per-agent mount could never exist; the session-scoped announcement is the
+  // only evidence, and it must seat the live Agent the seam carries.
+  let live = { session: { header: { id: 'worker-resumed', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: (id) => (id === 'worker-resumed' ? live : undefined), list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = () =>
+    tools(
+      { callId: 61, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent: live },
+      async () => ({ kind: 'accept' }),
+    )
+
+  assert.equal((await write()).kind, 'deny')
+  live = { session: { header: { id: 'worker-resumed', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  assert.equal((await write()).kind, 'deny', 'the resumed Agent starts unseated')
+
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-resumed' } },
+    { type: 'working-directory/change', data: { cwd: worktree } },
+  )
+  assert.equal((await write()).kind, 'accept')
+})
+
+test('a directory change into the primary checkout records no seat (#266)', async () => {
+  const agent = { session: { header: { id: 'worker-checkout', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  const change = listeners.get('session/event')[0]
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = () =>
+    tools(
+      { callId: 62, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+
+  await change({ header: { id: 'worker-checkout' } }, { type: 'working-directory/change', data: { cwd: repo } })
+  const denied = await write()
+  assert.equal(denied.kind, 'deny')
+  assert.match(denied.reason, /no worktree is recorded/u)
+
+  // Not a seat is not a failure: the announcement stays retryable, so a later
+  // real one can still seat the session.
+  await change({ header: { id: 'worker-checkout' } }, { type: 'working-directory/change', data: { cwd: worktree } })
+  assert.equal((await write()).kind, 'accept')
+})
+
+test('a directory change outside every installed worktree records no seat (#266)', async () => {
+  const agent = { session: { header: { id: 'worker-outside', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, config)
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-outside' } },
+    { type: 'working-directory/change', data: { cwd: '/tmp/anyplugin-wt/not-a-ticket' } },
+  )
+  const denied = await listeners.get('tools/pre-execute')[0](
+    { callId: 63, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(denied.kind, 'deny')
+  assert.match(denied.reason, /no worktree is recorded/u)
+})
+
+test('a recorded seat does not move when a later directory change names another worktree (#266)', async () => {
+  const elsewhere = '/work/wt/ticket-9997'
+  const policy = { ...config, worktrees: [worktree, elsewhere] }
+  const agent = { session: { header: { id: 'worker-moved', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, policy)
+  const preStep = listeners.get('agent/pre-step')[0]
+  const tools = listeners.get('tools/pre-execute')[0]
+  const write = (path) =>
+    tools(
+      { callId: 64, name: 'write', arguments: { file_path: path, content: 'x' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+
+  await preStep(
+    { agent, step: 1, messages: [{ role: 'user', content: `spawned to work in ${worktree}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'accept')
+
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-moved' } },
+    { type: 'working-directory/change', data: { cwd: elsewhere } },
+  )
+  assert.equal((await write(`${worktree}/src/x.ts`)).kind, 'accept', 'the recorded seat never moves')
+  const moved = await write(`${elsewhere}/src/x.ts`)
+  assert.equal(moved.kind, 'deny')
+  assert.match(moved.reason, /only inside its worktree/u)
+})
+
+test('an ambiguous directory change, like ambiguous text, records no seat (#266)', async () => {
+  // The announcement is resolved by the same exactly-one rule as a message:
+  // nested entries both cover the announced path, so neither wins.
+  const nested = `${worktree}/nested`
+  const policy = { ...config, worktrees: [worktree, nested] }
+  const agent = { session: { header: { id: 'worker-ambiguous', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const registry = { get: () => agent, list: () => [] }
+  const { ctx, listeners } = harness(registry)
+  await apply(ctx, policy)
+  await listeners.get('session/event')[0](
+    { header: { id: 'worker-ambiguous' } },
+    { type: 'working-directory/change', data: { cwd: nested } },
+  )
+  const denied = await listeners.get('tools/pre-execute')[0](
+    { callId: 65, name: 'write', arguments: { file_path: `${nested}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(denied.kind, 'deny')
+  assert.match(denied.reason, /no worktree is recorded/u)
 })
 
 test('a symlink inside the worktree does not become a write into the checkout', () => {
