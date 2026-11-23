@@ -226,9 +226,18 @@ The body has exactly four parts, in this order:
    legal choice).
 
 Everything an agent can settle by reproduction stays out of this queue. The
-queue is for the four things only a human holds: credentials, billing, rights,
-and irreversibility. "I am not sure" is not one of them — research it, test it,
-and write down what you chose.
+queue is for **the four human classes** only — the one list, defined here and
+cross-referenced by the worker protocol (`docs/WORKFLOW.md` §Escalation, D87):
+
+1. **Credentials** — a secret, a token, an account, a permission.
+2. **Billing** — a purchase, a paid plan, a metered run, a quota.
+3. **Rights** — a licence, a redistribution, a legal or contractual choice.
+4. **Irreversibility** — an action that cannot be undone, such as a publish, a
+   delete, a force-push, or closing a public thread with no record.
+
+"I am not sure" is not one of them — research it, test it, and write down the
+default you chose, then declare it on the ticket and proceed. A default that
+would bend §3 of `AGENTS.md` is not a default; that work stops instead.
 
 ### The inbox, and what a receipt means
 
