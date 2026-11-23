@@ -9,7 +9,7 @@
  *
  *   DSH_HARNESS_DIR=$PWD/.harness/0.2.2-rc.5 \
  *   DSH_HARNESS_VERSION=0.2.2-rc.5 \
- *     node packages/dsh-anyplugin-ui/test/mutations.mjs
+ *     node packages/dsh-anyplugin-install/test/panel-mutations.mjs
  *
  * This file deliberately does not match `*.test.mjs`: it mutates the working
  * tree, so it must not run inside `npm test`. It restores every file and
@@ -21,9 +21,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
-const SERVER = 'packages/dsh-anyplugin-ui/src/index.ts'
-const CLIENT = 'packages/dsh-anyplugin-ui/src/client/index.js'
-const TEST = 'packages/dsh-anyplugin-ui/test/panel.test.mjs'
+const SERVER = 'packages/dsh-anyplugin-install/src/panel.ts'
+const CLIENT = 'packages/dsh-anyplugin-install/src/client/panel.js'
+const TEST = 'packages/dsh-anyplugin-install/test/panel.test.mjs'
 
 function replaceOnce(text, find, replacement, occurrence = 0) {
   let index = -1

@@ -1,5 +1,6 @@
 /**
- * The AnyPlugin panel's server half.
+ * The AnyPlugin panel's server half — an internal source of the root package
+ * (D77: one package, one install), not a package of its own.
  *
  * It is a *reader of our own lifecycle API*: the grid is `listPlugins`, the
  * install form is `installPlugin`, the same functions the `dsh-anyplugin`
@@ -23,12 +24,7 @@ import { join } from 'node:path'
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-export const name = 'dsh-anyplugin-ui'
-
-/** The web server; the panel is inert without it. */
-export const inject = ['webServer']
-
-export interface Config {
+export interface PanelConfig {
   /** The lock file. Default `$DSH_HOME/anyplugin/installs.yml`. */
   installs?: string
   /** `$DSH_HOME` override. */
@@ -48,7 +44,7 @@ const INSTALLS = '/anyplugin/installs'
 const INSTALL = '/anyplugin/install'
 const MAX_BODY_BYTES = 64 * 1024
 
-function paths(config: Config) {
+function paths(config: PanelConfig) {
   const home = config.home ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
   return {
     home,
@@ -115,7 +111,7 @@ function requestHost(request: Request) {
 }
 
 /** Both routes are loopback-only unless the plugin was configured otherwise. */
-function hostAllowed(request: Request, config: Config): boolean {
+function hostAllowed(request: Request, config: PanelConfig): boolean {
   const host = requestHost(request)
   if (host === null) return false
   if (LOOPBACK_HOSTS.has(host.hostname)) return true
@@ -201,7 +197,7 @@ async function readBody(request: Request): Promise<{ ok: true; text: string } | 
   return { ok: true, text: new TextDecoder().decode(concatBytes(chunks, total)) }
 }
 
-/** The lifecycle entry is lazy: a profile that never opens the panel pays nothing. */
+/** The lifecycle entry is lazy: a profile whose web server never boots the panel pays nothing. */
 async function lifecycle(): Promise<{
   listPlugins: (options: ReturnType<typeof paths>) => {
     ok: boolean
@@ -210,8 +206,8 @@ async function lifecycle(): Promise<{
   }
   installPlugin: (options: Record<string, unknown>) => Record<string, unknown>
 }> {
-  // Published by the `dsh-anyplugin` package's `./install` export; the panel is
-  // an optional bundle that peers on the plugin, never on the private sources.
+  // This package's own `./install` export (D61); the panel is part of the
+  // `dsh-anyplugin` artifact (D77), so the profile's copy and the CLI's are one.
   return (await import('dsh-anyplugin/install')) as never
 }
 
@@ -231,7 +227,7 @@ function summarize(plugin: Record<string, unknown> & { effective?: { enabled?: b
   }
 }
 
-async function list(config: Config): Promise<Response> {
+async function list(config: PanelConfig): Promise<Response> {
   try {
     const { listPlugins } = await lifecycle()
     const result = listPlugins(paths(config))
@@ -245,7 +241,7 @@ async function list(config: Config): Promise<Response> {
   }
 }
 
-async function install(request: Request, config: Config): Promise<Response> {
+async function install(request: Request, config: PanelConfig): Promise<Response> {
   const payload = await readBody(request)
   if (!payload.ok) {
     return json({ ok: false, code: 'body-too-large', reason: `the install body exceeds ${MAX_BODY_BYTES} bytes` }, 413)
@@ -286,7 +282,7 @@ function reasonOf(error: unknown): string {
 }
 
 /** One Fetch request in, one Fetch response out; the host's resource route uses this directly. */
-export async function dispatch(request: Request, config: Config = {}): Promise<Response> {
+export async function dispatchPanel(request: Request, config: PanelConfig = {}): Promise<Response> {
   const url = new URL(request.url, 'http://anyplugin.invalid')
   const hostRefusal = hostAllowed(request, config)
     ? null
@@ -325,7 +321,7 @@ function headersOf(request: IncomingMessage): Headers {
  * response because a resource route only answers GET and HEAD; the body is
  * forwarded as a stream so the same `dispatch` path is the one under test.
  */
-export function installRoute(config: Config = {}) {
+export function installRoute(config: PanelConfig = {}) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const method = request.method ?? 'GET'
     const hasBody = method !== 'GET' && method !== 'HEAD'
@@ -334,7 +330,7 @@ export function installRoute(config: Config = {}) {
       headers: headersOf(request),
       ...(hasBody ? { body: request as unknown as ReadableStream, duplex: 'half' } : {}),
     } as RequestInit)
-    const result = await dispatch(forwarded, config)
+    const result = await dispatchPanel(forwarded, config)
     const headers = Object.fromEntries(result.headers)
     // A refusal can leave the request body unread; close the connection so the
     // client stops waiting on a request the server will not consume.
@@ -354,12 +350,12 @@ interface PluginContextLike {
   webServer: WebServerLike
 }
 
-export function apply(ctx: PluginContextLike, config: Config = {}): void {
+export function applyPanel(ctx: PluginContextLike, config: PanelConfig = {}): void {
   ctx.effect(() => {
     const offPanel = ctx.webServer.register({
       kind: 'prefix',
       path: PREFIX,
-      resource: (request: Request) => dispatch(request, config),
+      resource: (request: Request) => dispatchPanel(request, config),
     })
     const offInstall = ctx.webServer.register({
       kind: 'exact',
@@ -370,5 +366,5 @@ export function apply(ctx: PluginContextLike, config: Config = {}): void {
       offInstall()
       offPanel()
     }
-  }, 'dsh-anyplugin-ui: panel routes')
+  }, 'dsh-anyplugin: panel routes')
 }

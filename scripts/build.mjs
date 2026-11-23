@@ -54,8 +54,9 @@ const SHARED_ENTRIES = {
   index: 'packages/dsh-anyplugin-install/src/controller.ts',
   // The single published `bin`; the same CLI the conformance rig runs (D49).
   cli: 'packages/dsh-anyplugin-conformance/src/cli.ts',
-  // The optional panel's server half imports this at runtime (issue #147); it
-  // shares the CLI's install pipeline chunk instead of shipping a second copy.
+  // The panel's server half (now part of `index`) imports this at runtime
+  // through the package's own name; it shares the CLI's install pipeline chunk
+  // instead of shipping a second copy (D61/D77).
   install: 'packages/dsh-anyplugin-conformance/src/install-api.ts',
 }
 
@@ -77,6 +78,11 @@ const externals = [
   // The kernel's runtime, resolved from the installed dependencies (D34).
   '@babel/core',
   '@babel/plugin-transform-react-jsx',
+  // The panel's server half imports the package's own `./install` export. It
+  // must stay external so the profile resolves the installed tarball, not a
+  // copy of the pipeline baked into `lib/index.js` (D61/D77).
+  'dsh-anyplugin',
+  'dsh-anyplugin/*',
 ]
 
 /**
@@ -149,29 +155,13 @@ async function main() {
     }
   }
 
-  // The optional panel package (issue #147) is a separate artifact: its client
-  // bundle cannot fit the root tarball's D59 budget. The server half is a node
-  // entry; the browser half is this repo's first `dsh.client` bundle, wrapped
-  // in the registration contract S21 proved at both pins.
-  const ui = join(root, 'packages/dsh-anyplugin-ui')
-  const uiLib = join(ui, 'lib')
-  const uipkg = JSON.parse(readFileSync(join(ui, 'package.json'), 'utf8'))
-  rmSync(uiLib, { recursive: true, force: true })
-  await mkdir(uiLib, { recursive: true })
-  await build({
-    entryPoints: [join(ui, 'src/index.ts')],
-    outfile: join(uiLib, 'index.js'),
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    target: ['node22'],
-    external: ['dsh-anyplugin', 'dsh-anyplugin/*', '@deepseek-ai/*', 'node:*'],
-    logLevel: 'warning',
-    legalComments: 'none',
-    banner: { js: `// dsh-anyplugin-ui ${uipkg.version} — built by scripts/build.mjs; do not edit.` },
-  })
+  // The panel is one client entry inside the root tarball (D77), not a second
+  // package. The browser half is a classic script that registers a factory;
+  // `react` stays in the host's module table. The registration id must equal
+  // the loader row and package name — client-modules keys rows by the manifest
+  // name, so `dsh-anyplugin/panel` or a second row would compose no client row.
   const client = await build({
-    entryPoints: [join(ui, 'src/client/index.js')],
+    entryPoints: [join(root, 'packages/dsh-anyplugin-install/src/client/panel.js')],
     bundle: true,
     write: false,
     format: 'cjs',
@@ -181,12 +171,9 @@ async function main() {
     logLevel: 'warning',
     legalComments: 'none',
   })
-  // The bundle is a classic script that only registers a factory; the loader's
-  // `require` is the host's module table. The id must equal the Loader entry
-  // name (`cordis.patch.yml` inserts `name: dsh-anyplugin-ui`).
   writeFileSync(
-    join(uiLib, 'client.js'),
-    `window.__ModuleLoader__.load({\n  id: 'dsh-anyplugin-ui',\n  factory: (require) => {\n    var module = { exports: {} };\n    var exports = module.exports;\n${client.outputFiles[0].text}\n    return module.exports;\n  },\n});\n`,
+    join(lib, 'client.js'),
+    `window.__ModuleLoader__.load({\n  id: 'dsh-anyplugin',\n  factory: (require) => {\n    var module = { exports: {} };\n    var exports = module.exports;\n${client.outputFiles[0].text}\n    return module.exports;\n  },\n});\n`,
   )
 
   writeFileSync(
@@ -205,7 +192,7 @@ async function main() {
   )
 
   process.stdout.write(
-    `build: ${Object.keys(ENTRIES).length} entries → lib/; mods kernel ${kernelBytes} bytes across ${kernelInputs.size} files\n`,
+    `build: ${Object.keys(ENTRIES).length} entries + client bundle → lib/; mods kernel ${kernelBytes} bytes across ${kernelInputs.size} files\n`,
   )
 }
 
