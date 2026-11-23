@@ -3533,11 +3533,13 @@ because D77 is append-only:
    `exports["./client"]`.** That subpath is the client half of the same
    package, not a second bundle; D61's other guarantees (path-only install
    input, loopback-only serving, no foreign code imported by the server) stand.
-3. **The artifact is scanned whole, and its size is printed in bytes.**
-   `check:pack` now looks for the removed `dsh-anyplugin-ui` name in every
-   shipped file, not just `lib/`, and prints the tarball size in bytes next to
+3. **The code and the manifest are scanned, and the size is printed in bytes.**
+   `check:pack` looks for the removed `dsh-anyplugin-ui` name in every `lib/`
+   file and in the packed manifest, and prints the tarball size in bytes next to
    the KiB reading, so D77's "the measured byte count lives in the script" is a
-   fact a reader can check without a failing run.
+   fact a reader can check without a failing run. `INSTALL.md` keeps one mention
+   on purpose: it tells a development profile that linked the old bundle to
+   remove that entry, which is the opposite of a stale id.
 
 Evidence: `scripts/check-pack.mjs` (the `isClient` exclusion, the whole-tree
 scan, `notes.push` with bytes); `packages/dsh-anyplugin-install/test/panel.test.mjs`

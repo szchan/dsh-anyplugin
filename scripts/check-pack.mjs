@@ -227,13 +227,14 @@ try {
     check(serverSources.includes('dsh-anyplugin: panel routes'), 'the shipped server has no panel route registration')
     check(serverSources.includes('/anyplugin/installs'), 'the shipped server has no panel read route')
     check(serverSources.includes('dsh-anyplugin/install'), 'the shipped server does not reach the install writer through ./install')
-    // The deleted package must not survive as a string anywhere in the
-    // artifact: a stale id would make the bundle look for a row that is never
-    // composed, and a stale README would keep telling users to install it.
-    for (const path of files) {
-      const source = readFileSync(join(tree, path), 'utf8')
+    // The deleted package must not survive in the code or the manifest: a
+    // stale id would make the bundle look for a row that is never composed.
+    // INSTALL.md is allowed to name it, because its one mention is the
+    // instruction to delete an old dev-profile entry (D81).
+    for (const [path, source] of contents) {
       check(!source.includes('dsh-anyplugin-ui'), `${path} still names the removed dsh-anyplugin-ui package`)
     }
+    check(!JSON.stringify(manifest).includes('dsh-anyplugin-ui'), 'package.json still names the removed dsh-anyplugin-ui package')
     notes.push('panel: lib/client.js is the dsh-anyplugin dsh.client bundle; the server registers its routes in lib/index.js')
     const imported = new Set()
     // The panel reaches its own package's ./install export by name (D61/D77);
