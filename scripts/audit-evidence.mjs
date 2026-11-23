@@ -147,7 +147,10 @@ function worktreeState() {
 }
 
 function decisionsState() {
-  const path = join(root, 'docs', 'DECISIONS.md')
+  // The override exists so the gate can be proven against an out-of-order log
+  // without editing the real one; a digest run uses docs/DECISIONS.md.
+  const override = process.env.DSH_ANYPLUGIN_AUDIT_DECISIONS
+  const path = typeof override === 'string' && override.trim() !== '' ? resolve(override.trim()) : join(root, 'docs', 'DECISIONS.md')
   if (!existsSync(path)) return { entries: 0, last: '', duplicates: [] }
   const ids = [...readFileSync(path, 'utf8').matchAll(/^## (D\d+) — /gmu)].map((match) => match[1])
   const seen = new Set()
@@ -156,7 +159,18 @@ function decisionsState() {
     if (seen.has(id)) duplicates.add(id)
     seen.add(id)
   }
-  return { entries: ids.length, last: ids.at(-1) ?? '', duplicates: [...duplicates] }
+  // The log is append-only, not ordered: D85–D88 were added above the D84 entry,
+  // so "last" is the greatest decision number, not the last line in the file.
+  let last = ''
+  let lastNumber = -1
+  for (const id of ids) {
+    const number = Number(id.slice(1))
+    if (number > lastNumber) {
+      lastNumber = number
+      last = id
+    }
+  }
+  return { entries: ids.length, last, duplicates: [...duplicates] }
 }
 
 function featuresState() {
@@ -205,11 +219,40 @@ function mechanismState() {
 // did, as opposed to what the workflow says they do. Sessions are streamed:
 // one of them is over a megabyte compressed, and `execFileSync` with a buffer
 // died on it (`spawnSync zstd ENOBUFS`).
+//
+// DSH records session state under `$DSH_HOME` (the Desktop host defaults to
+// `~/.dsh`): transcripts in `$DSH_HOME/sessions`, projection records in
+// `$DSH_HOME/storages`. Resolving the variable rather than hard-coding `~/.dsh`
+// also gives a test one knob to point at a fixture home.
 
-const SESSION_ROOT = join(homedir(), '.dsh', 'sessions')
+const DSH_HOME = (() => {
+  const named = process.env.DSH_HOME?.trim()
+  return named === undefined || named === '' ? join(homedir(), '.dsh') : resolve(named)
+})()
+const SESSION_ROOT = join(DSH_HOME, 'sessions')
+const PROJECTION_ROOT = join(DSH_HOME, 'storages', 'session_projcache', 'sessions')
 /** `/home/szchan/Projects/dsh-anyplugin` -> `--home-szchan-Projects-dsh-anyplugin--`. */
 function sessionDir(repo) {
   return `--${repo.replaceAll(sep, '-').replace(/^-+/u, '')}--`
+}
+
+/**
+ * What the projection cache believes about a seeded session, for the one case
+ * where the transcript cannot be believed: the header says the session is
+ * seeded but no tagged end-of-seed marker was found, so the inherited prefix
+ * cannot be separated. The cache is a derived record (large, replaceable, and
+ * possibly stale) and is never the primary source; it only makes the digest's
+ * "cannot tell" note concrete. Returns the inherited event count or null.
+ */
+function cachedInheritedCount(id) {
+  try {
+    const record = JSON.parse(readFileSync(join(PROJECTION_ROOT, `${id}.json`), 'utf8'))
+    const identity = record?.record?.identity ?? record?.identity
+    if (identity?.isSeeded !== true) return null
+    return Number.isInteger(identity.inheritedEventCount) ? identity.inheritedEventCount : null
+  } catch {
+    return null
+  }
 }
 
 /** Collapse a command to the workflow it belongs to, not its arguments. */
@@ -242,6 +285,23 @@ function toolText(message) {
   return String(content ?? '')
 }
 
+/**
+ * Analyze one transcript in a single streaming pass.
+ *
+ * A seeded fork's transcript opens with a byte copy of its ancestor's events (the
+ * seed). The boundary is a tagged `session/end-seed` event (`data.inherited ===
+ * true`) whose `seq` is the cut: everything before the *last* tagged marker is
+ * inherited history, not work this session did (F21 — two children reported
+ * 3,685 tool calls each that were a root prefix, so the eight-largest table
+ * counted 7,370 of the root's calls twice). The header line records only
+ * `isSeeded`, and the projection cache only repeats the cut; the transcript is
+ * the counted artifact, so the cut is read from it.
+ *
+ * The last-marker rule matters for a fork of a fork: an earlier tagged marker can
+ * sit inside the inherited prefix, and everything between it and the final marker
+ * is inherited too. A later marker demotes that interval and the independent
+ * counters start over after it.
+ */
 async function analyzeSession(file) {
   const child = spawn('zstd', ['-dc', file], { stdio: ['ignore', 'pipe', 'ignore'] })
   const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity })
@@ -251,6 +311,16 @@ async function analyzeSession(file) {
     cwd: '',
     depth: 0,
     preset: '',
+    headerSeen: false,
+    // 'unseeded' | 'seeded' (the inherited prefix is known and counted) |
+    // 'unknown' (the header says seeded but the cut is missing: the session
+    // cannot be split, so it is excluded from every count rather than counted
+    // as independent work).
+    seed: { status: 'unseeded', cut: 0, inherited: 0, reason: '' },
+    // Independent tool calls whose event time is inside the pass window: the
+    // role-cap unit (D73). Lifetime is the same count over the whole independent
+    // transcript and is context, not the verdict.
+    windowTools: 0,
     toolCalls: new Map(),
     bash: new Map(),
     cdPrefix: 0,
@@ -263,6 +333,28 @@ async function analyzeSession(file) {
   }
   const calls = new Map()
   const bashGroupByCall = new Map()
+  const sinceMs = since.getTime()
+  let mode = 'independent' // 'inherited' while inside a seeded prefix
+  let seeded = false
+  let markerCut = null
+  let inheritedTools = 0
+  let intervalTools = 0
+  const resetIndependent = () => {
+    // A later tagged marker demotes everything since the previous marker to the
+    // inherited prefix; independent accounting starts over after it.
+    session.toolCalls.clear()
+    session.bash.clear()
+    session.guardDenials.clear()
+    session.writeFiles.clear()
+    session.cdPrefix = 0
+    session.workdir = 0
+    session.verifyRuns = 0
+    session.gateRuns = 0
+    session.toolErrors = 0
+    session.windowTools = 0
+    calls.clear()
+    bashGroupByCall.clear()
+  }
   for await (const line of lines) {
     if (line === '') continue
     let event
@@ -272,14 +364,37 @@ async function analyzeSession(file) {
       continue
     }
     if (event.type === 'session') {
+      if (session.headerSeen) continue
+      session.headerSeen = true
       session.cwd = event.cwd ?? ''
       session.depth = event.delegationDepth ?? 0
       session.preset = event.agentPreset ?? ''
+      seeded = event.isSeeded === true
+      if (seeded) mode = 'inherited'
+      continue
+    }
+    if (seeded && event.type === 'session/end-seed' && event.data?.inherited === true) {
+      // The last tagged marker is the current session's cut; untagged markers are
+      // ordinary restore/replay boundaries and say nothing about the seed.
+      if (mode === 'inherited') {
+        mode = 'independent'
+      } else {
+        inheritedTools += intervalTools
+        intervalTools = 0
+        resetIndependent()
+      }
+      markerCut = Number.isInteger(event.seq) ? event.seq : markerCut
+      continue
+    }
+    if (mode === 'inherited') {
+      if (event.type === 'tool/call') inheritedTools += 1
       continue
     }
     if (event.type === 'tool/call') {
       const name = event.data?.name ?? ''
       session.toolCalls.set(name, (session.toolCalls.get(name) ?? 0) + 1)
+      intervalTools += 1
+      if (Number.isFinite(event.time) && event.time >= sinceMs) session.windowTools += 1
       let args = {}
       try {
         args = JSON.parse(event.data?.arguments ?? '{}')
@@ -332,6 +447,13 @@ async function analyzeSession(file) {
     }
   }
   await new Promise((resolveClose) => child.on('close', resolveClose))
+  if (!session.headerSeen) {
+    session.seed = { status: 'unknown', cut: null, inherited: null, reason: 'no session header line' }
+  } else if (seeded && mode === 'inherited') {
+    session.seed = { status: 'unknown', cut: null, inherited: null, reason: 'seeded header without a tagged end-of-seed marker' }
+  } else if (seeded) {
+    session.seed = { status: 'seeded', cut: markerCut, inherited: inheritedTools, reason: '' }
+  }
   return session
 }
 
@@ -355,6 +477,13 @@ async function sessionEvidence() {
     roots: 0,
     children: 0,
     presets: [],
+    // A seeded fork's inherited prefix is another session's work. It is counted
+    // separately so the digest can say how much it excluded, and never enters the
+    // per-session or aggregate counters below (F21).
+    inherited: { sessions: 0, tools: 0 },
+    // Seeded sessions whose cut could not be read: excluded from the counts and
+    // named in the digest instead of being counted as independent work.
+    unknownSeed: [],
     toolCalls: [],
     bashGroups: [],
     cdPrefix: 0,
@@ -377,9 +506,22 @@ async function sessionEvidence() {
   const writePaths = new Map()
   for (const file of files) {
     const session = await analyzeSession(file)
-    if (session.depth === 0) aggregate.roots += 1
-    else aggregate.children += 1
-    presets.set(session.preset || '(unknown)', (presets.get(session.preset || '(unknown)') ?? 0) + 1)
+    if (session.headerSeen) {
+      if (session.depth === 0) aggregate.roots += 1
+      else aggregate.children += 1
+      presets.set(session.preset || '(unknown)', (presets.get(session.preset || '(unknown)') ?? 0) + 1)
+    }
+    if (session.seed.status === 'unknown') {
+      // The header says seeded but the transcript carries no tagged cut, so the
+      // inherited prefix cannot be separated from independent work. Do not guess
+      // and do not count it whole: name it and keep it out of every figure below.
+      aggregate.unknownSeed.push({ id: session.id, reason: session.seed.reason, projection: cachedInheritedCount(session.id) })
+      continue
+    }
+    if (session.seed.status === 'seeded') {
+      aggregate.inherited.sessions += 1
+      aggregate.inherited.tools += session.seed.inherited
+    }
     aggregate.cdPrefix += session.cdPrefix
     aggregate.workdir += session.workdir
     aggregate.toolErrors += session.toolErrors
@@ -387,11 +529,20 @@ async function sessionEvidence() {
     aggregate.gateRuns += session.gateRuns
     aggregate.writeTargets += session.writeFiles.size
     for (const path of session.writeFiles) writePaths.set(path, (writePaths.get(path) ?? 0) + 1)
+    // Independent work only: `window` is the role-cap unit (D73) and `lifetime` is
+    // the independent total; `inherited` is the copied prefix both exclude.
+    const lifetime = [...session.toolCalls.values()].reduce((sum, count) => sum + count, 0)
     largest.push({
       id: session.id,
       depth: session.depth,
       cwd: session.cwd,
-      tools: [...session.toolCalls.values()].reduce((sum, count) => sum + count, 0),
+      window: session.windowTools,
+      lifetime,
+      // F21 renamed the old `tools` total to `lifetime`. The evidence JSON is an
+      // artifact other tools read, so the old name stays as an alias.
+      tools: lifetime,
+      inherited: session.seed.inherited,
+      seed: session.seed.status,
       bash: [...session.bash.values()].reduce((sum, record) => sum + record.count, 0),
     })
     for (const [name, count] of session.toolCalls) tools.set(name, (tools.get(name) ?? 0) + count)
@@ -415,7 +566,9 @@ async function sessionEvidence() {
     .map(([group, record]) => ({ group, ...record }))
     .slice(0, 30)
   aggregate.guardDenials = [...denials.values()].sort((a, b) => b.count - a.count)
-  aggregate.largest = largest.sort((a, b) => b.tools - a.tools).slice(0, 8)
+  aggregate.largest = largest
+    .sort((a, b) => b.window - a.window || b.lifetime - a.lifetime || a.id.localeCompare(b.id))
+    .slice(0, 8)
   aggregate.topWritePaths = [...writePaths.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([path, count]) => ({ path, count }))
   return aggregate
 }
@@ -697,11 +850,20 @@ function digest(evidence) {
   } else {
     const sessions = evidence.sessions
     lines.push(`- ${sessions.sessions} sessions (${sessions.roots} root, ${sessions.children} child); presets: ${sessions.presets.map((row) => `${row.preset} ${row.count}`).join(', ')}`)
-    // The window selects *sessions* by transcript mtime; the per-session counts
-    // below cover the whole transcript, not just events inside the window. The
-    // largest-session total is therefore a lifetime figure, which is exactly the
-    // unit the role cap measures. Say so, or a 1-day digest reads as 1-day calls.
-    lines.push('- counts below are per included session\'s whole transcript: the window selects sessions by transcript mtime, not calls by time; largest-session totals are lifetime, the role-cap unit')
+    // Session selection is by transcript mtime, but each row's `window` is a
+    // per-call time filter: it counts only independent calls at or after the
+    // window start. A seeded fork's transcript opens with a copy of its ancestor's
+    // events, and those are another session's work (F21). Say both, or a 1-day
+    // digest reads as 1-day calls and a root's copied prefix reads as its peers.
+    lines.push('- counts below cover each included session\'s independent transcript: sessions are selected by transcript mtime, and a row\'s `window` counts only that session\'s independent calls whose event time is at or after the window start; a seeded fork\'s inherited prefix is excluded')
+    if (sessions.inherited.sessions > 0) {
+      lines.push(`- inherited prefixes excluded: ${sessions.inherited.sessions} seeded session(s), ${sessions.inherited.tools} copied tool calls (not independent work)`)
+    }
+    if (sessions.unknownSeed.length > 0) {
+      lines.push(`- seeded prefixes unreadable, excluded from the counts (the digest cannot tell inherited history from independent work): ${sessions.unknownSeed.map((row) => `${row.id.slice(0, 24)} (${row.reason}${row.projection === null ? '' : `; the projection cache says ${row.projection} inherited events`})`).join(', ')}`)
+    }
+    // `window` is the role-cap unit (D73); `lifetime` is the independent total and
+    // stays context only; `inherited` is the copied prefix both exclude.
     lines.push(`- bash ${sessions.bashCalls} calls; leading \`cd\` ${sessions.cdPrefix} (${pct(sessions.cdPrefix, sessions.bashCalls)}); \`workdir\` ${sessions.workdir} (${pct(sessions.workdir, sessions.bashCalls)}); tool errors ${sessions.toolErrors}; verify ${sessions.verifyRuns}, check:* ${sessions.gateRuns}`)
     lines.push(`- tools: ${sessions.toolCalls.slice(0, 12).map((row) => `${row.name} ${row.count}`).join(', ')}`)
     lines.push('- top command groups: ' + sessions.bashGroups.slice(0, 12).map((row) => `\`${row.group}\` ${row.count}${row.failed > 0 ? ` (${row.failed} failed)` : ''}`).join(', '))
@@ -709,7 +871,7 @@ function digest(evidence) {
     // test matrix, so the number is not a denial count; the structured denial
     // log below is. This line only says whether the guard was seen at all.
     lines.push(`- guard DENY lines (self-tests included): ${sessions.guardDenials.length === 0 ? 'none' : sessions.guardDenials.map((row) => `${row.rule} ${row.count}`).join(', ')}`)
-    lines.push(`- largest sessions: ${sessions.largest.map((row) => `${row.id.slice(0, 24)} d${row.depth} ${row.tools} tools${row.cwd ? ` @ ${row.cwd.replace(evidence.repo.root, '.')}` : ''}`).join(', ')}`)
+    lines.push(`- largest sessions: ${sessions.largest.map((row) => `${row.id.slice(0, 24)} d${row.depth} window ${row.window} lifetime ${row.lifetime} inherited ${row.inherited}${row.cwd ? ` @ ${row.cwd.replace(evidence.repo.root, '.')}` : ''}`).join(', ')}`)
     lines.push(`- write targets (top): ${sessions.topWritePaths.slice(0, 10).map((row) => `\`${row.path.replace(evidence.repo.root, '.')}\` ${row.count}`).join(', ') || 'none'}`)
   }
   lines.push('')
