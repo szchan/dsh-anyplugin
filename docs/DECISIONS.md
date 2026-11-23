@@ -3904,3 +3904,57 @@ progress, whose index has unmerged paths, or which is dirty, before it calls
 status, and pushes nothing, and run-level tests in `scripts/pr-update.test.mjs`
 pin the refusal, the abort, and the preserved state. GitHub documents that a
 `pull_request` run uses the PR merge commit's workflow file.
+
+## D86 — A claim marked `not proven` is re-run on the PR head before merge
+
+**Decided 2026-11-23** (#238, finding 3 of the 2026-11-22 workflow review).
+`docs/WORKFLOW.md` already says a mechanism PR merges only after two independent
+verdicts, that an unresolved `weaker`/`not proven` verdict is a merge veto, and
+that the master reads the verdict and the diff stat, not the whole diff. The last
+point is right about context, but the verdict is a PR comment and the master's
+merge is its only reader: nothing re-ran a claim a reviewer marked `not proven`,
+so such a claim could reach `main` on an unchecked verdict.
+
+1. **The step: the reviewer re-runs the recorded command on the head.** A
+   `not proven` verdict records the command that would settle the claim, as one
+   verbatim line. After the review, the reviewer runs that exact command against
+   the head under review and posts the updated verdict as a follow-up comment
+   before the master merges. The command is the one the reviewer wrote, not a
+   paraphrase: a translated command is a different command, and its transcript
+   no longer matches the claim it is offered for. The step lives in
+   `docs/WORKFLOW.md` §Review rubric ("Re-running a `not proven` verdict") and is
+   referenced from the §Roles veto paragraph.
+2. **The vocabulary stays `proven` / `weaker` / `not proven`.** The re-run ends
+   the claim as `proven` (the command settles it), `weaker` (it settles a weaker
+   property than the claim says), or `not proven` (it does not settle the
+   claim). No fourth state and no second claim: the three words are the
+   claim-table vocabulary of `docs/AUDIT.md` §6 and its reviewer brief, and a
+   re-run moves a claim between them; it does not introduce a scale.
+3. **An unsettled claim keeps the PR out of the merge queue.** A claim still
+   `not proven` after the re-run is not merged around: the master bounces the PR
+   and names the reason. The next head is the next chance, and a bounce on this
+   ground is a real reason, not a style note.
+4. **Why policy, not a gate.** No gate reads PR comments (`docs/WORKFLOW.md`
+   §Roles), and a gate that did would be the wrong instrument: the bot writes
+   both the verdict and the merge, so a parser would gate on text any agent
+   holding the bot token can produce, and "the re-run happened" is not derivable
+   from a comment at all — at best the gate would check that a string was typed.
+   The command can also need a probe worktree, the network, or money
+   (`claude plugin eval`), which CI must not do. The merge path is the pinned
+   head (D66) plus the master's judgement; the pin makes "what was reviewed"
+   falsifiable but does not prove a claim was re-run, the same limit D83 states
+   for a check's context name. A required check would turn an unverifiable
+   comment into the merge gate; policy keeps the master's bounce as the failure
+   mode, and the bounce is reviewable.
+
+**Not claimed.** That `weaker` is re-run: the step is `not proven` only;
+`weaker` already has a proof and the author grows it (`docs/AUDIT.md` §6). That
+the master reads the whole diff: unchanged. That a comment parser will later
+enforce this: the merge pin and the master's judgement remain the enforcement
+surface (D66), and #238's "Must not" forbids such a check.
+
+**Evidence.** `docs/WORKFLOW.md` §Roles names the re-run as a precondition of the
+veto, and §Review rubric states the step, the vocabulary and the bounce;
+`npm run check:decisions` locks the appended entry. There is no code and no test:
+the enforcement is procedural, so the evidence is the text the master reads and
+the pin on the merge. That limit is the point of rule 4.
