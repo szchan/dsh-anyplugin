@@ -141,3 +141,21 @@ test('a symlink to the checkout is the checkout', () => {
     rmSync(scratch, { recursive: true, force: true })
   }
 })
+
+test('a subdirectory of a review worktree is inside, and a relative gitdir resolves', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'guard-scope-'))
+  const checkout = join(dir, 'main')
+  const review = join(dir, 'review')
+  mkdirSync(join(checkout, '.git', 'worktrees', 'review'), { recursive: true })
+  mkdirSync(join(review, 'packages'), { recursive: true })
+  // git 2.56 with --relative-paths writes the pointer relative to the tree.
+  writeFileSync(join(review, '.git'), 'gitdir: ../main/.git/worktrees/review\n')
+  const policy = {
+    protectedRoots: [checkout, join(checkout, '.git')],
+    worktrees: [],
+    gitDirectories: [join(checkout, '.git')],
+  }
+  assert.equal(inTerritory(review, policy), true, 'a review root is a working tree')
+  assert.equal(inTerritory(join(review, 'packages'), policy), true, 'its subdirectory is inside it')
+  assert.equal(inTerritory(join(dir, 'elsewhere'), policy), false, 'a sibling is not')
+})

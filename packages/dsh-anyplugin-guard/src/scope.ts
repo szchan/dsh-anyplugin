@@ -12,7 +12,7 @@
  * paths or `<stem>-*` namespaces. No new configuration is invented here.
  */
 import { readFileSync, statSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 
 import { realTarget, type ResolvedPolicy } from './policy.ts'
 
@@ -57,9 +57,27 @@ const gitPointer = (path: string): string | undefined => {
   if (!stat.isFile()) return undefined
   try {
     const match = /^gitdir:\s*(.+)$/mu.exec(readFileSync(pointer, 'utf8'))
-    return match === null ? undefined : realTarget(match[1].trim())
+    if (match === null) return undefined
+    // A linked worktree created with git 2.56's relative paths writes
+    // `gitdir: ../main/.git/worktrees/review`; it is relative to the `.git`
+    // file's directory, not to the guard's cwd (reviewer finding on #230).
+    return realTarget(resolve(path, match[1].trim()))
   } catch {
     return undefined
+  }
+}
+
+/**
+ * The working tree containing `path`, if any. Checking only `path/.git` would
+ * make a session started in a subdirectory of a review worktree inert, so walk
+ * up to the nearest `.git` (reviewer finding on #230).
+ */
+const containingWorktree = (path: string): string | undefined => {
+  for (let current = path; ; ) {
+    if (gitPointer(current) !== undefined) return current
+    const parent = dirname(current)
+    if (parent === current) return undefined
+    current = parent
   }
 }
 
@@ -71,11 +89,13 @@ const isRepositoryWorktree = (path: string, policy: ResolvedPolicy): boolean => 
 }
 
 /**
- * `undefined` means the territory is unconfigured (a hand-written config or a
- * test): behave globally, because silently switching an unconfigured guard off
- * is the worse failure. With a territory configured, a session whose cwd is
- * unknown is treated as outside it — the guard does not guess. Paths are
- * compared canonically: a symlink to the checkout is the checkout.
+ * A policy with neither roots nor worktrees is unconfigured (a hand-written
+ * config, a unit test): behave globally, because silently switching an
+ * unconfigured guard off is the worse failure. With a territory configured, a
+ * session whose cwd is unknown is treated as outside it — the guard does not
+ * guess. Paths are compared canonically: a symlink to the checkout is the
+ * checkout, a relative gitdir resolves against its own tree, and a directory
+ * inside a working tree is inside that tree.
  */
 export const inTerritory = (cwd: string | undefined, policy: ResolvedPolicy): boolean => {
   const roots = territoryRoots(policy)
@@ -83,6 +103,9 @@ export const inTerritory = (cwd: string | undefined, policy: ResolvedPolicy): bo
   if (cwd === undefined) return false
   const path = realTarget(cwd)
   if (roots.some((root) => within(path, realTarget(root)))) return true
-  if (policy.worktrees.some((entry) => matchesPattern(path, entry))) return true
-  return isRepositoryWorktree(path, policy)
+  if (policy.worktrees.some((entry) => matchesPattern(path, realTarget(entry)))) return true
+  // A subdirectory of a review or ticket worktree has no .git of its own; the
+  // nearest ancestor that does is still a working tree of this repository.
+  const tree = containingWorktree(path)
+  return tree !== undefined && isRepositoryWorktree(tree, policy)
 }
