@@ -3863,3 +3863,44 @@ so are Bun's space-separated value flags (`bun --env-file .env test`) and
 `env --split-string='npm test'`, whose value is one token the reader takes for a
 flag rather than a command. The named spellings above are the ones an agent
 actually types; the residue is a convention gap for honest mistakes, not a
+
+## D83 — A fork PR's `verify` is advisory; the push run is the evidence
+
+`#227` added a `pull_request` trigger so a fork PR gets a gate at all. Review
+found the trust hole: a `pull_request` run executes the workflow file from the
+PR's merge commit, which a contributor without write access controls, and a
+skipped job reports as a passing check of its own context name.
+
+1. **The gate is the push run produced by this repository's `verify.yml` for
+   the head; reviewers count nothing else.** Branch protection matches a
+   required check by context name and the app that produced it. It does not
+   look at which workflow file produced the context, so it cannot tell this
+   repository's run from one that a contributor's `on: pull_request` workflow
+   produced: a fork PR that adds `.github/workflows/verify.yml` with a job
+   named `verify` gets a check that would satisfy the required context without
+   running our tests, and the job name is the fork's to choose. The rule is
+   therefore procedural, not enforced: a reviewer counts only the `push` run
+   this repository's `verify.yml` produced for the head, and for a fork PR that
+   is the maintainer's push run from pushing the head onto a branch here
+   (rule 2). `verify.yml` and `perf.yml` stay push-only as defence in depth:
+   that removes the accidental second run, not the trust boundary.
+2. **Merge evidence for a fork PR is a push run here.** A fork PR shows no
+   gate until a maintainer pushes the head to a branch in this repository (or
+   opens an equivalent branch); that push run is the gate. `scripts/pr-update.mjs`
+   is the mechanical half: do not print a merge line for a fork head that never
+   ran here, and it automates the same-repo path only.
+3. **The workflow diff is review surface.** A fork PR that touches
+   `.github/workflows/` is reviewed as a security change, not as formatting.
+
+Evidence: `.github/workflows/verify.yml` and `.github/workflows/perf.yml` are
+push-only (one run per push event; `docs/PROFILING.md` says the same for
+`perf`), and `scripts/ci-runs.mjs`'s `selectRun` accepts only `push` runs for
+the head; its run-level tests (`scripts/ci-runs.test.mjs`, `scripts/ci.test.mjs`)
+pin that a fork's own `pull_request` run is never watched and that an unpushed
+head fails fast with the push hint instead of waiting out the appearance
+window. `scripts/pr-update.mjs` refuses a worktree whose merge is already in
+progress, whose index has unmerged paths, or which is dirty, before it calls
+`git merge`; when its own merge conflicts it aborts, reads the abort's exit
+status, and pushes nothing, and run-level tests in `scripts/pr-update.test.mjs`
+pin the refusal, the abort, and the preserved state. GitHub documents that a
+`pull_request` run uses the PR merge commit's workflow file.

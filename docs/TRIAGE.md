@@ -186,6 +186,10 @@ These rules are absolute and are the reason this file exists:
 Every PR, internal or external, runs the same gate:
 
 1. `verify` green (CI). A skipped fidelity test on CI is a failure, not a pass.
+   For a fork PR the only count is the push run this repository's `verify.yml`
+   produced for the head — the maintainer's push of it onto a branch here; a
+   `pull_request` run executes the contributor's workflow file and is not
+   evidence (D83).
 2. The reviewer rubric in `docs/WORKFLOW.md`, including a mutation per claim.
 3. Touches respected, decisions not edited in place
    (`scripts/check-decisions.mjs` enforces the append-only rule).
