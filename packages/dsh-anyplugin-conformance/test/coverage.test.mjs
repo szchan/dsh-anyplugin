@@ -274,7 +274,7 @@ async function inventoryFor(fixture) {
         assert.equal(compactions[index + 1], 'PostCompact', 'and closes with end')
       }
       assert.equal(observed.count('PermissionDenied'), 1, 'the allowed demand is not a denial')
-      assert.equal(observed.count('CwdChanged'), 5, 'each working-directory set is one record')
+      assert.equal(observed.count('CwdChanged'), 5, 'each working-directory record is one line, sets and initial ensures alike')
       assert.equal(observed.count('ConfigChange'), 2, 'first read (0) and one change (1)')
       assert.equal(observed.count('TaskCreated'), 1, 'one creation record, one run')
       assert.equal(observed.count('TaskCompleted'), 1, 'one completed revision, one run')
