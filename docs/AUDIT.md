@@ -630,8 +630,8 @@ edit.
       "rationale": "The 2026-11-23 digest lists two children at 3,685 tool calls each, but both are seeded forks of the root prefix (each session's projection record says `isSeeded: true`, and its end-seed marker is seq 25,690); their counts are inherited, not independent work, and the eight-largest table double-counts 7,370 calls. The same digest prints `decisions.last: D84` while the file order ends at D84 and the highest id is D88. The role cap reads the root's window (1,931 at evidence time), not the lifetime column, but the table invites the wrong unit. The fix is to exclude the inherited prefix from the per-session counts, print a window column as the cap unit, take the numeric maximum decision id, and pin a seeded-fork fixture; the audit then reports independent work and a true `last`.",
       "evidence": [
         "2026-11-23 digest: a5d42890 and ca312f93 each 3,685 lifetime tool calls, cwd repo root; the session projections say isSeeded true, with end-seed markers at seq 25,690 (the digest itself prints lifetime without separating inherited work)",
-        "2026-11-23 digest: decisions 88 entries, last \"D84\"; docs/DECISIONS.md highest id D88",
-        "2026-11-23 root transcript: 4,922 lifetime / 1,931 window under the evidence-time upper bound (2,008 with the lower bound alone); other children 384/368/231/230/220"
+        "2026-11-23 digest: decisions 88 entries, last \"D84\"; at that pass `docs/DECISIONS.md` had highest id D88 (D89 landed later the same day)",
+        "2026-11-23 root transcript: 4,922 lifetime / 1,931 window under the evidence-time upper bound (2,008 on a review-time recount with the lower bound alone; a live snapshot either way); other children 384/368/231/230/220"
       ],
       "owner": "the master",
       "reviewBy": "2026-11-30"
