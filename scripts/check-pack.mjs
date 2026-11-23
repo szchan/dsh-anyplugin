@@ -216,9 +216,13 @@ try {
     check(clientSource.includes('window.__ModuleLoader__.load('), 'lib/client.js is not a client-modules bundle')
     check(/id:\s*['"]dsh-anyplugin['"]/.test(clientSource), 'lib/client.js does not register the dsh-anyplugin client row')
     check(clientSource.includes('settings.section'), 'lib/client.js does not register the panel slot')
-    const indexSource = contents.get('lib/index.js') ?? ''
-    check(indexSource.includes('/anyplugin/installs'), 'lib/index.js does not carry the panel read route')
-    check(indexSource.includes('dsh-anyplugin/install'), 'lib/index.js does not reach the install writer through ./install')
+    // The split build may place the controller's shared chunk beside
+    // lib/index.js, so the route and the writer reference are asserted over the
+    // whole shipped lib, not one file.
+    const serverSources = [...contents.values()].join("
+")
+    check(serverSources.includes('/anyplugin/installs'), 'the shipped lib has no panel read route')
+    check(serverSources.includes('dsh-anyplugin/install'), 'the shipped lib does not reach the install writer through ./install')
     // The deleted package must not survive as a string: a stale id would make
     // the bundle look for a row that is never composed.
     for (const [path, source] of contents) {
