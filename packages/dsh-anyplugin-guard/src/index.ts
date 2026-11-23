@@ -13,6 +13,11 @@
  *   `instructions` field (S9/S10), so this is the only seam that can put text
  *   in front of the worker at spawn time. The brief is context, not a file the
  *   worker is told to read.
+ * - `session/event` (emit): a worker that moves itself into its worktree makes
+ *   the host append a structured `working-directory/change` event. That
+ *   announcement is session-scoped, so it still arrives for a resumed session
+ *   whose seat was lost with the previous Agent object — the seat source that
+ *   survives a resume (#266).
  *
  * Both seams are dispatched through the *agent's* scope carrier
  * (`dsh-agent/lib/index.js:385-386` is the waterfall call; the loop builds the
@@ -45,7 +50,7 @@ export const name = 'anyplugin-guard'
 export const inject = ['tools']
 
 interface AgentState {
-  /** The worktree recorded from step text; confinement follows it. */
+  /** The worktree recorded from step text or a directory announcement; confinement follows it. */
   worktree?: string
   /**
    * A worktree was derived. Resolution must not be marked just because a step
@@ -111,12 +116,13 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
     // the plugin loads in a user profile, so most sessions are not ours.
     if (!inTerritory(agentCwd(agent), policy)) return next()
     const state = stateFor(agent)
-    // Seats come only from step text. A child's header cwd is creation
-    // metadata copied from its parent (`dsh-session` freezes the header and
-    // `dsh-subagent` copies the parent's cwd), so deriving a seat from it here
-    // would lock a child spawned elsewhere to its parent's worktree; the
-    // spawn cwd reaches the child as a `working-directory/change` notice in
-    // its messages, which the retrying step seat reads instead (#250).
+    // Seats come from step text and from the host's own directory announcement
+    // (`working-directory/change`, see `learnSeat`). A child's header cwd is
+    // creation metadata copied from its parent (`dsh-session` freezes the
+    // header and `dsh-subagent` copies the parent's cwd), so deriving a seat
+    // from it here would lock a child spawned elsewhere to its parent's
+    // worktree; the spawn cwd reaches the child as a working-directory notice
+    // in its messages, which the retrying step seat reads instead (#250).
     const call: GuardCall = {
       tool: typeof exec?.name === 'string' ? exec.name : '',
       args: (exec?.arguments ?? {}) as Record<string, unknown>,
@@ -184,6 +190,38 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
     return { ...result, messages: [...result.messages, brief] }
   }
 
+  // The seat a resume loses. A session resumed with a steering message is
+  // announced as a new Agent (`agent/created` fires again), but the state is
+  // keyed by the Agent object and the cold resume replays the stored log
+  // without re-publishing it, so neither the spawn prompt nor a directory
+  // notice is claimed again: every write stays unseated (#266). The host does
+  // publish the directory change itself, because the worker asks for it
+  // (`working-directory` tool -> `working-directory/change` `{cwd}`); that
+  // event is both structured and session-scoped, so it can seat the live
+  // agent for the resumed session without trusting the frozen header cwd
+  // (#250). Learn at most one seat: a recorded seat never moves, and an
+  // announcement that does not resolve to exactly one installed worktree —
+  // the primary checkout, outside every pattern, or an ambiguous match — is
+  // still not a seat.
+  const learnSeat = (session: any, event: any): void => {
+    if (event?.type !== 'working-directory/change') return
+    const id = session?.header?.id
+    const cwd = event?.data?.cwd
+    if ((typeof id !== 'string' && typeof id !== 'number') || typeof cwd !== 'string' || cwd.length === 0) return
+    const registry = typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+    const agent = typeof registry?.get === 'function' ? registry.get(String(id)) : undefined
+    if (agent === undefined || agent === null) return
+    const state = stateFor(agent)
+    if (state.resolved) return
+    // The announcement is a directory, not text: chooseWorktree's text branch
+    // contributes nothing, and the cwd branch keeps the same exactly-one rule
+    // the step seat uses.
+    const worktree = chooseWorktree({ text: '', cwd, worktrees: policy.worktrees })
+    if (worktree === undefined) return
+    state.worktree = worktree
+    state.resolved = true
+  }
+
   // Agent-scoped seats for the brief. The seams are dispatched through the
   // agent's carrier, but the app-level listener below receives child calls too;
   // a seat is an addition, not a replacement, and `state.briefed` keeps the
@@ -193,6 +231,7 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
   // App-level mounts: authoritative for every carrier, root or child.
   ctx.effect(() => ctx.on('tools/pre-execute', decideTool))
   ctx.effect(() => ctx.on('agent/pre-step', decideStep))
+  ctx.effect(() => ctx.on('session/event', learnSeat))
 
   const mountAgent = (agent: any): void => {
     const id = agentId(agent)
