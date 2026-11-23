@@ -352,12 +352,12 @@ edit.
       "mechanism": "schedule",
       "status": "reviewed",
       "artifact": "scripts/audit-evidence.mjs",
-      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. The daily digest reports the guard's install state as one line that distinguishes current, not-installed, installed-with-stale-paths, duplicate and unavailable (a probe that cannot report says why, and never fails the digest); installing it remains an operator action, so this is reviewed, not enforced.",
+      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. The daily digest reports the guard's install state as one line that distinguishes current, not-installed, installed-with-stale-paths, duplicate, refused and unavailable (a probe that cannot report says why, and never fails the digest); installing it remains an operator action, so this is reviewed, not enforced.",
       "evidence": [
         "2026-11-22 evidence: guard not-installed, pre-push missing, 23 worktrees",
         "docs/audits/2026-11-22.md",
-        "2026-11-23 digest line: `- guard: **stale**; source present; worktrees 1 desired / 1 installed; the installed block differs from the tree at line 4; hooks pre-push current`",
-        "scripts/audit-evidence.test.mjs: current, not-installed on exit 1, installed-with-stale-paths, duplicate, unavailable on spawn failure, unavailable on unparsable output"
+        "2026-11-23 digest line: `- guard: **stale**; source present; worktree entries 1 desired / 1 installed; the installed block differs from the tree at line 4; hooks pre-push current`",
+        "scripts/audit-evidence.test.mjs: current, not-installed on exit 1, installed-with-stale-paths, stale+difference line, duplicate, refused with its reason, unavailable on spawn failure, unavailable on timeout, unavailable on unparsable output"
       ],
       "proof": ".dsh/skills/dsh-anyplugin-audit/SKILL.md"
     },

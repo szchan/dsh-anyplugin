@@ -437,6 +437,14 @@ async function sessionEvidence() {
 const GUARD_STATUS_SCRIPT = join(root, 'scripts', 'guard-status.mjs')
 const GUARD_PROBE_TIMEOUT_MS = 25_000
 
+// The timeout is injectable for the same reason the runner is: the timeout
+// branch is part of the contract (it must produce `unavailable`, never a
+// failure), and a test cannot wait 25 s to prove it.
+function guardProbeTimeoutMs() {
+  const override = Number(process.env.DSH_ANYPLUGIN_GUARD_PROBE_TIMEOUT_MS)
+  return Number.isInteger(override) && override > 0 ? override : GUARD_PROBE_TIMEOUT_MS
+}
+
 function guardProbeCommand() {
   const override = process.env.DSH_ANYPLUGIN_GUARD_STATUS_RUNNER
   if (typeof override === 'string' && override.trim() !== '') {
@@ -454,11 +462,12 @@ function guardEvidence() {
   if (command === process.execPath && !existsSync(GUARD_STATUS_SCRIPT)) {
     return guardUnavailable('scripts/guard-status.mjs is missing')
   }
-  const result = run(command, args, { timeout: GUARD_PROBE_TIMEOUT_MS })
+  const timeoutMs = guardProbeTimeoutMs()
+  const result = run(command, args, { timeout: timeoutMs })
   if (result.error !== '') {
     const why =
       result.error === 'ETIMEDOUT'
-        ? `the probe timed out after ${GUARD_PROBE_TIMEOUT_MS} ms`
+        ? `the probe timed out after ${timeoutMs} ms`
         : `the probe could not be spawned (${result.error})`
     return guardUnavailable(why)
   }
@@ -644,11 +653,21 @@ function githubEvidence() {
  */
 function guardDigestLine(guard) {
   if (guard.status === 'unavailable') {
-    return `- guard: **unavailable**: ${guard.error}; install state unknown, not current`
+    return `- guard: **unavailable**: ${guard.error}; install state unknown — treat as not current until the probe reports`
+  }
+  // `refused` is guard-status declining to compose a block (a second guard id,
+  // a patch it cannot read): the reader's report carries no worktree/hook
+  // fields then, so reporting "source missing; 0 worktrees" would invent
+  // negative facts. It is a cannot-tell state, like `unavailable`.
+  if (guard.status === 'refused') {
+    const reason = guard.reason === undefined ? '' : `: ${guard.reason}`
+    return `- guard: **refused**${reason}; install state unknown — treat as not current until the probe reports`
   }
   const state = guard.duplicateId === true ? 'duplicate' : guard.status
   const parts = [`source ${guard.sourceExists === true ? 'present' : 'missing'}`]
-  parts.push(`worktrees ${guard.worktrees?.length ?? 0} desired / ${guard.installedWorktrees?.length ?? 0} installed`)
+  parts.push(
+    `worktree entries ${guard.worktrees?.length ?? 0} desired / ${guard.installedWorktrees?.length ?? 0} installed`,
+  )
   if ((guard.stalePaths ?? []).length > 0) parts.push(`stale paths: ${guard.stalePaths.join(', ')}`)
   if (guard.duplicateId === true) parts.push('a second anyplugin-guard id sits outside the managed block')
   if (guard.difference !== undefined) parts.push(`the installed block differs from the tree at line ${guard.difference.line}`)

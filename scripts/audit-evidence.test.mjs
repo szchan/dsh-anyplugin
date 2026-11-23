@@ -267,7 +267,7 @@ test('the digest reports a current guard from the parsed report', () => {
   const runner = guardRunner('current', { report: guardReport() })
   const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /^- guard: \*\*current\*\*; source present; worktrees 1 desired \/ 1 installed; hooks pre-push current$/mu)
+  assert.match(result.stdout, /^- guard: \*\*current\*\*; source present; worktree entries 1 desired \/ 1 installed; hooks pre-push current$/mu)
 
   const evidence = JSON.parse(
     runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
@@ -290,7 +290,7 @@ test('a nonzero guard-status exit with a valid report is not-installed, not unav
   })
   const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
   assert.equal(result.status, 0, 'a not-current guard must not fail the digest')
-  assert.match(result.stdout, /^- guard: \*\*not-installed\*\*; source present; worktrees 1 desired \/ 0 installed; hooks pre-push missing$/mu)
+  assert.match(result.stdout, /^- guard: \*\*not-installed\*\*; source present; worktree entries 1 desired \/ 0 installed; hooks pre-push missing$/mu)
 
   const evidence = JSON.parse(
     runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
@@ -312,7 +312,7 @@ test('installed-with-stale-paths names the stale path in the digest', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.match(
     result.stdout,
-    /^- guard: \*\*installed-with-stale-paths\*\*; source present; worktrees 1 desired \/ 0 installed; stale paths: \/tmp\/anyplugin-wt\/ticket-142; hooks pre-push current$/mu,
+    /^- guard: \*\*installed-with-stale-paths\*\*; source present; worktree entries 1 desired \/ 0 installed; stale paths: \/tmp\/anyplugin-wt\/ticket-142; hooks pre-push current$/mu,
   )
   const evidence = JSON.parse(
     runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
@@ -327,7 +327,7 @@ test('a duplicate guard id is reported as duplicate in the digest', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.match(
     result.stdout,
-    /^- guard: \*\*duplicate\*\*; source present; worktrees 1 desired \/ 1 installed; a second anyplugin-guard id sits outside the managed block; hooks pre-push current$/mu,
+    /^- guard: \*\*duplicate\*\*; source present; worktree entries 1 desired \/ 1 installed; a second anyplugin-guard id sits outside the managed block; hooks pre-push current$/mu,
   )
   // The derived word is for the digest; the reader's own status stays in the JSON.
   const evidence = JSON.parse(
@@ -345,7 +345,7 @@ test('a guard probe that cannot be spawned is unavailable, and the digest still 
   assert.equal(result.status, 0, 'an unavailable probe must not fail the digest')
   assert.match(
     result.stdout,
-    /^- guard: \*\*unavailable\*\*: the probe could not be spawned \(ENOENT\); install state unknown, not current$/mu,
+    /^- guard: \*\*unavailable\*\*: the probe could not be spawned \(ENOENT\); install state unknown — treat as not current until the probe reports$/mu,
   )
   const evidence = JSON.parse(
     runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
@@ -361,11 +361,77 @@ test('unparsable guard-status output is unavailable with the reason, not a crash
   assert.equal(result.status, 0, 'an unparsable report must not fail the digest')
   assert.match(
     result.stdout,
-    /^- guard: \*\*unavailable\*\*: unparsable guard-status output \(exit 1\); install state unknown, not current$/mu,
+    /^- guard: \*\*unavailable\*\*: unparsable guard-status output \(exit 1\); install state unknown — treat as not current until the probe reports$/mu,
   )
   const evidence = JSON.parse(
     runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
   )
   assert.equal(evidence.guard.status, 'unavailable')
   assert.match(evidence.guard.error, /unparsable guard-status output/u)
+})
+
+test('a stale block names the difference line the F2 evidence quotes', () => {
+  const dir = audit('guard-stale-difference')
+  const runner = guardRunner('stale-difference', {
+    report: guardReport({
+      status: 'stale',
+      difference: { line: 4, installed: 'id: anyplugin-guard', current: 'id: anyplugin-guard' },
+    }),
+  })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*stale\*\*; source present; worktree entries 1 desired \/ 1 installed; the installed block differs from the tree at line 4; hooks pre-push current$/mu,
+  )
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'stale')
+  assert.equal(evidence.guard.difference.line, 4)
+})
+
+test('a refused report is cannot-tell with its reason, not invented negative facts', () => {
+  const dir = audit('guard-refused')
+  const runner = guardRunner('refused', {
+    exitCode: 1,
+    report: { status: 'refused', reason: 'a second anyplugin-guard id sits outside the managed block' },
+  })
+  const result = runAudit(dir, ['--days', '1'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner })
+  assert.equal(result.status, 0, 'a refused guard report must not fail the digest')
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*refused\*\*: a second anyplugin-guard id sits outside the managed block; install state unknown — treat as not current until the probe reports$/mu,
+  )
+  assert.doesNotMatch(result.stdout, /source (?:present|missing); worktree entries/u, 'no negative facts are invented')
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: runner }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'refused')
+  assert.equal(evidence.guard.reason, 'a second anyplugin-guard id sits outside the managed block')
+})
+
+test('a probe that times out is unavailable, and the digest still exits 0', () => {
+  const dir = audit('guard-timeout')
+  const slowDir = mkdtempSync(join(tmpdir(), 'guard-status-slow-'))
+  const slow = join(slowDir, 'guard-status.mjs')
+  writeFileSync(slow, `#!${process.execPath}\nsetTimeout(() => {}, 60_000)\n`)
+  chmodSync(slow, 0o755)
+  const result = runAudit(dir, ['--days', '1'], {
+    DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: slow,
+    DSH_ANYPLUGIN_GUARD_PROBE_TIMEOUT_MS: '100',
+  })
+  assert.equal(result.status, 0, 'a timed-out probe must not fail the digest')
+  assert.match(
+    result.stdout,
+    /^- guard: \*\*unavailable\*\*: the probe timed out after 100 ms; install state unknown — treat as not current until the probe reports$/mu,
+  )
+  const evidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], {
+      DSH_ANYPLUGIN_GUARD_STATUS_RUNNER: slow,
+      DSH_ANYPLUGIN_GUARD_PROBE_TIMEOUT_MS: '100',
+    }).stdout,
+  )
+  assert.equal(evidence.guard.status, 'unavailable')
+  assert.match(evidence.guard.error, /timed out after 100 ms/u)
 })
