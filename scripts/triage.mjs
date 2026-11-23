@@ -10,7 +10,7 @@
 //   npm run inbox             # exits 1 when a human is waiting on the agent
 import { execFileSync } from 'node:child_process'
 
-import { AGENT_MARK, BOT_LOGIN, classifyIssue, hasLabel, inboxVerdict, labelsOf, roleOf, roleOfPullRequest } from './triage-rules.mjs'
+import { AGENT_MARK, BOT_LOGIN, classifyIssue, hasLabel, inboxVerdict, labelsOf, roleOfIssue, roleOfPullRequest } from './triage-rules.mjs'
 
 const json = process.argv.includes('--json')
 const waiting = process.argv.includes('--waiting')
@@ -72,6 +72,7 @@ const sections = {
   'Maintainer asks (new)': [],
   'Maintainer answers (resume)': [],
   'Blocked on a human': [],
+  'Agent findings (review)': [],
   'In review (PR open)': [],
   'In progress (no PR yet)': [],
   'External, untriaged': [],
@@ -116,14 +117,14 @@ for (const pr of prs) {
 
 for (const issue of queueIssues) {
   if (linkedIssues.has(issue.number)) {
-    sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: roleOfIssue(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
     continue
   }
   if (hasLabel(issue, 'ticket/in-progress')) {
     // Claimed work with no PR yet is in flight too. Without this the queue
     // undercounts WIP and the next round dispatches a second worker onto a
     // ticket that is already moving (docs/TRIAGE.md §2).
-    sections['In progress (no PR yet)'].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
+    sections['In progress (no PR yet)'].push({ number: issue.number, title: issue.title, role: roleOfIssue(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
     continue
   }
   let list = []
@@ -139,7 +140,7 @@ for (const issue of queueIssues) {
   const first = { author: { login: issue.author?.login }, createdAt: issue.createdAt, body: issue.body ?? '' }
   const verdict = classifyIssue(issue, [first, ...list], { ...identity, linkedPr: false })
   if (verdict.section === null) continue
-  sections[verdict.section].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: verdict.lastSpeaker })
+  sections[verdict.section].push({ number: issue.number, title: issue.title, role: roleOfIssue(issue, identity), labels: labelsOf(issue), lastSpeaker: verdict.lastSpeaker })
 }
 
 for (const pr of prs) {
@@ -173,6 +174,9 @@ if (waiting) {
     process.stdout.write(`  ${kind}: #${item.number} ${item.title}\n`)
   }
   for (const item of verdict.blocked) process.stdout.write(`  still blocked on a human: #${item.number} ${item.title}\n`)
+  // A finding is agent output, not a human waiting: it needs review/merge, so
+  // it is listed for the review pass and does not raise the exit code (D83).
+  for (const item of verdict.findings) process.stdout.write(`  agent finding to review: #${item.number} ${item.title}\n`)
   for (const failure of verdict.failures) {
     const what = failure.number === 0 ? 'pull requests' : `thread #${failure.number}`
     console.error(`inbox: unreadable ${what}: ${failure.message}`)
