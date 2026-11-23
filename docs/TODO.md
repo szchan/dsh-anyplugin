@@ -105,7 +105,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   rig's own `cli.ts`; `npx dsh-anyplugin install <dir> --dry-run` needs no DSH
   installation, and `check:pack` runs the extracted bin with no DSH environment,
   fails if a conformance-gate marker reaches shipped `lib/`, and holds the
-  tarball under its 180 KiB ceiling.
+  tarball under the ceiling `scripts/check-pack.mjs` asserts (193 KiB, D77;
+  the number lives in code, not in this line).
 
 - Mod type surface (ticket #144): `scripts/gen-mod-types.mjs` reads the pinned
   `mods/types/claude-code.d.ts` and `fixtures/mods/coverage.json` (D55) and
