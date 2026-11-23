@@ -25,7 +25,7 @@ loader. Two subsystems share one spine:
 | `docs/DECISIONS.md` | Ratified decisions D1–D88. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
-| `docs/WORKFLOW.md` §Roles, `docs/AUDIT.md` §7 | Who may do what, including the two scheduled roles (auditor and architecture reviewer) and their caps. |
+| `docs/WORKFLOW.md` §Roles, `docs/AUDIT.md` §7 | Who may do what, including the integration runner (`integrator-*`), the two scheduled roles (auditor and architecture reviewer) and their caps. |
 | `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
 | `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S20) and what a spike must prove. |
@@ -145,6 +145,11 @@ pushing, and the abort's exit status is checked before the message claims the
 merge was aborted. Before merging it refuses a worktree whose merge is already
 in progress, whose index has unmerged paths, or which is dirty — it never aborts
 someone else's conflict.
+
+The integration runner (`docs/WORKFLOW.md` §The integration runner) is the
+worker role that runs this update-and-poll loop for the master: one PR, its
+ticket branch, `verify` by sha, the PR body, the worktree. It never merges; the
+master runs the printed pinned line.
 
 An agent never posts as `szchan`. Comments, reviews, labels and PRs go through
 `npm run gh-bot -- <gh args…>`, because the login is what stays readable after the
