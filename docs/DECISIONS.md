@@ -4171,6 +4171,15 @@ guard is inert: confinement is still gated by the territory check on
 `header.cwd` at the tool seam (D80), so a seat learned for a session the guard
 does not police can never deny anything or write a denial record.
 
+A seat learned this way is only as good as the announcement: the host publishes
+it because the session asked to change directory, and the guard does not verify
+that the named worktree is the ticket the session was dispatched for. A session
+that moves itself into another installed worktree while still unseated is
+seated there. That is the accepted trade for mistake prevention — the
+alternative was blocking every resumed worker — but it does not turn the guard
+into containment (D80): the master's dispatch, not the seat, is what says which
+ticket a worker owns.
+
 **Evidence.** `packages/dsh-anyplugin-guard/src/index.ts` (`learnSeat`, and its
 mount on `session/event`); six apply-level tests in
 `packages/dsh-anyplugin-guard/test/guard.test.mjs`: an unseated worker is seated
@@ -4186,3 +4195,4 @@ reddens the no-move test; the announced path seated raw reddens the three
 fail-closed tests; an unresolvable announcement marked resolved reddens the
 primary-checkout test. `node --test
 packages/dsh-anyplugin-guard/test/guard.test.mjs`: 88 passing, 0 failing.
+
