@@ -31,6 +31,7 @@ import type { Materializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { compileReport } from './compile.ts'
 import { readEnablements } from './enablements.ts'
 import { readInstalls } from './installs.ts'
+import { applyPanel } from './panel.ts'
 import { reconcile, type LoaderLike, type ReconcileResult } from './reconcile.ts'
 
 export const name = 'dsh-anyplugin'
@@ -51,6 +52,11 @@ export interface Config {
   home?: string
   /** Workspace whose `.dsh/anyplugin*.yml` layers apply. Default `process.cwd()`. */
   projectDir?: string
+  /**
+   * Extra host names the panel answers besides loopback (DNS-rebinding
+   * defence). Ignored when the profile has no web server.
+   */
+  allowedHosts?: string[]
 }
 
 /**
@@ -66,6 +72,11 @@ export const MATERIALIZERS: Materializers = {
   hooks: 'dsh-anyplugin/materialize/hook',
   outputStyle: 'dsh-anyplugin/materialize/output-style',
 }
+
+// The panel's server half is part of this entry point now (D77), so the tests
+// (and any embedder of the published `lib/index.js`) reach it through the same
+// built file the profile loads, not a second package.
+export { applyPanel, dispatchPanel, type PanelConfig } from './panel.ts'
 
 interface Logger {
   debug?: (message: string) => void
@@ -109,10 +120,36 @@ function summary(result: ReconcileResult): string {
   return parts.join(', ')
 }
 
-export async function apply(ctx: { loader: LoaderLike; get?: (name: string) => unknown; logger?: unknown }, config: Config = {}): Promise<void> {
+type PanelContext = Parameters<typeof applyPanel>[0]
+
+interface ApplyContext {
+  loader: LoaderLike
+  get?: (name: string) => unknown
+  logger?: unknown
+  inject?: (names: string[], callback: (scoped: PanelContext) => void) => unknown
+}
+
+export async function apply(ctx: ApplyContext, config: Config = {}): Promise<void> {
   const log = loggerOf(ctx)
   const home = config.home ?? resolveHome(ctx)
   const installsFile = config.installs ?? join(home, 'anyplugin', 'installs.yml')
+  const projectDir = config.projectDir ?? process.cwd()
+  const allowedHosts = config.allowedHosts
+
+  // The panel is part of this package, not a second bundle (D77). Mounting it
+  // before the lock check is deliberate: a fresh profile has no installs.yml
+  // yet, and the panel is how its first plugin gets installed. Without a web
+  // server the injection never activates, so a headless profile pays nothing.
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['webServer'], (scoped) => {
+      applyPanel(scoped, {
+        installs: installsFile,
+        home,
+        projectDir,
+        ...(allowedHosts === undefined ? {} : { allowedHosts }),
+      })
+    })
+  }
 
   if (!existsSync(installsFile)) {
     log?.debug?.(`no lock at ${installsFile}; nothing to reconcile`)
@@ -124,7 +161,6 @@ export async function apply(ctx: { loader: LoaderLike; get?: (name: string) => u
   let grants: Grants | undefined
   if (existsSync(grantsFile)) grants = readGrants(grantsFile)
 
-  const projectDir = config.projectDir ?? process.cwd()
   const enablements = readEnablements({ projectDir, home })
   const report = compileReport(installs, {
     materializers: MATERIALIZERS,

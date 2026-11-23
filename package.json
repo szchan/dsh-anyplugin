@@ -19,6 +19,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./install": "./lib/install.js",
+    "./client": "./lib/client.js",
     "./materialize/agents": "./lib/materialize/agents.js",
     "./materialize/hook": "./lib/materialize/hook.js",
     "./materialize/mcp": "./lib/materialize/mcp.js",
@@ -39,6 +40,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "scripts": {
@@ -58,7 +62,7 @@
     "build": "node scripts/build.mjs",
     "check:pack": "node scripts/check-pack.mjs",
     "prepack": "npm run build",
-    "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm run check:audit && npm run check:pack && npm run check:ui && npm test",
+    "verify": "npm run check:arch && npm run check:features && npm run check:decisions && npm run check:audit && npm run check:pack && npm test",
     "spike:s9": "node spikes/s9-host-events/run.mjs",
     "spike:s10": "node spikes/s10-agents/run.mjs",
     "spike:s11": "node spikes/s11-prompt-scope/run.mjs",
@@ -75,8 +79,6 @@
     "check:decisions": "node scripts/check-decisions.mjs",
     "check:audit": "node scripts/check-audit.mjs",
     "audit:evidence": "node scripts/audit-evidence.mjs",
-    "pack:ui": "node scripts/pack-ui.mjs",
-    "check:ui": "node scripts/check-ui-pack.mjs",
     "perf": "node scripts/perf.mjs",
     "ci": "node scripts/ci.mjs",
     "verify:release": "node scripts/verify-release.mjs"

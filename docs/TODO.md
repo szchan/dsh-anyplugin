@@ -15,12 +15,6 @@ Pins for everything below: DSH `0.2.2-rc.2` (Desktop install) and
 
 ## Next
 
-- [ ] Publish `dsh-anyplugin-ui`, the optional panel (D61, #170). `npm run
-      pack:ui` produces the tarball and `npm run check:ui` holds its 64 KiB
-      ceiling; the first npm publish needs a one-time 2FA approval from a
-      maintainer, and until then the release workflow publishes only the root
-      package.
-
 ## Upstream proposals (union-only seams, T2)
 
 Each is a small, independent change that never alters existing behavior. Listed
