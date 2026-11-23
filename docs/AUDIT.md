@@ -227,7 +227,7 @@ adds measurable caps:
 
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
-| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 window tool calls, or one that both authors and approves the same change |
 | integration runner | one dispatched PR, as written in `docs/WORKFLOW.md` §The integration runner: merging `origin/main` into a ticket branch, pushing that branch, polling CI by sha, assembling the PR body, cleaning worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, touches `main`, or grows into a second master session (it exists to keep the root's window small, D73) |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |

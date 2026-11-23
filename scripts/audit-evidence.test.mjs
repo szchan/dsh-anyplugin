@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import zlib from 'node:zlib'
 
@@ -493,13 +493,41 @@ function writeProjectionFixture(home, id, identity) {
   writeFileSync(join(dir, `${id}.json`), JSON.stringify({ version: 7, record: { identity } }))
 }
 
-function runAuditSessions(home, dir, args = []) {
+function runAuditSessions(home, dir, args = [], env = {}) {
   return spawnSync(process.execPath, [script, ...args], {
     cwd: root,
     encoding: 'utf8',
     timeout: 120_000,
-    env: { ...process.env, DSH_ANYPLUGIN_AUDIT_DIR: dir, DSH_HOME: home },
+    env: { ...process.env, DSH_ANYPLUGIN_AUDIT_DIR: dir, DSH_HOME: home, ...env },
   })
+}
+
+// A frozen clock for the window-boundary case: the child computes `since` from
+// its own `Date.now()`, so a fixture written against the parent's clock can never
+// put a call exactly on `sinceMs`. `--import` runs before the script's main body
+// and only this spawn sees it, so the audit script itself needs no clock seam.
+// The override is test-only, like DSH_ANYPLUGIN_AUDIT_DIR.
+function frozenClockPreload(dir) {
+  const file = join(dir, 'frozen-clock.mjs')
+  writeFileSync(
+    file,
+    [
+      'const fixed = Number(process.env.DSH_AUDIT_TEST_NOW_MS)',
+      'const RealDate = Date',
+      'class FrozenDate extends RealDate {',
+      '  constructor(...args) {',
+      '    if (args.length === 0) super(fixed)',
+      '    else super(...args)',
+      '  }',
+      '  static now() {',
+      '    return fixed',
+      '  }',
+      '}',
+      'globalThis.Date = FrozenDate',
+      '',
+    ].join('\n'),
+  )
+  return pathToFileURL(file).href
 }
 
 function headerLine(id, { seeded = false, depth = 0 } = {}) {
@@ -536,7 +564,10 @@ test('a seeded fork counts only events after its tagged cut, and the eight large
     call(2, 'bash', now),
   ])
   // Four inherited calls, a tagged cut, then independent work: two bash calls in
-  // the window and one read older than it (lifetime but not window).
+  // the window and three reads older than it. The reads count in `lifetime` but
+  // not `window`, so this child has the largest lifetime (5) while its window
+  // work (2) is below the root's (3). A lifetime-only sort therefore produces a
+  // different order than the window sort, which is what proves the key below.
   writeSessionFixture(bucket, 'seeded-child-01', [
     headerLine('seeded-child-01', { seeded: true, depth: 1 }),
     call(0, 'bash', old),
@@ -547,6 +578,8 @@ test('a seeded fork counts only events after its tagged cut, and the eight large
     call(5, 'bash', now),
     call(6, 'read', old),
     call(7, 'bash', now),
+    call(8, 'read', old),
+    call(9, 'read', old),
   ])
   writeProjectionFixture(home, 'seeded-child-01', {
     formatVersion: 4,
@@ -567,6 +600,13 @@ test('a seeded fork counts only events after its tagged cut, and the eight large
 
   const result = runAuditSessions(home, dir, ['--days', '1'])
   assert.equal(result.status, 0, result.stderr)
+  // Selection of a session is by transcript mtime; the per-row `window` value is
+  // a per-call filter. The digest must say both, or a 1-day window reads as a
+  // lifetime count for every included session.
+  assert.match(
+    result.stdout,
+    /sessions are selected by transcript mtime, and a row's `window` counts only that session's independent calls whose event time is at or after the window start/u,
+  )
   // The copied prefix is reported as excluded, never silently dropped.
   assert.match(
     result.stdout,
@@ -574,24 +614,70 @@ test('a seeded fork counts only events after its tagged cut, and the eight large
   )
   // Aggregates count independent calls only: 3 root + 2 seeded + 1 plain bash calls.
   assert.match(result.stdout, /^- bash 6 calls;/mu)
-  assert.match(result.stdout, /^- tools: bash 6, read 1$/mu)
+  assert.match(result.stdout, /^- tools: bash 6, read 3$/mu)
   // The eight largest show independent window work, with lifetime as context.
-  assert.match(result.stdout, /seeded-child-01 d1 window 2 lifetime 3 inherited 4/u)
+  assert.match(result.stdout, /seeded-child-01 d1 window 2 lifetime 5 inherited 4/u)
 
   const evidence = JSON.parse(runAuditSessions(home, dir, ['--days', '1', '--json']).stdout)
+  const rows = evidence.sessions.largest
+  const windowOrder = [...rows]
+    .sort((a, b) => b.window - a.window || b.lifetime - a.lifetime || a.id.localeCompare(b.id))
+    .map((row) => row.id)
+  const lifetimeOrder = [...rows].sort((a, b) => b.lifetime - a.lifetime || a.id.localeCompare(b.id)).map((row) => row.id)
+  // The fixture makes the two keys disagree (window 3 > 2 > 1; lifetime 5 > 3 > 1).
+  // A sort that drops the window key yields the second list, so pinning the first
+  // list is a proof that window work orders the table.
+  assert.deepEqual(windowOrder, ['root-session-01', 'seeded-child-01', 'plain-child-01'], 'window order')
   assert.deepEqual(
-    evidence.sessions.largest.map((row) => row.id),
-    ['root-session-01', 'seeded-child-01', 'plain-child-01'],
-    'the table is ordered by independent window work (3 > 2 > 1), not lifetime',
+    lifetimeOrder,
+    ['seeded-child-01', 'root-session-01', 'plain-child-01'],
+    'a lifetime-only sort must order this fixture differently, or the fixture does not prove the window key',
   )
-  const seeded = evidence.sessions.largest.find((row) => row.id === 'seeded-child-01')
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    windowOrder,
+    'the table is ordered by independent window work (3 > 2 > 1), not lifetime (5 > 3 > 1)',
+  )
+  const seeded = rows.find((row) => row.id === 'seeded-child-01')
   assert.deepEqual(
     { window: seeded.window, lifetime: seeded.lifetime, inherited: seeded.inherited, seed: seeded.seed },
-    { window: 2, lifetime: 3, inherited: 4, seed: 'seeded' },
+    { window: 2, lifetime: 5, inherited: 4, seed: 'seeded' },
   )
+  // `tools` is the pre-F21 name for the independent total; the evidence JSON is
+  // an artifact other tools read, so the old key stays as an alias.
+  for (const row of rows) assert.equal(row.tools, row.lifetime, `${row.id}: tools must alias lifetime`)
+  assert.equal(seeded.tools, 5)
   assert.deepEqual(evidence.sessions.inherited, { sessions: 1, tools: 4 })
   assert.deepEqual(evidence.sessions.unknownSeed, [])
   assert.equal(evidence.sessions.toolCalls.find((row) => row.name === 'bash')?.count, 6)
+})
+
+test('a call exactly at the window start counts in window, one millisecond earlier does not', () => {
+  const dir = audit('window-boundary')
+  const { home, bucket } = sessionAuditFixtures()
+  // Freeze the child's clock to one known millisecond so `sinceMs = now - 1 day`
+  // is exact; `generatedAt` below proves the child ran on that clock.
+  const now = Date.now()
+  const sinceMs = now - 86_400_000
+  writeSessionFixture(bucket, 'boundary-session-01', [
+    headerLine('boundary-session-01', { depth: 0 }),
+    call(0, 'bash', sinceMs),
+    call(1, 'read', sinceMs - 1),
+  ])
+  const result = runAuditSessions(home, dir, ['--days', '1', '--json'], {
+    DSH_AUDIT_TEST_NOW_MS: String(now),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import ${frozenClockPreload(dir)}`.trim(),
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const evidence = JSON.parse(result.stdout)
+  assert.equal(evidence.generatedAt, new Date(now).toISOString(), 'the frozen clock must reach the child')
+  const row = evidence.sessions.largest.find((candidate) => candidate.id === 'boundary-session-01')
+  assert.ok(row, 'the fixture session must be included')
+  // `>= sinceMs` includes the call exactly at the boundary; one millisecond
+  // earlier is independent lifetime work but outside the window.
+  assert.equal(row.window, 1, 'a call exactly at the window start is inside it (event.time >= sinceMs)')
+  assert.equal(row.lifetime, 2, 'the call one millisecond before the window is lifetime work only')
+  assert.equal(row.tools, 2, 'tools aliases the independent lifetime total')
 })
 
 test('decisions.last is the greatest decision number, not the last line in the file', () => {
@@ -605,6 +691,60 @@ test('decisions.last is the greatest decision number, not the last line in the f
   assert.match(result.stdout, /^- decisions: 4 \(last D88; duplicates: none\)$/mu)
   const evidence = JSON.parse(runAudit(dir, ['--days', '1', '--json'], env).stdout)
   assert.deepEqual(evidence.decisions, { entries: 4, last: 'D88', duplicates: [] })
+})
+
+test('duplicate, reworded and prose-embedded decision ids follow the heading grammar', () => {
+  const dir = audit('decisions-grammar')
+  const home = mkdtempSync(join(tmpdir(), 'audit-empty-home-'))
+  const file = join(mkdtempSync(join(tmpdir(), 'decisions-grammar-')), 'DECISIONS.md')
+  writeFileSync(
+    file,
+    [
+      '## D1 — one',
+      '',
+      '## D2 — two',
+      '',
+      '## D1 — one, repeated heading', // duplicate: counted, named once
+      '',
+      'Prose mentions D99 and a lookalike `## D98 — not a heading`.', // prose-embedded: not a heading
+      '',
+      '### D3 — three', // reworded: h3, not the h2 the log uses
+      '',
+      '## D 4 — four', // reworded: a space after D
+      '',
+      '## D5: five', // reworded: colon instead of the em dash
+      '',
+      '## D2 — two, repeated heading', // duplicate of an earlier id
+      '',
+      '## D6 — six',
+      '',
+    ].join('\n'),
+  )
+  const env = { DSH_ANYPLUGIN_AUDIT_DECISIONS: file, DSH_HOME: home }
+  const result = runAudit(dir, ['--days', '1'], env)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /^- decisions: 5 \(last D6; duplicates: D1, D2\)$/mu)
+  assert.deepEqual(
+    JSON.parse(runAudit(dir, ['--days', '1', '--json'], env).stdout).decisions,
+    { entries: 5, last: 'D6', duplicates: ['D1', 'D2'] },
+  )
+
+  // A doubled log is the reviewer's hand exercise: every heading counts and each
+  // id is named once as a duplicate. The expectation is derived from the real log
+  // so appending a decision does not make this fixture stale.
+  const real = readFileSync(join(root, 'docs', 'DECISIONS.md'), 'utf8')
+  const realIds = [...real.matchAll(/^## (D\d+) — /gmu)].map((match) => match[1])
+  const doubled = join(mkdtempSync(join(tmpdir(), 'decisions-doubled-')), 'DECISIONS.md')
+  writeFileSync(doubled, real + real)
+  const doubledEvidence = JSON.parse(
+    runAudit(dir, ['--days', '1', '--json'], { ...env, DSH_ANYPLUGIN_AUDIT_DECISIONS: doubled }).stdout,
+  )
+  const greatest = [...realIds].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)))[0]
+  assert.deepEqual(doubledEvidence.decisions, {
+    entries: realIds.length * 2,
+    last: greatest,
+    duplicates: [...new Set(realIds)],
+  })
 })
 
 test('a seeded header whose cut cannot be read is excluded and named, not counted as independent work', () => {

@@ -529,14 +529,18 @@ async function sessionEvidence() {
     aggregate.gateRuns += session.gateRuns
     aggregate.writeTargets += session.writeFiles.size
     for (const path of session.writeFiles) writePaths.set(path, (writePaths.get(path) ?? 0) + 1)
+    // Independent work only: `window` is the role-cap unit (D73) and `lifetime` is
+    // the independent total; `inherited` is the copied prefix both exclude.
+    const lifetime = [...session.toolCalls.values()].reduce((sum, count) => sum + count, 0)
     largest.push({
       id: session.id,
       depth: session.depth,
       cwd: session.cwd,
-      // Independent work only: `window` is the role-cap unit (D73), `lifetime` is
-      // context and `inherited` is the copied prefix the other two exclude.
       window: session.windowTools,
-      lifetime: [...session.toolCalls.values()].reduce((sum, count) => sum + count, 0),
+      lifetime,
+      // F21 renamed the old `tools` total to `lifetime`. The evidence JSON is an
+      // artifact other tools read, so the old name stays as an alias.
+      tools: lifetime,
       inherited: session.seed.inherited,
       seed: session.seed.status,
       bash: [...session.bash.values()].reduce((sum, record) => sum + record.count, 0),
@@ -846,11 +850,12 @@ function digest(evidence) {
   } else {
     const sessions = evidence.sessions
     lines.push(`- ${sessions.sessions} sessions (${sessions.roots} root, ${sessions.children} child); presets: ${sessions.presets.map((row) => `${row.preset} ${row.count}`).join(', ')}`)
-    // The window selects *sessions* by transcript mtime, not calls by time; a
-    // seeded fork's transcript opens with a byte copy of its ancestor's events and
-    // those are another session's work (F21). Both facts are printed, or a 1-day
+    // Session selection is by transcript mtime, but each row's `window` is a
+    // per-call time filter: it counts only independent calls at or after the
+    // window start. A seeded fork's transcript opens with a copy of its ancestor's
+    // events, and those are another session's work (F21). Say both, or a 1-day
     // digest reads as 1-day calls and a root's copied prefix reads as its peers.
-    lines.push('- counts below cover each included session\'s independent transcript: the window selects sessions by transcript mtime, not calls by time, and a seeded fork\'s inherited prefix is excluded')
+    lines.push('- counts below cover each included session\'s independent transcript: sessions are selected by transcript mtime, and a row\'s `window` counts only that session\'s independent calls whose event time is at or after the window start; a seeded fork\'s inherited prefix is excluded')
     if (sessions.inherited.sessions > 0) {
       lines.push(`- inherited prefixes excluded: ${sessions.inherited.sessions} seeded session(s), ${sessions.inherited.tools} copied tool calls (not independent work)`)
     }
