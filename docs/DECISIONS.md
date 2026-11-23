@@ -3494,13 +3494,15 @@ Cost is part of the design. The base tree needs its own `lib/` for P2, so the
 job pays for a second build; it does not pay for a second `npm ci` when
 `package-lock.json` is identical (the existing dependency-sharing rule), and
 it reuses `--base` instead of inventing a second measurement model. The job
-also fetches both declared pins and the pinned mod and Claude trees; a missing
-pin is a failed P2 row, never a silently dropped gate.
+also fetches both declared pins and the pinned mod and Claude trees; the
+workflow's guard step fails the job before measurement on a missing pin, so a
+missing pin is never a silently dropped gate.
 
 A red `perf` is a **regression claim**, and the claim names the probe, the
-threshold and the repeat count. The workflow runs `--repeat 5`; a single
-sample outside the observed band is a reason to re-run, not a conclusion
-(D69 rule 4). The failure table prints metric, base, head, ratio, limit and
+threshold and the repeat count. The workflow runs `--repeat 5`. The absolute
+caps are hard walls: a value at or above the cap fails, and that failure is a
+claim, not a reason to re-run. The ratio gates keep D69's `<=` at the
+threshold; only host noise on a ratio probe may be re-run once. The failure table prints metric, base, head, ratio, limit and
 verdict. The merge command stays human.
 
 **Consequences.** D69 rules 1, 2, 4 and 6 stand; rule 3's gate list and rule 5's

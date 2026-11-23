@@ -51,13 +51,15 @@ a **failed** row, not a skipped gate. The P2 base/head ratio is still printed,
 but it is description: its noise is why D69 did not gate it, and D76 keeps that
 objection while gating the head's absolute boot instead. The absolute caps are
 hard walls, not a noise band: a single sample at the boundary is red, and the
-verdict line says "all gated" rather than "all ratios" so the recorded P2 boot
-ratio is never implied to have been checked.
+verdict line reads `gates: all N gated measurements pass`, and the separate
+`gated (D76)` line lists the seven gates, so the recorded P2 boot ratio is never
+implied to have been checked.
 
 `npm run perf` on a workstation is **local-only for debugging and never a
 merge gate**. `npm run verify` does not read perf; the `perf` workflow is its
-own check. It runs on both `push` and `pull_request`, so one commit produces two
-`perf` runs; do not add it to the required checks until those triggers are
+own check. It runs on `push` and — while the PR is a same-repository one — `pull_request`,
+so one commit can produce two `perf` runs; do not add it to the required checks
+until those triggers are
 collapsed to one run per commit — a second check under the same name leaves the
 other pending and blocks the merge (the failure `verify` already had before it
 went push-only). Whether a red `perf` blocks a merge is branch protection's

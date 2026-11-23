@@ -457,7 +457,7 @@ export function gateFailures(report, limits = GATE_LIMITS) {
       if (row.detail !== null) return `${row.metric}: ${row.detail} (repeat ${repeat})`
       if (row.head === null) return `${row.metric}: not measured (repeat ${repeat})`
       if (row.limitKind === 'absolute' || row.limitKind === 'ms') {
-        return `${row.metric}: ${row.head.toFixed(1)} ${row.unit} at or above ${row.limitText} (repeat ${repeat})`
+        return `${row.metric}: ${row.head.toFixed(1)} ${row.unit} at or above ${row.limit} ${row.unit} (repeat ${repeat})`
       }
       if (row.limitKind === 'multiplier') {
         return `${row.metric}: ${row.head.toFixed(1)} ms at or above ${row.limitText} (repeat ${repeat})`
@@ -798,7 +798,7 @@ export function formatTable(report) {
     lines.push('')
     lines.push(
       report.check.failures.length === 0
-        ? `gates: ${gated} measurements, all pass (repeat ${report.repeat})`
+        ? `gates: all ${gated} gated measurements pass (repeat ${report.repeat})`
         : `gates: ${report.check.failures.length} failed (repeat ${report.repeat}) — ${report.check.failures.join('; ')}`,
     )
   }

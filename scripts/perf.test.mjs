@@ -324,8 +324,8 @@ test('gateRows fails P3 on the absolute cap and P2 on either cap', () => {
   ]
   assert.deepEqual(gateFailures(report), [
     'P2 one-plugin boot @ dsh 0.2.2-rc.5: 650.0 ms at or above 2.00x empty (250.0 ms) (repeat 5)',
-    'P2 empty boot @ dsh 0.2.2-rc.2: 3010.0 ms at or above < 3000 ms (repeat 5)',
-    'P3 pre-execute fan-out: 51.0 us at or above < 50.0 us (repeat 5)',
+    'P2 empty boot @ dsh 0.2.2-rc.2: 3010.0 ms at or above 3000 ms (repeat 5)',
+    'P3 pre-execute fan-out: 51.0 us at or above 50 us (repeat 5)',
   ])
 })
 
@@ -573,13 +573,13 @@ test('an absolute budget fails at its boundary, a ratio does not', () => {
   edge.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 20), empty: row(10, 10) }]
   assert.deepEqual(gateFailures(edge), [
     'P2 one-plugin boot @ dsh 0.2.2-rc.5: 20.0 ms at or above 2.00x empty (10.0 ms) (repeat 5)',
-    'P3 pre-execute fan-out: 50.0 us at or above < 50.0 us (repeat 5)',
+    'P3 pre-execute fan-out: 50.0 us at or above 50 us (repeat 5)',
   ])
 
   const emptyEdge = sampleReport()
   emptyEdge.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 345), empty: row(10, 3000) }]
   assert.deepEqual(gateFailures(emptyEdge), [
-    'P2 empty boot @ dsh 0.2.2-rc.5: 3000.0 ms at or above < 3000 ms (repeat 5)',
+    'P2 empty boot @ dsh 0.2.2-rc.5: 3000.0 ms at or above 3000 ms (repeat 5)',
   ])
 
   const justUnder = sampleReport()
