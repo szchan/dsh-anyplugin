@@ -166,12 +166,17 @@ const total = Object.values(sections).reduce((sum, list) => sum + list.length, 0
 if (waiting) {
   const verdict = inboxVerdict(sections, readFailures)
   process.stdout.write(`${verdict.summary}\n`)
-  for (const item of verdict.waiting) {
+  // A partial read makes the waiting list untrustworthy: a thread we could not
+  // read may be the one that is waiting, so say what failed instead.
+  for (const item of verdict.failures.length === 0 ? verdict.waiting : []) {
     const kind = item.section === 'Maintainer asks (new)' ? 'new ask' : 'reply'
     process.stdout.write(`  ${kind}: #${item.number} ${item.title}\n`)
   }
   for (const item of verdict.blocked) process.stdout.write(`  still blocked on a human: #${item.number} ${item.title}\n`)
-  for (const failure of verdict.failures) console.error(`inbox: unreadable thread #${failure.number}: ${failure.message}`)
+  for (const failure of verdict.failures) {
+    const what = failure.number === 0 ? 'pull requests' : `thread #${failure.number}`
+    console.error(`inbox: unreadable ${what}: ${failure.message}`)
+  }
   process.exit(verdict.exitCode)
 }
 

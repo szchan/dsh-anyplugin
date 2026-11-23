@@ -116,7 +116,7 @@ npm run perf                      # our hot paths as base/head ratios (docs/PROF
 npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
 npm run check:audit               # the audit ledger/report gate (part of verify)
 npm run verify:release -- --version <v>   # post-publish probe: registry + packed bin + its report
-npm run inbox                     # round start: who is waiting on us (exit 1 if any, 2 if a thread could not be read)
+npm run inbox                     # round start: who is waiting on us (exit 1 if any, 2 if a thread or the PR list could not be read)
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
 npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```

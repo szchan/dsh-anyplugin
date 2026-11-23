@@ -106,8 +106,8 @@ test('the receipt matcher does not swallow a real agent answer', () => {
 })
 
 test('a maintainer-authored escalation whose only later comment is a receipt is still blocked', () => {
-  // Pins the `reply === undefined` clause: without it this falls through to
-  // "resume" and the inbox reports work that no one answered.
+  // A receipt is not an answer: if it counted as the agent's reply the thread
+  // would fall through to "resume" and the inbox would report work nobody did.
   const verdict = classifyIssue(
     issue({ author: { login: 'szchan-bot' }, labels: labels('maintainer-question') }),
     [
@@ -117,6 +117,23 @@ test('a maintainer-authored escalation whose only later comment is a receipt is 
     options,
   )
   assert.equal(verdict.section, 'Blocked on a human')
+})
+
+test('a maintainer reply followed by a bystander does not resume, and the speaker is external', () => {
+  const verdict = classifyIssue(
+    issue({ author: { login: 'szchan-bot' }, labels: labels('maintainer-question') }),
+    [
+      comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> which file?'),
+      comment('szchan', '2026-11-22T08:10:00Z', 'src/x.ts, please'),
+      comment('szchan-bot', '2026-11-22T08:20:00Z', '<!-- dsh-anyplugin-agent --> one more question'),
+      comment('someone', '2026-11-22T08:30:00Z', '+1'),
+    ],
+    options,
+  )
+  // The code fix is agentAfterMaintainer; reverting it would report "resume"
+  // here even though the last human word is a bystander (reviewer #228).
+  assert.equal(verdict.section, 'Blocked on a human')
+  assert.equal(verdict.lastSpeaker, 'external')
 })
 
 test('a bystander does not unblock an escalation only a maintainer can answer', () => {

@@ -1,10 +1,12 @@
 /**
  * The AnyPlugin panel's browser half.
  *
- * A prebuilt `dsh.client` bundle: `scripts/build.mjs` turns this module into
- * `window.__ModuleLoader__.load({ id: 'dsh-anyplugin-ui', factory })` with
- * `react` left to the host's module table. Nothing else is imported — the
- * panel is a reader of `/anyplugin/installs` and a form around
+ * A prebuilt `dsh.client` bundle inside the same install as the loader row
+ * (D77): `scripts/build.mjs` turns this module into
+ * `window.__ModuleLoader__.load({ id: 'dsh-anyplugin', factory })` with
+ * `react` left to the host's module table. The id is the package name, which
+ * is the row id the client-module registry keys on. Nothing else is imported —
+ * the panel is a reader of `/anyplugin/installs` and a form around
  * `/anyplugin/install`, not a second lifecycle implementation.
  *
  * The panel renders into the `settings.section` slot. It uses only

@@ -81,6 +81,7 @@ verify` boots the packed tarball to check every row.
 | `mods` | **shipped** — the kernel is in the tarball (`D30`, `D31`, `D34`): authored `.js`, `.mjs` and `.ts` load as authored in one `node:vm` realm, `.tsx` only through the one classic-pragma pass; `$` serves the measured namespaces and a seat binds each agent's events. The lock (`dsh-anyplugin/installs@2`) carries a granted `mods` tree and `dsh-anyplugin install` writes it; the hook row's `mods` config is emitted from that record, and an ungranted, unrecorded or changed tree — one digest over the whole plugin tree — is refused before `loadMod` |
 | Codex plugins | `equivalent` — `plugin.json` 1.0.0 plus `skills/` and `mcp.json`; installs and runs on the same IR, with fixtures as the spec because there is no upstream oracle |
 | Install / enable / release | `dsh-anyplugin@0.3.0` — bundle + controller + reconciler |
+| Panel | **shipped** — the same install serves Settings → AnyPlugin: list and install over loopback, through the CLI's own writer (`D77`, no second package) |
 
 ### Refused in 0.3.0
 

@@ -70,18 +70,18 @@ export const classifyIssue = (issue, comments, options) => {
   // bystander's "+1" cannot move a row (reviewer finding on #228).
   const agentAfterHuman = reply !== undefined && (lastHuman === undefined || (reply.createdAt ?? '') > (lastHuman.createdAt ?? ''))
   const agentAfterMaintainer = reply !== undefined && (human === undefined || (reply.createdAt ?? '') > (human.createdAt ?? ''))
+  // The speaker is the author of the last substantive comment (a receipt is
+  // not speech), not a derived guess: a bystander after a maintainer must not
+  // be reported as the maintainer.
+  const last = [...comments].reverse().find((comment) => !isReceipt(comment))
   const lastSpeaker =
-    reply === undefined
-      ? lastHuman === undefined
-        ? 'none'
-        : human === undefined
-          ? 'external'
-          : 'maintainer'
-      : agentAfterHuman
+    last === undefined
+      ? 'none'
+      : isAgentComment(last, options)
         ? 'agent'
-        : human === undefined
-          ? 'external'
-          : 'maintainer'
+        : options.maintainers.includes(last.author?.login ?? '')
+          ? 'maintainer'
+          : 'external'
 
   // An escalation (docs/TRIAGE.md §6) is blocked on the human *while the agent
   // has the last word*: it asked, and nothing can move until the answer comes.
