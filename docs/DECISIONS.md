@@ -4196,3 +4196,56 @@ fail-closed tests; an unresolvable announcement marked resolved reddens the
 primary-checkout test. `node --test
 packages/dsh-anyplugin-guard/test/guard.test.mjs`: 88 passing, 0 failing.
 
+## D90 — `guard:status` compares the block by parsed value, not by bytes
+
+**Decided 2026-11-23** (#268).
+
+The installed block and the block the tree composes are the same policy only if
+their values are equal. The profile writer is not this repository: DSH rewrites
+`cordis.patch.yml` through a comment-preserving YAML document API (the loader
+parses with js-yaml `4.3.2`, `JSON_SCHEMA` extended with the `!!js` tags) and
+may fold a long double-quoted scalar or reseat a comment without changing one
+value. #268 was a false `stale` for exactly that reason.
+
+1. **Both sides are parsed and compared as values.** The managed block is YAML
+   in the JSON subset the loader accepts; the comparison covers every key and
+   sequence element on both sides, so an added or removed key is still stale.
+2. **Text equality is no longer the contract.** Byte identity was a proxy for
+   "the loader applies the same policy"; the writer defeats it without changing
+   the policy.
+3. **Unparsable is stale, never current.** A side the reader cannot account for
+   is not provably equal, so `guard:status` reports stale and prints the reason
+   (`the installed block cannot be read as YAML (...)`); "I could not read it"
+   is never "it is current".
+4. **The reader refuses what it cannot prove.** The subset parser (no new
+   dependency; D23's rationale) refuses duplicate keys, anchors, aliases, tags,
+   flow collections, block scalars and quoted scalars it cannot fold. It folds
+   a quoted scalar the way the loader does — an escaped line break removes the
+   break and the continuation's indentation while spaces before the backslash
+   and spaces decoded from `\ ` stay content; a bare break folds to one space
+   and drops only raw trailing whitespace. Plain scalars are typed the way the
+   loader's schema types them (`TRUE`/`True` booleans, `Null`/`~` null,
+   `0x10`/`0o12`/`0b101`/`012`/`+1`/`.5` numbers) and a plain scalar the loader
+   would reject (`foo: bar`, `- b`) is refused. #274 review showed both lenient
+   readings produced a false `current`.
+5. **A serialisation that differs while the values match is reported.** Status
+   stays `current`; the human output and JSON `reserialised: true` say so, so a
+   folded block is visibly read, not silently accepted.
+
+**Not claimed.** The reader is a subset, not a YAML implementation: a value it
+cannot parse makes the install stale with a reason even when a full parser would
+have accepted it. That is the fail-closed direction — false stale, never false
+current. The state line stays trivia because it records the pre-install file,
+not the policy.
+
+**Evidence.** The real profile's folded block reports `current` /
+`reserialised: true` where `main`'s byte comparison reported stale at line 4;
+mutated copies that the loader reads differently stay stale (folded whitespace,
+changed path, added/removed key or worktree, changed id, duplicate key/block,
+anchor, alias, tag, block scalar, flow collection, unterminated quote); the
+reader's fold and plain-scalar typing are pinned by
+`the block reader types plain scalars the way the loader does, and folds
+whitespace the way YAML does` and the status regression by `guard:status reads a
+folded block as current, and still refuses a changed, a duplicated or an
+unreadable one` in `packages/dsh-anyplugin-guard/test/guard.test.mjs` (91 guard
+tests), with `verify` on the merge head.

@@ -277,7 +277,7 @@ function parseValue(document: Document, line: number, column: number): unknown {
   if (text[0] === '|' || text[0] === '>') fail(line, 'block scalars are not read')
   const plain = stripComment(text).trim()
   if (plain === '') fail(line, 'a key needs a value (an empty value is refused)')
-  return resolvePlain(plain)
+  return resolvePlain(plain, line)
 }
 
 function finishFlow(document: Document, line: number, column: number, value: unknown): unknown {
@@ -296,11 +296,27 @@ function stripComment(text: string): string {
   return text
 }
 
-function resolvePlain(text: string): unknown {
-  if (text === 'null' || text === '~') return null
-  if (text === 'true') return true
-  if (text === 'false') return false
-  if (/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/u.test(text)) return Number(text)
+function resolvePlain(text: string, line: number): unknown {
+  // The loader resolves plain scalars with a YAML schema, so a plain scalar is
+  // only "the same value" as another when both sides type it the same way. The
+  // tag set below is YAML 1.2 core/JSON: `true` in any case, `null`/`~`, decimal
+  // integers (leading zeros included), `0x`/`0o`/`0b` integers and floats with a
+  // digit on at least one side of the dot. Anything else stays a string.
+  if (/^(?:true|True|TRUE)$/u.test(text)) return true
+  if (/^(?:false|False|FALSE)$/u.test(text)) return false
+  if (/^(?:null|Null|NULL|~)$/u.test(text)) return null
+  if (/^[-+]?0x[0-9a-fA-F]+$/u.test(text)) return Number.parseInt(text, 16)
+  if (/^[-+]?0o[0-7]+$/u.test(text)) return Number.parseInt(text.replace(/^[-+]?0o/u, ''), 8) * (text.startsWith('-') ? -1 : 1)
+  if (/^[-+]?0b[01]+$/u.test(text)) return Number.parseInt(text.replace(/^[-+]?0b/u, ''), 2) * (text.startsWith('-') ? -1 : 1)
+  if (/^[-+]?[0-9]+$/u.test(text)) return Number(text)
+  if (/^(?:[-+]?[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u.test(text)) return Number(text)
+  // A plain scalar the reader cannot type confidently is refused: the loader
+  // may throw on it (`foo: bar`, `- b`) or type it as something we do not model
+  // (`0b`, `1_000`, `.inf`). A refusal makes the comparison stale, never
+  // current, which is the direction F20 needs.
+  if (text.includes(': ') || text.startsWith('- ') || text.startsWith('? ') || /^[&*!|>{[\]}]/u.test(text)) {
+    fail(line, `plain value ${JSON.stringify(text)} is not read; quote it`)
+  }
   return text
 }
 
@@ -322,20 +338,35 @@ function parseQuoted(document: Document, line: number, column: number, quote: st
     const text = document.lines[current - 1]
     let closed = false
     let escapedBreak = false
+    // Raw spaces and tabs are trimmable at a fold; whitespace that came from an
+    // escape is content and is flushed immediately. Keeping the two apart is
+    // what makes `".../ind   \` + `ex.ts"` a different value from `".../ind\`
+    // + `ex.ts"` — the loader sees `ind   ex.ts` in the first and `index.ts` in
+    // the second (F20 follow-up: a lenient reader called them equal).
+    let pending = ''
     while (position < text.length) {
       const character = text[position]
+      if (character === ' ' || character === '\t') {
+        pending += character
+        position += 1
+        continue
+      }
       if (character === quote) {
         if (quote === "'" && text[position + 1] === "'") {
-          value += "'"
+          value += pending + "'"
+          pending = ''
           position += 2
           continue
         }
+        value += pending
+        pending = ''
         closed = true
         position += 1
         break
       }
       if (character !== '\\' || quote === "'") {
-        value += character
+        value += pending + character
+        pending = ''
         position += 1
         continue
       }
@@ -347,7 +378,8 @@ function parseQuoted(document: Document, line: number, column: number, quote: st
       const escape = text[position + 1]
       const simple = ESCAPED[escape]
       if (simple !== undefined) {
-        value += simple
+        value += pending + simple
+        pending = ''
         position += 2
         continue
       }
@@ -359,7 +391,8 @@ function parseQuoted(document: Document, line: number, column: number, quote: st
       }
       const codepoint = Number.parseInt(digits, 16)
       if (codepoint > 0x10ffff) fail(current, `escape ${JSON.stringify(`\\${escape}${digits}`)} is not a Unicode scalar value`)
-      value += String.fromCodePoint(codepoint)
+      value += pending + String.fromCodePoint(codepoint)
+      pending = ''
       position += 2 + width
     }
     if (closed) {
@@ -374,11 +407,12 @@ function parseQuoted(document: Document, line: number, column: number, quote: st
     if (next > document.lines.length) fail(current, 'unterminated quoted scalar')
     const continuation = document.lines[next - 1]
     if (isBlank(continuation)) fail(next, 'a blank line inside a quoted scalar is not read')
-    if (escapedBreak) value = value.replace(/[ \t]+$/u, '')
-    else {
-      value = value.replace(/[ \t]+$/u, '')
-      value += ' '
-    }
+    // An escaped line break removes the break and the next line's indentation;
+    // spaces before the backslash are content, because the line's last
+    // character is the backslash and not the space. A bare line break folds to
+    // one space and raw trailing whitespace is dropped.
+    value += escapedBreak ? pending : ' '
+    pending = ''
     current = next
     position = indentOf(continuation)
     document.index = Math.max(document.index, current)

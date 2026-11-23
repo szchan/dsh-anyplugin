@@ -1759,6 +1759,59 @@ test('the block reader proves a folded scalar equal and refuses what it cannot r
   assert.match(anchored.ok ? '' : anchored.reason, /anchors, aliases and tags are not read/u)
 })
 
+test('the block reader types plain scalars the way the loader does, and folds whitespace the way YAML does', () => {
+  // FAIL-OPEN regression (F20 follow-up): a fold that leaves literal spaces
+  // before the escaped break changes the value the loader sees. The reader used
+  // to trim them and call the block current.
+  const spaced = parseBlock('name: "src/ind   \\\n        ex.ts"\n')
+  assert.equal(spaced.ok, true, spaced.ok ? '' : spaced.reason)
+  assert.deepEqual({ ...spaced.value }, { name: 'src/ind   ex.ts' }, 'spaces before an escaped break are content')
+
+  const tabbed = parseBlock('name: "src/ind\t\\\n        ex.ts"\n')
+  assert.equal(tabbed.ok, true, tabbed.ok ? '' : tabbed.reason)
+  assert.deepEqual({ ...tabbed.value }, { name: 'src/ind\tex.ts' })
+
+  const escapedSpaceBreak = parseBlock('name: "src/ind\\ \\\n        ex.ts"\n')
+  assert.equal(escapedSpaceBreak.ok, true, escapedSpaceBreak.ok ? '' : escapedSpaceBreak.reason)
+  assert.deepEqual({ ...escapedSpaceBreak.value }, { name: 'src/ind ex.ts' }, 'an escaped space stays one space')
+
+  const escapedSpaceFold = parseBlock('name: "src/ind\\ \n        ex.ts"\n')
+  assert.equal(escapedSpaceFold.ok, true, escapedSpaceFold.ok ? '' : escapedSpaceFold.reason)
+  assert.deepEqual({ ...escapedSpaceFold.value }, { name: 'src/ind  ex.ts' }, 'a bare fold adds a space next to an escaped one')
+
+  // Plain scalars are typed by the YAML schema, so `TRUE` is a boolean and
+  // `0x10` is 16: reading them as strings would make two different loader
+  // documents compare equal.
+  assert.deepEqual(parseBlock('a: TRUE\n').ok ? { ...parseBlock('a: TRUE\n').value } : undefined, { a: true })
+  assert.deepEqual(parseBlock('a: Null\n').ok ? { ...parseBlock('a: Null\n').value } : undefined, { a: null })
+  assert.deepEqual(parseBlock('a: 0x10\n').ok ? { ...parseBlock('a: 0x10\n').value } : undefined, { a: 16 })
+  assert.deepEqual(parseBlock('a: 012\n').ok ? { ...parseBlock('a: 012\n').value } : undefined, { a: 12 })
+  assert.deepEqual(parseBlock('a: .5\n').ok ? { ...parseBlock('a: .5\n').value } : undefined, { a: 0.5 })
+  assert.deepEqual(parseBlock('a: +1\n').ok ? { ...parseBlock('a: +1\n').value } : undefined, { a: 1 })
+  assert.deepEqual(parseBlock('a: 1_000\n').ok ? { ...parseBlock('a: 1_000\n').value } : undefined, { a: '1_000' })
+  assert.deepEqual(parseBlock('a: yes\n').ok ? { ...parseBlock('a: yes\n').value } : undefined, { a: 'yes' })
+
+  // Values the loader would throw on are refused, so the comparison is stale
+  // rather than "equal".
+  const mappingLike = parseBlock('a: foo: bar\n')
+  assert.equal(mappingLike.ok, false)
+  assert.match(mappingLike.ok ? '' : mappingLike.reason, /plain value "foo: bar" is not read/u)
+  const sequenceLike = parseBlock('a: - b\n')
+  assert.equal(sequenceLike.ok, false)
+  assert.match(sequenceLike.ok ? '' : sequenceLike.reason, /plain value "- b" is not read/u)
+
+  // `guardWorktrees` selects the guard's own insert row, not the first one, and
+  // a malformed config is "unknown", never a guess (m3-drop-id-check mutation).
+  const foreignFirst = parseBlock(
+    '- insert:\n    - id: "someone-else"\n      config:\n        worktrees:\n          - "/nope"\n    - id: "anyplugin-guard"\n      config:\n        worktrees:\n          - "/tmp/anyplugin-wt/ticket-*"\n',
+  )
+  assert.equal(foreignFirst.ok, true, foreignFirst.ok ? '' : foreignFirst.reason)
+  assert.deepEqual(guardWorktrees(foreignFirst.value), ['/tmp/anyplugin-wt/ticket-*'])
+  const malformedWorktrees = parseBlock('- insert:\n    - id: "anyplugin-guard"\n      config:\n        worktrees: 5\n')
+  assert.equal(malformedWorktrees.ok, true, malformedWorktrees.ok ? '' : malformedWorktrees.reason)
+  assert.equal(guardWorktrees(malformedWorktrees.value), undefined)
+})
+
 test('guard:status reads a folded block as current, and still refuses a changed, a duplicated or an unreadable one', () => {
   const scratch = scratchCheckout()
   const profile = mkdtempSync(join(tmpdir(), 'guard-status-values-'))
