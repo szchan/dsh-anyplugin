@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { classifyIssue, isOurs, roleOf, roleOfPullRequest } from './triage-rules.mjs'
+import { classifyIssue, inboxVerdict, isOurs, isReceipt, roleOf, roleOfPullRequest } from './triage-rules.mjs'
 
 const options = { maintainers: ['szchan'], botLogin: 'szchan-bot' }
 const issue = (extra = {}) => ({ number: 1, title: 'x', author: { login: 'szchan' }, labels: [], ...extra })
@@ -95,4 +95,48 @@ test('the bot is ours: its PR is not an external contribution, and labels still 
   assert.equal(roleOfPullRequest({ author: { login: 'someone' } }, options), 'external')
   assert.equal(roleOf(issue({ author: { login: 'szchan-bot' } }), options), 'maintainer')
   assert.equal(roleOf(issue({ author: { login: 'szchan-bot' }, labels: labels('external') }), options), 'external')
+})
+
+test('the receipt matcher does not swallow a real agent answer', () => {
+  // Match the fixed opening, not "Seen." generally — otherwise an answer that
+  // begins with the word is discarded and the thread looks unanswered (D79).
+  assert.equal(isReceipt({ body: 'Seen. Fixed in 123abc, tests added.' }), false)
+  assert.equal(isReceipt({ body: ' Seen. The master acts on this at its next turn boundary; this note exists so the reply is not a silent queue.' }), true)
+  assert.equal(isReceipt({ body: 'seen. the master acts on this at its next turn boundary' }), true)
+})
+
+test('a maintainer-authored escalation whose only later comment is a receipt is still blocked', () => {
+  // Pins the `reply === undefined` clause: without it this falls through to
+  // "resume" and the inbox reports work that no one answered.
+  const verdict = classifyIssue(
+    issue({ author: { login: 'szchan-bot' }, labels: labels('maintainer-question') }),
+    [
+      comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> may I change the gate?'),
+      comment('szchan-bot', '2026-11-22T08:01:00Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary.'),
+    ],
+    options,
+  )
+  assert.equal(verdict.section, 'Blocked on a human')
+})
+
+test('a bystander does not unblock an escalation only a maintainer can answer', () => {
+  const verdict = classifyIssue(
+    issue({ author: { login: 'szchan-bot' }, labels: labels('maintainer-question') }),
+    [
+      comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> may I change the gate?'),
+      comment('someone', '2026-11-22T08:20:00Z', '+1, same problem here'),
+    ],
+    options,
+  )
+  assert.equal(verdict.section, 'Blocked on a human')
+})
+
+test('the inbox exit contract counts asks, answers and unreadable threads', () => {
+  const sections = (...names) => Object.fromEntries(names.map((name) => [name, [{ number: 1, title: 'x' }]]))
+  assert.equal(inboxVerdict({}).exitCode, 0)
+  assert.equal(inboxVerdict(sections('Maintainer asks (new)')).exitCode, 1)
+  assert.equal(inboxVerdict(sections('Maintainer answers (resume)')).exitCode, 1)
+  assert.equal(inboxVerdict(sections('Blocked on a human')).exitCode, 0)
+  assert.equal(inboxVerdict(sections('Maintainer answers (resume)'), [{ number: 2, message: 'EOF' }]).exitCode, 2)
+  assert.equal(inboxVerdict({}).summary, 'inbox: 0 answer(s) waiting, 0 escalation(s) open, 0 thread(s) unreadable')
 })

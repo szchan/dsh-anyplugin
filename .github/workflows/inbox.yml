@@ -4,8 +4,9 @@ name: inbox
 # path posted a Seen. receipt, and the next round reported "queue empty" from
 # docs/TODO.md. The rule that came out of it — a round starts with the inbox,
 # and a receipt is not an answer — is enforced by scripts/triage-rules.mjs and
-# this job. A failing run is the alarm: it means a human wrote after the agent's
-# last substantive comment and nothing has replied (D79).
+# this job. A red run alone reaches the workflow author (the bot), not a human,
+# so the failure step below opens or updates an issue labelled maintainer-question
+# with the same body — that is the alarm the maintainer actually receives (D79).
 
 on:
   schedule:
@@ -14,8 +15,9 @@ on:
 
 permissions:
   contents: read
-  issues: read
+  issues: write
   pull-requests: read
+  checks: read
 
 jobs:
   inbox:
@@ -28,3 +30,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAINTAINER_LOGINS: szchan
         run: node scripts/triage.mjs --waiting
+      - name: Escalate to the maintainer
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/triage.mjs --waiting > /tmp/inbox.txt 2>&1 || true
+          open=$(gh issue list --label inbox-alert --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body-file /tmp/inbox.txt
+          else
+            gh issue create --label inbox-alert --label maintainer-question \
+              --title "inbox: a maintainer reply is waiting" \
+              --body-file /tmp/inbox.txt
+          fi

@@ -190,8 +190,13 @@ and write down what you chose.
 ### The inbox, and what a receipt means
 
 A round begins with `npm run inbox` (`scripts/triage.mjs --waiting`). It lists
-threads where the maintainer has the last *substantive* word and exits 1 when
-there is one, so a session cannot report an empty queue without reading it.
+threads where the maintainer has the last *substantive* word — an unanswered
+reply, or a maintainer-authored issue the agent never touched — and exits 1
+when there is one, so a session cannot report an empty queue without reading it.
+Exit 2 means a thread could not be read: an unreadable tracker is not an empty
+one, and the round must fix the read before concluding nobody is waiting.
+Only a login in `MAINTAINER_LOGINS` can move a row: a bystander's comment on a
+bot escalation is a report, not an answer.
 
 The intake path posts a `Seen.` receipt when a session picks a thread up. A
 receipt says "an owner exists", not "the answer landed": `scripts/triage-rules.mjs`

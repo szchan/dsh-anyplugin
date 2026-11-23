@@ -3452,8 +3452,8 @@ of the remaining work are superseded.
 ## D79 — A receipt is not an answer, and a round starts with the inbox
 
 **Decided 2026-11-22** (F19, maintainer-observed). On 2026-11-22 the maintainer
-answered #170, #175 and #177 between 12:25 and 12:31 UTC. The intake path posted
-its `Seen. The master acts on this at its next turn boundary` receipt at 12:45.
+answered #170 at 10:19 UTC (receipt 10:26) and #175/#177 between 12:25 and 12:31 UTC
+(receipts at 12:45).
 Every later read of those threads treated them as answered, because the receipt
 was the last comment — one round went further and reported an empty queue from
 `docs/TODO.md` without asking the tracker at all. The work sat for about
