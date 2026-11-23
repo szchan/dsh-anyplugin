@@ -219,8 +219,7 @@ try {
     // The split build may place the controller's shared chunk beside
     // lib/index.js, so the route and the writer reference are asserted over the
     // whole shipped lib, not one file.
-    const serverSources = [...contents.values()].join("
-")
+    const serverSources = [...contents.values()].join("\n")
     check(serverSources.includes('/anyplugin/installs'), 'the shipped lib has no panel read route')
     check(serverSources.includes('dsh-anyplugin/install'), 'the shipped lib does not reach the install writer through ./install')
     // The deleted package must not survive as a string: a stale id would make
