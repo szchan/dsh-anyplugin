@@ -1,0 +1,209 @@
+name: perf
+
+# Branch pushes and PRs to main both measure. The two events use different
+# concurrency refs (`refs/heads/...` vs `refs/pull/...`), so a branch with an
+# open PR runs twice; that is deliberate while `perf` is a separate check.
+# Keep one job name so a future required check has an unambiguous name.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # One job, one runner: head and origin/main are measured on the same host,
+  # in the same child where the probe allows it, so a runner's load trajectory
+  # cannot become the regression. A matrix would measure the sides on different
+  # hosts. The job is named `perf` exactly; a matrix would report `perf (x)`.
+  perf:
+    name: perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # P2 boots `lib/`, so the base needs a real checkout and its own build;
+      # `scripts/perf.mjs --base` already owns that worktree and the build.
+      # Full history keeps `origin/main` available; the explicit fetch below
+      # pins it to the base repository's current main.
+      # On a PR, `github.sha` is the merge commit; measure the PR head instead,
+      # so the head side is the code under review, not a merge with main. The
+      # `refs/pull/N/head` ref lives in the base repository, so it also works
+      # for a fork PR where the head SHA is not otherwise advertised.
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          ref: refs/pull/${{ github.event.number }}/head
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request'
+        with:
+          fetch-depth: 0
+
+      # Full history normally has `origin/main`, but fetch it explicitly so the
+      # comparison ref is current and a checkout configuration change cannot
+      # silently turn the base into a stale or missing ref.
+      - name: Fetch the comparison base
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      # Fail before the expensive setup if the comparison ref is missing. The
+      # runner never fetches a ref on its own; the base is whatever this
+      # checkout's `origin/main` says it is.
+      - name: Guard the merge base
+        run: |
+          git rev-parse --verify --end-of-options 'origin/main^{commit}'
+          git rev-parse --verify --end-of-options 'HEAD^{commit}'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      # The same pinned inputs the suite uses. P1 and P4 need the mod tree;
+      # P2 needs both declared DSH pins; the environment guard requires the
+      # pinned Claude CLI even though the timed probes do not call it.
+      - name: Cache pinned upstream mods
+        uses: actions/cache@v4
+        with:
+          path: .mods
+          key: mods-${{ hashFiles('packages/dsh-anyplugin-mod-host/src/pin.ts', 'scripts/fetch-mod.mjs') }}
+
+      - name: Install pinned upstream mods
+        id: mod
+        run: |
+          tree=$(node scripts/fetch-mod.mjs)
+          diff_tree="$tree/mods/diff/hooks"
+          echo "ANYPLUGIN_MODS_TREE=$tree" >> "$GITHUB_ENV"
+          echo "ANYPLUGIN_MOD_TREE=$diff_tree" >> "$GITHUB_ENV"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "diff_tree=$diff_tree" >> "$GITHUB_OUTPUT"
+
+      - name: Guard the pinned upstream mods
+        env:
+          ANYPLUGIN_MODS_TREE: ${{ steps.mod.outputs.tree }}
+          ANYPLUGIN_MOD_TREE: ${{ steps.mod.outputs.diff_tree }}
+        run: |
+          if [ -z "${ANYPLUGIN_MODS_TREE:-}" ] || [ -z "${ANYPLUGIN_MOD_TREE:-}" ]; then
+            echo "::error::the pinned mod tree is unset; P1 and P4 would not have their pinned input"
+            exit 1
+          fi
+          verified=$(node scripts/fetch-mod.mjs --verify)
+          if [ "$verified" != "$ANYPLUGIN_MODS_TREE" ]; then
+            echo "::error::ANYPLUGIN_MODS_TREE=$ANYPLUGIN_MODS_TREE does not match the pinned tree $verified"
+            exit 1
+          fi
+          if [ "$ANYPLUGIN_MOD_TREE" != "$ANYPLUGIN_MODS_TREE/mods/diff/hooks" ]; then
+            echo "::error::ANYPLUGIN_MOD_TREE=$ANYPLUGIN_MOD_TREE is not the diff root inside the pinned tree"
+            exit 1
+          fi
+          if [ ! -f "$ANYPLUGIN_MOD_TREE/register.ts" ]; then
+            echo "::error::$ANYPLUGIN_MOD_TREE/register.ts is missing from the pinned tree"
+            exit 1
+          fi
+
+      - name: Cache pinned Claude Code CLI
+        uses: actions/cache@v4
+        with:
+          path: .claude-code
+          key: claude-code-${{ hashFiles('packages/dsh-anyplugin-conformance/src/pin.ts', 'scripts/fetch-claude.mjs') }}
+
+      - name: Install pinned Claude Code CLI
+        id: claude
+        run: |
+          bin=$(node scripts/fetch-claude.mjs)
+          echo "CLAUDE_BIN=$bin" >> "$GITHUB_ENV"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      - name: Guard the pinned Claude Code CLI
+        env:
+          CLAUDE_BIN: ${{ steps.claude.outputs.bin }}
+        run: |
+          if [ -z "${CLAUDE_BIN:-}" ]; then
+            echo "::error::CLAUDE_BIN is unset; the perf environment guard requires the pinned CLI"
+            exit 1
+          fi
+          node scripts/fetch-claude.mjs --verify "$CLAUDE_BIN"
+
+      # Both declared pins are required. P2 reports one empty and one one-plugin
+      # boot per declared pin, and a missing pin is a failed gate row rather
+      # than a silent omission. Each pin is attempted before the step fails.
+      - name: Fetch DSH harness pins
+        id: fetch
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          status=0
+          fetch_pin() {
+            version="$1"
+            output="$2"
+            echo "::group::fetch DSH $version"
+            if dir=$(node scripts/fetch-harness.mjs "$version"); then
+              printf '%s=%s\n' "$output" "$dir" >> "$GITHUB_OUTPUT"
+              echo "fetched DSH $version at $dir"
+            else
+              code=$?
+              echo "::error::failed to fetch DSH $version (exit $code)"
+              status=1
+            fi
+            echo "::endgroup::"
+          }
+          fetch_pin 0.2.2-rc.5 dir_rc5
+          fetch_pin 0.2.2-rc.2 dir_rc2
+          exit "$status"
+
+      - name: Guard both resolved pins
+        env:
+          DIR_RC5: ${{ steps.fetch.outputs.dir_rc5 }}
+          DIR_RC2: ${{ steps.fetch.outputs.dir_rc2 }}
+        run: |
+          set -uo pipefail
+          status=0
+          guard_pin() {
+            version="$1"
+            dir="$2"
+            if [ -z "${dir:-}" ] || [ ! -d "$dir/node_modules/@deepseek-ai" ]; then
+              echo "::error::DSH_HARNESS_DIR is unset or missing for DSH $version; P2 would drop a declared pin"
+              status=1
+            fi
+          }
+          guard_pin 0.2.2-rc.5 "$DIR_RC5"
+          guard_pin 0.2.2-rc.2 "$DIR_RC2"
+          if [ "$status" -eq 0 ]; then
+            echo "DSH_HARNESS_DIR=$DIR_RC5" >> "$GITHUB_ENV"
+            echo "DSH_HARNESS_VERSION=0.2.2-rc.5" >> "$GITHUB_ENV"
+          fi
+          exit "$status"
+
+      - name: Fail if a pinned fetch failed
+        if: always()
+        env:
+          FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+        run: |
+          if [ "$FETCH_OUTCOME" != "success" ]; then
+            echo "::error::a pinned DSH fetch failed; perf measures every declared pin and will not drop one"
+            exit 1
+          fi
+
+      # `--ci` selects the fixed D76 limits (it rejects --threshold), writes
+      # perf.json before it exits, prints the gate table, and exits 1 on a red
+      # gate. The base tree is built by the existing --base machinery.
+      - name: Measure the head against origin/main
+        run: node scripts/perf.mjs --base origin/main --repeat 5 --ci --json-out perf.json
+
+      # The artifact is the evidence behind a red check as well as a green one.
+      # A run that produced no report is itself a failure: the gate has no
+      # verdict to show.
+      - name: Upload perf.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf.json
+          path: perf.json
+          retention-days: 30
+          if-no-files-found: error
