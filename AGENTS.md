@@ -142,16 +142,19 @@ fact; the `<!-- dsh-anyplugin-agent -->` marker is only a fallback (docs/TRIAGE.
 `verify` is the gate, and it runs **in CI**: every branch push triggers it. It
 must report **0 skipped** — a skip means an environment variable is missing, and
 on CI a skip is a failure by design (D22/D24). Do not run it, `npm test`,
-`npm run build` or `npm run bench` locally; push and read `npm run ci`. Static
-checks (`check:arch`, `check:features`, `check:decisions`) are the only local
-gate, because they spawn nothing.
+`npm run build`, `check:pack`, a perf run or a spike locally; push and read
+`npm run ci`. Static checks (`check:arch`, `check:features`, `check:decisions`)
+are the only local gate, because they spawn nothing. The guard enforces this
+(`local-verify-refused`, D78): the root can prefix one command with
+`ANYPLUGIN_LOCAL_VERIFY=1` for a deliberate local run, a worker cannot.
 
-If you must run a suite locally anyway (reproducing a flake the reviewer reported),
-`npm test` now takes a machine-wide slot (`scripts/gate-slot.mjs`) and runs with
-`--test-concurrency=2`: one run at a time, two workers, so three agents cannot
-saturate the host. A slot held by a live process is waited on; a dead holder or a
-lock older than an hour is reclaimed with a printed reason. `npm run perf` is the
-other CPU-heavy command — run it once, not in a loop, and never alongside a suite.
+If you must reproduce a flake the reviewer reported, the only local path is the
+root's hatch: `ANYPLUGIN_LOCAL_VERIFY=1 npm test` (one segment, visible in the
+transcript). Inside it, `npm test` takes a machine-wide slot
+(`scripts/gate-slot.mjs`) and runs with `--test-concurrency=2`: one run at a
+time, two workers, so three agents cannot saturate the host. A slot held by a
+live process is waited on; a dead holder or a lock older than an hour is
+reclaimed with a printed reason.
 
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.

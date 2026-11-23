@@ -43,7 +43,7 @@ export function renderBrief(input: BriefInput): string {
     lines.push(`Open ratchet rows: ${brief.open.join(', ')}.`)
   }
   lines.push(
-    'Call-time rules: push only the ticket branch, never main; open a PR, never merge one; docs/DECISIONS.md is append-only through `node scripts/check-decisions.mjs --update` and the proposed entry text belongs in the PR body; do not move coverage totals.',
+    'Call-time rules: push only the ticket branch, never main; open a PR, never merge one; docs/DECISIONS.md is append-only through `node scripts/check-decisions.mjs --update` and the proposed entry text belongs in the PR body; do not move coverage totals; run the suite, the build, the pack check and the perf gate in CI, and let the verify workflow run the spikes it owns, by pushing — not here (D78).',
   )
   lines.push(
     'Shell subset: one command list per call. `&&`, `||`, `|` and redirections (including `2>&1`) are modelled. Grouping, a background `&`, command substitution, backticks, unquoted `$` expansion, here-strings and running a shell script file are refused.',
