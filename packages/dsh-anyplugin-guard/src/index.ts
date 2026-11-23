@@ -31,6 +31,7 @@
 import { chooseWorktree, messageText, renderBrief, textMessage } from './brief.ts'
 import { denialSubject, recordDenial } from './denials.ts'
 import { currentBranch } from './git.ts'
+import { inTerritory } from './scope.ts'
 import {
   judgeCall,
   resolvePolicy,
@@ -98,6 +99,9 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
 
   const decideTool = async (exec: any, next: () => Promise<unknown>): Promise<unknown> => {
     const agent = exec?.agent
+    // D80: outside this checkout and its ticket worktrees the guard is inert —
+    // the plugin loads in a user profile, so most sessions are not ours.
+    if (!inTerritory(agentCwd(agent), policy)) return next()
     const state = stateFor(agent)
     const call: GuardCall = {
       tool: typeof exec?.name === 'string' ? exec.name : '',
@@ -129,6 +133,7 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
   // continuation is `{kind: 'enter', messages: [...claimed, context]}`).
   const decideStep = async (payload: any, next: () => Promise<unknown>): Promise<unknown> => {
     const agent = payload?.agent
+    if (!inTerritory(agentCwd(agent), policy)) return next()
     const result = (await next()) as { kind?: unknown; messages?: unknown } | undefined
     if (result?.kind !== 'enter' || !Array.isArray(result.messages)) return result
     if (!isWorker(agent)) return result

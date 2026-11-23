@@ -3546,3 +3546,49 @@ scan, `notes.push` with bytes); `packages/dsh-anyplugin-install/test/panel.test.
 now states what the mount test proves (the controller asks for `webServer` and
 the panel registers both routes in the pin's documented `register` shape; no
 test boots a real web server).
+
+---
+
+## D80 — The guard is scoped to this checkout and its ticket worktrees
+
+The guard is installed into a *user* profile, so DSH loads it for every session
+on the machine. `#221` named the consequence: the maintainer opened an
+unrelated project and the guard denied it. A layer that polices the whole host
+is not a layer anyone keeps installed.
+
+1. **Territory, not configuration.** The scope is derived from what the
+   installer already composes: `protectedRoots` (this checkout; the `.git`
+   entry is a write target, not a session cwd), `worktrees` (exact ticket
+   paths, or `<stem>-*` namespaces) and `gitDirectories` (the common dir).
+   Any *working tree of this repository* is inside the territory — a review or
+   verify worktree as much as a ticket one — because its `.git` points into
+   that common dir, and a directory inside a working tree is inside that tree
+   (a subdirectory has no .git of its own; the nearest one above it decides).
+   Write permission stays the ticket list: a review tree is judged and
+   unwritable. A fresh install with no ticket worktree writes the
+   documented namespace (`$ANYPLUGIN_WORKTREE_ROOT/ticket-*`, default
+   `/tmp/anyplugin-wt/ticket-*`) so the first worktree needs no reinstall.
+2. **Inert outside.** For a session whose canonical `header.cwd` is outside
+   the territory, both seams call `next()` before judging: no denial, no brief,
+   no denial record. A symlink is resolved first, so a link into the checkout is
+   the checkout, and a relative `gitdir:` pointer resolves against the
+   working tree's own directory (git 2.56 `--relative-paths`). Delegation is
+   not modelled: a child started with a chosen
+   `cwd` is judged by that path, and a child pointed outside is outside. The guard does not *observe* other projects either — a
+   dormant mechanism that still logs is a surveillance tool, not a guard.
+3. **Unknown cwd is outside.** With a territory configured, a session without
+   `header.cwd` is treated as outside rather than guessed at: the guard's own
+   view of a session is one path from the pin, and inventing a default would
+   police whatever directory the host happened to start in. An *unconfigured*
+   policy (a hand-written config, a unit test) keeps the previous global
+   behaviour, because silently switching an unconfigured guard off is the worse
+   failure.
+4. **Workers stay governed.** The worktree pattern is matched segment-wise
+   (`/tmp/anyplugin-wt/ticket-*` covers `/tmp/anyplugin-wt/ticket-225/…`, not
+   `/tmp/anyplugin-wt/notes`), and a worker whose cwd is a ticket worktree is
+   judged even though that path is outside the checkout.
+
+Evidence: `packages/dsh-anyplugin-guard/src/scope.ts` (unit table in
+`test/scope.test.mjs`), and two apply-level tests — one session outside the
+territory is accepted with no brief and no record, one inside a real ticket
+worktree is denied and recorded.
