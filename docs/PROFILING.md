@@ -1,37 +1,151 @@
-# PROFILING — our own hot paths, as ratios
+# PROFILING — our own hot paths, gated in CI
 
 `npm run perf` measures the four hot paths that a plugin install and a plugin
-load go through, and reports each as **head over base**. It exists because
-`npm run verify` answers a different question: *is the behavior right?* This
-one answers *did the base commit's tree get slower?* and it answers it on the
-machine you are sitting at.
+load go through. It exists because `npm run verify` answers a different
+question: *is the behavior right?* This one answers *did the tree get slower,
+and did a boot or a dispatch cross its budget?*
 
-A regression is **a ratio against the base, not a millisecond count** (ratified
-as D69 in `docs/DECISIONS.md`). The
-stopwatch is only there to produce the numerator and the denominator; the
-number a reviewer reads is the median of the per-pair `head/base` ratios,
-where `< 1.00` is faster. The pair, not a side's median, is the unit: a burst
-that slows one side also slows the boot or sample measured next to it, so it
-mostly cancels inside the pair instead of becoming a regression.
+P1 (cold mod load) and P4 (compile) report **head over base** and are gated as
+ratios: the number a reviewer reads is the median of the per-pair `head/base`
+ratios, where `< 1.00` is faster (D69). P2 (boot + reconcile) and P3
+(`pre-execute` dispatch) are gated as **absolute budgets** on the head, because
+those numbers are short enough that a base/head ratio is mostly host noise
+(D76). P5 (size/RSS) is recorded and never gated. The full decision is D76 in
+`docs/DECISIONS.md`; D69's pairing rules still govern the ratios, and D69's
+"not in CI" clause is superseded.
 
-`--check` gates **P1, P3 and P4**. **P2 is informational** — its five-run
-stability evidence is below — and **P5 is informational**. A standalone
-millisecond figure is not comparable to a number measured in another process,
-on another machine, or at another commit, so the tool never presents one as a
-claim.
+## The CI gate
+
+`.github/workflows/perf.yml` runs one job named **`perf`** on every branch push
+and on every pull request whose base is `main`. The job measures the head and
+`origin/main` on the **same runner**:
+
+1. it checks out the PR head (or the pushed commit) with full history and
+   fetches `origin/main` explicitly, so the comparison ref is the base repo's
+   current `main`; the same `--base` machinery then creates the detached base
+   worktree;
+2. it fetches the pinned mod tree, the pinned Claude Code CLI and both DSH pins
+   declared by `engines.dsh`, and refuses to measure with any of them missing;
+3. `node scripts/perf.mjs --base origin/main --repeat 5 --ci --json-out
+   perf.json` creates a detached worktree at `origin/main`, builds both trees,
+   runs the interleaved probes, prints the gate table and writes the artifact;
+4. the job uploads the artifact named **`perf.json`**, retained for **30
+   days**, with `if: always()` so a red run still carries its report.
+
+The fixed limits are:
+
+| probe | measurement | limit |
+| --- | --- | --- |
+| P1 cold mod load | median of the paired head/base ratios | `<= 1.50x` |
+| P2 empty-profile boot (per declared pin) | head median | `< 3000 ms` |
+| P2 one-plugin boot (per declared pin) | head median / head empty median | `< 2.00x` |
+| P3 pre-execute fan-out | head median, microseconds per dispatch | `< 50.0 us` |
+| P4 compile | median of the paired head/base ratios | `<= 1.50x` |
+| P5 tarball/unpacked/kernel/RSS | recorded only | never gates |
+
+A ratio exactly at its limit passes: 1.5× is a ceiling, as `exceedsThreshold`
+has always meant. An absolute budget fails at its boundary — the ratified
+numbers read "< 3 s", "< 2× empty" and "< 50 µs" — so 3000 ms, exactly 2× and
+50 µs are red (`exceedsCap`). A pin declared in `engines.dsh` but not fetched is a **failed** row from
+`discoverPins`, and an unmeasured probe is a failed row; the workflow guard
+fails the job before measurement when one of the two hardcoded pins cannot be
+fetched. Neither layer drops the gate silently. The P2 base/head ratio is still printed,
+but it is description: its noise is why D69 did not gate it, and D76 keeps that
+objection while gating the head's absolute boot instead. The absolute caps are
+hard walls, not a noise band: a single sample at the boundary is red, and the
+verdict line reads `gates: all N gated measurements pass`, and the separate
+`gated (D76)` line lists the seven gates, so the recorded P2 boot ratio is never
+implied to have been checked.
+
+`npm run perf` on a workstation is **local-only for debugging and never a
+merge gate**. `npm run verify` does not read perf; the `perf` workflow is its
+own check. It runs on `push` and on `pull_request` to `main` (fork PRs included, via
+`refs/pull/N/head` in the base repository). A same-repository PR therefore
+shows two `perf` runs for one commit (its push run and its PR run); do not add it to the required checks
+until those triggers are
+collapsed to one run per commit — a second check under the same name leaves the
+other pending and blocks the merge (the failure `verify` already had before it
+went push-only). Whether a red `perf` blocks a merge is branch protection's
+decision, and the merge command stays human.
+
+## Reading the artifact
+
+Download `perf.json` from the run's **Artifacts** section, or read the same
+gate table in the job log. The report is:
+
+```json
+{
+  "schema": "dsh-anyplugin/perf@1",
+  "base": { "ref": "origin/main", "commit": "...", "sameAsHead": false },
+  "head": { "commit": "..." },
+  "repeat": 5,
+  "gateLimits": { "ratio": 1.5, "p2EmptyMs": 3000, "p2PluginOverEmpty": 2,
+                  "p3Micros": 50, "p4Ratio": 1.5 },
+  "probes": { "P1": {}, "P2": [], "P3": {}, "P4": {} },
+  "p5": { "informational": true, "tarballBytes": 0, "unpackedBytes": 0,
+          "kernelBytes": 0, "bootPeakRssKiB": 0 },
+  "check": { "limits": {}, "rows": [], "failures": [] },
+  "notes": []
+}
+```
+
+- `probes.P1/P3/P4` hold `base`, `head`, the paired `ratio` and the samples.
+  P4 also says whether the two sides compiled the same plugin set.
+- `probes.P2` has one row per declared pin. Each row has the one-plugin
+  `base/head/ratio/pairs` and an `empty` object with the same shape. A row
+  whose pin was not fetched has `reason: "pin not fetched"` instead of numbers.
+- `check.rows` is the gate table: `metric`, `base`, `head`, `ratio`, `limit`,
+  `verdict` (`pass`, `FAIL` or `record`) and `detail`. The four P5 rows are
+  `record`; they never appear in `check.failures`.
+- `check.failures` is what turned the job red, one line per failed row, naming
+  the probe, the value, the threshold and the repeat count.
+- `p5` is the recorded size/RSS block. It has no base/head pair.
+
+`perf.json` is written before the process exits, so a gate failure still
+produces the evidence. A run with no `perf.json` is itself a failed job: the
+upload step errors rather than letting a report-less run look green.
+
+## What a red gate means
+
+A red `perf` is a **regression claim**, and the claim names three things: the
+probe, the threshold and the repeat count. The workflow runs `--repeat 5`; the
+gate table and the log line say so.
+
+1. Read the failed row. P1/P4 failures are a paired ratio above 1.5x; P2
+   failures are a head boot above 3000 ms or above 2x the empty boot; P3 is a
+   head dispatch above 50 us.
+2. Check P4's `comparable` flag. If it is false, the base and head compiled
+   different plugin sets and the failure is a set mismatch, not a slower
+   compile; fix the fixture/pin difference first.
+3. Re-run the job before writing a regression report. One sample outside the
+   observed band is a reason to re-measure (D69 rule 4), not a conclusion.
+   A second red run at the same repeat count is the regression claim.
+4. Do not widen `--threshold` to make CI pass. `--ci` rejects `--threshold`
+   outright; the ratified limits are fixed in `scripts/perf.mjs`.
+
+Do not read a standalone millisecond figure as a cross-machine claim. P2's
+3000 ms and P3's 50 us are budgets for this job on this runner, not numbers
+comparable to a laptop. P1/P4 are meaningful only as the paired ratio from the
+same run.
+
+## Commands
 
 ```bash
 npm run perf                                   # base origin/main, 5 samples, table
 npm run perf -- --base HEAD~1 --repeat 7       # a different base, more samples
 npm run perf -- --json                         # the same report as JSON
 npm run perf -- --quiet                        # JSON on stdout, nothing else
-npm run perf -- --check --threshold 1.5        # gate P1/P3/P4; exit 1 above 1.5x
+npm run perf -- --check                        # the D76 gates, exit 1 on a failure
+npm run perf -- --check --threshold 2          # local experiment: move P1/P4 only
+node scripts/perf.mjs --ci --json-out perf.json  # what CI runs; fixed limits
 ```
 
-`perf` is **not** wired into `verify` or CI, and `--check` is not called by any
-workflow. CI timing on a shared runner is not comparable to a maintainer's
-machine and would turn noise into red builds. A `--check` failure is a local
-signal for the person changing a hot path, not a merge gate.
+`--check` applies all D76 gates on the workstation: P1/P4 ratios, P2's absolute
+caps, P3's absolute cap. `--threshold` moves only the P1/P4 ratio ceilings and
+is a local experiment. `--ci` selects the fixed D76 limits, rejects
+`--threshold`, writes `perf.json` (default name; `--json-out` overrides it),
+prints the gate table and exits 1 on a red gate. A plain `npm run perf` is a
+table, not a verdict, and exits 0.
 
 For a pipe, ask npm to stay quiet: `npm` prints its own `> dsh-anyplugin@…
 perf` banner on stdout before the script starts, so `npm run perf -- --json`
@@ -63,7 +177,7 @@ The base is measured in a detached `git worktree` at the base commit:
 1. `git rev-parse --verify --end-of-options <ref>^{commit}` — no fetch;
 2. `git worktree add --detach <tmp>/base <commit>`;
 3. `scripts/build.mjs` runs in **both** trees before any stopwatch starts, so
-   the build is the harness's own cost;
+   the build is the harness's own cost (P2 boots `lib/`);
 4. `node_modules` is shared only when `package-lock.json` is byte-identical.
    Otherwise the base gets its own `npm install --offline` (still no network);
    product packages import each other relatively, so a shared dependency tree
@@ -73,9 +187,11 @@ The base is measured in a detached `git worktree` at the base commit:
    `[base, head]` and `[head, base]`. Each side keeps its own module graph and
    its own `vm` contexts; because the two halves of a pair are adjacent in
    time, a drift in the host's load cancels inside the pair instead of being
-   reported as a ratio. P2 does the same in one child per pin: it boots the
-   base side and the head side as a pair, alternating which side goes first,
-   and reports the median of the per-pair ratios;
+   reported as a ratio. P2 boots the base side and the head side as a pair, alternating which side
+   goes first, and reports the median of the per-pair ratios; one probe child
+   serves every declared pin in turn, so a failure on the first pin stops the
+   rest, and the peak RSS is the maximum across pins rather than a per-pin
+   number;
 6. the worktree and the scratch home are removed in a `finally`.
 
 Everything the runner needs for itself — worktree creation, dependency sharing,
@@ -91,56 +207,71 @@ only timed regions are the four numbered `performance.now()` spans below.
 slowest single unit: link, type-strip and evaluate a foreign module in a fresh
 `vm` context. Every sample creates a fresh context. One warmup per side is
 discarded; the report's ratio is the median of `2 × --repeat` per-pair ratios
-(two samples per side per pair). After the stopwatch closes, the probe asserts the pinned
-registration count from `fixtures/mods/upstream.json` (11 for `diff`) and
-disposes the mod.
+(two samples per side per pair). The gate is that median at or below 1.5x.
+After the stopwatch closes, the probe asserts the pinned registration count
+from `fixtures/mods/upstream.json` (11 for `diff`) and disposes the mod.
 
 P1 does not depend on the DSH pin: it measures our mod host against the pinned
 Claude Code mod tree (2.1.329, commit `f9e4d1e…`), not against a DSH release.
 
 ### P2 — boot + reconcile
 
-The host's own profile loader boots a scratch profile with **one installed
-plugin** (`fixtures/claude-skills-only`), and the controller reconciles it from
-`installs.yml`. This is measured **once per DSH pin declared in
-`engines.dsh`** that is fetched next to `DSH_HARNESS_DIR`; a declared pin that
-is not fetched is a note naming the fetch command, either way.
+For each DSH pin declared in `engines.dsh`, the host's own profile loader boots
+two scratch profiles:
 
-Outside the timed region: scratch home, `installPlugin()` (writes
-`installs.yml` + `enabled.yml`), `appBoot.initProfile()`, the
+- **empty** — a home with no `anyplugin/installs.yml`. The controller starts,
+  logs that it has no lock and nothing to reconcile, and mounts **no**
+  `anyplugin.*` group and no fixture skill. This is the base cost of the
+  harness plus our controller.
+- **one plugin** — a home where `installPlugin()` installed
+  `fixtures/claude-skills-only`; the controller reconciles it from
+  `installs.yml`, mounts one active group and exposes `greet,hello`.
+
+Outside every timed region: the two scratch homes, `installPlugin()` (writes
+`installs.yml` + enabled state), `appBoot.initProfile()`, the
 `<profile>/node_modules/dsh-anyplugin → <side root>` symlink, and
 `appBoot.loadProfile()`. The timed region is `mountProfile()`: the harness
 boot, the profile's plugin activation, module loading from the side's `lib/`,
-and the controller's reconcile pass. A full warm-up pair (one boot per side,
-both discarded) runs first. Each repeat then boots the base side and the head
-side **as a pair**, adjacent in time and with the order alternating; each boot
-uses a fresh profile directory and disposes its context afterwards. The
-reported ratio is the median of the per-pair ratios; the per-side medians next
-to it are descriptive, not the ratio.
+and the controller's reconcile pass (or its early return for the empty home).
 
-After the stopwatch closes, P2 asserts:
+Each profile gets one discarded warm-up pair (base and head), then each repeat
+boots the base side and the head side **as a pair**, adjacent in time and with
+the order alternating. The two profiles alternate their order inside a repeat,
+so four boots happen per repeat: empty base/head and one-plugin base/head.
+`pairBootLog` validates that each profile's log is still adjacent and
+alternating. The reported base/head ratio for each profile is the median of its
+per-pair ratios; the per-side medians are descriptive.
+
+The D76 gates are on the **head** side of those medians: the empty boot must be
+strictly below 3000 ms, and the one-plugin boot strictly below 2x the empty
+boot; the boundary value fails.
+The base/head P2 ratio stays in the table but does not gate.
+
+After the stopwatch closes, P2 asserts the profile shape:
 
 - the harness and the controller entry are active (state `2`);
-- exactly one `anyplugin.*` group is mounted, and it is active;
-- the module URL is **this side's** `<root>/lib/index.js` (so the base
-  worktree is not booting the head's artifact);
-- the controller logged `reconciled … from <installs.yml>`;
-- the reconciled fixture's skills are `greet,hello`.
+- the empty boot has zero `anyplugin.*` groups and an empty skill list, and the
+  controller logged `no lock … nothing to reconcile`;
+- the one-plugin boot has exactly one active `anyplugin.*` group, the
+  controller logged `reconciled … from <installs.yml>`, and the skills are
+  `greet,hello`;
+- in both, the module URL is **this side's** `<root>/lib/index.js` (so the base
+  worktree is not booting the head's artifact).
 
-P2 deliberately does **not** assert the reconcile log's summary columns.
-`controller.ts` calls `reconcile(..., { settle: false })`, and the summary
-checks the group's fiber immediately after `loader.create`, while the group is
-still loading: the line therefore reads `created 0, …, kept 0, failed 1` even
-though the group becomes active during boot. That is a known wart of the
-existing controller, not something to bend a perf probe around; the assertion
-that the reconcile ran, and the group is active, is the honest one.
+P2 deliberately does **not** assert the one-plugin reconcile log's summary
+columns. `controller.ts` calls `reconcile(..., { settle: false })`, and the
+summary checks the group's fiber immediately after `loader.create`, while the
+group is still loading: the line therefore reads `created 0, …, kept 0,
+failed 1` even though the group becomes active during boot. That is a known
+wart of the existing controller, not something to bend a perf probe around; the
+assertion that the reconcile ran, and the group is active, is the honest one.
 
-The probe records which host path the boot took (`PluginPackages` or the
+The probe records which host path each boot took (`PluginPackages` or the
 scope-link fallback) so the JSON report says how the plugin was found.
 
-P2 is **informational, not gated**. The bar a gated probe must hold is every
-ratio inside 0.85–1.18 over five consecutive `--base HEAD --repeat 5` runs on
-identical code. Five such runs produced:
+The P2 **base/head ratio** is informational, not gated. The bar a ratio-gated
+probe must hold is every ratio inside 0.85–1.18 over five consecutive `--base
+HEAD --repeat 5` runs on identical code. Five such runs produced:
 
 | pin | ratios from the five runs |
 | --- | --- |
@@ -148,13 +279,12 @@ identical code. Five such runs produced:
 | rc.5 | 0.958, 1.011, 1.021, 1.073, 1.193 |
 
 rc.2 holds. rc.5 misses the bar once (1.193). Individual paired boots still
-swing from ~21 ms to ~36 ms when a GC or another agent's build lands inside
-one, and a pair cannot cancel a pause that hits only one side. Gating at 1.5
-would therefore let a real 1.5x boot regression pass whenever that noise lands
-on the head side — which is exactly what the merged-block design did before
-pairing: reviewer-perf measured 0.59x and 1.02x back to back on identical code.
-The threshold is not widened to hide that; P2 is printed and `--check` does not
-read it.
+swing when a GC or another agent's build lands inside one, and a pair cannot
+cancel a pause that hits only one side. Gating the base/head ratio at 1.5 would
+therefore let a real 1.5x boot regression pass whenever that noise lands on the
+head side — which is exactly what the merged-block design did before pairing:
+reviewer-perf measured 0.59x and 1.02x back to back on identical code. D76
+keeps that ratio descriptive and gates the head's absolute boot instead.
 
 ### P3 — interception
 
@@ -168,7 +298,10 @@ read it.
 
 Every sample is 2,000 dispatches; the reported number is **microseconds per
 dispatch**, and the probe asserts the exact trace and a `continue` decision
-after each sample. The dispatch is in-process: no host, no CLI, no IPC.
+after each sample. The gate is the head median strictly below **50 us per
+dispatch** (the observed value is roughly 8–10 us). The base/head ratio is
+printed as description; the absolute cap is the gate. The dispatch is
+in-process: no host, no CLI, no IPC.
 
 P3 does not depend on the DSH pin.
 
@@ -190,9 +323,11 @@ artifacts the gate refuses; their refusal is part of the pinned shape and is
 measured, not asserted away. The probe does assert that the set as a whole
 reaches both exec surfaces, hook and mod.
 
-P4 does not depend on the DSH pin.
+The gate is the median of the paired ratios at or below 1.5x. If base and head
+compiled a different plugin set, P4 is reported not comparable and the gate
+fails; the ratio would mix sets. P4 does not depend on the DSH pin.
 
-### P5 — informational, never gated
+### P5 — recorded, never gated
 
 | number | source |
 | --- | --- |
@@ -203,8 +338,8 @@ P4 does not depend on the DSH pin.
 
 P5 has no base/head pair. It changes for many reasons (a dependency bump, a
 platform's allocator, test fixtures) and none of them is "the hot path got
-slower", so it is stamped `informational` in the table and the JSON, and
-`--check` never reads it.
+slower", so it is stamped `informational` in the table and the JSON, its gate
+rows say `record`, and no verdict reads it.
 
 ## What this deliberately does not measure
 
@@ -217,11 +352,11 @@ slower", so it is stamped `informational` in the table and the JSON, and
 - **No install time.** `npm install` of the tarball, downloads and extraction
   are outside every stopwatch; P5 reports the artifact's size, not the time to
   obtain it.
-- **No absolute cross-machine claim.** A millisecond count is not comparable
-  across machines, processes or cooling states. That is the whole reason the
-  output is a ratio.
-- **No CI timing.** `perf` is not in `verify`, and CI would compare a shared
-  runner's noise to nothing.
+- **No cross-machine ratio.** A paired ratio is meaningful only inside the run
+  that produced it. P2's 3000 ms and P3's 50 us are budgets on the CI runner,
+  not numbers comparable to a laptop.
+- **No release gate hidden in `verify`.** `verify` stays perf-free; the
+  separate `perf` workflow is where the D76 limits run.
 
 ## Variance: what to expect, and what a ratio means
 
@@ -237,30 +372,34 @@ produced 1.89x on P3. The machine's load trajectory had become the regression.
 Five consecutive `--base HEAD --repeat 5` runs after pairing, on the same busy
 host and the same commit:
 
-| probe | the five ratios | gated by `--check`? |
+| probe | the five ratios | ratio-gated by D76? |
 | --- | --- | --- |
 | P1 | 1.077, 1.011, 1.033, 1.014, 1.025 | yes |
-| P3 | 0.924, 0.967, 0.944, 0.965, 0.987 | yes |
+| P3 | 0.924, 0.967, 0.944, 0.965, 0.987 | no — 50 us head cap |
 | P4 | 1.025, 0.990, 0.994, 1.005, 0.990 | yes |
-| P2 rc.2 | 1.021, 0.966, 0.928, 0.933, 0.906 | no — informational |
-| P2 rc.5 | 1.073, 0.958, 1.021, 1.193, 1.011 | no — informational |
+| P2 rc.2 | 1.021, 0.966, 0.928, 0.933, 0.906 | no — head boot caps |
+| P2 rc.5 | 1.073, 0.958, 1.021, 1.193, 1.011 | no — head boot caps |
 
-The bar a gated probe must hold is every ratio inside 0.85–1.18 over five
-consecutive runs. P1, P3 and P4 hold; P2 does not (1.193 once on rc.5), so it
-is informational. Do not widen `--threshold` to turn a miss into a pass; make
-the probe honest or stop gating it.
+The ratio bar is every ratio inside 0.85–1.18 over five consecutive runs on
+identical code. P1 and P4 hold. P3's five-run ratio also sits inside the band,
+but its gate is the 50 us cap; P2's rc.5 ratio misses once, which is why D76
+does not gate that ratio. Do not widen a cap to turn a miss into a pass; make
+the probe honest or take the claim out of the gate.
 
 So:
 
-- on the gated probes the five-run spread was 0.924–1.077. A ratio inside that
-  band is the probe's own noise, not a regression; a ratio outside it is worth
-  a second run before reading anything into it;
-- a gated ratio above the `--check` default of 1.5 fails the local gate. That
-  is the only automatic verdict the tool has;
-- P2 and P5 are printed, never gated. Read P2 as a direction (about ±20–30 %),
-  not as a pass/fail; P5 says `informational` in both output modes;
-- absolute medians in two different runs are not a comparison. Only ratios
-  from the same run are, and only the paired ones.
+- on the ratio-gated probes the five-run spread was 0.990–1.077. A ratio inside
+  that band is the probe's own noise, not a regression; a ratio outside it is
+  worth a second run before reading anything into it;
+- P1/P4 fail at a paired ratio above 1.5x. P2 fails at a head empty boot above
+  3000 ms or a one-plugin boot above 2x the empty boot. P3 fails at a head
+  median above 50 us per dispatch. Those are the only automatic verdicts;
+- P2's base/head ratio and P5 are printed, never gated. Read the P2 ratio as a
+  direction (about ±20–30 %), not as a pass/fail; P5 says `informational` in
+  both output modes;
+- absolute medians in two different runs are not a comparison. A ratio is
+  meaningful only from the same run, and the D76 absolute caps are budgets,
+  not cross-run comparisons.
 
 Raising `--repeat` tightens every median; it cannot remove the drift between
 separate runs.

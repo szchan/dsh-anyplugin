@@ -7,23 +7,27 @@
  * never prints a standalone millisecond count as a claim — a number on one
  * machine at one moment is not comparable to anything. Every probe prints a
  * base/head pair and the ratio between them, and a regression is a ratio, not
- * a millisecond count. P5 (bytes and RSS) is informational by construction.
+ * a millisecond count. Three probes also have absolute caps, because their
+ * cross-run ratio is the noisy quantity (D76): P2's empty-profile boot and its
+ * one-plugin multiplier, and P3's per-dispatch time. P5 (bytes and RSS) is
+ * recorded in the artifact and never gates.
  *
- * The four ratio probes, cheapest-first:
+ * The four probes, cheapest-first:
  *
  *   P1  cold mod load      loadMod + evaluate of the pinned upstream `diff`
  *                          mod, the kernel's slowest single unit.
- *   P2  boot + reconcile   the host's own profile loader boots a profile with
- *                          one installed plugin and the controller reconciles
- *                          it, once per declared DSH pin.
+ *   P2  boot + reconcile   the host's own profile loader boots an empty profile
+ *                          and a profile with one installed plugin, once per
+ *                          declared DSH pin; the controller reconciles the
+ *                          second and the multiplier is gated.
  *   P3  interception       runChain over three handlers with one matcher hit;
  *                          microseconds per dispatch.
  *   P4  compile            readClaudePlugin + gate + emit over the seven
  *                          pinned upstream mods and every fixture plugin.
  *
  * P5 reports the tarball's bytes, its unpacked bytes, the mods kernel's bytes
- * and the boot's peak RSS. It is stamped `informational` in both output modes
- * and `--check` never looks at it.
+ * and share, and the boot's peak RSS. It is stamped `informational` in both
+ * output modes and neither `--check` nor `--ci` looks at it.
  *
  * How the base is measured: a detached worktree at the base commit, built
  * there. P1/P3/P4 import the base and the head in one child and measure them
@@ -34,6 +38,11 @@
  * dependencies are shared only when `package-lock.json` is byte-identical;
  * otherwise the base gets its own offline `npm install`. Everything the runner
  * does for itself (worktree, build, pack) happens outside every stopwatch.
+ *
+ * `--ci` is the workflow's mode (`.github/workflows/perf.yml`): it runs the
+ * ratified D76 gate set, writes `perf.json`, and exits 1 on a failed gate.
+ * `--check` runs the same verdicts on a workstation. Plain `npm run perf`
+ * stays a local debugging aid and is never a merge gate.
  *
  * The five environment variables are the suite's (`DSH_HARNESS_DIR`,
  * `DSH_HARNESS_VERSION`, `CLAUDE_BIN`, `ANYPLUGIN_MODS_TREE`,
@@ -59,6 +68,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -79,8 +89,29 @@ export const ENV_VARS = Object.freeze([
 
 export const DEFAULT_BASE = 'origin/main'
 export const DEFAULT_REPEAT = 5
+
+/** The pair count the gate's claim is defined on (D76). */
+const GATE_REPEAT = 5
 export const DEFAULT_THRESHOLD = 1.5
 export const REPORT_SCHEMA = 'dsh-anyplugin/perf@1'
+
+/**
+ * The ratified D76 gate set. Ratios are ceilings: a value at the limit is
+ * inside it, matching `exceedsThreshold`. P2's empty cap is absolute
+ * milliseconds; its one-plugin cap is a multiplier over the *head's* empty
+ * median, so a slow runner that moves both boots together does not trip it.
+ */
+export const GATE_LIMITS = Object.freeze({
+  ratio: 1.5,
+  p2EmptyMs: 3000,
+  p2PluginOverEmpty: 2,
+  p3Micros: 50,
+  p4Ratio: 1.5,
+})
+
+/** The artifact name the workflow uploads, and how long it keeps it. */
+export const CI_ARTIFACT = 'perf.json'
+export const ARTIFACT_RETENTION_DAYS = 30
 
 /** One warmup, then this many timed samples per probe, per side. */
 const MAX_REPEAT = 100
@@ -89,35 +120,45 @@ const DISPATCH_BATCH = 2000
 /** The diff mod's registration count, from fixtures/mods/upstream.json. */
 const DIFF_MOD = 'diff'
 
-export const USAGE = `perf — measure dsh-anyplugin's own hot paths, as ratios against a base ref.
+export const USAGE = `perf — measure dsh-anyplugin's own hot paths against a base ref.
 
 Usage:
   npm run perf [-- --base <git-ref>] [--repeat <n>] [--json | --quiet]
-               [--check [--threshold <x>]]
+               [--check | --ci] [--json-out <path>] [--threshold <x>]
 
-Probes (each prints base, head and ratio; a regression is a ratio):
-  P1  cold mod load      loadMod + evaluate of the pinned upstream diff mod
-  P2  boot + reconcile   the host's profile loader boots one installed plugin,
-                         once per DSH pin declared in engines.dsh; paired and
-                         informational today, not gated
-  P3  interception       runChain over three handlers, one matcher hit (us)
+Probes (base, head, ratio; P2/P3 also have absolute caps, P5 never gates):
+  P1  cold mod load      loadMod + evaluate of the pinned upstream diff mod;
+                         head/base ratio <= ${GATE_LIMITS.ratio}x
+  P2  boot + reconcile   an empty profile and a one-installed-plugin profile,
+                         once per DSH pin declared in engines.dsh; head empty
+                         boot <= ${GATE_LIMITS.p2EmptyMs} ms absolute and head
+                         one-plugin <= ${GATE_LIMITS.p2PluginOverEmpty}x head empty
+  P3  interception       runChain over three handlers, one matcher hit;
+                         <= ${GATE_LIMITS.p3Micros} us per dispatch absolute
   P4  compile            readClaudePlugin + gate + emit over the seven upstream
-                         mods and every fixture that carries a plugin manifest
-  P5  informational      tarball bytes, unpacked bytes, mods kernel bytes and
-                         the boot's peak RSS; never gated
+                         mods and every fixture that carries a plugin manifest;
+                         head/base ratio <= ${GATE_LIMITS.p4Ratio}x
+  P5  recorded           tarball bytes, unpacked bytes, mods kernel bytes and
+                         share, and the boot's peak RSS; never gated
 
 Options:
   --base <ref>       base revision measured in a separate worktree
                      (default: ${DEFAULT_BASE}; the ref must exist locally)
   --repeat <n>       samples per side, 1..${MAX_REPEAT} (default: ${DEFAULT_REPEAT});
                      P1/P3/P4 take 2n interleaved samples per side, P2 takes n
-                     paired boots per side plus one discarded warm-up pair
+                     paired boots per profile and side plus one discarded
+                     warm-up pair
   --json             print the JSON report instead of the table
   --quiet            print only the JSON report; suppress notes (failures print)
-  --check            exit 1 when a gated ratio (P1, P3, P4) exceeds --threshold;
-                     P2 and P5 are printed but never gated; not wired into verify
-  --threshold <x>    ratio ceiling for --check (default: ${DEFAULT_THRESHOLD});
-                     requires --check
+  --check            run the D76 gates and exit 1 when one trips; --threshold
+                     may relax the P1/P4 ratio ceiling for local experiments
+  --ci               the workflow mode: the fixed D76 limits, writes
+                     ${CI_ARTIFACT} (or --json-out), and exits 1 on a failed
+                     gate; --threshold is rejected so a run cannot change the
+                     ratified ceilings
+  --json-out <path>  write the JSON report to <path> as well as printing
+  --threshold <x>    P1/P4 ratio ceiling for --check (default:
+                     ${DEFAULT_THRESHOLD}); requires --check, rejected by --ci
   -h, --help         this text
 
 Environment (the suite's five; a missing one is a named failure, not a skip):
@@ -141,11 +182,22 @@ export class PerfError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * Strictly greater: a ratio exactly at the threshold is inside it. The
- * threshold is a ceiling for a *regression*, and equality is not a regression.
+ * Strictly greater: a ratio exactly at the threshold is inside it. A ratio
+ * threshold is a ceiling for a *regression*, and measuring exactly the
+ * pre-registered value is not a regression.
  */
 export function exceedsThreshold(ratio, threshold) {
   return ratio > threshold
+}
+
+/**
+ * At or above: an absolute budget is a wall, not a ratio. The ratified caps
+ * read "< 3 s", "< 2x empty", "< 50 us", so the boundary value itself fails —
+ * otherwise the gate is wider than the number the maintainer approved
+ * (reviewer finding on #231).
+ */
+export function exceedsCap(value, cap) {
+  return value >= cap
 }
 
 /** Median of the timed samples. Empty input is a harness bug, not a zero. */
@@ -189,23 +241,230 @@ export function pairRatios(baseSamples, headSamples) {
   return baseSamples.map((value, index) => headOverBase(value, headSamples[index]))
 }
 
-/** Ratio failures for `--check`. P2 and P5 are never in this list; neither is a note. */
-export function checkFailures(report, threshold) {
-  const failures = []
-  for (const id of ['P1', 'P3', 'P4']) {
-    const probe = report.probes?.[id]
-    if (probe === undefined) continue
-    if (id === 'P4' && probe.comparable === false) {
-      failures.push('P4 not comparable (base and head compiled different plugin sets)')
-      continue
-    }
-    if (probe.ratio === null || !Number.isFinite(probe.ratio)) {
-      failures.push(`${id} not measured`)
-      continue
-    }
-    if (exceedsThreshold(probe.ratio, threshold)) failures.push(`${id} ${probe.ratio.toFixed(2)}x`)
+function measuredMedian(row) {
+  const value = row?.head?.median
+  return Number.isFinite(value) ? value : null
+}
+
+function measuredBase(row) {
+  const value = row?.base?.median
+  return Number.isFinite(value) ? value : null
+}
+
+function finiteRatio(value) {
+  return Number.isFinite(value) ? value : null
+}
+
+function gateRow(probe, metric, unit, base, head, ratio, limit, limitKind, limitText, ok, detail) {
+  return {
+    probe,
+    metric,
+    unit,
+    base,
+    head,
+    ratio,
+    limit,
+    limitKind,
+    limitText,
+    verdict: ok ? 'pass' : 'FAIL',
+    detail: ok ? null : detail,
   }
-  return failures
+}
+
+/**
+ * The D76 verdict table: one row per gated measurement, plus P5 as `record`
+ * rows so the artifact's table shows what was recorded and what was gated.
+ * Pure: it reads a finished report and never measures. A missing measurement
+ * is a failure, never a skipped row — a gate that vanishes is a green light
+ * nobody earned.
+ */
+export function gateRows(report, limits = GATE_LIMITS) {
+  const rows = []
+
+  const p1 = report.probes?.P1
+  const p1Base = measuredBase(p1)
+  const p1Head = measuredMedian(p1)
+  const p1Ratio = finiteRatio(p1?.ratio)
+  const p1Ok = p1Ratio !== null && !exceedsThreshold(p1Ratio, limits.ratio)
+  rows.push(
+    gateRow(
+      'P1',
+      'P1 cold mod load',
+      'ms',
+      p1Base,
+      p1Head,
+      p1Ratio,
+      limits.ratio,
+      'ratio',
+      `${limits.ratio.toFixed(2)}x`,
+      p1Ok,
+      p1Ratio === null ? 'not measured' : null,
+    ),
+  )
+
+  const p2 = report.probes?.P2
+  if (!Array.isArray(p2) || p2.length === 0) {
+    rows.push(
+      gateRow(
+        'P2',
+        'P2 boot + reconcile',
+        'ms',
+        null,
+        null,
+        null,
+        limits.p2EmptyMs,
+        'ms',
+        `< ${limits.p2EmptyMs} ms`,
+        false,
+        'not measured',
+      ),
+    )
+  } else {
+    for (const pin of p2) {
+      const version = typeof pin?.version === 'string' ? pin.version : '?'
+      const empty = pin?.empty
+      const emptyBase = measuredBase(empty)
+      const emptyHead = measuredMedian(empty)
+      const emptyRatio = finiteRatio(empty?.ratio)
+      const emptyOk = emptyHead !== null && !exceedsCap(emptyHead, limits.p2EmptyMs)
+      rows.push(
+        gateRow(
+          'P2',
+          `P2 empty boot @ dsh ${version}`,
+          'ms',
+          emptyBase,
+          emptyHead,
+          emptyRatio,
+          limits.p2EmptyMs,
+          'ms',
+          `< ${limits.p2EmptyMs} ms`,
+          emptyOk,
+          emptyHead === null ? 'not measured' : null,
+        ),
+      )
+
+      const oneBase = measuredBase(pin)
+      const oneHead = measuredMedian(pin)
+      const oneRatio = finiteRatio(pin?.ratio)
+      const multiplier = limits.p2PluginOverEmpty
+      let oneOk = false
+      let oneDetail = null
+      if (emptyHead === null) oneDetail = 'empty boot not measured'
+      else if (oneHead === null) oneDetail = 'not measured'
+      else oneOk = !exceedsCap(oneHead, multiplier * emptyHead)
+      const oneLimit = emptyHead === null ? null : multiplier * emptyHead
+      const oneLimitText =
+        emptyHead === null
+          ? `${multiplier.toFixed(2)}x empty (empty not measured)`
+          : `${multiplier.toFixed(2)}x empty (${emptyHead.toFixed(1)} ms)`
+      rows.push(
+        gateRow(
+          'P2',
+          `P2 one-plugin boot @ dsh ${version}`,
+          'ms',
+          oneBase,
+          oneHead,
+          oneRatio,
+          oneLimit,
+          'multiplier',
+          oneLimitText,
+          oneOk,
+          oneDetail,
+        ),
+      )
+    }
+  }
+
+  const p3 = report.probes?.P3
+  const p3Base = measuredBase(p3)
+  const p3Head = measuredMedian(p3)
+  const p3Ratio = finiteRatio(p3?.ratio)
+  const p3Ok = p3Head !== null && !exceedsCap(p3Head, limits.p3Micros)
+  rows.push(
+    gateRow(
+      'P3',
+      'P3 pre-execute fan-out',
+      'us',
+      p3Base,
+      p3Head,
+      p3Ratio,
+      limits.p3Micros,
+      'absolute',
+      `< ${limits.p3Micros.toFixed(1)} us`,
+      p3Ok,
+      p3Head === null ? 'not measured' : null,
+    ),
+  )
+
+  const p4 = report.probes?.P4
+  const p4Base = measuredBase(p4)
+  const p4Head = measuredMedian(p4)
+  const p4Ratio = finiteRatio(p4?.ratio)
+  const p4Ok = p4?.comparable !== false && p4Ratio !== null && !exceedsThreshold(p4Ratio, limits.p4Ratio)
+  let p4Detail = null
+  if (p4?.comparable === false) p4Detail = 'not comparable (base and head compiled different plugin sets)'
+  else if (p4Ratio === null) p4Detail = 'not measured'
+  rows.push(
+    gateRow(
+      'P4',
+      'P4 compile (7 upstream + fixtures)',
+      'ms',
+      p4Base,
+      p4Head,
+      p4Ratio,
+      limits.p4Ratio,
+      'ratio',
+      `${limits.p4Ratio.toFixed(2)}x`,
+      p4Ok,
+      p4Detail,
+    ),
+  )
+
+  const p5 = report.p5 ?? {}
+  for (const [metric, unit, value] of [
+    ['P5 tarball bytes', 'B', p5.tarballBytes],
+    ['P5 unpacked bytes', 'B', p5.unpackedBytes],
+    ['P5 mods kernel bytes', 'B', p5.kernelBytes],
+    ['P5 boot peak RSS', 'KiB', p5.bootPeakRssKiB],
+  ]) {
+    rows.push({
+      probe: 'P5',
+      metric,
+      unit,
+      base: null,
+      head: Number.isFinite(value) ? value : null,
+      ratio: null,
+      limit: null,
+      limitKind: 'record',
+      limitText: 'record only',
+      verdict: 'record',
+      detail: null,
+    })
+  }
+
+  return rows
+}
+
+/**
+ * A red gate is a regression claim, so its line names the probe, the observed
+ * value, the limit and the repeat count (D69 rule 6 / D76).
+ */
+export function gateFailures(report, limits = GATE_LIMITS) {
+  const repeat = Number.isInteger(report?.repeat) ? report.repeat : '?'
+  return gateRows(report, limits)
+    .filter((row) => row.verdict === 'FAIL')
+    .map((row) => {
+      if (row.detail !== null) return `${row.metric}: ${row.detail} (repeat ${repeat})`
+      if (row.head === null) return `${row.metric}: not measured (repeat ${repeat})`
+      if (row.limitKind === 'absolute' || row.limitKind === 'ms') {
+        return `${row.metric}: ${row.head.toFixed(1)} ${row.unit} at or above ${row.limit} ${row.unit} (repeat ${repeat})`
+      }
+      if (row.limitKind === 'multiplier') {
+        return `${row.metric}: ${row.head.toFixed(1)} ms at or above ${row.limitText} (repeat ${repeat})`
+      }
+      const ratio = row.ratio === null ? 'not measured' : `${row.ratio.toFixed(2)}x`
+      return `${row.metric}: ${ratio} > ${row.limitText} (repeat ${repeat})`
+    })
 }
 
 /**
@@ -219,11 +478,13 @@ export function parseArgs(argv) {
     json: false,
     quiet: false,
     check: false,
+    ci: false,
     help: false,
     base: DEFAULT_BASE,
     repeat: DEFAULT_REPEAT,
     threshold: DEFAULT_THRESHOLD,
     thresholdSet: false,
+    jsonOut: null,
     probe: null,
     root: CHECKOUT,
     roots: null,
@@ -271,6 +532,20 @@ export function parseArgs(argv) {
         noValue(flag, inline)
         options.check = true
         break
+      // The workflow mode: same verdicts, fixed limits, an artifact on disk.
+      // It does not imply --json; the table is what the CI log should show.
+      case '--ci':
+        noValue(flag, inline)
+        options.ci = true
+        options.check = true
+        break
+      case '--json-out': {
+        const value = takeValue(flag, inline, index)
+        if (inline === undefined) index += 1
+        if (value.trim() === '') throw new PerfError('perf: --json-out needs a non-empty path')
+        options.jsonOut = value
+        break
+      }
       case '--help':
       case '-h':
         noValue(flag, inline)
@@ -347,7 +622,16 @@ export function parseArgs(argv) {
   if (options.thresholdSet && !options.check) {
     throw new PerfError('perf: --threshold only means something with --check')
   }
+  if (options.ci && options.thresholdSet) {
+    throw new PerfError('perf: --ci uses the ratified D76 limits; --threshold is a local --check experiment')
+  }
+  if (options.ci && options.jsonOut === null) options.jsonOut = CI_ARTIFACT
   if (options.quiet) options.json = true
+  // Flag order must not matter: `--repeat 1 --ci` is the same request as
+  // `--ci --repeat 1`.
+  if (options.ci && options.repeat < GATE_REPEAT) {
+    throw new PerfError(`perf: --ci needs --repeat >= ${GATE_REPEAT} (the median of ${GATE_REPEAT} pairs is the claim), got ${options.repeat}`)
+  }
   return options
 }
 
@@ -442,7 +726,7 @@ export function formatTable(report) {
     `dsh-anyplugin perf — base ${report.base.commit.slice(0, 8)} (${report.base.ref}) -> head ${report.head.commit.slice(0, 8)}`,
   )
   lines.push(
-    `node ${report.node} · ratio = median of per-pair head/base · P1/P3/P4 ${report.repeat * 2} interleaved samples/side · P2 ${report.repeat} paired boots/side`,
+    `node ${report.node} · ratio = median of per-pair head/base · P1/P3/P4 ${report.repeat * 2} interleaved samples/side · P2 ${report.repeat} paired boots per profile/side`,
   )
   lines.push('')
 
@@ -460,8 +744,14 @@ export function formatTable(report) {
 
   pair('P1', 'cold mod load: diff (loadMod + evaluate)', report.probes.P1)
   for (const row of report.probes.P2) {
+    const pin = row.version ?? row.pin
+    if (row.empty === undefined || row.empty.base === null || row.empty.head === null) {
+      rows.push(['P2', `empty boot (no lock) @ dsh ${pin}`, '-', '-', '-'])
+    } else {
+      pair('P2', `empty boot (no lock) @ dsh ${pin}`, row.empty)
+    }
     if (row.base === null || row.head === null) {
-      rows.push(['P2', `boot + reconcile @ dsh ${row.pin}`, '-', '-', '-'])
+      rows.push(['P2', `one-plugin boot + reconcile @ dsh ${pin}`, '-', '-', '-'])
       continue
     }
     const comparable = {
@@ -470,11 +760,11 @@ export function formatTable(report) {
       head: { median: row.head.median },
       ratio: row.ratio,
     }
-    pair('P2', `boot + reconcile @ dsh ${row.pin}`, { ...comparable, unit: 'ms' })
+    pair('P2', `one-plugin boot + reconcile @ dsh ${pin}`, comparable)
   }
   pair('P3', `interception: runChain, 3 handlers, 1 match`, report.probes.P3)
   const p4 = report.probes.P4
-  pair('P4', `compile: ${p4.plugins.head} plugins (read+gate+emit)`, p4)
+  pair('P4', `compile: ${p4.plugins?.head ?? '?'} plugins (read+gate+emit)`, p4)
   if (p4.comparable === false) {
     rows[rows.length - 1][4] = 'n/c'
   }
@@ -487,9 +777,13 @@ export function formatTable(report) {
   lines.push(formatRow(headers))
   for (const row of rows) lines.push(formatRow(row))
 
+  const limits = report.gateLimits ?? GATE_LIMITS
   lines.push('')
-  lines.push('gated by --check: P1, P3, P4 · informational: P2 (boot timing), P5')
-  lines.push('P5  informational — never gated, head only')
+  lines.push(
+    `gated (D76): P1 ratio <= ${limits.ratio}x · P2 empty < ${limits.p2EmptyMs} ms and one-plugin < ${limits.p2PluginOverEmpty}x empty · P3 < ${limits.p3Micros} us/dispatch · P4 ratio <= ${limits.p4Ratio}x`,
+  )
+  lines.push('recorded, never gated: P5')
+  lines.push('P5  head only')
   const p5 = report.p5
   const byte = (value) => (typeof value === 'number' ? `${groupDigits(value)} bytes` : '-')
   lines.push(`    tarball        ${byte(p5.tarballBytes)}`)
@@ -499,13 +793,53 @@ export function formatTable(report) {
     `    boot peak RSS  ${typeof p5.bootPeakRssKiB === 'number' ? `${groupDigits(p5.bootPeakRssKiB)} KiB` : '-'}`,
   )
   if (report.check !== null) {
+    const checkRows = report.check.rows ?? gateRows(report, report.check.limits ?? GATE_LIMITS)
+    const gated = checkRows.filter((row) => row.verdict !== 'record').length
     lines.push('')
     lines.push(
       report.check.failures.length === 0
-        ? `--check: all gated ratios within ${report.check.threshold}x — P2 is informational and was not checked`
-        : `--check: ${report.check.failures.length} above ${report.check.threshold}x — ${report.check.failures.join(', ')}`,
+        ? `gates: all ${gated} gated measurements pass (repeat ${report.repeat})`
+        : `gates: ${report.check.failures.length} failed (repeat ${report.repeat}) — ${report.check.failures.join('; ')}`,
     )
   }
+  return lines.join('\n')
+}
+
+/**
+ * The CI gate table: metric, base, head, ratio, limit, verdict. `--ci` prints
+ * this to the workflow log, so a red job names the row without opening the
+ * artifact. It reads the rows the report already carries, so the table and
+ * the exit code cannot disagree.
+ */
+export function formatGateTable(report) {
+  const rows = report.check?.rows ?? gateRows(report, report.check?.limits ?? GATE_LIMITS)
+  const lines = []
+  const baseRef = report.base?.ref ?? '?'
+  const baseSha = report.base?.commit?.slice(0, 8) ?? '?'
+  const headSha = report.head?.commit?.slice(0, 8) ?? '?'
+  lines.push(
+    `dsh-anyplugin perf gates — base ${baseSha} (${baseRef}) -> head ${headSha} · repeat ${report.repeat}`,
+  )
+  const formatValue = (value, unit) => {
+    if (!Number.isFinite(value)) return '-'
+    if (unit === 'B' || unit === 'KiB') return `${groupDigits(Math.round(value))} ${unit}`
+    return `${formatMeasurement(value, unit)} ${unit}`
+  }
+  const cells = rows.map((row) => [
+    row.metric,
+    formatValue(row.base, row.unit),
+    formatValue(row.head, row.unit),
+    row.ratio === null || !Number.isFinite(row.ratio) ? '-' : `${row.ratio.toFixed(2)}x`,
+    row.limitText,
+    row.verdict,
+  ])
+  const headers = ['metric', 'base', 'head', 'ratio', 'limit', 'verdict']
+  const widths = headers.map((header, column) =>
+    Math.max(header.length, ...cells.map((row) => row[column].length)),
+  )
+  const formatRow = (row) => row.map((cell, column) => cell.padEnd(widths[column])).join('  ').trimEnd()
+  lines.push(formatRow(headers))
+  for (const row of cells) lines.push(formatRow(row))
   return lines.join('\n')
 }
 
@@ -689,9 +1023,9 @@ export function coreReportRow({ unit, baseSamples, headSamples }) {
 }
 
 /** The P2 row: the same pair-median contract, for one pin's paired boots. */
-export function pinReportRow({ pin, samples, hostPath, moduleUrl }) {
+export function pinReportRow({ pin, samples, emptySamples, hostPath, moduleUrl }) {
   const ratios = pairRatios(samples.base, samples.head)
-  return {
+  const row = {
     pin,
     unit: 'ms',
     base: summarize(samples.base, 'ms'),
@@ -701,6 +1035,17 @@ export function pinReportRow({ pin, samples, hostPath, moduleUrl }) {
     hostPath,
     pinnedFiles: moduleUrl,
   }
+  if (emptySamples !== undefined) {
+    const emptyRatios = pairRatios(emptySamples.base, emptySamples.head)
+    row.empty = {
+      unit: 'ms',
+      base: summarize(emptySamples.base, 'ms'),
+      head: summarize(emptySamples.head, 'ms'),
+      ratio: median(emptyRatios),
+      pairs: emptyRatios.map((ratio) => Number(ratio.toFixed(4))),
+    }
+  }
+  return row
 }
 
 async function runSuite(options) {
@@ -775,16 +1120,35 @@ async function runSuite(options) {
     const p2 = pins.map((pin) => {
       const measured = boot.pins.find((entry) => entry.version === pin.version)
       if (!pin.available) {
-        return { pin: pin.version, unit: 'ms', base: null, head: null, ratio: null, reason: 'pin not fetched' }
+        return {
+          version: pin.version,
+          pin: pin.version,
+          unit: 'ms',
+          base: null,
+          head: null,
+          ratio: null,
+          empty: null,
+          reason: 'pin not fetched',
+        }
       }
       assert(measured !== undefined, `P2 measured no boot for dsh ${pin.version}`)
-      return pinReportRow({
-        pin: pin.version,
-        samples: measured.samples,
-        hostPath: measured.hostPath,
-        moduleUrl: measured.moduleUrl,
-      })
+      assert(measured.empty !== undefined, `P2 measured no empty boot for dsh ${pin.version}`)
+      return {
+        ...pinReportRow({
+          pin: pin.version,
+          samples: measured.samples,
+          emptySamples: measured.empty.samples,
+          hostPath: measured.hostPath,
+          moduleUrl: measured.moduleUrl,
+        }),
+        version: pin.version,
+      }
     })
+
+    // `--threshold` stays a local `--check` experiment: it moves the two ratio
+    // ceilings only. The absolute caps are the ratified D76 numbers, and `--ci`
+    // rejects the flag outright.
+    const limits = { ...GATE_LIMITS, ratio: options.threshold, p4Ratio: options.threshold }
 
     const pack = packTarball(CHECKOUT)
     const kernel = JSON.parse(readFileSync(join(CHECKOUT, 'lib', 'kernel-size.json'), 'utf8'))
@@ -799,6 +1163,8 @@ async function runSuite(options) {
       repeat: options.repeat,
       coreSamplesPerSide: options.repeat * 2,
       bootPairs: options.repeat,
+      bootProfilesPerPair: 2,
+      gateLimits: limits,
       probes: {
         P1: coreRow('p1', 'ms'),
         P2: p2,
@@ -823,7 +1189,12 @@ async function runSuite(options) {
       notes,
     }
     if (options.check) {
-      report.check = { threshold: options.threshold, failures: checkFailures(report, options.threshold) }
+      report.check = {
+        threshold: options.threshold,
+        limits,
+        rows: gateRows(report, limits),
+        failures: gateFailures(report, limits),
+      }
     }
     return report
   } finally {
@@ -1150,6 +1521,33 @@ export async function sampleBootPairs({ repeat, run }) {
   return log
 }
 
+/**
+ * The two-profile schedule: each pair measures an empty boot and a one-plugin
+ * boot, base and head adjacent for each profile. Every profile is first on
+ * alternating pairs, and the two profiles are ordered by the same alternation,
+ * so the empty/one-plugin medians are not two blocks measured at different
+ * points in the run. Returns one pairwise log per profile; `pairBootLog`
+ * validates each independently.
+ */
+export async function sampleBootProfiles({ repeat, profiles, run }) {
+  for (const profile of profiles) {
+    await run({ profile, side: 'base', pair: -1, warmup: true })
+    await run({ profile, side: 'head', pair: -1, warmup: true })
+  }
+  const logs = Object.fromEntries(profiles.map((profile) => [profile, []]))
+  for (let pair = 0; pair < repeat; pair += 1) {
+    const sides = sideOrder(pair)
+    const order = pair % 2 === 0 ? profiles : [...profiles].reverse()
+    for (const profile of order) {
+      for (const side of sides) {
+        const elapsed = await run({ profile, side, pair, warmup: false })
+        logs[profile].push({ profile, pair, side, elapsed })
+      }
+    }
+  }
+  return logs
+}
+
 /** Validate a paired boot log and return per-side samples and per-pair ratios. */
 export function pairBootLog(log) {
   if (!Array.isArray(log) || log.length === 0 || log.length % 2 !== 0) {
@@ -1202,7 +1600,7 @@ export async function probeBoot(options) {
   const previousHome = process.env.DSH_HOME
   const measured = []
 
-  const assertBoot = async (mounted, installsFile, side) => {
+  const bootShape = (mounted, side) => {
     assert(mounted.ctx.fiber.state === 2, 'the booted harness settled in a non-active state')
     const entries = [...mounted.ctx.loader.entries()]
     const controller = entries.find((entry) => entry.options?.id === 'dsh-anyplugin')
@@ -1214,13 +1612,38 @@ export async function probeBoot(options) {
         typeof entry.options?.id === 'string' &&
         entry.options.id.startsWith('anyplugin.'),
     )
-    assert(groups.length === 1, `exactly one plugin group must be mounted, found ${groups.length}`)
-    assert(groups[0].fiber?.state === 2, 'the reconciled plugin group is not active')
     const expectedModule = pathToFileURL(join(roots[side], 'lib', 'index.js')).href
     assert(
       mounted.moduleUrls.includes(expectedModule),
       `the boot loaded ${mounted.moduleUrls.join(', ')}, not the ${side} checkout's ${expectedModule}`,
     )
+    return {
+      entries,
+      groups,
+      hostPath: mounted.hostPath,
+      moduleUrl: mounted.moduleUrls.find((url) => url === expectedModule),
+    }
+  }
+
+  const assertEmptyBoot = async (mounted, installsFile, side) => {
+    const { groups, ...shape } = bootShape(mounted, side)
+    assert(groups.length === 0, `an empty profile must mount no plugin group, found ${groups.length}`)
+    const noLock = mounted.logs.some(
+      (record) =>
+        record.name === 'dsh-anyplugin' &&
+        record.args.join(' ').includes('nothing to reconcile') &&
+        record.args.join(' ').includes(`no lock at ${installsFile}`),
+    )
+    assert(noLock, `the controller never took the empty-lock path for ${installsFile}`)
+    const names = (await mounted.ctx.skills.list()).map((skill) => skill.name).sort()
+    assert(names.length === 0, `an empty profile loaded skills ${names.join(',')}`)
+    return shape
+  }
+
+  const assertOnePluginBoot = async (mounted, installsFile, side) => {
+    const { groups, ...shape } = bootShape(mounted, side)
+    assert(groups.length === 1, `exactly one plugin group must be mounted, found ${groups.length}`)
+    assert(groups[0].fiber?.state === 2, 'the reconciled plugin group is not active')
     const reconciled = mounted.logs.some(
       (record) =>
         record.name === 'dsh-anyplugin' &&
@@ -1230,7 +1653,7 @@ export async function probeBoot(options) {
     assert(reconciled, `the controller never reconciled from ${installsFile}`)
     const names = (await mounted.ctx.skills.list()).map((skill) => skill.name).sort()
     assert(names.join(',') === 'greet,hello', `the reconciled skills are ${names.join(',')}, expected greet,hello`)
-    return { hostPath: mounted.hostPath, moduleUrl: mounted.moduleUrls.find((url) => url === expectedModule) }
+    return shape
   }
 
   try {
@@ -1245,13 +1668,20 @@ export async function probeBoot(options) {
         pathToFileURL(join(located.harnessDir, 'dsh-skill', 'lib', 'index.js')).href
       )
       const installAnchor = join(located.installRoot, 'package.json')
-      const home = join(scratch, pin.version)
-      mkdirSync(home, { recursive: true })
-      process.env.DSH_HOME = home
-      installPlugin({ pluginDir: fixture, home, projectDir: roots.head })
-      const installsFile = join(home, 'anyplugin', 'installs.yml')
+      const homeOne = join(scratch, pin.version, 'one')
+      const homeEmpty = join(scratch, pin.version, 'empty')
+      mkdirSync(homeOne, { recursive: true })
+      mkdirSync(homeEmpty, { recursive: true })
+      process.env.DSH_HOME = homeOne
+      installPlugin({ pluginDir: fixture, home: homeOne, projectDir: roots.head })
+      const installsFile = join(homeOne, 'anyplugin', 'installs.yml')
+      const emptyInstallsFile = join(homeEmpty, 'anyplugin', 'installs.yml')
 
-      const bootOnce = async (side, profileName) => {
+      const bootOnce = async (kind, side, profileName) => {
+        const home = kind === 'empty' ? homeEmpty : homeOne
+        // The controller resolves a relative default from DSH_HOME dynamically;
+        // the explicit home below is what `mountProfile` hands the loader.
+        process.env.DSH_HOME = home
         const profileDir = join(home, 'profiles', profileName)
         appBoot.initProfile(profileDir, ['dsh-anyplugin'])
         mkdirSync(join(profileDir, 'node_modules'), { recursive: true })
@@ -1272,30 +1702,41 @@ export async function probeBoot(options) {
         })
         const elapsed = performance.now() - started
         try {
-          const observed = await assertBoot(mounted, installsFile, side)
+          const observed =
+            kind === 'empty'
+              ? await assertEmptyBoot(mounted, emptyInstallsFile, side)
+              : await assertOnePluginBoot(mounted, installsFile, side)
           return { elapsed, ...observed }
         } finally {
           await mounted.ctx.fiber.dispose()
         }
       }
 
-      const observed = { base: null, head: null }
-      const log = await sampleBootPairs({
+      const observed = { empty: { base: null, head: null }, one: { base: null, head: null } }
+      const logs = await sampleBootProfiles({
         repeat,
-        run: async ({ side, pair, warmup }) => {
-          const profileName = warmup ? `perf-${side}-warmup` : `perf-${side}-${pair}`
-          const run = await bootOnce(side, profileName)
-          observed[side] = run
+        profiles: ['empty', 'one'],
+        run: async ({ profile, side, pair, warmup }) => {
+          const profileName = `perf-${profile}-${side}-${warmup ? 'warmup' : pair}`
+          const run = await bootOnce(profile, side, profileName)
+          observed[profile][side] = run
           return run.elapsed
         },
       })
-      const paired = pairBootLog(log)
+      const emptyPaired = pairBootLog(logs.empty)
+      const onePaired = pairBootLog(logs.one)
       measured.push({
         version: pin.version,
-        hostPath: { base: observed.base.hostPath, head: observed.head.hostPath },
-        moduleUrl: { base: observed.base.moduleUrl, head: observed.head.moduleUrl },
-        samples: { base: paired.base, head: paired.head },
-        ratios: paired.ratios,
+        hostPath: { base: observed.one.base.hostPath, head: observed.one.head.hostPath },
+        moduleUrl: { base: observed.one.base.moduleUrl, head: observed.one.head.moduleUrl },
+        samples: { base: onePaired.base, head: onePaired.head },
+        ratios: onePaired.ratios,
+        empty: {
+          hostPath: { base: observed.empty.base.hostPath, head: observed.empty.head.hostPath },
+          moduleUrl: { base: observed.empty.base.moduleUrl, head: observed.empty.head.moduleUrl },
+          samples: { base: emptyPaired.base, head: emptyPaired.head },
+          ratios: emptyPaired.ratios,
+        },
         maxRssKiB: process.resourceUsage().maxRSS,
       })
     }
@@ -1342,18 +1783,35 @@ async function main() {
   }
 
   const report = await runSuite(options)
+
+  // The artifact is written before the verdict is delivered: a red workflow
+  // still uploads the same perf.json a green one does. `--ci` defaults the
+  // path to CI_ARTIFACT; `--json-out` works with or without a gate mode.
+  if (options.jsonOut !== null) {
+    const artifact = resolve(options.jsonOut)
+    writeFileSync(artifact, `${JSON.stringify(report, null, 2)}\n`)
+    if (!options.quiet) process.stderr.write(`perf: wrote ${artifact}\n`)
+  }
+
   if (options.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
-  else process.stdout.write(`${formatTable(report)}\n`)
+  else {
+    process.stdout.write(`${formatTable(report)}\n`)
+    if (report.check !== null) process.stdout.write(`\n${formatGateTable(report)}\n`)
+  }
 
   if (!options.quiet) {
     for (const note of report.notes) process.stderr.write(`perf: note: ${note}\n`)
   }
   if (report.check !== null) {
     if (report.check.failures.length === 0) {
-      if (!options.quiet) process.stderr.write(`perf --check: all gated ratios within ${report.check.threshold}x — P2 is informational and was not checked\n`)
+      if (!options.quiet) {
+        process.stderr.write(`perf: all gates pass (repeat ${report.repeat})\n`)
+      }
     } else {
+      // A red perf is a regression claim: probe, observed value, limit and
+      // repeat count, one line each so a CI failure names what regressed.
       for (const failure of report.check.failures) {
-        process.stderr.write(`perf --check: ${failure} (threshold ${report.check.threshold}x)\n`)
+        process.stderr.write(`perf: gate failed: ${failure}\n`)
       }
       process.exitCode = 1
     }

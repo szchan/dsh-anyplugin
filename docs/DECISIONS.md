@@ -3448,3 +3448,283 @@ contract's own terms and is corrected here:
 
 D74's class, anchors and evidence stand; only the GA framing and the ordering
 of the remaining work are superseded.
+
+---
+
+## D76 — Performance gates run in CI: paired ratios for P1/P4, absolute caps for P2/P3, P5 recorded
+
+**Decided 2026-11-22** (#223; supersedes D69 rules 3 and 5). A single `perf`
+job in `.github/workflows/perf.yml` runs on every branch push and on every pull
+request whose base is `main`. The job measures the head and `origin/main` on
+the **same runner** through the existing `scripts/perf.mjs --base` machinery:
+a detached worktree at the base commit, both trees built before any stopwatch,
+P1/P3/P4 imported into one child and sampled in alternating adjacent pairs, and
+P2 boots paired per pin. It uploads `perf.json` as the artifact named
+`perf.json`, retained for 30 days, and it writes that file even when a gate
+fails. The local `npm run perf` remains a debugging tool: it is not a merge
+gate, and `npm run verify` does not read perf.
+
+The fixed limits are `GATE_LIMITS` in `scripts/perf.mjs`:
+
+1. **P1 cold mod load** — the median of the per-pair head/base ratios must be
+   at or below 1.5×. A value exactly at 1.5× passes, as for the existing
+   `exceedsThreshold` ceiling.
+2. **P2 boot + reconcile** — for each pin declared in `engines.dsh`, the head
+   empty-profile boot must be strictly below 3000 ms absolute, and the head
+   one-plugin boot strictly below 2× the head empty-profile median. An
+   absolute budget fails at its boundary — unlike the 1.5× ratios, where
+   equality is inside the ceiling. The
+   empty profile is a home with no `anyplugin/installs.yml`; the controller
+   mounts no plugin group and logs that it has nothing to reconcile. The
+   P2 base/head ratio stays in the table as description but does not gate:
+   D69 rule 3's boot-noise objection is about that ratio, and it is why the
+   cap is on head milliseconds and a head-local multiplier instead.
+3. **P3 pre-execute fan-out** — the head median must be strictly below 50 µs per
+   dispatch (2,000 dispatches per sample). This is an absolute budget on our
+   own loop, not a base comparison.
+4. **P4 compile** — the median of the per-pair head/base ratios must be at or
+   below 1.5× over the seven pinned upstream plugins plus every fixture with a
+   plugin manifest. A base/head plugin-set mismatch is a failed row, not a
+   skipped gate.
+5. **P5 is recorded and never gated.** `perf.json` carries tarball bytes,
+   unpacked bytes, mods-kernel bytes and boot peak RSS. They move for reasons
+   unrelated to a hot path and are not durations; no verdict reads them.
+
+Cost is part of the design. The base tree needs its own `lib/` for P2, so the
+job pays for a second build; it does not pay for a second `npm ci` when
+`package-lock.json` is identical (the existing dependency-sharing rule), and
+it reuses `--base` instead of inventing a second measurement model. The job
+also fetches both declared pins and the pinned mod and Claude trees; the
+workflow's guard step fails the job before measurement on a missing pin, so a
+missing pin is never a silently dropped gate.
+
+A red `perf` is a **regression claim**, and the claim names the probe, the
+threshold and the repeat count. The workflow runs `--repeat 5`. The absolute
+caps are hard walls: a value at or above the cap fails, and that failure is a
+claim, not a reason to re-run. The ratio gates keep D69's `<=` at the
+threshold; only host noise on a ratio probe may be re-run once. The failure table prints metric, base, head, ratio, limit and
+verdict. The merge command stays human.
+
+**Consequences.** D69 rules 1, 2, 4 and 6 stand; rule 3's gate list and rule 5's
+"not in CI" are superseded. `--check` evaluates the same D76 gates on a
+workstation; `--ci` selects the fixed limits, writes `perf.json`, prints the
+gate table and exits 1 on a red gate; `--threshold` remains a local `--check`
+experiment and `--ci` rejects it. `docs/PROFILING.md` documents the workflow,
+the artifact and what a red gate means. `scripts/perf.test.mjs` pins the table
+
+---
+
+## D77 — One package, one install: the panel ships inside `dsh-anyplugin`
+
+**Decided 2026-11-22**, with `#224` (from `#170`). Supersedes D61's
+"separately published optional package" sentence and D62 item 1 plus the parts
+of D62's consequences about a second bundle, a second `cordis.patch.yml`, the
+`check:ui` 64 KiB ceiling, and the `packages/dsh-anyplugin-ui/test/mutations.mjs`
+path. D62 items 2–5 stand unchanged.
+
+The maintainer rejected the two-package split: a user who installs
+`dsh-anyplugin` must get the panel. The panel was never separately publishable
+anyway (D62 made it `private`), and its 64 KiB budget only existed because the
+root tarball was capped for the kernel, not because the panel needed its own
+artifact.
+
+**Decided.**
+
+1. **One artifact, one version.** The panel is internal source of the install
+   package, not a package: `packages/dsh-anyplugin-install/src/panel.ts` is the
+   server half and `packages/dsh-anyplugin-install/src/client/panel.js` is the
+   browser half. `scripts/build.mjs` bundles the server half into `lib/index.js`
+   and emits the browser half as `lib/client.js`. There is no
+   `dsh-anyplugin-ui` manifest, version, patch file, tarball, publish step or
+   workspace entry.
+2. **One row, one client row.** `cordis.patch.yml` still inserts exactly one
+   loader row, `id: dsh-anyplugin`. The root manifest declares
+   `dsh.client = { platform: "web" }` and `exports["./client"]`, and the bundle
+   registers itself as `dsh-anyplugin`. This is forced by the host:
+   dsh-client-modules keys graph rows by the manifest name and refuses two
+   active Loader sources for one package, while a subpath-shaped loader name
+   composes no client row at all. The controller mounts the panel with
+   `ctx.inject(['webServer'], …)` *before* the missing-lock early return, so a
+   fresh profile can install its first plugin from the panel; a profile with no
+   web server simply leaves the child inactive.
+3. **The ceiling is a build constraint owned by `check:pack`.** The root
+   tarball ceiling in `scripts/check-pack.mjs` covers both halves. `check:pack`
+   asserts the `dsh.client` declaration, `exports["./client"]`, the presence of
+   `lib/client.js`, its `window.__ModuleLoader__.load({ id: 'dsh-anyplugin' })`
+   registration and `settings.section`, the `/anyplugin/installs` route in
+   `lib/index.js`, and that no shipped file still names `dsh-anyplugin-ui`.
+   `pack:ui`/`check:ui` do not exist; the publish workflow publishes one
+   package. This decision authorizes raising the root ceiling for the panel;
+   the measured byte count lives in the `check-pack` comment and in PR `#224`,
+   not in this entry, so the number cannot drift from the script. Any future
+   raise still needs its own decision — D62's "a ceiling is not raised to fit a
+   feature" rule stands for everything except this moved boundary.
+4. **The install writer is unchanged.** The panel still reaches
+   `dsh-anyplugin/install` (D61) through the package's own exports map and never
+   becomes a second writer over `installs.yml`. The mutation audit moves to
+   `packages/dsh-anyplugin-install/test/panel-mutations.mjs`; its eleven
+   single-property breaks still have to redden `test/panel.test.mjs`.
+
+**Why.** One install is the product claim; a second package made the panel an
+opt-in artifact with its own release problem, while the host gives exactly one
+client row per package name. The two halves already shared one install writer,
+one lock and one test box, so the package boundary bought nothing the tarball
+ceiling could not express.
+
+**Consequences.** `npm pack` on the root package now carries the panel entry
+and its assets; the tarball is larger by the measured amount in
+`docs/ARCHITECTURE.md` §2. The panel cannot be updated independently of the
+loader — the bundle id *is* the package name — so panel changes are package
+changes. A future external panel would have to be a different package with a
+different row id, not a second install of this one.
+
+## D81 — The panel's pack gate proves the server, and D61's subpath clause
+
+D77 shipped the panel inside `dsh-anyplugin`, and the review found the pack gate
+proving less than the decision said. Three corrections, ratified separately
+because D77 is append-only:
+
+1. **The route check reads server chunks only.** `check:pack` joined every
+   `lib/` file, so `lib/client.js`'s own `/anyplugin/installs` fetch satisfied
+   the "the server serves the panel" assertion even with the server route
+   deleted. The check now excludes the client bundle (`lib/client.js` and any
+   `lib/client-*`/`lib/client/` chunk), requires the server's route-registration
+   label, and still requires the `dsh-anyplugin/install` reference. The client
+   half stays proven by its own assertions (`dsh.client`, the bundle's
+   registration id, `settings.section`).
+2. **D61's "no other subpath is added" sentence is superseded as far as
+   `exports["./client"]`.** That subpath is the client half of the same
+   package, not a second bundle; D61's other guarantees (path-only install
+   input, loopback-only serving, no foreign code imported by the server) stand.
+3. **The code and the manifest are scanned, and the size is printed in bytes.**
+   `check:pack` looks for the removed `dsh-anyplugin-ui` name in every `lib/`
+   file and in the packed manifest, and prints the tarball size in bytes next to
+   the KiB reading, so D77's "the measured byte count lives in the script" is a
+   fact a reader can check without a failing run. `INSTALL.md` keeps one mention
+   on purpose: it tells a development profile that linked the old bundle to
+   remove that entry, which is the opposite of a stale id.
+
+Evidence: `scripts/check-pack.mjs` (the `isClient` exclusion, the whole-tree
+scan, `notes.push` with bytes); `packages/dsh-anyplugin-install/test/panel.test.mjs`
+now states what the mount test proves (the controller asks for `webServer` and
+the panel registers both routes in the pin's documented `register` shape; no
+test boots a real web server).
+
+---
+
+## D80 — The guard is scoped to this checkout and its ticket worktrees
+
+The guard is installed into a *user* profile, so DSH loads it for every session
+on the machine. `#221` named the consequence: the maintainer opened an
+unrelated project and the guard denied it. A layer that polices the whole host
+is not a layer anyone keeps installed.
+
+1. **Territory, not configuration.** The scope is derived from what the
+   installer already composes: `protectedRoots` (this checkout; the `.git`
+   entry is a write target, not a session cwd), `worktrees` (exact ticket
+   paths, or `<stem>-*` namespaces) and `gitDirectories` (the common dir).
+   Any *working tree of this repository* is inside the territory — a review or
+   verify worktree as much as a ticket one — because its `.git` points into
+   that common dir, and a directory inside a working tree is inside that tree
+   (a subdirectory has no .git of its own; the nearest one above it decides).
+   Write permission stays the ticket list: a review tree is judged and
+   unwritable. A fresh install with no ticket worktree writes the
+   documented namespace (`$ANYPLUGIN_WORKTREE_ROOT/ticket-*`, default
+   `/tmp/anyplugin-wt/ticket-*`) so the first worktree needs no reinstall.
+2. **Inert outside.** For a session whose canonical `header.cwd` is outside
+   the territory, both seams call `next()` before judging: no denial, no brief,
+   no denial record. A symlink is resolved first, so a link into the checkout is
+   the checkout, and a relative `gitdir:` pointer resolves against the
+   working tree's own directory (git 2.56 `--relative-paths`). Delegation is
+   not modelled: a child started with a chosen
+   `cwd` is judged by that path, and a child pointed outside is outside. The guard does not *observe* other projects either — a
+   dormant mechanism that still logs is a surveillance tool, not a guard.
+3. **Unknown cwd is outside.** With a territory configured, a session without
+   `header.cwd` is treated as outside rather than guessed at: the guard's own
+   view of a session is one path from the pin, and inventing a default would
+   police whatever directory the host happened to start in. An *unconfigured*
+   policy (a hand-written config, a unit test) keeps the previous global
+   behaviour, because silently switching an unconfigured guard off is the worse
+   failure.
+4. **Workers stay governed.** The worktree pattern is matched segment-wise
+   (`/tmp/anyplugin-wt/ticket-*` covers `/tmp/anyplugin-wt/ticket-225/…`, not
+   `/tmp/anyplugin-wt/notes`), and a worker whose cwd is a ticket worktree is
+   judged even though that path is outside the checkout.
+
+Evidence: `packages/dsh-anyplugin-guard/src/scope.ts` (unit table in
+`test/scope.test.mjs`), and two apply-level tests — one session outside the
+territory is accepted with no brief and no record, one inside a real ticket
+worktree is denied and recorded.
+
+## D79 — A receipt is not an answer, and a round starts with the inbox
+
+**Decided 2026-11-22** (F19, maintainer-observed). On 2026-11-22 the maintainer
+answered #170 at 10:19 UTC (receipt 10:26) and #175/#177 between 12:25 and 12:31 UTC
+(receipts at 12:45).
+Every later read of those threads treated them as answered, because the receipt
+was the last comment — one round went further and reported an empty queue from
+`docs/TODO.md` without asking the tracker at all. The work sat for about
+fourteen hours.
+
+The failure is not "nobody was told"; it is that the tooling counted an
+acknowledgement as a reply and the loop had no step that forced the question.
+Three rules follow:
+
+1. **A receipt is not a reply.** `scripts/triage-rules.mjs` classifies an agent
+   comment whose body opens with the fixed template
+   `Seen. The master acts on this at its next turn boundary` (optionally after
+   the `<!-- dsh-anyplugin-agent -->` marker) as an acknowledgement:
+   `lastAgentReply` skips it, so a maintainer comment followed by a receipt is a
+   resume row, not a closed thread. A bare `Seen.` prefix is not enough —
+   "Seen. Fixed in 123abc" is a real answer and moves the row.
+   `scripts/triage-rules.test.mjs` pins both directions, using the real #177
+   body.
+2. **The queue is GitHub, not `docs/TODO.md`.** `npm run inbox`
+   (`scripts/triage.mjs --waiting`) lists resume rows, blocked escalations and
+   brand-new maintainer asks, and **exits 1** when a maintainer comment has no
+   agent answer or a maintainer opened an issue nothing has picked up, so
+   "queue empty" cannot be reported without reading it. `AGENTS.md` §5 makes it
+   the first command of a round.
+3. **The wait is observable.** `.github/workflows/inbox.yml` runs the same
+   command daily with `MAINTAINER_LOGINS=szchan`. A red run opens (or comments
+   on) an `inbox-alert` issue assigned to the maintainer — the run alone only
+   notifies the bot — and the next green run closes it. Unreadable threads exit
+   2 rather than reporting "nothing waits". The alarm issue is excluded from the
+   triage queue. The audit ledger records the miss as F19.
+
+A thread is read by author and time, never by `.comments[-1]`: the last comment
+is the one most likely to be our own receipt.
+
+## D82 — The architecture reviewer is a scheduled role with write authority
+
+**Decision.** A second scheduled role, the *architecture reviewer*, reads the
+design against the tree every day and files what it finds. It is separate from
+the process auditor (D63) in subject and in output: the auditor asks whether the
+process produced a bad change and may push mechanism fixes; the architecture
+reviewer asks whether `docs/ARCHITECTURE.md` §0/§2/§7, `docs/FEATURES.md`,
+`docs/DECISIONS.md` and `docs/TODO.md` still describe the code, and files
+**issues** (a docs-only correction may go out as a PR instead of an issue for
+that finding).
+
+**Shape.** One pass per day, triggered by the session scheduler — CI cannot read
+design intent, and no Actions cron is claimed. The task is a persisted
+`schedule_create` entry (`~/.dsh/storages/schedule.json`), new session each
+run, working in the main checkout.
+
+**Caps.** As in `docs/AUDIT.md` §7: it may file findings and push a docs-only
+branch; it may not merge, approve or close its own issue/PR, push `main`, write
+feature code, touch ticket branches, edit `docs/DECISIONS.md`, move
+`docs/FEATURES.md` coverage rows or totals, or change a contract in
+`docs/ARCHITECTURE.md` §0/§2/§7 without a decision.
+
+**Evidence bar.** A finding names the commit it was read at, the file and the
+line, the contract sentence that contradicts the tree, and the smallest change
+that would close it. A claim without a path and a line is a topic, not a finding
+(the audit's bar, tightened).
+
+**Consequences.** The role is documented in `docs/WORKFLOW.md` §Roles; a
+mechanism PR still needs two independent verdicts (F17) and the master merges
+it. Deliberately not claimed: that the queue routes agent-filed issues
+correctly — `roleOf` reads the bot as a maintainer today, so those issues need a
+routing class or an explicit master triage; that is a follow-up, named rather
+than hidden.

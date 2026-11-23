@@ -10,7 +10,7 @@
 //   refusals and the method rules. A client-supplied `scope`/`grants` must not
 //   change the written layer.
 // - client: boot the pinned `Loader` + `ClientModuleRegistry`, let it compose
-//   the panel package's `dsh.client` row, run the harness's real browser half
+//   the root package's `dsh.client` row, run the harness's real browser half
 //   in a `vm`, import the served bundle through it, and render the registered
 //   component against a `fetch` that calls the server half's own dispatch.
 //
@@ -18,9 +18,9 @@
 // test proves the handshake and the data, not a screenshot.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
@@ -29,7 +29,6 @@ import { readEnablements, readInstalls } from '../../dsh-anyplugin-install/src/i
 import { harnessSkipReason, resolveHarness } from '../../dsh-anyplugin-conformance/src/harness.ts'
 
 const REPO = realpathSync(fileURLToPath(new URL('../../..', import.meta.url)))
-const PANEL = join(REPO, 'packages', 'dsh-anyplugin-ui')
 const FIXTURE = join(REPO, 'fixtures', 'claude-skills-only')
 const ID = 'claude-code:skills-only'
 const PREFIX = '/anyplugin'
@@ -46,13 +45,14 @@ const until = async (fn, label, timeoutMs = 5000) => {
 }
 
 /**
- * A profile-shaped temp root: the panel is copied into `node_modules/` (a
- * symlink would resolve the realpath and lose the `dsh-anyplugin` lookup), and
- * the published plugin is linked beside it so `dsh-anyplugin/install` resolves
- * through its `exports` map to the built `lib/install.js`.
+ * A profile-shaped temp root. The repo is linked as the published
+ * `dsh-anyplugin` package and imported from its built `lib/`. The panel is part
+ * of that same artifact (D77), so there is no second package to copy, and the
+ * server half's `dsh-anyplugin/install` self-reference resolves through the
+ * manifest's `exports` map.
  */
 function makeBox() {
-  const root = mkdtempSync(join(tmpdir(), 'anyplugin-ui-'))
+  const root = mkdtempSync(join(tmpdir(), 'anyplugin-panel-'))
   const home = join(root, 'home')
   const project = join(root, 'workspace')
   const empty = join(root, 'empty')
@@ -60,25 +60,14 @@ function makeBox() {
   const nodeModules = join(root, 'node_modules')
   mkdirSync(nodeModules, { recursive: true })
   symlinkSync(REPO, join(nodeModules, 'dsh-anyplugin'), 'dir')
-  cpSync(PANEL, join(nodeModules, 'dsh-anyplugin-ui'), {
-    recursive: true,
-    filter: (source) => !source.includes(`${sep}node_modules`),
-  })
-  // A profile can only import built JavaScript. The repo manifest keeps
-  // exports["."] = ./src/index.ts (R7); the publish-time manifest points at
-  // lib, and that is the shape a real install must use. Rewrite the copy only.
-  const copied = join(nodeModules, 'dsh-anyplugin-ui', 'package.json')
-  const manifest = JSON.parse(readFileSync(copied, 'utf8'))
-  manifest.exports['.'] = './lib/index.js'
-  writeFileSync(copied, `${JSON.stringify(manifest, null, 2)}\n`)
-  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'anyplugin-ui-test', private: true })}\n`)
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'anyplugin-panel-test', private: true })}\n`)
   return {
     root,
     home,
     project,
     empty,
     installs: join(home, 'anyplugin', 'installs.yml'),
-    entry: join(nodeModules, 'dsh-anyplugin-ui', 'lib', 'index.js'),
+    entry: join(nodeModules, 'dsh-anyplugin', 'lib', 'index.js'),
   }
 }
 
@@ -279,7 +268,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   t.after(() => rmSync(box.root, { recursive: true, force: true }))
   const panel = await loadPanel(box)
   const config = { installs: box.installs, home: box.home, projectDir: box.project }
-  const { routes, ctx } = mountServer(panel.apply, config)
+  const { routes, ctx } = mountServer(panel.applyPanel, config)
   t.after(() => ctx.dispose())
 
   const listRoute = routes.find((route) => route.kind === 'prefix' && route.path === PREFIX)
@@ -450,7 +439,7 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal(nonLoopback.json.code, 'host-not-allowed')
 
   const allowedConfig = { ...config, allowedHosts: ['dev.internal'] }
-  const allowed = await panel.dispatch(
+  const allowed = await panel.dispatchPanel(
     new Request('http://127.0.0.1' + PREFIX + '/install', {
       method: 'POST',
       headers: { 'content-type': 'application/json', host: 'dev.internal:4123', origin: 'http://dev.internal:4123' },
@@ -459,7 +448,7 @@ test('server half lists the lock and installs through the published lifecycle AP
     allowedConfig,
   )
   assert.equal(allowed.status, 200, JSON.stringify(await allowed.clone().json()))
-  const allowedRead = await panel.dispatch(
+  const allowedRead = await panel.dispatchPanel(
     new Request('http://127.0.0.1' + PREFIX + '/installs', { headers: { host: 'dev.internal:4123' } }),
     allowedConfig,
   )
@@ -479,7 +468,7 @@ test('server half lists the lock and installs through the published lifecycle AP
       return null
     },
   }
-  const declaredResponse = await panel.dispatch(declaredRequest)
+  const declaredResponse = await panel.dispatchPanel(declaredRequest)
   assert.equal(declaredResponse.status, 413)
   assert.equal(bodyReads, 0, 'the declared-length path never touched the body')
 
@@ -504,7 +493,7 @@ test('server half lists the lock and installs through the published lifecycle AP
       },
     },
   }
-  const chunkedResponse = await panel.dispatch(chunkedRequest)
+  const chunkedResponse = await panel.dispatchPanel(chunkedRequest)
   assert.equal(chunkedResponse.status, 413)
   assert.ok(chunkedReads <= 3, `the chunked body was cancelled early (reads: ${chunkedReads})`)
   assert.equal(chunkedCancelled, 1, 'the over-limit stream was cancelled')
@@ -533,7 +522,7 @@ test('server half lists the lock and installs through the published lifecycle AP
 
   // A 200 can still carry a refusal inside the transplant report; the panel
   // passes the report through rather than hiding it.
-  const hooks = await panel.dispatch(
+  const hooks = await panel.dispatchPanel(
     new Request('http://127.0.0.1' + PREFIX + '/install', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -546,17 +535,17 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal(hooksBody.report.totals.refused, 1)
 
   // Method rules and shapes through the same dispatch the routes use.
-  assert.equal((await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/install`))).status, 405)
-  assert.equal((await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/install`, { method: 'PUT' }))).status, 405)
-  assert.equal((await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/unknown`))).status, 404)
-  const bad = await panel.dispatch(new Request(`http://127.0.0.1${PREFIX}/install`, {
+  assert.equal((await panel.dispatchPanel(new Request(`http://127.0.0.1${PREFIX}/install`))).status, 405)
+  assert.equal((await panel.dispatchPanel(new Request(`http://127.0.0.1${PREFIX}/install`, { method: 'PUT' }))).status, 405)
+  assert.equal((await panel.dispatchPanel(new Request(`http://127.0.0.1${PREFIX}/unknown`))).status, 404)
+  const bad = await panel.dispatchPanel(new Request(`http://127.0.0.1${PREFIX}/install`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: 'not json',
   }))
   assert.equal(bad.status, 400)
   assert.equal((await bad.json()).code, 'invalid-body')
-  const huge = await panel.dispatch(
+  const huge = await panel.dispatchPanel(
     new Request(`http://127.0.0.1${PREFIX}/install`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -565,6 +554,42 @@ test('server half lists the lock and installs through the published lifecycle AP
   )
   assert.equal(huge.status, 413)
   assert.equal((await huge.json()).code, 'body-too-large')
+})
+
+test('the controller mounts the panel before it checks for a lock', async () => {
+  const box = makeBox()
+  try {
+    const panel = await loadPanel(box)
+    const config = { installs: join(box.home, 'anyplugin', 'installs.yml'), home: box.home, projectDir: box.project }
+    // A bare probe shaped like the pin's `webServer` service: the controller's
+    // own inject callback is what applies the panel, so applying it here first
+    // would register the routes twice. No test boots a real web server (the
+    // harness tree is never started with one), so this asserts the controller
+    // asks for ['webServer'] and that the panel registers the two routes in
+    // the documented `register({ kind, path, resource | handler })` shape.
+    const mounted = mountServer(() => {}, config)
+    let asked
+    await panel.apply(
+      {
+        loader: {},
+        get() {
+          return undefined
+        },
+        inject(names, callback) {
+          asked = names
+          callback(mounted.ctx)
+        },
+      },
+      config,
+    )
+    // A fresh profile has no installs.yml yet; the panel is how its first
+    // plugin gets installed, so the mount must precede the early return.
+    assert.deepEqual(asked, ['webServer'])
+    assert.deepEqual(mounted.routes.map((route) => route.path), [PREFIX, `${PREFIX}/install`])
+    assert.equal(existsSync(config.installs), false)
+  } finally {
+    rmSync(box.root, { recursive: true, force: true })
+  }
 })
 
 test('client half is a served dsh.client bundle and renders the lock', async (t) => {
@@ -584,11 +609,11 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   t.after(() => rmSync(box.root, { recursive: true, force: true }))
   const panel = await loadPanel(box)
   const config = { installs: box.installs, home: box.home, projectDir: box.project }
-  const { ctx: serverCtx } = mountServer(panel.apply, config)
+  const { ctx: serverCtx } = mountServer(panel.applyPanel, config)
   t.after(() => serverCtx.dispose())
 
   // Install first, so the panel has something real to show.
-  const install = await panel.dispatch(
+  const install = await panel.dispatchPanel(
     new Request(`http://127.0.0.1${PREFIX}/install`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -610,19 +635,28 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   ctx.provide('webServer', { register: () => () => {} })
   ctx.plugin(Loader, { baseUrl: pathToFileURL(join(box.root, 'cordis.yml')).href })
   const loader = await until(() => ctx.loader, 'the loader service')
-  await loader.create({ id: 'panel', name: 'dsh-anyplugin-ui', config: {} })
+  // The same row now carries both halves (D77): boot it with the temp profile's
+  // paths so the controller reconciles the lock the direct dispatch just wrote.
+  await loader.create({
+    id: 'panel',
+    name: 'dsh-anyplugin',
+    config: { installs: box.installs, home: box.home, projectDir: box.project },
+  })
   await loader.await()
   await sleep(60)
   await ctx.plugin(ClientModuleRegistry)
   const registry = ctx.clientModules
 
   const graph = registry.graph()
-  const entry = graph.entries.find((row) => row.id === 'dsh-anyplugin-ui')
-  assert.ok(entry, 'the panel package composed a dsh.client row')
-  assert.equal(registry.clientPath('dsh-anyplugin-ui'), join(box.root, 'node_modules', 'dsh-anyplugin-ui', 'lib', 'client.js'))
+  const entry = graph.entries.find((row) => row.id === 'dsh-anyplugin')
+  assert.ok(entry, 'the root package composed a dsh.client row')
+  // The loader resolves the package symlink to the checkout it points at, so
+  // the served file is the real package location, not the box's link.
+  const packageRoot = realpathSync(join(box.root, 'node_modules', 'dsh-anyplugin'))
+  assert.equal(registry.clientPath('dsh-anyplugin'), join(packageRoot, 'lib', 'client.js'))
 
-  const batch = graph.batches.flatMap((row) => row.entries).includes('dsh-anyplugin-ui')
-    ? graph.batches.find((row) => row.entries.includes('dsh-anyplugin-ui')).url
+  const batch = graph.batches.flatMap((row) => row.entries).includes('dsh-anyplugin')
+    ? graph.batches.find((row) => row.entries.includes('dsh-anyplugin')).url
     : graph.batches[0].url
   const served = await registry.fetchBundle(new Request(new URL(batch, 'http://dsh.invalid/')))
   assert.equal(served.status, 200)
@@ -632,7 +666,7 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
 
   const { react, render } = hookRuntime()
   const client = await browser(harnessDir, registry, graph, { react })
-  const exports = await client.import('dsh-anyplugin-ui')
+  const exports = await client.import('dsh-anyplugin')
   // The array was built in the vm realm; compare its contents, not its prototype.
   assert.deepEqual(Array.from(exports.inject), ['slots'])
 
@@ -674,7 +708,7 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   const realFetch = globalThis.fetch
   globalThis.fetch = async (url, init = {}) => {
     calls.push([String(url), init.method ?? 'GET'])
-    return panel.dispatch(new Request(new URL(url, 'http://127.0.0.1'), init), config)
+    return panel.dispatchPanel(new Request(new URL(url, 'http://127.0.0.1'), init), config)
   }
   t.after(() => {
     globalThis.fetch = realFetch
@@ -707,7 +741,7 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   // refuse; the install still succeeds, and the panel must say so instead of
   // showing a bare "installed".
   const hooksPath = join(REPO, 'fixtures', 'claude-hooks-mcp')
-  const hooksInstall = await panel.dispatch(
+  const hooksInstall = await panel.dispatchPanel(
     new Request('http://127.0.0.1' + PREFIX + '/install', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -218,6 +218,7 @@ adds measurable caps:
 | integration runner | merges `origin/main` into a ticket branch, pushes that branch, polls CI, assembles PR bodies, cleans worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, or one that touches `main` |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
+| architecture reviewer | one daily pass reading the design against the tree; finding issues and docs-only PRs | merge, approve or close its own issue/PR, push `main`, feature code, ticket branches, `docs/DECISIONS.md`, `docs/FEATURES.md` coverage rows or totals, a contract change in `docs/ARCHITECTURE.md` §0/§2/§7 without a decision | an issue without file:line at a commit; a run that edits code, merges, or moves coverage/contract |
 | auditor | audit tooling, process docs, the audit skill, and a gate/test that is the finding's fix; issues and PRs | feature code, ticket branches, `docs/DECISIONS.md`, approve, merge, close an issue or PR; it proposes a decision and the master writes it | an audit PR the auditor approved, merged, or closed itself |
 
 The auditor's "no approve, no merge, no close" rule is a convention first: the
@@ -544,6 +545,20 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
         "2026-11-22 00:20 evidence: root session-522222a9 2,470 tools, next child 1,073",
         "2026-11-22 09:00 evidence: same root 2,991 lifetime (1,112 in window), next child 1,073; split proposal #199",
         "docs/AUDIT.md §7 role caps"
+      ]
+    },
+    {
+      "id": "F19",
+      "title": "A maintainer's reply waits a day because a receipt reads as an answer",
+      "mechanism": "ci",
+      "status": "enforced",
+      "artifact": "scripts/triage-rules.mjs",
+      "proof": "scripts/triage-rules.test.mjs",
+      "rationale": "On 2026-11-22 the maintainer answered #170 at 10:19 UTC (receipt 10:26) and #175/#177 between 12:25 and 12:31 UTC (receipts at 12:45), and every later read treated the thread as answered because the receipt was the last comment — one round reported an empty queue from docs/TODO.md instead of the tracker. Three rules hold now: a Seen. receipt is not an agent reply (isReceipt in the artifact, pinned by the proof); a round starts with npm run inbox, which exits 1 while a substantive maintainer comment is unanswered (scripts/triage.mjs --waiting); and .github/workflows/inbox.yml runs that command daily with MAINTAINER_LOGINS=szchan, so a waiting reply becomes a failing run instead of a silent wait (D79).",
+      "evidence": [
+        "2026-11-22 #170 szchan 10:19Z, receipt 10:26Z; #177 szchan 12:31Z, receipt 12:45Z; #175 szchan 12:25Z, receipt 12:45Z",
+        "scripts/triage-rules.test.mjs: a receipt after a maintainer reply is a resume row",
+        "AGENTS.md §5 and docs/TRIAGE.md §6"
       ]
     }
   ]
