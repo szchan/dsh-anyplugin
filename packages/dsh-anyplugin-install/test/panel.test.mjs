@@ -556,6 +556,38 @@ test('server half lists the lock and installs through the published lifecycle AP
   assert.equal((await huge.json()).code, 'body-too-large')
 })
 
+test('the controller mounts the panel before it checks for a lock', async () => {
+  const box = makeBox()
+  try {
+    const panel = await loadPanel(box)
+    const config = { installs: join(box.home, 'anyplugin', 'installs.yml'), home: box.home, projectDir: box.project }
+    // A bare probe: the controller's own inject callback is what applies the
+    // panel, so applying it here first would register the routes twice.
+    const mounted = mountServer(() => {}, config)
+    let asked
+    await panel.apply(
+      {
+        loader: {},
+        get() {
+          return undefined
+        },
+        inject(names, callback) {
+          asked = names
+          callback(mounted.ctx)
+        },
+      },
+      config,
+    )
+    // A fresh profile has no installs.yml yet; the panel is how its first
+    // plugin gets installed, so the mount must precede the early return.
+    assert.deepEqual(asked, ['webServer'])
+    assert.deepEqual(mounted.routes.map((route) => route.path), [PREFIX, `${PREFIX}/install`])
+    assert.equal(existsSync(config.installs), false)
+  } finally {
+    rmSync(box.root, { recursive: true, force: true })
+  }
+})
+
 test('client half is a served dsh.client bundle and renders the lock', async (t) => {
   const harness = resolveHarness()
   const skip = harness === undefined
@@ -614,7 +646,10 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   const graph = registry.graph()
   const entry = graph.entries.find((row) => row.id === 'dsh-anyplugin')
   assert.ok(entry, 'the root package composed a dsh.client row')
-  assert.equal(registry.clientPath('dsh-anyplugin'), join(box.root, 'node_modules', 'dsh-anyplugin', 'lib', 'client.js'))
+  // The loader resolves the package symlink to the checkout it points at, so
+  // the served file is the real package location, not the box's link.
+  const packageRoot = realpathSync(join(box.root, 'node_modules', 'dsh-anyplugin'))
+  assert.equal(registry.clientPath('dsh-anyplugin'), join(packageRoot, 'lib', 'client.js'))
 
   const batch = graph.batches.flatMap((row) => row.entries).includes('dsh-anyplugin')
     ? graph.batches.find((row) => row.entries.includes('dsh-anyplugin')).url
