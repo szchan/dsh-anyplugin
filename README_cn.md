@@ -75,6 +75,7 @@ mods/*.ts            ──▶    mod host ──▶ 内核 ──▶ 宿主接�
 | `mods` | **已发布**：内核在 tarball 里（`D30`、`D31`、`D34`）——按原样加载 `.js`/`.mjs`/`.ts`（每个 mod 一个 `node:vm` realm），`.tsx` 只走那一次 classic pragma 变换；`$` 提供已测量的命名空间，seat 绑定每个 agent 的事件。hook 行的 config 可以带 `mods: [{ entry }]`；lock 的 schema 仍没有 `mods` 字段，所以 `dsh plugin add` 暂不安装 mods |
 | Codex 插件 | `equivalent` —— `plugin.json` 1.0.0 + `skills/` + `mcp.json`；同一套 IR 上安装并运行，没有上游 oracle，所以 fixture 就是规格 |
 | 安装 / 启用 / 发布 | `dsh-anyplugin@0.3.0`（bundle + 控制器 + 协调器） |
+| 面板 | **已发布**：同一次安装即带 Settings → AnyPlugin：只在回环地址上列表与安装，并复用 CLI 的同一个写入者（`D77`，没有第二个包） |
 
 ### 0.3.0 明确拒绝什么
 

@@ -77,6 +77,19 @@ That row is the whole bundle. It needs the profile's package scope to resolve
 `mcp`, `hook`, `agents`, `output-style` — which is exactly what
 `dsh plugin add` (pnpm in the profile) provides.
 
+The same row also serves the panel (D77). When the profile has a web server,
+the browser loads `lib/client.js` from this install and Settings → AnyPlugin
+lists and installs plugins over the loopback routes, through the same
+`installPlugin` the CLI calls. There is no second package to add or publish.
+
+**Upgrading from a profile that carried `dsh-anyplugin-ui`.** Earlier
+development builds could link that bundle into a profile by hand; it was never
+published, so no install from the registry has it. Remove the leftover entry
+from the profile's `package.json` bundle list (and its dependency) before the
+first boot on 0.3.0: DSH skips an unresolved bundle rather than aborting, but
+an old linked copy keeps its own panel enabled and would render a second,
+stale one next to this package's.
+
 Commands are not a sixth subpath: a slash command lands as a **skill** on its
 model face (`equivalent`). The human `/…` face is still `planned` and needs
 the host command-name seam (D10); wiring it is not part of 0.3.0.
