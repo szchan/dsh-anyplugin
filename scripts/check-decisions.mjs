@@ -170,7 +170,7 @@ if (appendFile !== undefined || rewordId !== undefined) {
     const after = text.slice(start + 1).search(/^## D\d+ — /mu)
     const end = after < 0 ? text.length : start + 1 + after
     const rewritten = `${payload}\n\n`
-    nextText = `${text.slice(0, start)}${rewritten}${text.slice(end)}`.replace(/\n{3,}/gu, '\n\n')
+    nextText = `${text.slice(0, start)}${rewritten}${text.slice(end).replace(/^\n{2,}/u, "\n")}`
   }
   // Everything outside the touched entry must still hash the same; otherwise the
   // writer would be a back door for the in-place edits the gate forbids.
