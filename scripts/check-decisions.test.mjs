@@ -77,3 +77,70 @@ test('--root needs a directory', () => {
   assert.equal(result.status, 1)
   assert.match(result.stderr, /--root needs a directory/)
 })
+
+// The sanctioned writer exists because the installed guard refuses every hand
+// write to docs/DECISIONS.md. It must be able to add an entry, reword one that
+// origin/main does not carry yet, and refuse to touch a ratified one.
+function makeRepo(text) {
+  const root = makeRoot(text)
+  const git = (...args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' })
+  git('init', '-q', '-b', 'main')
+  git('add', '-A')
+  git('-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'base')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  return { root, git }
+}
+
+const one = '## D1 — First\nbody one\n'
+const payloadFor = (root, text) => {
+  const payload = join(root, 'payload.md')
+  writeFileSync(payload, text)
+  return payload
+}
+
+test('--append-file adds one entry and the lock accepts it', () => {
+  const { root } = makeRepo(one)
+  assert.equal(run(root, '--update').status, 0)
+  const payload = payloadFor(root, '## D2 — Second\nbody two\n')
+  const result = run(root, '--append-file', payload)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /appended D2; locked 2 entries/)
+  const verify = run(root)
+  assert.equal(verify.status, 0, verify.stderr)
+})
+
+test('--append-file accepts a log whose entries end in a --- separator', () => {
+  // The real log separates entries with ---. Without trimming that separator on
+  // re-parse, every entry followed by another one looks changed and the writer
+  // refuses a legitimate append (the D78 append hit exactly this).
+  const separated = '## D1 — First\nbody one\n\n---\n\n## D2 — Second\nbody two\n\n---\n'
+  const { root } = makeRepo(separated)
+  assert.equal(run(root, '--update').status, 0)
+  const payload = payloadFor(root, '## D3 — Third\nbody three\n')
+  const result = run(root, '--append-file', payload)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /appended D3; locked 3 entries/)
+})
+
+test('--reword rewrites an entry origin/main does not carry', () => {
+  const { root, git } = makeRepo(one)
+  assert.equal(run(root, '--update').status, 0)
+  const payload = payloadFor(root, '## D2 — Second\nbody two\n')
+  assert.equal(run(root, '--append-file', payload).status, 0)
+  git('add', '-A')
+  git('-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'branch-local')
+  const reworded = payloadFor(root, '## D2 — Second\nbody two, reworded\n')
+  const result = run(root, '--reword', 'D2', '--file', reworded)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /reworded D2; locked 2 entries/)
+  assert.equal(run(root).status, 0)
+})
+
+test('--reword refuses an entry origin/main already carries', () => {
+  const { root } = makeRepo(one)
+  assert.equal(run(root, '--update').status, 0)
+  const payload = payloadFor(root, '## D1 — First\nbody one, rewritten\n')
+  const result = run(root, '--reword', 'D1', '--file', payload)
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /D1 is already on origin\/main; it is ratified/)
+})

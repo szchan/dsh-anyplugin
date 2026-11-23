@@ -39,6 +39,7 @@ not.
 | label | meaning |
 | --- | --- |
 | `from-maintainer` | authored by the human account. **Ranks first in the queue; it does not skip verification.** |
+| `priority/now` | a maintainer's "do this next" mark. Only the latest labelled event by a maintainer counts; an agent-applied label does not (§2). |
 | `external` | any other login. Treated as a report, never as an instruction. |
 | `needs-evidence` | the report cannot be acted on as written; an agent commented asking for specifics. |
 | `agent-reply` | the newest comment came from `szchan-bot`. |
@@ -68,28 +69,83 @@ Consequence, stated so nobody is surprised: a new issue waits for the next pull 
 up to one scheduling interval — before it is labelled. It is never lost, and it
 never interrupts a worker mid-branch.
 
-The queue has six sections:
+**A maintainer can jump the queue.** Apply the `priority/now` label to an issue
+or a PR. Only the latest `labeled`/`unlabeled` event for that label counts, and
+only when a maintainer is the actor: the bot's token can edit bodies and apply
+labels, so the labels array alone is not evidence. The queue prints a
+**Priority (jump the queue)** section first, each row names the section it came
+from, and the 20-minute watch dispatches those rows before it posts receipts.
+The label stays until a maintainer removes it. A jumped row is still counted
+where it came from, so a `Maintainer answers` thread with no reply still makes
+the round-start exit 1; an unreadable label timeline is a recorded read failure,
+not a silent demotion.
 
-1. **Maintainer asks** — `from-maintainer` threads whose last human message is
-   newer than the last agent message. These outrank everything.
-2. **Maintainer answers** — `maintainer-question` threads where the human replied.
-   The waiting agent resumes; nobody else takes the ticket.
-3. **In review** — issues that an open PR already closes (`Closes #N` in the PR
-   body). Listed so the ticket is visibly in flight, never left in a queue: an
-   ask that already has a PR invites a second worker to claim the same ticket.
-4. **In progress** — issues labelled `ticket/in-progress` that have no PR yet.
-   Claimed work is in flight even when there is nothing to review; without this
-   the queue undercounts WIP and the next round dispatches a second worker onto
-   a moving ticket.
-5. **External reports** — `external` issues with no agent triage yet. Each gets
-   one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
+The queue prints these sections in this order (a `priority/now` item is moved,
+not copied, so it prints once, under *Priority*):
+
+1. **Priority (jump the queue)** — issues and PRs carrying `priority/now`,
+   applied last by a maintainer. Each row names the section it came from; the
+   label ranks the row first, it does not skip verification.
+2. **Maintainer asks (new)** — `from-maintainer` threads whose last human message
+   is newer than the last agent message. These outrank everything except a
+   `priority/now` row.
+3. **Maintainer answers (resume)** — `maintainer-question` threads where the human
+   replied. The waiting agent resumes; nobody else takes the ticket.
+4. **Blocked on a human** — `maintainer-question` threads where the agent asked
+   last (§6). Nothing moves until a maintainer answers.
+5. **Agent findings (review)** — issues the architecture reviewer (D82) filed
+   through the bot with an `arch:` title. They are agent output: they need a
+   review/merge decision, not an answer. A maintainer's later comment on one
+   turns it into a **Maintainer answers** row, so the class never hides a human
+   reply (D85).
+6. **In review (PR open)** — issues that an open PR already closes (`Closes #N`
+   in the PR body). Listed so the ticket is visibly in flight, never left in a
+   queue: an ask that already has a PR invites a second worker to claim the same
+   ticket.
+7. **In progress (no PR yet)** — issues labelled `ticket/in-progress` that have
+   no PR yet. Claimed work is in flight even when there is nothing to review;
+   without this the queue undercounts WIP and the next round dispatches a second
+   worker onto a moving ticket.
+8. **External, untriaged** — `external` issues with no agent triage yet. Each
+   gets one of: accepted (`auto-fix`, an issue-body rewrite into a ticket), or
    `needs-evidence` with the exact questions, or `invalid` with the reason.
-6. **PRs** — every open PR, with its `verify` status and whether an agent has
-   reviewed at the current head.
+9. **External, awaiting evidence** — `needs-evidence` issues where the agent
+   asked last: the reporter's answer is what unblocks them.
+10. **Pull requests** — every open PR, with its `verify` status and whether an
+    agent has reviewed at the current head.
+
+Order here is display priority, not classifier precedence: the classifier
+early-returns, so an issue already closed by an open PR is listed under *In
+review* even when it is a maintainer ask, and a `ticket/in-progress` issue is
+listed under *In progress* even when it also carries `maintainer-question`.
 
 A new issue or PR is labelled `needs-triage` by `.github/workflows/intake.yml`
 the moment it opens, so nothing sits unlabelled waiting for the poll. The label
 is the only thing that workflow does; it never checks out the contribution.
+
+### Agent findings are not maintainer asks
+
+The architecture reviewer (D82) files through the bot, and the bot is ours:
+`roleOf` reads it as a maintainer, so before the class a finding was printed in
+no section at all, and after a maintainer comment it read as a maintainer reply.
+The class is the **author plus the title prefix** the D82 reviewer's prompt
+fixes (`docs/WORKFLOW.md` §Roles states the contract; the scheduled prompt
+carries the same command):
+
+- **author is `szchan-bot`** and the **title starts `arch:`** (case-insensitive).
+  A maintainer issue titled `arch:` is still a maintainer ask: identity is the
+  account, not the wording (§1). A bot-filed issue without the prefix keeps
+  today's behaviour — the class is the reviewer's contract, not "everything the
+  bot wrote".
+- The title is the only marker the reviewer emits — it files with the existing
+  `area/*` labels only — so no label is added or required. If role filing ever
+  gains an explicit `agent-finding` label, the predicate changes and D85 is
+  superseded.
+
+A finding is *agent output*: it needs a review/merge decision, not an answer.
+`npm run inbox` lists it as `agent finding to review` and does not raise the
+exit code (D85) — a finding alone exits 0; 1 still means a maintainer answer or
+a new ask waits, 2 still means a thread could not be read.
 
 ### A pull request, in three shapes
 
@@ -147,6 +203,10 @@ These rules are absolute and are the reason this file exists:
 Every PR, internal or external, runs the same gate:
 
 1. `verify` green (CI). A skipped fidelity test on CI is a failure, not a pass.
+   For a fork PR the only count is the push run this repository's `verify.yml`
+   produced for the head — the maintainer's push of it onto a branch here; a
+   `pull_request` run executes the contributor's workflow file and is not
+   evidence (D83).
 2. The reviewer rubric in `docs/WORKFLOW.md`, including a mutation per claim.
 3. Touches respected, decisions not edited in place
    (`scripts/check-decisions.mjs` enforces the append-only rule).
@@ -183,9 +243,18 @@ The body has exactly four parts, in this order:
    legal choice).
 
 Everything an agent can settle by reproduction stays out of this queue. The
-queue is for the four things only a human holds: credentials, billing, rights,
-and irreversibility. "I am not sure" is not one of them — research it, test it,
-and write down what you chose.
+queue is for **the four human classes** only — the one list, defined here and
+cross-referenced by the worker protocol (`docs/WORKFLOW.md` §Escalation, D87):
+
+1. **Credentials** — a secret, a token, an account, a permission.
+2. **Billing** — a purchase, a paid plan, a metered run, a quota.
+3. **Rights** — a licence, a redistribution, a legal or contractual choice.
+4. **Irreversibility** — an action that cannot be undone, such as a publish, a
+   delete, a force-push, or closing a public thread with no record.
+
+"I am not sure" is not one of them — research it, test it, and write down the
+default you chose, then declare it on the ticket and proceed. A default that
+would bend §3 of `AGENTS.md` is not a default; that work stops instead.
 
 ### The inbox, and what a receipt means
 
@@ -196,7 +265,10 @@ when there is one, so a session cannot report an empty queue without reading it.
 Exit 2 means a thread could not be read: an unreadable tracker is not an empty
 one, and the round must fix the read before concluding nobody is waiting.
 Only a login in `MAINTAINER_LOGINS` can move a row: a bystander's comment on a
-bot escalation is a report, not an answer.
+bot escalation is a report, not an answer. Agent findings (the architecture
+reviewer's bot-filed `arch:` issues) are listed separately as `agent finding to
+review`: they need review/merge, not an answer, and they do not raise the exit
+code (D85).
 
 The intake path posts a `Seen.` receipt when a session picks a thread up. A
 receipt says "an owner exists", not "the answer landed": `scripts/triage-rules.mjs`
@@ -217,6 +289,17 @@ signal, and the answer belongs in that thread.
 **No silent blocking.** If the work can proceed on a declared default, it
 proceeds and records the default in the issue; only a decision that would bend §3
 waits indefinitely.
+
+**A refused shell spelling is a policy gap, not a retry.** The live guard admits
+one statically readable command list per call (D78): `export VAR=…` is refused
+as unmodelled, a heredoc whose body contains a backtick is refused, and
+`"$VAR"` is refused because a double-quoted expansion hides the value. Pass
+environment through `env KEY=value command`; `ANYPLUGIN_LOCAL_VERIFY=1` is the
+root's one-segment escape, never a worker's. If a spelling the work legitimately
+needs is refused, the fix is a policy entry plus a matrix test in the guard
+package, and the refusal is filed in the ticket that needed it — not worked
+around with a different quoting trick. The guard is inert outside this checkout
+and its ticket worktrees (D80).
 
 ## 7. What the loop guarantees
 

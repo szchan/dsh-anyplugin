@@ -22,11 +22,10 @@ loader. Two subsystems share one spine:
 | File | Why |
 | --- | --- |
 | `docs/ARCHITECTURE.md` | The design. §0 (the fidelity contract) and §7 (mods) are load-bearing. |
-| `docs/DECISIONS.md` | Ratified decisions D1–D82. **Do not relitigate these in code review or in a PR without a new decision entry.** |
-| `docs/WORKFLOW.md` | How agents take tickets, where they work, and what a PR must prove. |
+| `docs/DECISIONS.md` | Ratified decisions D1–D88. **Do not relitigate these in code review or in a PR without a new decision entry.** |
 | `docs/AUDIT.md` | The daily process audit: finding ledger, role caps, and the evidence a claim needs. |
 | `docs/TRIAGE.md` | How issues and PRs become work: labels, the queue, and why a non-maintainer's text is data. |
-| `docs/WORKFLOW.md` §Roles, `docs/AUDIT.md` §7 | Who may do what, including the two scheduled roles (auditor and architecture reviewer) and their caps. |
+| `docs/WORKFLOW.md` §Roles, `docs/AUDIT.md` §7 | Who may do what, including the integration runner (`integrator-*`), the two scheduled roles (auditor and architecture reviewer) and their caps. |
 | `docs/FEATURES.md` | The capability map. Every row is a claim with an artifact; `check:features` keeps the paths honest. |
 | `docs/TODO.md` | The burn-down list: what is next, what each item must prove, and which upstream proposal it waits on. |
 | `docs/ARCHITECTURE.md` §10 | Verification plan (S1–S20) and what a spike must prove. |
@@ -110,9 +109,10 @@ npm run rig -- verify --plugin <dir> --golden <file>   # conformance rig
 npm run capture:fixtures          # re-capture goldens after a pin bump; review the diff
 npm run verify                    # CI only (all five env vars, both pins); do not run it locally
 npm run ci                        # watch the verify run for the current branch and print the failure
+npm run pr:update <n>             # merge origin/main into a PR branch, push, wait for verify, print the pinned merge line
 npm run check:arch                # structural rules R1–R14
 npm run check:features            # the capability map points at real files; owns R15
-npm run check:decisions           # D1–D82 append-only (--update accepts new entries only)
+npm run check:decisions           # D1–D88 append-only (--update accepts new entries only)
 npm run perf                      # our hot paths as base/head ratios (docs/PROFILING.md)
 npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .audit/)
 npm run check:audit               # the audit ledger/report gate (part of verify)
@@ -126,29 +126,58 @@ A round starts with `npm run inbox`, before any other step: it lists the
 maintainer answers with no agent reply and the maintainer-opened issues nothing
 has picked up, and exits 1 when there is one (2 when a thread could not be
 read). A `Seen.` receipt is not an answer (D79) — never judge a thread by its
-last comment.
+last comment. Agent findings (the architecture reviewer's bot-filed `arch:`
+issues, D82) are listed separately as `agent finding to review` rows: they are
+agent output and need review/merge, not an answer, so they do not raise the exit
+code (D85).
 
 `verify:release` is the post-publish probe from `docs/RELEASING.md` — a
 maintainer step, not a gate: it needs the network and a version the registry
 already serves, so it is never part of `verify`.
 
+`npm run pr:update <n>` is the update path for a PR branch that is behind
+`main`: it merges `origin/main` into the head branch, pushes, waits for the new
+head's `verify`, and prints (never runs) the D66-pinned `gh pr merge` line. It
+automates the same-repository path only: a fork PR is refused because its branch
+is not ours to push, and a fork's gate stays the maintainer's push of its head
+onto a branch here (D83). A conflict its own merge creates aborts without
+pushing, and the abort's exit status is checked before the message claims the
+merge was aborted. Before merging it refuses a worktree whose merge is already
+in progress, whose index has unmerged paths, or which is dirty — it never aborts
+someone else's conflict.
+
+The integration runner (`docs/WORKFLOW.md` §The integration runner) is the
+worker role that runs this update-and-poll loop for the master: one PR, its
+ticket branch, `verify` by sha, the PR body, the worktree. It never merges; the
+master runs the printed pinned line.
+
 An agent never posts as `szchan`. Comments, reviews, labels and PRs go through
 `npm run gh-bot -- <gh args…>`, because the login is what stays readable after the
 fact; the `<!-- dsh-anyplugin-agent -->` marker is only a fallback (docs/TRIAGE.md §1).
 
-`verify` is the gate, and it runs **in CI**: every branch push triggers it. It
-must report **0 skipped** — a skip means an environment variable is missing, and
-on CI a skip is a failure by design (D22/D24). Do not run it, `npm test`,
-`npm run build` or `npm run bench` locally; push and read `npm run ci`. Static
-checks (`check:arch`, `check:features`, `check:decisions`) are the only local
-gate, because they spawn nothing.
+`verify` is the gate, and it runs **in CI**: every branch push triggers it, one
+run per push event, and the gate is the push run this repository's `verify.yml`
+produced for the head (D83). Branch protection matches the required context by
+name and producing app, not by workflow file, so the rule is procedural: a
+reviewer counts only that push run, and for a fork PR it is the maintainer's push
+run from pushing the head onto a branch here (rule 2). A fork PR has no gate
+until then — a `pull_request` run executes the fork's workflow file, and its
+check name is the contributor's to choose. A skipped *test* is not: the suite must
+report **0 skipped** — a skip means an environment variable is missing, and on CI a
+skip is a failure by design (D22/D24). Do not run `verify`, `npm test`,
+`npm run build`, `check:pack`, a perf run or a spike locally; push and read
+`npm run ci`. Static checks (`check:arch`, `check:features`, `check:decisions`)
+are the only local gate, because they spawn nothing. The guard enforces this
+(`local-verify-refused`, D78): the root can prefix one command with
+`ANYPLUGIN_LOCAL_VERIFY=1` for a deliberate local run, a worker cannot.
 
-If you must run a suite locally anyway (reproducing a flake the reviewer reported),
-`npm test` now takes a machine-wide slot (`scripts/gate-slot.mjs`) and runs with
-`--test-concurrency=2`: one run at a time, two workers, so three agents cannot
-saturate the host. A slot held by a live process is waited on; a dead holder or a
-lock older than an hour is reclaimed with a printed reason. `npm run perf` is the
-other CPU-heavy command — run it once, not in a loop, and never alongside a suite.
+If you must reproduce a flake the reviewer reported, the only local path is the
+root's hatch: `ANYPLUGIN_LOCAL_VERIFY=1 npm test` (one segment, visible in the
+transcript). Inside it, `npm test` takes a machine-wide slot
+(`scripts/gate-slot.mjs`) and runs with `--test-concurrency=2`: one run at a
+time, two workers, so three agents cannot saturate the host. A slot held by a
+live process is waited on; a dead holder or a lock older than an hour is
+reclaimed with a printed reason.
 
 The global npm cache on this machine is root-owned and unusable; `.npmrc`
 points npm at `./.npm-cache` on purpose. Do not "fix" it by running `sudo chown`.

@@ -1,14 +1,16 @@
 name: perf
 
-# Branch pushes and PRs to main both measure. The two events use different
-# concurrency refs (`refs/heads/...` vs `refs/pull/...`), so a branch with an
-# open PR runs twice; that is deliberate while `perf` is a separate check.
-# Keep one job name so a future required check has an unambiguous name.
+# Push only, one run per push event. A `pull_request` run executes the
+# workflow file from the PR's merge commit; for a fork that file is the
+# contributor's, with a job name the contributor chooses, so a check it
+# produces is not evidence this repository measured anything (D83). `verify`
+# counts only the push run this repository's `verify.yml` produced for the
+# head, and `perf` follows the same rule: only the push run produced by this
+# `perf.yml` counts. Keep one job name so a future required check has an
+# unambiguous name.
 on:
   push:
     branches: ["**"]
-  pull_request:
-    branches: [main]
 
 concurrency:
   group: perf-${{ github.ref }}
@@ -31,17 +33,7 @@ jobs:
       # `scripts/perf.mjs --base` already owns that worktree and the build.
       # Full history keeps `origin/main` available; the explicit fetch below
       # pins it to the base repository's current main.
-      # On a PR, `github.sha` is the merge commit; measure the PR head instead,
-      # so the head side is the code under review, not a merge with main. The
-      # `refs/pull/N/head` ref lives in the base repository, so it also works
-      # for a fork PR where the head SHA is not otherwise advertised.
       - uses: actions/checkout@v4
-        if: github.event_name == 'pull_request'
-        with:
-          ref: refs/pull/${{ github.event.number }}/head
-          fetch-depth: 0
-      - uses: actions/checkout@v4
-        if: github.event_name != 'pull_request'
         with:
           fetch-depth: 0
 

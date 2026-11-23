@@ -87,9 +87,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `claude-code.d.ts` (D14 forbids vendoring the artifact, and the licence
       does not grant redistribution) or derive an inline subset whose shapes are
       no longer copied verbatim (a different claim under D57).
-      Blocked on: D14 (read the pin, do not vendor it), D57 (a served shape is
-      copied verbatim), and a decision entry for the inline-subset path (D59
-      proposed in #150; #144 generated the internal file).
+      Blocked on: D14 (read the pin, do not vendor it), D57 (a served member
+      keeps the pin's own shape, asserted not guessed), and D60 (the generated
+      file is internal; shipping a surface is a separate decision, taken with
+      #150 after #144 generated the file). D60's consequences name the only two
+      exits: negotiate redistribution, or publish a derived subset under a new
+      decision that says so.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
@@ -102,7 +105,8 @@ with the exact anchor so the proposal is reviewable without a checkout.
   rig's own `cli.ts`; `npx dsh-anyplugin install <dir> --dry-run` needs no DSH
   installation, and `check:pack` runs the extracted bin with no DSH environment,
   fails if a conformance-gate marker reaches shipped `lib/`, and holds the
-  tarball under its 180 KiB ceiling.
+  tarball under the ceiling `scripts/check-pack.mjs` asserts (193 KiB, D77;
+  the number lives in code, not in this line).
 
 - Mod type surface (ticket #144): `scripts/gen-mod-types.mjs` reads the pinned
   `mods/types/claude-code.d.ts` and `fixtures/mods/coverage.json` (D55) and

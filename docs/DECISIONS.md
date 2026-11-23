@@ -3728,3 +3728,386 @@ it. Deliberately not claimed: that the queue routes agent-filed issues
 correctly — `roleOf` reads the bot as a maintainer today, so those issues need a
 routing class or an explicit master triage; that is a follow-up, named rather
 than hidden.
+
+## D85 — Agent-filed findings are their own queue class
+
+**Decided 2026-11-22** (#234, D82 follow-up). D82's consequences named the gap:
+`roleOf` reads the bot as a maintainer, so the architecture reviewer's issues
+"need a routing class or an explicit master triage". The reviewer files through
+the bot with `--title "arch: <finding>"`, so without the class the queue cannot
+tell an agent finding (needs review/merge) from a maintainer request (needs an
+answer): at `e310841` a bot-filed `arch:` issue with no comments classified to
+`{section: null}` and was printed in no section, and a maintainer comment on it
+made it look like a maintainer reply.
+
+1. **Predicate: author is the bot AND the title starts `arch:`.** The title
+   prefix is the contract the reviewer's scheduled prompt fixes
+   (`--title "arch: <finding>"`); its in-repo home is `docs/WORKFLOW.md` §Roles,
+   summarised in `docs/TRIAGE.md` §2. It files with the existing `area/*` labels
+   only, so no label exists to mark the class and the reviewer needs no change.
+   The author half is load-bearing: a maintainer issue titled `arch:` remains a
+   maintainer ask, because identity is the account (`docs/TRIAGE.md` §1), not
+   the wording. Matching is on the trimmed title, case-insensitive, with the
+   colon literal and the prefix anchored, so a capitalised prefix does not hide
+   a finding while `archived:`, `architecture:` or `arch :` do not create one.
+   `isAgentFinding` owns the predicate.
+2. **One class, two views.** `classifyIssue` returns the section
+   `Agent findings (review)` before the `who === 'maintainer'` branch; `npm run
+   triage` prints it as its own section and `roleOfIssue` reports the author
+   class as `agent`, so the line does not claim the maintainer wrote the issue.
+   `inboxVerdict` carries the findings separately; `npm run inbox` lists them as
+   `agent finding to review`.
+3. **The exit contract does not change.** Findings need review/merge, not an
+   answer: a finding alone exits 0. Exit 1 still means a maintainer answer or a
+   new maintainer ask waits, exit 2 still means a thread could not be read.
+4. **The class never swallows a human reply.** The finding branch returns the
+   resume row itself when a maintainer comment follows the finding's last agent
+   word: it is `Maintainer answers (resume)` (exit 1), and a later agent reply
+   closes the row like any other thread.
+
+**Not claimed.** That an arbitrary bot-filed issue (a follow-up ticket, a
+`[HUMAN]` escalation) is routed as anything but today's behaviour: the class is
+the architecture reviewer's `arch:` findings, not "everything the bot wrote". A
+future explicit `agent-finding` label would revisit the predicate, not the
+class.
+
+**Evidence.** Probe at `e310841`: a bot-filed `arch:` issue classified
+`{section: null}`, and after a maintainer comment it became `Maintainer answers
+(resume)`. `scripts/triage-rules.test.mjs` pins the finding, the maintainer
+resume on a finding, the maintainer-filed `arch:` ask, the plain-bot issue,
+`roleOfIssue`, the inbox exit codes, and the title contract's trim, anchor and
+colon-literal cases (`arch :`, `archived:`, `architecture:` must not match);
+`scripts/triage.test.mjs` runs the queue against a fake `gh` and pins the section
+name, the `agent` role and the `agent finding to review` line. Removing the
+`if (isAgentFinding(...))` branch makes the finding tests fail, and each of the
+five wiring mutations the reviewer named — `roleOf` instead of `roleOfIssue`,
+the findings print loop, `.trim()`, the anchored colon-literal regex, findings
+counted as blocked — fails at least one test. `docs/TRIAGE.md` §2 (the section
+list and *Agent findings are not maintainer asks*), §6's inbox subsection,
+`docs/WORKFLOW.md` §Roles, and the `AGENTS.md` §5 inbox paragraph state the
+classes.
+
+## D78 — The suite, the build, the pack check and the spikes are refused locally by name
+
+**Decided 2026-11-22** (#175, maintainer-ratified). #175 moved the gate to CI
+and trimmed local work to the static checks, but the rule lived only in prose:
+an agent that ran `npm test` anyway paid no price, and three parallel sessions
+had already saturated a 12-core machine (`load average 20.6`, #189). The guard
+now enforces the split at the tool call:
+
+1. **Refused by name, all roles.** The scripts `test`, `verify`, `build`,
+   `check:pack`, `perf`, `bench` and `spike:*` are denied as
+   `local-verify-refused`, however they are reached: `npm|pnpm|yarn test|t|tst`,
+   `run|rum|urn <script>`, package-manager flag forms (`--prefix . run verify`,
+   `-w x run test`, `--filter pkg run verify` — the flag's value is not the
+   verb), `node --test`, `node --run <script>`,
+   `node scripts/gate-slot.mjs`, a known test runner or `npm` behind
+   `npx`/`npm exec|x`/`pnpm exec`/`yarn exec`, `bun test` and
+   `bun run <script>`, and a bare runner (`vitest`, `jest`, `mocha`, `ava`,
+   `tap`, `uvu`, `c8`, `nyc`, or the `node_modules/.bin/` path).
+   A launcher is not an exemption: `npx`, `npm exec|x`, `pnpm`/`yarn`
+   `exec|dlx`, `yarn workspace|workspaces` and `bun x` hand off to a command,
+   and the guard re-judges that target with this whole policy, not with the
+   CI-only rule alone (#226). A launcher's own flags and their values are
+   skipped only when they are inert (`-p typescript tsc`, `--cwd . tsc`); a flag
+   whose value node or the shell executes is folded into the judged command:
+   `--node-arg` and `--node-options` values are placed before the target, so
+   `npx --node-arg --test node` is judged as `node --test`, and `--shell` is
+   accepted only as a bare known shell — a shell with its own flags or an
+   unknown program is refused as a layer the reader cannot model. A launcher's
+   `-c`/`--call` string is split by the same quote-aware list splitter, and
+   every segment in it is judged by this policy. The deny names the rule the
+   handed-off command broke — `interpreter-exec`, `local-verify-refused`,
+   `sudo-refused`, `git-push-main`, `gh-pr-merge-worker`,
+   `write-outside-worktree` — so standing one launcher away does not turn a deny
+   into an allow. Launcher chains are followed at most four deep: a fifth
+   launcher is `shell-unmodelled`, and a chain whose inner command already
+   breaks another rule is denied by that rule first (`npx npx npx npx npm test`
+   is `local-verify-refused`, not a depth refusal), which bounds the recursion.
+   The reader is a small modelled subset, not a shell: grouping and
+   substitutions (`( )` `{ }` backticks, `$`), control keywords
+   (`if/for/while/until/case/!`) and assignment prefixes are refused as
+   unmodelled. Wrappers are not a hiding place either: on a direct command line
+   the reader strips the ones it models (`env`, `command`, `nice`, `timeout`,
+   `xargs`) and judges the command they run, so `env -i npm test` is still the
+   suite, while `sudo` has its own rule; inside a `-c` string a wrapper word the
+   list reader cannot place is refused as unmodelled. The message names the
+   script and points at `npm run ci`. Matching is on the script or a known
+   runner, not the binary: `npm run check`, `check:arch`, `check:features`,
+   `check:decisions`, `check:audit`, `ci`, `inbox`, `guard:status` and
+   `verify:release` stay allowed, because they read files or the network and
+   spawn no test boot.
+2. **One deliberate escape hatch, root only.** `ANYPLUGIN_LOCAL_VERIFY=1` — and
+   only `=1`; `=0`, `=false`, `=00` and the bare name do not open the door — may
+   prefix one command segment, and the guard counts: a call that prefixes two
+   CI-only segments is refused. A launcher prefix passes the hatch to the
+   command the launcher hands off to, so
+   `ANYPLUGIN_LOCAL_VERIFY=1 npx -c "npm test"` is one deliberate run while a
+   second command in that `-c` string is still refused. The prefix is visible in
+   the transcript, so an audit can count it, and a worker's prefix is still
+   denied. A flake the reviewer reported is reproduced through this hatch, not
+   by loosening the rule.
+3. **A redirect or a pipeline is not an exemption.** `npm test 2>&1 | tail` is
+   still the suite; the rule matches the segment, not its stdio.
+4. **The brief tells workers the same thing.** `renderBrief` says to push and
+   let CI run the suite, the build, the pack check and the perf gate, and to let
+   the verify workflow run the spikes it owns — the other spikes do not run in
+   CI — so the rule and the handed instructions agree.
+
+The guard is not containment: `env` indirection reaches any command, a shell
+script's body is refused for workers but run for the root, and a script the
+reader does not model is still allowed — by path rather than by script name
+(`node scripts/build.mjs`, `node scripts/check-pack.mjs`, `node scripts/perf.mjs`)
+or behind make (`make test`). Those names are the residue, not an oversight, and
+so are Bun's space-separated value flags (`bun --env-file .env test`) and
+`env --split-string='npm test'`, whose value is one token the reader takes for a
+flag rather than a command. The named spellings above are the ones an agent
+actually types; the residue is a convention gap for honest mistakes, not a
+
+## D83 — A fork PR's `verify` is advisory; the push run is the evidence
+
+`#227` added a `pull_request` trigger so a fork PR gets a gate at all. Review
+found the trust hole: a `pull_request` run executes the workflow file from the
+PR's merge commit, which a contributor without write access controls, and a
+skipped job reports as a passing check of its own context name.
+
+1. **The gate is the push run produced by this repository's `verify.yml` for
+   the head; reviewers count nothing else.** Branch protection matches a
+   required check by context name and the app that produced it. It does not
+   look at which workflow file produced the context, so it cannot tell this
+   repository's run from one that a contributor's `on: pull_request` workflow
+   produced: a fork PR that adds `.github/workflows/verify.yml` with a job
+   named `verify` gets a check that would satisfy the required context without
+   running our tests, and the job name is the fork's to choose. The rule is
+   therefore procedural, not enforced: a reviewer counts only the `push` run
+   this repository's `verify.yml` produced for the head, and for a fork PR that
+   is the maintainer's push run from pushing the head onto a branch here
+   (rule 2). `verify.yml` and `perf.yml` stay push-only as defence in depth:
+   that removes the accidental second run, not the trust boundary.
+2. **Merge evidence for a fork PR is a push run here.** A fork PR shows no
+   gate until a maintainer pushes the head to a branch in this repository (or
+   opens an equivalent branch); that push run is the gate. `scripts/pr-update.mjs`
+   is the mechanical half: do not print a merge line for a fork head that never
+   ran here, and it automates the same-repo path only.
+3. **The workflow diff is review surface.** A fork PR that touches
+   `.github/workflows/` is reviewed as a security change, not as formatting.
+
+Evidence: `.github/workflows/verify.yml` and `.github/workflows/perf.yml` are
+push-only (one run per push event; `docs/PROFILING.md` says the same for
+`perf`), and `scripts/ci-runs.mjs`'s `selectRun` accepts only `push` runs for
+the head; its run-level tests (`scripts/ci-runs.test.mjs`, `scripts/ci.test.mjs`)
+pin that a fork's own `pull_request` run is never watched and that an unpushed
+head fails fast with the push hint instead of waiting out the appearance
+window. `scripts/pr-update.mjs` refuses a worktree whose merge is already in
+progress, whose index has unmerged paths, or which is dirty, before it calls
+`git merge`; when its own merge conflicts it aborts, reads the abort's exit
+status, and pushes nothing, and run-level tests in `scripts/pr-update.test.mjs`
+pin the refusal, the abort, and the preserved state. GitHub documents that a
+`pull_request` run uses the PR merge commit's workflow file.
+
+## D86 — A claim marked `not proven` is re-run on the PR head before merge
+
+**Decided 2026-11-23** (#238, finding 3 of the 2026-11-22 workflow review).
+`docs/WORKFLOW.md` already says a mechanism PR merges only after two independent
+verdicts, that an unresolved `weaker`/`not proven` verdict is a merge veto, and
+that the master reads the verdict and the diff stat, not the whole diff. The last
+point is right about context, but the verdict is a PR comment and the master's
+merge is its only reader: nothing re-ran a claim a reviewer marked `not proven`,
+so such a claim could reach `main` on an unchecked verdict.
+
+1. **The step: the reviewer re-runs the recorded command on the head.** A
+   `not proven` verdict records the command that would settle the claim, as one
+   verbatim line. After the review, the reviewer runs that exact command against
+   the head under review and posts the updated verdict as a follow-up comment
+   before the master merges. The command is the one the reviewer wrote, not a
+   paraphrase: a translated command is a different command, and its transcript
+   no longer matches the claim it is offered for. The step lives in
+   `docs/WORKFLOW.md` §Review rubric ("Re-running a `not proven` verdict") and is
+   referenced from the §Roles veto paragraph.
+2. **The vocabulary stays `proven` / `weaker` / `not proven`.** The re-run ends
+   the claim as `proven` (the command settles it), `weaker` (it settles a weaker
+   property than the claim says), or `not proven` (it does not settle the
+   claim). No fourth state and no second claim: the three words are the
+   claim-table vocabulary of `docs/AUDIT.md` §6 and its reviewer brief, and a
+   re-run moves a claim between them; it does not introduce a scale.
+3. **An unsettled claim keeps the PR out of the merge queue.** A claim still
+   `not proven` after the re-run is not merged around: the master bounces the PR
+   and names the reason. The next head is the next chance, and a bounce on this
+   ground is a real reason, not a style note.
+4. **Why policy, not a gate.** No gate reads PR comments (`docs/WORKFLOW.md`
+   §Roles), and a gate that did would be the wrong instrument: the bot writes
+   both the verdict and the merge, so a parser would gate on text any agent
+   holding the bot token can produce, and "the re-run happened" is not derivable
+   from a comment at all — at best the gate would check that a string was typed.
+   The command can also need a probe worktree, the network, or money
+   (`claude plugin eval`), which CI must not do. The merge path is the pinned
+   head (D66) plus the master's judgement; the pin makes "what was reviewed"
+   falsifiable but does not prove a claim was re-run, the same limit D83 states
+   for a check's context name. A required check would turn an unverifiable
+   comment into the merge gate; policy keeps the master's bounce as the failure
+   mode, and the bounce is reviewable.
+
+**Not claimed.** That `weaker` is re-run: the step is `not proven` only;
+`weaker` already has a proof and the author grows it (`docs/AUDIT.md` §6). That
+the master reads the whole diff: unchanged. That a comment parser will later
+enforce this: the merge pin and the master's judgement remain the enforcement
+surface (D66), and #238's "Must not" forbids such a check.
+
+**Evidence.** `docs/WORKFLOW.md` §Roles names the re-run as a precondition of the
+veto, and §Review rubric states the step, the vocabulary and the bounce;
+`npm run check:decisions` locks the appended entry. There is no code and no test:
+the enforcement is procedural, so the evidence is the text the master reads and
+the pin on the merge. That limit is the point of rule 4.
+
+## D87 — A worker blocks only for the four human classes, and declares a default otherwise
+
+**Decided 2026-11-23** (#239, finding 4 of the 2026-11-22 workflow review).
+`docs/WORKFLOW.md` §Escalation told a worker to comment `BLOCKED: <question>`
+and stop whenever it could not proceed without a decision. `docs/TRIAGE.md` §6
+said no silent blocking: work that can proceed on a declared default proceeds
+and records it, and only a decision that would bend §3 waits. The same worker on
+the same ticket read two rules, so a decidable ambiguity could stall a ticket
+the master never had to see.
+
+1. **`BLOCKED` is a closed set, and the set is written down once.** A worker
+   comments `BLOCKED: <question>` and stops only for the four human classes
+   listed in `docs/TRIAGE.md` §6; that section is the definition, and
+   `docs/WORKFLOW.md` §Escalation references it rather than restating it, so the
+   two protocols cannot drift apart again. Every other decision is the
+   worker's: it states the default it will proceed on and proceeds.
+2. **The default is written down before the work continues, not after.** A
+   default reconstructed from the diff is not a default; it is a description of
+   what happened, and any choice can be rationalised once its consequences are
+   visible. The comment has to land first for two readers: the reviewer can
+   check the diff against the declared default, and the master can rewrite the
+   ticket before work is built on an assumption neither of them chose. A default
+   that would bend §3 of `AGENTS.md` is not a default; that ticket takes the
+   human path.
+3. **The default is not an escape from the work.** "I am not sure" is not one of
+   the four classes (`docs/TRIAGE.md` §6 says so in the same words); the default
+   is the normal path for a decidable ticket, and a worker that blocks on an
+   ambiguity it can settle is misusing the queue. The master's rewrite path for
+   an underspecified ticket is unchanged: a worker does not silently reinterpret
+   the ticket in the default's name, and a `BLOCKED` ticket is answered or
+   rewritten by the master, never resolved by the worker choosing the easier
+   path.
+4. **Why policy, not a gate.** Nothing parses the ticket comment to check that a
+   default was declared; the reviewer reads the comment against the diff, and
+   the master's rewrite is the correction. A gate on comment text would be
+   written by the same bot that writes the comment — it would check that a
+   string was typed, not that a decision was made before the work.
+
+**Not claimed.** That the four classes are exhaustive of what a maintainer may
+decide: the queue is theirs to widen with a new decision, and this entry only
+fixes the reading the two documents disagreed on. That a default may bend §3,
+stand in for the master's answer, or replace the rewrite path. That the comment
+is machine-checked — rule 4 says why it is not.
+
+**Evidence.** `docs/TRIAGE.md` §6 holds the single list of the four classes and
+points at `docs/WORKFLOW.md` §Escalation; §Escalation points back and states the
+declared-default path. `npm run check:decisions` locks this entry. There is no
+code and no test: the enforcement is procedural, so the evidence is the text the
+worker and the reviewer read.
+
+## D88 — Retire the documented finding status; accepted risks carry an owner and a review date
+
+**Decided 2026-11-23** (#240, finding 6 of the 2026-11-22 workflow review).
+`docs/AUDIT.md` §11 listed `documented` as a finding status: "prose only". F13,
+F14 and F15 were filed that way even though the evidence in the same pass showed
+the behavior still happening, so the next pass had no action to take except to
+write the same paragraphs again. A status whose only exit is another pass of the
+same prose is not a status; it is a deferral that never expires.
+
+1. **The status set is closed, and it is enforced.** A finding is exactly one of
+   `enforced`, `reviewed`, `dormant`, `open`, `retired` or `accepted`.
+   `scripts/check-audit.mjs` refuses `documented` by name, with the §11 reason
+   and the two exits (an `open` finding needs a tracking issue; an `accepted`
+   one needs an owner and a review date), so a pass cannot reintroduce the word
+   as a typo-shaped status. The status list is not a suggestion the report can
+   widen; §9 of `docs/AUDIT.md` is the gate.
+2. **`accepted` is a decision with a name and an expiry, not a deferral.**
+   An accepted entry carries `owner` (who owns the risk) and `reviewBy` (the ISO
+   date the next pass re-decides it), both required by the gate, and `reviewBy`
+   is a real calendar day: `2026-02-31` and `soon` are refused, because a phrase
+   is how the old status died. When the date arrives the pass renews the date,
+   retires the finding, or moves it to a lever; it does not re-argue the risk.
+   This is why the status is not called "documented" again: the sentence that
+   documents it was never the part that was missing.
+3. **An accepted finding stays on the next pass's checklist.** The gate requires
+   every `open`, `dormant` and `accepted` entry to appear in every report's
+   `## Open`, and every id named there to hold one of those three statuses; the
+   report and the ledger cannot drift apart, and a deferred finding cannot fall
+   out of the next pass by being deleted from the report. F13–F15 are in
+   `docs/audits/2026-11-22.md` `## Open` with owner the master and
+   `reviewBy: 2026-11-30`.
+4. **Where prose could carry a lever, the prose changed in this PR.** The
+   worktree setup example in `docs/WORKFLOW.md` §Isolation ended in
+   `cd "$dir"`, which is what the per-call `cd` prefix copies; it now teaches
+   `workdir` as the directory on the call (including a subdirectory) and says
+   why the shape is not hook-checkable: a guard sees the literal `cd` but not
+   whether it is a redundant prefix or a deliberate directory change. F13 stays
+   `accepted` for that reason, not because nothing changed — the example that
+   taught the habit is fixed.
+5. **No finding is deleted to make the ledger greener.** F13, F14 and F15 keep
+   their ids, titles, mechanism and artifact (the lock still pins the identity);
+   they change status and gain the reason no check can see the intent. Deleting
+   them would make the counts look better and the process worse.
+
+**Not claimed.** That `accepted` is a way to park work: it expires, the next
+pass re-decides it, and the weekly mutation check is still the only defense
+against a green mechanism that does nothing. That the gate checks the mechanism
+works; §9 of `docs/AUDIT.md` says it checks shape, and the reviewer and the
+weekly check are the rest. That a hook can see intent — if it could, F13 would
+be `enforced`. That F14 and F15 have a lever a check can see: none was found, so
+they are `accepted` with the reason (edit scope, and file read versus pipe
+filter, are not visible in the command string), and the next pass re-decides
+them at `reviewBy`.
+
+**Evidence.** `docs/AUDIT.md` §11 states the closed vocabulary and the
+`accepted` fields; §9 states the gate bullets that enforce it. `scripts/
+check-audit.mjs` holds `STATUSES` (`documented` gone), the named `documented`
+refusal, the `owner`/`reviewBy` validation and the `## Open` membership rule;
+`scripts/check-audit.test.mjs` adds seven tests for those paths and passes 29/29
+locally. `docs/audits/2026-11-22.md` `## Open` carries F13–F15, and its
+daily-pass `## Actions` records the 2026-11-23 correction. `docs/WORKFLOW.md`
+§Isolation teaches `workdir` and states the hook limit. `npm run check:audit`
+passes; the entry is locked by `npm run check:decisions`.
+
+## D84 — Priority is a maintainer-applied label, not text in the body
+
+**Decided 2026-11-23** (#237). A maintainer can jump the queue, and every agent
+writes as the bot — so the queue needs a mark whose authority is the event, not
+the text.
+
+**Decision.** A maintainer moves an issue or a PR to the front of the queue with
+the `priority/now` label. The queue prints a **Priority (jump the queue)**
+section first, each row names the section it came from, and the label stays
+until a maintainer removes it. The row is moved, not copied, and it is still
+counted where it came from: a `Maintainer answers` thread with no reply keeps
+the round-start exit at 1.
+
+**Why a label and not a body field.** Every agent writes as `szchan-bot`, and
+the bot's token can edit bodies and apply labels alike, so text in a body or a
+comment cannot prove a human wrote it. The label event records the actor.
+`isPriority` reads the timeline, not the labels array: the last
+`labeled`/`unlabeled` event for this label must be `labeled`, and its actor must
+be a maintainer login — not the bot, and not a `[bot]` app. Without the actor
+check the mechanism would be self-service queue-jumping (#221, #226).
+
+**A read failure is recorded, not a demotion.** If the timeline cannot be read,
+the item stays in its normal section and the failure is reported as a read
+failure, the same contract as an unreadable thread.
+
+**Scope.** Deliberately not a general "trusted field" system. The inbox, the
+watch dispatch and the merge rules are unchanged; only the order of the queue
+and the first item a round picks up. The 20-minute watch dispatches the first
+priority row before posting receipts; it still may not merge, close, or decide.
+
+**Limit.** A stolen maintainer account or token defeats the check; that is the
+same trust boundary as every other human-only action (branch protection,
+publishing). Injection aimed at code or merge is the guard's job (D80, D82) and
+is not claimed here.
+
+**Numbering.** D83 (the fork PR's `verify` gate) and D85–D88 have since landed on
+`main`; this entry fills the D84 slot the earlier PR reserved, and it is not
+renumbered.

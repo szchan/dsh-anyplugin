@@ -357,9 +357,312 @@ test('a root agent is not confined, but is still bound by the push and decisions
 })
 
 test('read-only and build commands stay allowed', () => {
-  for (const command of ['npm run verify', 'git status --short', 'git log --oneline -5', 'rg "foo" packages', 'cat README.md']) {
+  for (const command of ['npm run check', 'npm run check:arch', 'git status --short', 'git log --oneline -5', 'rg "foo" packages', 'cat README.md', 'bun install', 'bun --version', 'bun run check', 'npx -c "npm run check"', 'npx -c "tsc --noEmit"', 'npx -c "echo \'npm test\'"', 'npx -c "grep \'npm test\' file"']) {
     assert.equal(shell(command).kind, 'allow', command)
   }
+})
+
+test('the suite, the build and the spikes run in CI, not here (#175)', () => {
+  for (const command of [
+    'npm test',
+    'npm t',
+    'npm run test',
+    'npm run verify',
+    'npm run build',
+    'npm run check:pack',
+    'npm run perf',
+    'npm run bench',
+    'npm run spike:s24',
+    'node scripts/gate-slot.mjs -- node --test',
+    // The runner itself, and the launchers: the review found each of these
+    // reaching the suite with the wrapper rule in place.
+    'node --test',
+    'node --experimental-vm-modules --test --test-concurrency=2 "packages/**/*.test.mjs"',
+    'node --run verify',
+    'node --run=build',
+    'npm --prefix . run verify',
+    'npm --prefix . test',
+    'npm run -w . verify',
+    'npm --workspace x run verify',
+    'npm rum verify',
+    'npm urn verify',
+    'npm tst',
+    'npx npm test',
+    'npx --no-install vitest',
+    'npm exec vitest',
+    'npm x vitest',
+    'node_modules/.bin/vitest',
+    'vitest run',
+    'jest',
+    // Launcher wrappers the second review reached (#226): a package operand, a
+    // shell-string call, a launcher over node, a launcher over a launcher, and
+    // the pnpm/yarn/bun aliases of the same scripts.
+    'npx -p npm npm test',
+    'npx --package npm npm test',
+    'npx -c "npm test"',
+    'npx --call "npm run verify"',
+    'npx node --test',
+    'npx npx npm test',
+    'pnpm verify',
+    'yarn verify',
+    'bun test',
+    'bun run verify',
+    'pnpm --dir . run verify',
+    // A `-c` string is a command list; every segment is judged, not the first.
+    'npx -c "npm run check; npm test"',
+    'npx -c "npm run check && npm test"',
+    'npx -c "npm run check || npm run build"',
+    'npx -c "cd . && npm test"',
+    'npx -c "sh -c \\"npm test\\""',
+    'npm exec -c "npm run check; npm test"',
+    // Bun only when it runs the suite; `bun install` is not a suite run.
+    'bun --watch test',
+    // A quoted nested list must be read the same way: splitting before quote
+    // handling let the suite hide behind an inner shell (reviewer #226).
+    `npx -c "sh -c 'npm run check; npm test'"`,
+    `npx -c "sh -c 'npm run check && npm test'"`,
+    `npx -c "bash -c 'npm run check; npm test'"`,
+    `npm exec -c "sh -c 'npm run check; npm test'"`,
+    `npx -c "npm run check | npm test"`,
+    `npx -c "npm run check & npm test"`,
+    // Wrappers that hide the list are refused as unmodelled, not guessed at.
+    `npx -c "eval 'npm test'"`,
+    `npx -c "sudo sh -c 'npm test'"`,
+    `npx -c "dash -c 'npm test'"`,
+    `npx -c "bash -lc 'npm test'"`,
+    `npx -c "env sh -c 'npm test'"`,
+    `npx -c "command sh -c 'npm test'"`,
+    // Quotes are removed by the shell, so the reader must remove them too.
+    'npx -c "npm run \\"verify\\""',
+    `npx -c 'npm run "verify"'`,
+    `npx -c '"npm" test'`,
+    `npx -c "sh -c 'npm run \\"test\\"'"`,
+    // Grouping, control constructs and unlisted wrappers are the same policy.
+    'npx -c "(npm test)"',
+    'npx -c "{ npm test; }"',
+    'npx -c "if true; then npm test; fi"',
+    'npx -c "for x in 1; do npm test; done"',
+    'npx -c "! npm test"',
+    `npx -c "nice sh -c 'npm test'"`,
+    `npx -c "FOO=1 sh -c 'npm test'"`,
+    'npx -c "stdbuf -oL npm test"',
+    'npx -c "setsid npm test"',
+    'npx -c "flock /tmp/x npm test"',
+    `npx -c "busybox sh -c 'npm test'"`,
+  ]) {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, 'local-verify-refused', command)
+  }
+  for (const command of ['npm run check', 'npm run check:arch', 'npm run check:audit', 'npm run inbox', 'npm run ci', 'npm run guard:status', 'npm run verify:release -- --version 0.3.0', 'npx tsc --noEmit', 'node scripts/check-decisions.mjs']) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+  assert.equal(shell('ANYPLUGIN_LOCAL_VERIFY=1 npm run verify', root).kind, 'allow', 'the root may opt into one deliberate run')
+  assert.equal(shell('ANYPLUGIN_LOCAL_VERIFY=1 npm run verify').kind, 'deny', 'a worker may not opt in')
+  for (const value of ['0', 'false', '00', '']) {
+    assert.equal(shell(`ANYPLUGIN_LOCAL_VERIFY=${value} npm test`, root).kind, 'deny', `${value || 'empty'} does not opt in`)
+  }
+  assert.equal(shell('ANYPLUGIN_LOCAL_VERIFY=1 npm test', root).kind, 'allow', 'the hatch opens a deliberate run')
+  assert.equal(shell('ANYPLUGIN_LOCAL_VERIFY=1 npm run build', root).kind, 'allow', 'the hatch names what it is for')
+  assert.equal(shell('npm run check && npm test', root).kind, 'deny', 'one CI-only script in a chain is enough')
+  const twoRuns = shell('ANYPLUGIN_LOCAL_VERIFY=1 npm test; ANYPLUGIN_LOCAL_VERIFY=1 npm run build', root)
+  assert.equal(twoRuns.kind, 'deny', 'the hatch covers one command segment, so a second escaped run is refused')
+  assert.equal(twoRuns.rule, 'local-verify-refused')
+})
+
+test('a launcher is not an exemption: its target is judged by the whole policy (#226)', () => {
+  const deny = (command, rule, agent = worker) => {
+    const outcome = shell(command, agent)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, rule, command)
+  }
+  // Each of these was allowed before the launcher target was re-judged: the
+  // wrapper was read, the command it would run was not.
+  deny(`npx node -e "require('child_process').execSync('npm test')"`, 'interpreter-exec')
+  deny(`npx node -e "require('child_process').execSync('git push origin main')"`, 'interpreter-exec')
+  deny(`npx bash -lc 'npm test'`, 'local-verify-refused')
+  deny(`npx env -i npm test`, 'local-verify-refused')
+  deny('npx sudo npm test', 'sudo-refused')
+  deny('npx git push origin main', 'git-push-main')
+  deny('npx -c "git push origin main"', 'git-push-main')
+  deny('npx -c "gh pr merge 82 --squash"', 'gh-pr-merge-worker')
+  deny(`npx -c "rm -rf ${repo}/tmp"`, 'write-outside-worktree')
+  deny('npx -c "git push origin main"', 'git-push-main', root)
+  // The `-c`/`--call` string is judged the same way as a direct command.
+  deny('npx -c "npm test"', 'local-verify-refused')
+  // A call string the reader cannot see into (parentheses here) is refused as
+  // an unmodelled shell list before the full-policy pass gets to name a rule.
+  deny('npx -c "node -e \'require(\\"child_process\\").execSync(\\"npm test\\")\'"', 'local-verify-refused')
+  // The same target behind the rest of the launcher family.
+  deny(`npm exec node -e "require('child_process').execSync('npm test')"`, 'interpreter-exec')
+  deny('npm exec -c "git push origin main"', 'git-push-main')
+  deny('npm x --call "gh pr merge 82 --squash"', 'gh-pr-merge-worker')
+  deny('pnpm exec -c "rm -rf /tmp/elsewhere"', 'write-outside-worktree')
+  deny('pnpm exec vitest', 'local-verify-refused')
+  deny('pnpm dlx vitest', 'local-verify-refused')
+  deny('yarn exec vitest', 'local-verify-refused')
+  deny('yarn dlx vitest', 'local-verify-refused')
+  deny('bun x vitest', 'local-verify-refused')
+  // A launcher can wrap a launcher; the policy follows both without looping.
+  deny(`npx npx bash -lc 'npm test'`, 'local-verify-refused')
+  deny('npx -p typescript npx npx node --test', 'local-verify-refused')
+})
+
+test('the launcher target that the policy allows still runs (#226)', () => {
+  for (const command of [
+    'npx tsc --noEmit',
+    'npx -p tsc tsc --noEmit',
+    'npx -p npm',
+    'npx --no-install tsc --noEmit',
+    'npx -y tsc --noEmit',
+    'npx -- tsc --noEmit',
+    `npx bash -lc 'npm run check'`,
+    'npx node -e "console.log(1)"',
+    'npx -c "echo test"',
+    'npx --call "echo test"',
+    'npx -c "tsc --noEmit"',
+    'npx -c "git status --short"',
+    'npx -c "npm run check"',
+    `npx -c "echo 'npm test'"`,
+    'npm exec tsc -- --noEmit',
+    'npm x tsc --noEmit',
+    'npx npx tsc --noEmit',
+    'pnpm exec tsc --noEmit',
+    'yarn dlx tsc --noEmit',
+    'bun x tsc --noEmit',
+  ]) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+  // The hatch prefixes one segment; a launcher in front of that segment does
+  // not swallow the prefix, and it does not unlock a second CI-only script.
+  assert.equal(shell('ANYPLUGIN_LOCAL_VERIFY=1 npx -c "npm test"', root).kind, 'allow', 'the hatch reaches the target it prefixes')
+  const two = shell('ANYPLUGIN_LOCAL_VERIFY=1 npx -c "npm test; npm run build"', root)
+  assert.equal(two.kind, 'deny', 'the hatch is one script, not a launcher-shaped exemption')
+  assert.equal(two.rule, 'local-verify-refused')
+})
+
+test('a launcher flag value is never mistaken for the target (#226)', () => {
+  const deny = (command, rule = 'local-verify-refused') => {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, rule, command)
+  }
+  // The reviewer's flag matrix: each of these values is an operand, so the
+  // command after it is the target that gets judged. A naïve reader takes the
+  // last word as the command and misses the suite in front of it.
+  deny('npx -p typescript npm test')
+  deny('npx --package typescript npm test')
+  deny('npx --cwd . npm test')
+  deny('npx --dir . npm test')
+  deny('npx -C . npm test')
+  deny('npx --registry http://example.test npm test')
+  deny('npx -w foo npm test')
+  deny('npx --workspace foo npm test')
+  deny('npx --cache /tmp/cache npm test')
+  deny('npx -y npm test')
+  deny('npx -- npm test')
+  deny('npm exec --cwd . npm test')
+  deny('npm exec -- node --test')
+  // pnpm/yarn workspace selectors are values too: without them the selector
+  // word reads as the verb and `pnpm --filter pkg run verify` looks like a
+  // `pkg` script.
+  deny('pnpm --dir . run verify')
+  deny('pnpm --filter pkg run verify')
+  deny('pnpm -F pkg run verify')
+  deny('pnpm --filter pkg test')
+  deny('yarn --filter pkg run verify')
+  for (const command of [
+    'npx -p tsc tsc --noEmit',
+    'npx -y tsc --noEmit',
+    'npx -- tsc --noEmit',
+    'npx --cwd . tsc --noEmit',
+    'npx --registry http://example.test tsc --noEmit',
+    'npx --cache /tmp/cache tsc --noEmit',
+    'pnpm --filter pkg exec tsc --noEmit',
+    'pnpm --filter pkg run check',
+    'pnpm --dir . run check',
+    'yarn --filter pkg run check',
+  ]) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+})
+
+test('a launcher flag whose value executes is folded into the judged command (#226)', () => {
+  const deny = (command, rule = 'local-verify-refused') => {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, rule, command)
+  }
+  // `--node-arg`/`--node-options` are arguments to the node that runs the
+  // target, so folding the value before the target judges the command node
+  // will actually run instead of skipping the value as an npx operand.
+  deny('npx --node-arg --test node')
+  deny('npx --node-arg --run=verify node')
+  deny('npx --node-arg=--test node')
+  deny('npx --node-arg=--run=verify node')
+  deny('npx --node-options=--test node')
+  deny('npx --node-arg --test')
+  deny('npm exec --node-arg --test node')
+  deny('npm exec --node-arg --test')
+  deny('npm x --node-arg --test')
+  // An executed payload is judged by the rest of the policy, not CI-only.
+  deny(`npx --node-arg -e --node-arg "require('child_process').execSync('npm test')" node`, 'interpreter-exec')
+  // A launcher can wrap the chain; every layer folds the same way.
+  deny('npx npx --node-arg --test node')
+  deny('npx -c "npx --node-arg --test node"')
+  // `--shell <program>` runs the target through that program. A bare known
+  // shell is the same command; a shell with its own flags, or an unknown
+  // program, is a layer the reader refuses rather than guesses at.
+  deny('npx --shell bash --node-arg --test node')
+  deny(`npx --shell 'bash -c "npm test"' node`, 'shell-unmodelled')
+  deny('npx --shell=fish node --version', 'shell-unmodelled')
+  // `x` is the target here (npx has no `x` verb); it is refused as a command.
+  deny('npx x --node-arg --test', 'shell-unmodelled')
+  for (const command of ['npx --node-arg --version node', 'npx --shell bash node --version', 'npx --shell=bash node --version']) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+})
+
+test('yarn workspace and workspaces hand off to the command they run (#226)', () => {
+  const deny = (command, rule = 'local-verify-refused') => {
+    const outcome = shell(command)
+    assert.equal(outcome.kind, 'deny', command)
+    assert.equal(outcome.rule, rule, command)
+  }
+  // The workspace selector is not the command: `exec`, `dlx` and a bare
+  // command all reach the target underneath, and `run <script>` keeps the
+  // npm verb grammar the CI-only rule reads.
+  deny('yarn workspace pkg exec npm test')
+  deny('yarn workspace pkg exec vitest')
+  deny('yarn workspace pkg dlx vitest')
+  deny('yarn workspace pkg node --test')
+  deny('yarn workspace pkg run verify')
+  deny('yarn workspaces run test')
+  deny('yarn workspaces foreach exec npm test')
+  deny('yarn -s workspace pkg run verify')
+  deny('yarn --cwd . workspace pkg run verify')
+  for (const command of [
+    'yarn workspace pkg run check',
+    'yarn workspace pkg exec tsc --noEmit',
+    'yarn workspaces list',
+    'yarn -s workspace pkg run check',
+    'yarn workspaces foreach -A run check',
+  ]) {
+    assert.equal(shell(command).kind, 'allow', command)
+  }
+})
+
+test('a launcher chain is bounded instead of followed forever (#226)', () => {
+  assert.equal(shell('npx npx npx npx tsc --noEmit').kind, 'allow', 'four modelled launchers are shallow enough')
+  const deep = shell('npx npx npx npx npx tsc --noEmit')
+  assert.equal(deep.kind, 'deny')
+  assert.equal(deep.rule, 'shell-unmodelled')
+  assert.match(deep.reason, /launcher/u)
+  // A chain whose inner command already breaks a rule is denied by that rule
+  // first: the depth cap is not what makes the suite run wrong.
+  const inner = shell('npx npx npx npx npm test')
+  assert.equal(inner.kind, 'deny')
+  assert.equal(inner.rule, 'local-verify-refused')
 })
 
 test('an alias, a git config write and an unknown subcommand cannot hide a push', () => {
@@ -521,10 +824,10 @@ test('here-strings, process substitution and /dev/stdin are refused', () => {
 })
 
 test('redirections that capture output are not background jobs', () => {
-  for (const command of ['npm test 2>&1', 'npm run verify 2>&1 | tail -20', 'npm test 1>&2', `npm test > ${worktree}/out 2>&1`]) {
+  for (const command of ['git status 2>&1', 'git log 2>&1 | tail -20', 'node --version 1>&2', `git status > ${worktree}/out 2>&1`]) {
     assert.equal(shell(command).kind, 'allow', command)
   }
-  assert.equal(shell('npm test &').kind, 'deny', 'a real background job is still refused')
+  assert.equal(shell('git status &').kind, 'deny', 'a real background job is still refused')
 })
 
 test('$ is literal in single quotes and at a boundary that cannot start an expansion', () => {
@@ -604,7 +907,7 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
   assert.equal(denied.kind, 'deny')
   assert.equal(ran, 0, 'the host never executes a denied call')
   assert.equal(
-    (await listeners.get('tools/pre-execute')[0](exec('bash', { command: 'npm run verify' }), next)).kind,
+    (await listeners.get('tools/pre-execute')[0](exec('bash', { command: 'npm run check' }), next)).kind,
     'accept',
   )
   assert.equal(ran, 1)
@@ -769,6 +1072,124 @@ test('a reviewer prompt that names only the branch records no worktree and write
     assert.equal(denied.kind, 'deny', path)
     assert.match(denied.reason, /protected checkout|no worktree is recorded/u)
   }
+})
+
+test('a seat that misses its first step retries and admits writes once the prompt arrives (#250)', async () => {
+  // A fresh child's first pre-step can arrive before the message that names
+  // its worktree does. Marking the attempt resolved turned that timing race
+  // into a session that could never write; the seat must keep looking.
+  const { ctx, listeners } = harness()
+  await apply(ctx, config)
+  const preStep = listeners.get('agent/pre-step')[0]
+  const tools = listeners.get('tools/pre-execute')[0]
+  const continuation = async () => ({ kind: 'enter', messages: [] })
+  const agent = { session: { header: { id: 'worker-250', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+
+  const first = await preStep({ agent, step: 1, messages: [] }, continuation)
+  assert.equal(first.messages.length, 1, 'the brief is delivered even when the seat is unknown')
+  const early = await tools(
+    { callId: 30, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(early.kind, 'deny', 'nothing is recorded yet, so nothing is writable')
+  assert.match(early.reason, /re-spawned with the worktree named in its prompt/u, 'the refusal says what to do')
+
+  const second = await preStep(
+    { agent, step: 2, messages: [{ role: 'user', content: `work in ${worktree}` }] },
+    continuation,
+  )
+  assert.equal(second.messages.length, 0, 'the brief is not repeated while the seat is retried')
+
+  const allowed = await tools(
+    { callId: 31, name: 'write', arguments: { file_path: `${worktree}/src/x.ts`, content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(allowed.kind, 'accept')
+  const outside = await tools(
+    { callId: 32, name: 'write', arguments: { file_path: '/work/wt/ticket-9999/src/x.ts', content: 'x' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(outside.kind, 'deny')
+  assert.match(outside.reason, /only inside its worktree/u)
+})
+
+test('a seat is never derived from the header cwd, which a child copies from its parent (#250)', async () => {
+  // `dsh-session` freezes the header and `dsh-subagent` copies the parent's
+  // cwd into a child, so a child spawned elsewhere carries its parent's cwd.
+  // Seating from it would lock the child to the parent's worktree; the spawn
+  // cwd reaches it only as a working-directory notice in its messages.
+  const elsewhere = '/work/wt/ticket-9997'
+  const policy = { ...config, worktrees: [worktree, elsewhere] }
+  const { ctx, listeners } = harness()
+  await apply(ctx, policy)
+  const agent = { session: { header: { id: 'worker-252', cwd: worktree, origin: 'subagent', parentSession: 'root-1' } } }
+  const tools = listeners.get('tools/pre-execute')[0]
+  const preStep = listeners.get('agent/pre-step')[0]
+  // The #250 ordering: the first pre-step carries nothing yet, and the child's
+  // header cwd is the parent's worktree. A cwd seat here would accept a write
+  // into the parent's worktree.
+  await preStep({ agent, step: 1, messages: [] }, async () => ({ kind: 'enter', messages: [] }))
+  for (const path of [`${worktree}/src/y.ts`, `${elsewhere}/src/y.ts`]) {
+    const denied = await tools(
+      { callId: 40, name: 'write', arguments: { file_path: path, content: 'y' }, agent },
+      async () => ({ kind: 'accept' }),
+    )
+    assert.equal(denied.kind, 'deny', `${path} is not writable before a seat exists`)
+  }
+  // A later step naming the child's real worktree seats it there, not at the
+  // parent's cwd worktree.
+  await preStep(
+    { agent, step: 2, messages: [{ role: 'user', content: `your worktree is ${elsewhere}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const allowed = await tools(
+    { callId: 41, name: 'write', arguments: { file_path: `${elsewhere}/src/y.ts`, content: 'y' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(allowed.kind, 'accept')
+  const parentWorktree = await tools(
+    { callId: 42, name: 'write', arguments: { file_path: `${worktree}/src/y.ts`, content: 'y' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(parentWorktree.kind, 'deny', 'the seat is the named worktree, not the parent cwd')
+  // A resolved seat never moves: a later notice naming the parent's worktree
+  // does not re-seat the child.
+  await preStep(
+    { agent, step: 3, messages: [{ role: 'user', content: `working directory changed to ${worktree}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const stillElsewhere = await tools(
+    { callId: 43, name: 'write', arguments: { file_path: `${elsewhere}/src/y.ts`, content: 'y' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(stillElsewhere.kind, 'accept')
+})
+
+test('ambiguous text seats nothing and a later unambiguous message can still seat (#250)', async () => {
+  const other = '/work/wt/ticket-9996'
+  const policy = { ...config, worktrees: [worktree, other] }
+  const { ctx, listeners } = harness()
+  await apply(ctx, policy)
+  const agent = { session: { header: { id: 'worker-253', cwd: repo, origin: 'subagent', parentSession: 'root-1' } } }
+  const preStep = listeners.get('agent/pre-step')[0]
+  await preStep(
+    { agent, step: 1, messages: [{ role: 'user', content: `maybe ${worktree}, maybe ${other}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const denied = await listeners.get('tools/pre-execute')[0](
+    { callId: 50, name: 'write', arguments: { file_path: `${worktree}/src/z.ts`, content: 'z' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(denied.kind, 'deny', 'two candidate worktrees are not a seat')
+  await preStep(
+    { agent, step: 2, messages: [{ role: 'user', content: `working directory changed to ${other}` }] },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const allowed = await listeners.get('tools/pre-execute')[0](
+    { callId: 51, name: 'write', arguments: { file_path: `${other}/src/z.ts`, content: 'z' }, agent },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(allowed.kind, 'accept')
 })
 
 test('a symlink inside the worktree does not become a write into the checkout', () => {
@@ -1229,6 +1650,11 @@ test('renderBrief names the worktree, the ratchet and the rules; message text is
   assert.match(brief, /Write only inside that worktree, with absolute paths/u)
   assert.match(brief, /packages\/dsh-anyplugin-conformance\/test\/coverage\.test\.mjs/u)
   assert.match(brief, /mcpServers:a-server-name-that-is-long-enough:refused/u)
+  // The brief may not overstate what CI runs: verify.yml boots seven spikes,
+  // not every spike in the repository (D78).
+  assert.match(brief, /run the suite, the build, the pack check and the perf gate in CI/u)
+  assert.match(brief, /let the verify workflow run the spikes it owns/u)
+  assert.doesNotMatch(brief, /the spikes in CI/u)
   assert.equal(
     messageText([
       { role: 'user', content: 'plain' },

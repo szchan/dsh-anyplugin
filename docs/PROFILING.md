@@ -17,13 +17,14 @@ those numbers are short enough that a base/head ratio is mostly host noise
 ## The CI gate
 
 `.github/workflows/perf.yml` runs one job named **`perf`** on every branch push
-and on every pull request whose base is `main`. The job measures the head and
-`origin/main` on the **same runner**:
+(push only: one run per push event, so a same-repo PR shows one `perf` for its
+head — a `pull_request` run would execute the workflow file from the PR's merge
+commit, which a fork controls). The job measures the head and `origin/main` on
+the **same runner**:
 
-1. it checks out the PR head (or the pushed commit) with full history and
-   fetches `origin/main` explicitly, so the comparison ref is the base repo's
-   current `main`; the same `--base` machinery then creates the detached base
-   worktree;
+1. it checks out the pushed commit with full history and fetches `origin/main`
+   explicitly, so the comparison ref is the base repo's current `main`; the same
+   `--base` machinery then creates the detached base worktree;
 2. it fetches the pinned mod tree, the pinned Claude Code CLI and both DSH pins
    declared by `engines.dsh`, and refuses to measure with any of them missing;
 3. `node scripts/perf.mjs --base origin/main --repeat 5 --ci --json-out
@@ -59,14 +60,16 @@ implied to have been checked.
 
 `npm run perf` on a workstation is **local-only for debugging and never a
 merge gate**. `npm run verify` does not read perf; the `perf` workflow is its
-own check. It runs on `push` and on `pull_request` to `main` (fork PRs included, via
-`refs/pull/N/head` in the base repository). A same-repository PR therefore
-shows two `perf` runs for one commit (its push run and its PR run); do not add it to the required checks
-until those triggers are
-collapsed to one run per commit — a second check under the same name leaves the
-other pending and blocks the merge (the failure `verify` already had before it
-went push-only). Whether a red `perf` blocks a merge is branch protection's
-decision, and the merge command stays human.
+own check. It is push only, one run per push event, the same rule as `verify`
+(D83): a `pull_request` run executes the workflow file from the PR's merge
+commit — for a fork the contributor's own file, with a job name the contributor
+chooses — so a check it produced would not be evidence this repository measured
+anything, and a same-repo PR would show two `perf` runs for one commit. Branch
+protection cannot tell which workflow file produced a context, so if `perf`
+becomes a required check the reviewer counts only the push run produced by this
+repository's `perf.yml`; for a fork PR that is the run from a maintainer pushing
+the head onto a branch here. Whether a red `perf` blocks a merge is branch
+protection's decision, and the merge command stays human.
 
 ## Reading the artifact
 

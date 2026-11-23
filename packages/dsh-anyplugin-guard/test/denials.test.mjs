@@ -87,7 +87,7 @@ test('an allowed call writes nothing', async () => {
   const { ctx, listeners } = harness()
   await apply(ctx, config)
   const result = await listeners.get('tools/pre-execute')[0](
-    { callId: 702, name: 'bash', arguments: { command: 'npm run verify' }, agent: worker },
+    { callId: 702, name: 'bash', arguments: { command: 'npm run check' }, agent: worker },
     accept,
   )
   assert.equal(result.kind, 'accept')

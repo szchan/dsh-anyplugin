@@ -97,6 +97,10 @@ The schema, the status meanings and append-only are `docs/AUDIT.md` §11. New
 entries need `node scripts/check-audit.mjs --update`, which also refreshes
 `docs/audit.lock.json`; a locked title, mechanism or artifact cannot change in
 place. Then `npm run check:audit` prints the entry/report counts and must exit 0.
+An `accepted` entry carries `owner` and `reviewBy` (a real `YYYY-MM-DD` day) and
+appears in the report's `## Open`, together with every `open` and `dormant`
+entry; the gate checks that membership, so the report is the next pass's
+checklist.
 
 ## 6. Ship the pass
 
@@ -107,7 +111,7 @@ merge path: the auditor never approves, merges, or closes it, and a finding that
 needs product code gets an issue and a separate worker.
 
 Completion: `verify` green, report and ledger in the PR, every open finding
-tracked.
+tracked, and every open, dormant or accepted finding in the report's `## Open`.
 
 ## 7. The Monday mutation check
 

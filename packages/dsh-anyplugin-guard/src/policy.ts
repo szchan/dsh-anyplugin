@@ -33,6 +33,15 @@
  *    execute a program (`alias.*`, `filter.*`, `core.pager`, `core.fsmonitor`,
  *    hooks path, ssh command, …). Unknown git subcommands are refused for
  *    workers because an alias can hide a push behind one.
+ * 7. `local-verify-refused` — the suite, the build, the pack check, the perf
+ *    run and the spikes burn this machine and are the CI's job (#175). The
+ *    root may set `ANYPLUGIN_LOCAL_VERIFY=1` in front of one command to run it
+ *    deliberately; a worker never may.
+ * 8. A launcher is judged through: `npx`, `npm exec|x`, `pnpm`/`yarn`
+ *    `exec|dlx` and `bun x` hand off to another command, and that command (or
+ *    the string `-c`/`--call` carries) is re-judged by every rule above, at
+ *    most four launchers deep. The deny names the rule the handed-off command
+ *    broke, not the launcher.
  *
  * The tool layer is what sees a tool call. The managed `pre-push` hook is
  * defence in depth for a push that reaches git without going through
@@ -116,6 +125,469 @@ export const DEFAULT_WRITE_TOOLS = ['write', 'edit', 'apply_patch']
 export const DEFAULT_DECISIONS = ['docs/DECISIONS.md', 'docs/decisions.lock.json']
 
 const ALLOW: Verdict = { kind: 'allow', rule: 'allow' }
+
+/** Scripts that are CI's job, not this machine's (#175). `check*` stays local. */
+const CI_ONLY_SCRIPTS = new Set(['test', 'verify', 'build', 'check:pack', 'perf', 'bench'])
+/** The one deliberate escape hatch, root only, visible in the transcript. */
+export const LOCAL_VERIFY_ENV = 'ANYPLUGIN_LOCAL_VERIFY'
+
+/** Flags whose following token is a value, not the npm verb. */
+const NPM_VALUE_FLAGS = new Set([
+  '--prefix',
+  '-w',
+  '--workspace',
+  '--registry',
+  '--cache',
+  '--userconfig',
+  '--location',
+  '--globalconfig',
+  // A launcher's package operand is a value, not the command it runs; without
+  // these, `npx -p npm npm test` reads `npm` as the target (reviewer #226).
+  '-p',
+  '--package',
+  // Yarn/pnpm directory flags: `pnpm --dir . run verify`.
+  '--cwd',
+  '--dir',
+  '-C',
+  // Yarn/pnpm workspace selectors: `pnpm --filter pkg run verify` runs the
+  // script in a subset of workspaces, so the selector is a value, not the verb.
+  '--filter',
+  '-F',
+])
+/** npm's own aliases for `run`/`test` — `npm rum verify` runs the script. */
+const NPM_RUN_ALIASES = new Set(['run', 'run-script', 'rum', 'urn'])
+/** Test runners a launcher can start; each one runs the suite outside the scripts. */
+const TEST_RUNNERS = new Set(['vitest', 'jest', 'mocha', 'ava', 'tap', 'uvu', 'c8', 'nyc'])
+
+/** npm words with flags and their values removed, so the verb is words[0]. */
+function npmWords(tokens: string[]): string[] {
+  const words: string[] = []
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token.startsWith('-')) {
+      if (!token.includes('=') && NPM_VALUE_FLAGS.has(token)) index += 1
+      continue
+    }
+    words.push(token)
+  }
+  return words
+}
+
+/** Split a shell string on list separators, respecting quotes. */
+function callSegments(call: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let quote = ''
+  for (let index = 0; index < call.length; index += 1) {
+    const char = call[index] as string
+    if (quote !== '') {
+      current += char
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      current += char
+      continue
+    }
+    if (char === ';' || char === '\n' || char === '&' || char === '|') {
+      segments.push(current)
+      current = ''
+      continue
+    }
+    current += char
+  }
+  segments.push(current)
+  return segments.map((segment) => segment.trim()).filter((segment) => segment !== '')
+}
+
+/** The words of one segment, with quotes and backslash escapes removed. */
+function callWords(segment: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quote = ''
+  let started = false
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index] as string
+    if (quote !== '') {
+      if (char === quote) {
+        quote = ''
+        continue
+      }
+      if (quote === '"' && char === '\\') {
+        word += segment[(index += 1)] ?? ''
+        continue
+      }
+      word += char
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      started = true
+      continue
+    }
+    if (char === '\\') {
+      word += segment[(index += 1)] ?? ''
+      started = true
+      continue
+    }
+    if (/\s/u.test(char)) {
+      if (started) {
+        words.push(word)
+        word = ''
+        started = false
+      }
+      continue
+    }
+    word += char
+    started = true
+  }
+  if (started) words.push(word)
+  return words
+}
+
+/** A nested shell or a wrapper that hides the list from the reader. */
+const CALL_HAZARDS = new Set([
+  'sudo',
+  'eval',
+  'env',
+  'command',
+  'xargs',
+  'dash',
+  'ksh',
+  'fish',
+  'timeout',
+  'nice',
+  'nohup',
+  'time',
+  'exec',
+  'stdbuf',
+  'setsid',
+  'flock',
+  'busybox',
+  'chroot',
+  'watch',
+])
+
+/** Shell syntax the reader does not model: grouping, keywords, substitutions. */
+const CALL_SYNTAX = /[(){}\u0060$]/u
+const CALL_KEYWORDS = new Set([
+  'if',
+  'then',
+  'elif',
+  'else',
+  'fi',
+  'for',
+  'in',
+  'do',
+  'done',
+  'while',
+  'until',
+  'case',
+  'esac',
+  '!',
+  'shift',
+  'return',
+])
+
+/** Judge a whole shell command list: every segment can run the suite. */
+function callScript(call: string): string | undefined {
+  for (const segment of callSegments(call)) {
+    if (CALL_SYNTAX.test(segment)) return 'shell'
+    const words = callWords(segment)
+    const head = words[0] === undefined ? undefined : baseCommand(words[0])
+    if (head === undefined) continue
+    if (CALL_KEYWORDS.has(head) || CALL_HAZARDS.has(head)) return 'shell'
+    // An assignment prefix (FOO=1 sh -c ...) hides the wrapper the same way.
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[0] as string)) return 'shell'
+    // A nested shell's -c string hides one more list; judge it, and refuse
+    // shapes that do not fit that form (combined -lc, no -c at all).
+    if (['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(head)) {
+      const at = words.findIndex((word) => word === '-c')
+      if (at === -1) return 'shell'
+      const nested = callScript(words.slice(at + 1).join(' '))
+      if (nested !== undefined) return nested
+      continue
+    }
+    const hit = ciOnlyScript(words)
+    if (hit !== undefined) return hit
+  }
+  return undefined
+}
+
+/** The CI-only script a command runs, if any; `undefined` means it runs none. */
+function ciOnlyScript(tokens: string[]): string | undefined {
+  const head = stripPrefix(tokens)
+  const name = baseCommand(head[0])
+  if (name === 'node') {
+    // `node --test`, `node --run <script>` and the suite wrapper are the
+    // runner itself, even though no npm script is named on the line.
+    if (head.some((token) => token === '--test' || token.startsWith('--test='))) return 'test'
+    const runAt = head.findIndex((token) => token === '--run' || token.startsWith('--run='))
+    if (runAt !== -1) {
+      const value = head[runAt].includes('=') ? head[runAt].split('=')[1] : head[runAt + 1]
+      if (value !== undefined && (CI_ONLY_SCRIPTS.has(value) || value.startsWith('spike'))) return value
+    }
+    if (head.some((token) => token.endsWith('gate-slot.mjs'))) return 'gate-slot'
+    return undefined
+  }
+  if (TEST_RUNNERS.has(name)) return name
+  if (name === 'npx' || (name === 'npm' && ['exec', 'x'].includes(npmWords(head.slice(1))[0] ?? ''))) {
+    // `-c`/`--call` carries a shell string; every quoted segment is judged, and
+    // a wrapper that hides the list is refused rather than read as a benign
+    // argument (reviewer #226).
+    const callAt = head.findIndex(
+      (token) => token === '-c' || token === '--call' || token.startsWith('--call='),
+    )
+    if (callAt !== -1) {
+      const call = head[callAt].includes('=')
+        ? head[callAt].slice(head[callAt].indexOf('=') + 1)
+        : (head[callAt + 1] ?? '')
+      return callScript(call)
+    }
+    const words = npmWords(head.slice(1))
+    const rest = name === 'npm' ? words.slice(1) : words
+    const target = rest[0]
+    if (target === undefined) return undefined
+    const inner = baseCommand(target)
+    // A launcher can wrap a launcher, node, or the runner directly.
+    if (['npm', 'pnpm', 'yarn', 'node', 'npx', 'bun'].includes(inner)) {
+      // Recurse from the target, not from npmWords: the word filter drops
+      // flags like `--test` and would let `npx node --test` through. The guard
+      // keeps a self-wrapping launcher (a target that is the same command) from
+      // recursing forever.
+      const rest2 = [target, ...head.slice(head.lastIndexOf(target) + 1)]
+      return rest2.length < head.length ? ciOnlyScript(rest2) : undefined
+    }
+    if (TEST_RUNNERS.has(inner)) return inner
+    if (CI_ONLY_SCRIPTS.has(inner) || inner.startsWith('spike')) return inner
+    return undefined
+  }
+  if (name === 'bun') {
+    // `bun test` is a runner; `bun run <script>` is the npm.run shape. Flags
+    // are skipped first so `bun --watch test` still reads as the runner.
+    const words = npmWords(head.slice(1))
+    if (words[0] === 'test') return 'test'
+    if (words[0] === 'run') {
+      const script = words[1]
+      return script !== undefined && (CI_ONLY_SCRIPTS.has(script) || script.startsWith('spike'))
+        ? script
+        : undefined
+    }
+    return undefined
+  }
+  if (name !== 'npm' && name !== 'pnpm' && name !== 'yarn') return undefined
+  const words = npmWords(head.slice(1))
+  const verb = words[0]
+  // Yarn/pnpm run a bare script name: `pnpm verify` is a suite run even though
+  // there is no `run` token (reviewer #226).
+  if (name !== 'npm' && verb !== undefined && CI_ONLY_SCRIPTS.has(verb)) return verb
+  const script =
+    verb === 'test' || verb === 't' || verb === 'tst'
+      ? 'test'
+      : verb !== undefined && NPM_RUN_ALIASES.has(verb)
+        ? words[1]
+        : undefined
+  if (script === undefined) return undefined
+  return CI_ONLY_SCRIPTS.has(script) || script.startsWith('spike') ? script : undefined
+}
+
+/** The command a launcher hands off to, and the directory it runs it in. */
+interface LauncherTarget {
+  command: string
+  /** The value of `--cwd`/`--dir`/`-C`, relative to the caller's cwd. */
+  cwd?: string
+  /** Why the target cannot be read as a command, when the launcher hides it. */
+  refused?: string
+}
+
+/** How far a chain of launchers is followed before it is refused as unmodelled. */
+const LAUNCHER_DEPTH_LIMIT = 4
+
+/** Launcher flags whose following token is a value, not the command to run. */
+const LAUNCHER_VALUE_FLAGS = new Set([
+  ...NPM_VALUE_FLAGS,
+  // npx's node launch options are values; `-c`/`--call` is handled before this
+  // set because it carries the command itself, not an argument to npx.
+  '--shell',
+  '--node-options',
+  '--node-arg',
+  // Bun reads a `.env` file before the command: `bun --env-file .env test`.
+  '--env-file',
+])
+/** The launcher flags that name the directory the handed-off command runs in. */
+const LAUNCHER_DIRECTORY_FLAGS = new Set(['--cwd', '--dir', '-C'])
+/** The verbs through which npm, pnpm and yarn hand off to another command. */
+const LAUNCHER_VERBS: Record<string, ReadonlySet<string>> = {
+  npm: new Set(['exec', 'x']),
+  pnpm: new Set(['exec', 'dlx']),
+  yarn: new Set(['exec', 'dlx']),
+}
+
+/** The first word that is not a flag, skipping a known value flag's operand. */
+function firstWordIndex(tokens: string[]): number {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as string
+    if (!token.startsWith('-')) return index
+    if (!token.includes('=') && LAUNCHER_VALUE_FLAGS.has(token)) index += 1
+  }
+  return -1
+}
+
+/** The directory a launcher's target runs in, if it names one. */
+function launcherDirectory(tokens: string[]): string | undefined {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as string
+    const at = token.indexOf('=')
+    const name = at === -1 ? token : token.slice(0, at)
+    if (!LAUNCHER_DIRECTORY_FLAGS.has(name)) continue
+    const value = at === -1 ? tokens[index + 1] : token.slice(at + 1)
+    return value === undefined || value === '' ? undefined : value
+  }
+  return undefined
+}
+
+/** One shell word, quoted so the reader's tokenizer reads back the same token. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/u.test(word) ? word : `'${word.replace(/'/gu, "'\\''")}'`
+}
+
+/**
+ * The command a launcher hands off to, or the string its `-c`/`--call` carries.
+ *
+ * The launcher's own flags and their values come first; a package operand
+ * (`npx -p npm`) is a value, not a command, and yields no target. `--` ends the
+ * launcher's flags: the command follows it. A flag whose value is executed
+ * rather than consumed (`--node-arg`, `--node-options`, `--shell`) is folded
+ * into the target, because that value is what the launcher would run.
+ */
+function launcherTarget(rawTokens: string[]): LauncherTarget | undefined {
+  const tokens = stripPrefix(rawTokens)
+  const name = baseCommand(tokens[0])
+  const cwd = launcherDirectory(tokens)
+  let start: number
+  if (name === 'npx') {
+    start = 1
+  } else if (name === 'bun') {
+    const at = firstWordIndex(tokens.slice(1))
+    if (at === -1 || tokens[at + 1] !== 'x') return undefined
+    start = at + 2
+  } else {
+    const verbs = LAUNCHER_VERBS[name]
+    if (verbs === undefined) return undefined
+    const at = firstWordIndex(tokens.slice(1))
+    if (at === -1) return undefined
+    const verb = tokens[at + 1]
+    if (verb === undefined) return undefined
+    // `yarn workspace <name> <command>` and `yarn workspaces [foreach] <command>`
+    // hand off like exec/dlx: the workspace selector is not the command.
+    if (name === 'yarn' && (verb === 'workspace' || verb === 'workspaces')) {
+      const words = yarnWorkspaceWords(tokens, at)
+      return words === undefined ? undefined : { command: words.map(shellWord).join(' '), cwd }
+    }
+    if (!verbs.has(verb)) return undefined
+    start = at + 2
+  }
+  const nodeArgs: string[] = []
+  let shellValue: string | undefined
+  let index = start
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index] as string
+    if (token === '-c' || token === '--call') {
+      const call = tokens[index + 1]
+      return call === undefined || call === '' ? undefined : { command: call, cwd }
+    }
+    if (token.startsWith('--call=')) {
+      const call = token.slice('--call='.length)
+      return call === '' ? undefined : { command: call, cwd }
+    }
+    if (token === '--') {
+      index += 1
+      break
+    }
+    if (!token.startsWith('-')) break
+    const at = token.indexOf('=')
+    const flag = at === -1 ? token : token.slice(0, at)
+    // A launcher flag whose value is executed by node or by the shell is folded
+    // into the judged command; skipping it would judge the wrong command.
+    if (flag === '--node-arg') {
+      const value = at === -1 ? tokens[(index += 1)] : token.slice(at + 1)
+      if (value !== undefined) nodeArgs.push(value)
+      continue
+    }
+    if (flag === '--node-options') {
+      // `--node-options` is a NODE_OPTIONS string: node reads it as words.
+      const value = at === -1 ? tokens[(index += 1)] : token.slice(at + 1)
+      if (value !== undefined) nodeArgs.push(...value.split(/\s+/u).filter((word) => word !== ''))
+      continue
+    }
+    if (flag === '--shell') {
+      shellValue = at === -1 ? tokens[(index += 1)] : token.slice(at + 1)
+      continue
+    }
+    if (at === -1 && LAUNCHER_VALUE_FLAGS.has(token)) index += 1
+  }
+  let words = tokens.slice(index)
+  if (words.length === 0 && nodeArgs.length === 0) return undefined
+  if (nodeArgs.length > 0) {
+    // `--node-arg --test` is an argument to the node that runs the target.
+    const rest = words.length > 0 && baseCommand(words[0]) === 'node' ? words.slice(1) : words
+    words = ['node', ...nodeArgs, ...rest]
+  }
+  const command = words.map(shellWord).join(' ')
+  // `--shell <program>` runs the target through that program. A bare known
+  // shell is the same command; a shell with its own flags, or a program the
+  // guard does not know, is a layer it cannot read.
+  if (shellValue !== undefined && (/\s/u.test(shellValue) || !SHELL_BASES.has(baseCommand(shellValue)))) {
+    return {
+      command,
+      cwd,
+      refused: `the launcher runs the target through --shell ${shellValue}, a shell program the guard cannot model`,
+    }
+  }
+  return { command, cwd }
+}
+
+/**
+ * The command `yarn workspace <selector> <command>` or
+ * `yarn workspaces [foreach] [flags] <command>` hands off to. `at` indexes the
+ * token before the `workspace`/`workspaces` word.
+ */
+function yarnWorkspaceWords(tokens: string[], at: number): string[] | undefined {
+  if (tokens[at + 1] === 'workspace') {
+    const words = tokens.slice(at + 3)
+    const verb = words[0]
+    if (verb === undefined) return undefined
+    if (verb === 'exec' || verb === 'dlx') return words.length > 1 ? words.slice(1) : undefined
+    // `yarn workspace pkg run <script>` is the npm.run shape; other words are
+    // the command itself (`yarn workspace pkg node --test` runs node).
+    if (NPM_RUN_ALIASES.has(verb)) return ['yarn', ...words]
+    return words
+  }
+  let index = at + 2
+  if (tokens[index] === 'foreach') {
+    index += 1
+    for (; index < tokens.length; index += 1) {
+      const token = tokens[index] as string
+      if (!token.startsWith('-')) break
+      if (!token.includes('=') && LAUNCHER_VALUE_FLAGS.has(token)) index += 1
+    }
+  }
+  const words = tokens.slice(index)
+  if (words.length === 0) return undefined
+  // `yarn workspaces <command>` runs the command in every workspace; judging it
+  // as `yarn <command>` keeps the npm verb grammar the rest of the policy reads.
+  return ['yarn', ...words]
+}
+
+/** True when the root deliberately opted into one local run: exactly `=1`, root only. */
+function localVerifyEscape(tokens: string[], worker: boolean): boolean {
+  if (worker) return false
+  return leadingAssignments(tokens).some((assignment) => {
+    const index = assignment.indexOf('=')
+    return assignment.slice(0, index) === LOCAL_VERIFY_ENV && assignment.slice(index + 1) === '1'
+  })
+}
 
 /** Apply defaults; the installer always writes them explicitly, tests may omit them. */
 export function resolvePolicy(config: GuardConfig = {}): ResolvedPolicy {
@@ -293,7 +765,7 @@ function confinement(target: string, worktree: string | undefined, policy: Resol
   if (worktree === undefined) {
     return deny(
       'write-outside-worktree',
-      `refusing to write ${target}: no worktree is recorded for this agent; use an explicit absolute path under a worktree the installed policy admits, and run \`npm run guard:install\` from the main checkout if that path is outside the installed pattern`,
+      `refusing to write ${target}: no worktree is recorded for this agent, and a worker writes only inside its own worktree. A seat needs a message that names an installed worktree (the spawn prompt, or a working-directory notice); if this session never received one, it cannot write anywhere and must be re-spawned with the worktree named in its prompt. If the path belongs to a worktree the installed pattern does not cover, run \`npm run guard:install\` from the main checkout`,
     )
   }
   if (!isInside(realTarget(worktree), real)) {
@@ -1471,6 +1943,7 @@ function judgeCommand(
   worktree: string | undefined,
   policy: ResolvedPolicy,
   context: JudgeContext,
+  depth = 0,
 ): Verdict {
   const segments = parseSegments(command)
   const flat = flatten(segments)
@@ -1493,6 +1966,53 @@ function judgeCommand(
   for (const segment of flat) {
     const violation = decisionsViolation(segment)
     if (violation !== undefined) return violation
+  }
+
+  // The escape hatch prefixes one command segment: two escaped CI-only runs on
+  // one call would launder a second suite run behind the first (D78).
+  const escapedRuns = flat.filter(
+    (segment) => ciOnlyScript(segment.tokens) !== undefined && localVerifyEscape(segment.tokens, agent.worker),
+  )
+  if (escapedRuns.length > 1) {
+    return deny(
+      'local-verify-refused',
+      `refusing "${excerpt(command)}": ${LOCAL_VERIFY_ENV}=1 covers one command segment per call and this call opens ${escapedRuns.length}; push the branch and read \`npm run ci\` instead`,
+    )
+  }
+
+  for (const segment of flat) {
+    const script = ciOnlyScript(segment.tokens)
+    if (script === undefined || localVerifyEscape(segment.tokens, agent.worker)) continue
+    return deny(
+      'local-verify-refused',
+      `refusing "${excerpt(segment.raw)}": ${script} is the CI's job on this machine; push the branch and read \`npm run ci\`, or prefix ${LOCAL_VERIFY_ENV}=1 for one deliberate local run (root only)`,
+    )
+  }
+
+  // A launcher is not an exemption: `npx`, `npm exec|x`, `pnpm`/`yarn`
+  // `exec|dlx`, `yarn workspace|workspaces` and `bun x` hand off to a command,
+  // and that command is judged by this whole policy, not by the CI-only rule
+  // alone (reviewer #226). The chain is bounded so launchers cannot recurse
+  // forever.
+  for (const segment of flat) {
+    const target = launcherTarget(segment.tokens)
+    if (target === undefined) continue
+    if (target.refused !== undefined) {
+      return deny('shell-unmodelled', `refusing "${excerpt(segment.raw)}": ${target.refused}`)
+    }
+    if (depth >= LAUNCHER_DEPTH_LIMIT) {
+      return deny(
+        'shell-unmodelled',
+        `refusing "${excerpt(segment.raw)}": the guard follows at most ${LAUNCHER_DEPTH_LIMIT} nested launchers and this one is deeper`,
+      )
+    }
+    const targetCwd = target.cwd === undefined ? cwd : (resolveTarget(target.cwd, cwd) ?? cwd)
+    // The hatch prefixes a segment; when the launcher is prefixed, the prefix
+    // must reach the command it hands off to (and only the first segment).
+    const inherited =
+      localVerifyEscape(segment.tokens, agent.worker) ? `${LOCAL_VERIFY_ENV}=1 ${target.command}` : target.command
+    const verdict = judgeCommand(inherited, targetCwd, agent, worktree, policy, context, depth + 1)
+    if (verdict.kind === 'deny') return verdict
   }
 
   if (agent.worker) {

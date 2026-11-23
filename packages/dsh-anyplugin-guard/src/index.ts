@@ -45,10 +45,18 @@ export const name = 'anyplugin-guard'
 export const inject = ['tools']
 
 interface AgentState {
-  /** The worktree recorded from the spawn prompt; confinement follows it. */
+  /** The worktree recorded from step text; confinement follows it. */
   worktree?: string
-  /** The first step was observed; the brief is delivered at most once. */
+  /**
+   * A worktree was derived. Resolution must not be marked just because a step
+   * was seen: a fresh child's first pre-step can arrive before the message
+   * that names its worktree (the spawn prompt or a working-directory notice),
+   * and a seat that gave up there confines every later write for the
+   * session's whole life (#250).
+   */
   resolved: boolean
+  /** The brief is delivered at most once, even while resolution is retried. */
+  briefed?: boolean
 }
 
 function headerOf(agent: unknown): Record<string, unknown> | undefined {
@@ -103,6 +111,12 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
     // the plugin loads in a user profile, so most sessions are not ours.
     if (!inTerritory(agentCwd(agent), policy)) return next()
     const state = stateFor(agent)
+    // Seats come only from step text. A child's header cwd is creation
+    // metadata copied from its parent (`dsh-session` freezes the header and
+    // `dsh-subagent` copies the parent's cwd), so deriving a seat from it here
+    // would lock a child spawned elsewhere to its parent's worktree; the
+    // spawn cwd reaches the child as a `working-directory/change` notice in
+    // its messages, which the retrying step seat reads instead (#250).
     const call: GuardCall = {
       tool: typeof exec?.name === 'string' ? exec.name : '',
       args: (exec?.arguments ?? {}) as Record<string, unknown>,
@@ -138,19 +152,31 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
     if (result?.kind !== 'enter' || !Array.isArray(result.messages)) return result
     if (!isWorker(agent)) return result
     const state = stateFor(agent)
-    if (state.resolved) return result
-    state.resolved = true
-    const worktree = chooseWorktree({
-      text: messageText(payload?.messages),
-      ...(agentCwd(agent) === undefined ? {} : { cwd: agentCwd(agent) as string }),
-      worktrees: policy.worktrees,
-    })
-    if (worktree !== undefined) state.worktree = worktree
+    // Keep trying while the seat is unknown: a fresh child's first pre-step
+    // can arrive before the message that names its worktree (#250). Marking
+    // `resolved` on the attempt is what turned that timing race into a
+    // write-nothing session. The seat is derived from message text only: a
+    // spawn prompt or a working-directory notice that arrives one step late
+    // still wins, and a cwd is never consulted (`dsh-subagent` copies the
+    // parent's cwd into a child, so a cwd seat can lock a child to the wrong
+    // worktree; see `decideTool`).
+    if (!state.resolved) {
+      const worktree = chooseWorktree({
+        text: messageText(payload?.messages),
+        worktrees: policy.worktrees,
+      })
+      if (worktree !== undefined) {
+        state.worktree = worktree
+        state.resolved = true
+      }
+    }
+    if (state.briefed === true) return result
+    state.briefed = true
     if (policy.brief === false) return result
     const cwd = agentCwd(agent)
     const brief = textMessage(
       renderBrief({
-        ...(worktree === undefined ? {} : { worktree }),
+        ...(state.worktree === undefined ? {} : { worktree: state.worktree }),
         ...(cwd === undefined ? {} : { cwd }),
         config: policy.brief,
       }),
@@ -160,7 +186,7 @@ export async function apply(ctx: any, config: GuardConfig = {}): Promise<void> {
 
   // Agent-scoped seats for the brief. The seams are dispatched through the
   // agent's carrier, but the app-level listener below receives child calls too;
-  // a seat is an addition, not a replacement, and `state.resolved` keeps the
+  // a seat is an addition, not a replacement, and `state.briefed` keeps the
   // brief to one delivery when both mounts see the same step.
   const seats = new Map<string, { agent: unknown; dispose: () => void }>()
 

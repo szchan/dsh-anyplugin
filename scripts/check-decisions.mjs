@@ -8,11 +8,21 @@
 // Creating a new decision (or appending "Superseded by D<n>" as a new entry) is
 // the only sanctioned way to move a ratified decision.
 //
-//   node scripts/check-decisions.mjs            # verify
-//   node scripts/check-decisions.mjs --update   # accept new entries only
+//   node scripts/check-decisions.mjs                        # verify
+//   node scripts/check-decisions.mjs --update               # accept new entries only
+//   node scripts/check-decisions.mjs --append-file <path>   # sanctioned writer: append one entry
+//   node scripts/check-decisions.mjs --reword D83 --file <path>
+//                                                           # sanctioned writer: rewrite an entry
+//                                                           # that is not yet on origin/main
+//
+// The last two exist because the guard refuses every hand write to this file
+// (`decisions-append-only`): without a writer, nothing could record a decision
+// after the guard is installed. Both refuse to touch an entry that origin/main
+// already carries — ratification is what makes an entry historical.
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const argv = process.argv.slice(2)
@@ -27,19 +37,22 @@ const lockPath = join(root, 'docs', 'decisions.lock.json')
 const update = argv.includes('--update')
 
 const text = readFileSync(decisionsPath, 'utf8')
-const heading = /^## (D\d+) — (.+)$/gmu
-const entries = []
-let current = null
-for (const line of text.split('\n')) {
-  const match = line.match(/^## (D\d+) — (.+)$/u)
-  if (match !== null) {
-    if (current !== null) entries.push(current)
-    current = { id: match[1], title: match[2].trim(), lines: [] }
-    continue
+
+function parseEntries(source) {
+  const parsed = []
+  let current = null
+  for (const line of source.split('\n')) {
+    const match = line.match(/^## (D\d+) — (.+)$/u)
+    if (match !== null) {
+      if (current !== null) parsed.push(current)
+      current = { id: match[1], title: match[2].trim(), lines: [] }
+      continue
+    }
+    if (current !== null) current.lines.push(line)
   }
-  if (current !== null) current.lines.push(line)
+  if (current !== null) parsed.push(current)
+  return parsed
 }
-if (current !== null) entries.push(current)
 
 // An entry ends at the next heading, so its trailing separator must not be
 // part of the hash: otherwise appending D<n+1> rewrites D<n>'s digest and the
@@ -52,7 +65,8 @@ const trimTail = (entry) => {
   }
   return entry
 }
-for (const entry of entries) trimTail(entry)
+
+const entries = parseEntries(text).map(trimTail)
 
 if (entries.length === 0) {
   console.error('decisions: no entries found')
@@ -82,6 +96,102 @@ const digest = (entry) =>
 
 const currentHashes = Object.fromEntries(entries.map((entry) => [entry.id, digest(entry)]))
 const lock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, 'utf8')) : { schema: 'dsh-anyplugin/decisions@1', entries: {} }
+
+// The sanctioned writer. It exists because the guard (D78-adjacent rules) refuses
+// every hand write to docs/DECISIONS.md: without it, no session could record a
+// decision once the guard is installed. It writes through the lock, so the
+// append-only verdict keeps meaning something.
+const valueOf = (flag) => {
+  const index = argv.indexOf(flag)
+  return index >= 0 ? argv[index + 1] : undefined
+}
+const appendFile = valueOf('--append-file')
+const rewordFile = valueOf('--file')
+const rewordId = valueOf('--reword')
+if (appendFile !== undefined || rewordId !== undefined) {
+  const payloadPath = appendFile ?? rewordFile
+  if (payloadPath === undefined) {
+    console.error('decisions: --reword needs --file <path>')
+    process.exit(1)
+  }
+  if (appendFile !== undefined && rewordId !== undefined) {
+    console.error('decisions: --append-file and --reword are different modes; pick one')
+    process.exit(1)
+  }
+  const payload = readFileSync(resolve(payloadPath), 'utf8').replace(/\s+$/u, '')
+  const headingMatch = payload.match(/^## (D\d+) — (.+)$/mu)
+  if (headingMatch === null) {
+    console.error(`decisions: the payload must start with "## D<n> — <title>"; got ${JSON.stringify(payload.slice(0, 60))}`)
+    process.exit(1)
+  }
+  // A decision that origin/main already carries is ratified: rewriting it here
+  // would be the very in-place edit the lock exists to catch.
+  const onMain = () => {
+    try {
+      const mainText = execFileSync('git', ['-C', root, 'show', 'origin/main:docs/DECISIONS.md'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return mainText
+    } catch {
+      return undefined
+    }
+  }
+  const mainText = onMain()
+  if (mainText === undefined) {
+    console.error('decisions: cannot read origin/main:docs/DECISIONS.md; the writer refuses to guess what is ratified')
+    process.exit(1)
+  }
+  const mainIds = new Set([...mainText.matchAll(/^## (D\d+) — /gmu)].map((match) => match[1]))
+  const ids = [...payload.matchAll(/^## (D\d+) — /gmu)].map((match) => match[1])
+  if (ids.length !== 1) {
+    console.error(`decisions: the payload must hold exactly one entry, found ${ids.length}`)
+    process.exit(1)
+  }
+  const id = ids[0]
+  if (mainIds.has(id)) {
+    console.error(`decisions: ${id} is already on origin/main; it is ratified, supersede it with a new entry instead`)
+    process.exit(1)
+  }
+  let nextText
+  if (appendFile !== undefined) {
+    if (entries.some((entry) => entry.id === id)) {
+      console.error(`decisions: ${id} already exists; --append-file only adds a new id`)
+      process.exit(1)
+    }
+    nextText = `${text.replace(/\s+$/u, '')}\n\n${payload}\n`
+  } else {
+    const start = text.search(new RegExp(`^## ${rewordId} — `, 'mu'))
+    if (start < 0) {
+      console.error(`decisions: no entry ${rewordId} to reword`)
+      process.exit(1)
+    }
+    if (id !== rewordId) {
+      console.error(`decisions: the payload's id ${id} does not match --reword ${rewordId}`)
+      process.exit(1)
+    }
+    const after = text.slice(start + 1).search(/^## D\d+ — /mu)
+    const end = after < 0 ? text.length : start + 1 + after
+    const rewritten = `${payload}\n\n`
+    nextText = `${text.slice(0, start)}${rewritten}${text.slice(end).replace(/^\n{2,}/u, "\n")}`
+  }
+  // Everything outside the touched entry must still hash the same; otherwise the
+  // writer would be a back door for the in-place edits the gate forbids.
+  const before = new Map(entries.map((entry) => [entry.id, digest(entry)]))
+  // The re-parse must trim the separator the same way the baseline did, or every
+  // entry followed by another one appears to change and the writer refuses a
+  // legitimate append (D78 was the case that found this).
+  const refreshed = parseEntries(nextText).map(trimTail)
+  for (const entry of refreshed) {
+    if (entry.id === id) continue
+    if (before.get(entry.id) !== digest(entry)) {
+      console.error(`decisions: the payload changes ${entry.id} as well; one entry at a time`)
+      process.exit(1)
+    }
+  }
+  writeFileSync(decisionsPath, nextText)
+  const nextHashes = Object.fromEntries(refreshed.map((entry) => [entry.id, digest(entry)]))
+  writeFileSync(lockPath, `${JSON.stringify({ ...lock, entries: nextHashes }, null, 2)}\n`)
+  console.log(`decisions: ${appendFile !== undefined ? 'appended' : 'reworded'} ${id}; locked ${refreshed.length} entries`)
+  process.exit(0)
+}
 
 if (update) {
   // Only additions are accepted; a changed hash is exactly what this rule forbids.

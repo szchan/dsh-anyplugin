@@ -23,6 +23,20 @@ export const roleOf = (node, options) => {
   return isOurs(node.author?.login, options) ? 'maintainer' : 'external'
 }
 
+// The architecture reviewer (D82) files findings through the bot as
+// `arch: <finding>`. The bot is ours, so `roleOf` reads it as a maintainer and
+// the queue cannot tell a finding (needs review/merge) from a maintainer
+// request (needs an answer). The title prefix is the reviewer's own contract;
+// the author half is load-bearing because a maintainer issue titled `arch:`
+// stays a maintainer ask (D85).
+export const AGENT_FINDING_TITLE = /^arch:/iu
+
+/** Bot-authored and titled `arch:`: agent output, not a question to answer. */
+export const isAgentFinding = (issue, options) =>
+  issue.author?.login === options.botLogin && AGENT_FINDING_TITLE.test(String(issue.title ?? '').trim())
+
+export const roleOfIssue = (issue, options) => (isAgentFinding(issue, options) ? 'agent' : roleOf(issue, options))
+
 const isAgentComment = (comment, options) =>
   comment.author?.login === options.botLogin || (comment.body ?? '').includes(AGENT_MARK)
 
@@ -92,6 +106,14 @@ export const classifyIssue = (issue, comments, options) => {
     if (human === undefined || agentAfterMaintainer) return { section: 'Blocked on a human', lastSpeaker }
     return { section: 'Maintainer answers (resume)', lastSpeaker }
   }
+  // An agent-filed finding (D85) is agent output, not a maintainer question:
+  // it is queued for review with nobody waiting on a human. A maintainer's
+  // later comment still resumes it like any other agent thread.
+  if (isAgentFinding(issue, options)) {
+    if (human === undefined) return { section: 'Agent findings (review)', lastSpeaker }
+    if (agentAfterMaintainer) return { section: null, lastSpeaker }
+    return { section: 'Maintainer answers (resume)', lastSpeaker }
+  }
   if (who === 'maintainer') {
     if (agent === undefined) return { section: 'Maintainer asks (new)', lastSpeaker }
     if (!agentAfterMaintainer && human !== undefined) return { section: 'Maintainer answers (resume)', lastSpeaker }
@@ -107,24 +129,55 @@ export const classifyIssue = (issue, comments, options) => {
 /** PRs are a flat list; the role is the only classification. */
 export const roleOfPullRequest = (pr, options) => (isOurs(pr.author?.login, options) ? 'maintainer' : 'external')
 
+export const PRIORITY_LABEL = 'priority/now'
+
+/**
+ * A maintainer's "do this next" mark, and only a maintainer's.
+ *
+ * The labels array alone is not evidence: the bot's token can label too, and
+ * every agent writes as the bot. So the last labelled/unlabelled event for this
+ * label must be `labeled`, and its actor must be a maintainer (not the bot, not
+ * a GitHub App). The timeline is the only place the actor is recorded.
+ */
+export const isPriority = (node, events, options) => {
+  if (!hasLabel(node, PRIORITY_LABEL)) return false
+  const relevant = (events ?? [])
+    .filter((event) => (event.event === 'labeled' || event.event === 'unlabeled') && event.label === PRIORITY_LABEL)
+    .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')))
+  const last = relevant.at(-1)
+  if (last === undefined || last.event !== 'labeled') return false
+  const actor = last.actor ?? ''
+  return options.maintainers.includes(actor) && actor !== options.botLogin && !actor.endsWith('[bot]')
+}
+
 /**
  * What `npm run inbox` says and returns.
  *
  * 0 — nothing waits; 1 — a maintainer has the last substantive word (a reply or
  * a new ask); 2 — the tracker could not be read, so "nothing waits" would be a
- * lie. Receipts are not answers (D79).
+ * lie. Receipts are not answers (D79). Agent findings are listed but do not
+ * wait on a human: they need review/merge, not an answer (D85).
  */
 export const inboxVerdict = (sections, failures = []) => {
   const tag = (name) => (sections[name] ?? []).map((item) => ({ ...item, section: name }))
-  const resume = tag('Maintainer answers (resume)')
-  const asks = tag('Maintainer asks (new)')
-  const blocked = tag('Blocked on a human')
+  // A priority row was moved out of its section, so the section name it was
+  // printed under is not the one that decides whether it is waiting on a human.
+  // Count it by `originally`, and keep that as `section` for the caller's label.
+  const priority = tag('Priority (jump the queue)').map((item) => ({
+    ...item,
+    section: item.originally ?? 'Priority (jump the queue)',
+  }))
+  const resume = [...tag('Maintainer answers (resume)'), ...priority.filter((item) => item.section === 'Maintainer answers (resume)')]
+  const asks = [...tag('Maintainer asks (new)'), ...priority.filter((item) => item.section === 'Maintainer asks (new)')]
+  const blocked = [...tag('Blocked on a human'), ...priority.filter((item) => item.section === 'Blocked on a human')]
+  const findings = tag('Agent findings (review)')
   const waiting = [...asks, ...resume]
   return {
     waiting,
     blocked,
+    findings,
     failures,
     exitCode: failures.length > 0 ? 2 : waiting.length > 0 ? 1 : 0,
-    summary: `inbox: ${waiting.length} thread(s) waiting, ${blocked.length} escalation(s) open, ${failures.length} thread(s) unreadable`,
+    summary: `inbox: ${waiting.length} thread(s) waiting, ${blocked.length} escalation(s) open, ${findings.length} agent finding(s) to review, ${failures.length} thread(s) unreadable`,
   }
 }

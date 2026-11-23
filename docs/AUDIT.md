@@ -84,8 +84,11 @@ that contains a token, an email, or a customer path.
 
 ## 4. The daily pass
 
-1. **Read the previous report's `## Open`** and the ledger's `open` entries.
-   The first job of a pass is to check whether last pass's actions happened.
+1. **Read the previous report's `## Open`** and the ledger's `open`, `dormant`
+   and `accepted` entries. The first job of a pass is to check whether last
+   pass's actions happened. An `accepted` risk whose `reviewBy` date has arrived
+   is re-decided in this pass (renew the date, retire it, or move it to a lever);
+   the rest are checked for the date, not re-argued.
 2. Run the evidence script for the window since the previous report.
 3. Check the three recurring shapes against the window:
    - **claim > proof** — a PR body or comment asserting behavior its test does
@@ -105,8 +108,9 @@ that contains a token, an email, or a customer path.
    check:audit`, and open the PR in the same pass. A report-only PR is docs; a
    PR that changes a mechanism also carries the code and its test. Every
    finding gets an action in this pass: the fix in the PR, a tracking issue, or
-   an explicit accepted risk with an owner and a review date. A finding with no
-   action is a plan, not a finding; it does not become next pass's backlog.
+   an accepted risk — status `accepted`, with an `owner` and a `reviewBy` date.
+   A finding with no action is a plan, not a finding; it does not become next
+   pass's backlog.
 7. Open the PR and hand it to the master. The review path in §6 belongs to the
    master; the auditor's part ends at the PR.
 
@@ -134,8 +138,12 @@ what changed in this pass, with the finding id. An issue or PR opened in the
 same pass is an action; "investigate later" is not.
 
 ## Open
-only findings that are genuinely blocked or deferred, each with a tracking
-issue, an owner, and the condition that reopens it. `Open` is not a backlog.
+only findings that are genuinely blocked or deferred — `open`, `dormant` or
+`accepted` in the ledger — each with its status, an owner, and the condition
+that reopens it. An `open` finding names its tracking issue; an `accepted` one
+names its `reviewBy` date. Every `open`, `dormant` and `accepted` entry in the
+ledger appears here: this section is the next pass's checklist, and `Open` is
+not a backlog.
 ```
 
 A report is not a diary. If nothing new was found, the report says which
@@ -204,8 +212,9 @@ the highest-risk gaps. Cite file:line for every row.
 - A reviewer verdict is a PR comment from the bot account, with the
   `<!-- dsh-anyplugin-agent -->` marker; it is not a GitHub review. F12's
   guard rule requires `--match-head-commit <40-hex>` on every modelled merge
-  (`--help` and `--disable-auto` perform none); that is omission prevention, not review verification, and it is
-  dormant on this machine until the guard is installed (F1).
+  (`--help` and `--disable-auto` perform none); that is omission prevention, not review verification; the rule is
+  enforced on the modelled merge paths since the guard install on 2026-11-23
+  (#221, F12).
 
 ## 7. Roles, and what "too broad" means
 
@@ -214,8 +223,8 @@ adds measurable caps:
 
 | Role | May write | May not | Alarm |
 | --- | --- | --- | --- |
-| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (dormant until the guard is installed, F1) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
-| integration runner | merges `origin/main` into a ticket branch, pushes that branch, polls CI, assembles PR bodies, cleans worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, or one that touches `main` |
+| master | docs, integration fixes, `docs/DECISIONS.md`, merges after the §6 verdicts with a pinned head (guard-enforced since the 2026-11-23 install, F12) | feature code; merging with unresolved `weaker`/`not proven` verdicts | a root session over ~1,500 tool calls, or one that both authors and approves the same change |
+| integration runner | one dispatched PR, as written in `docs/WORKFLOW.md` §The integration runner: merging `origin/main` into a ticket branch, pushing that branch, polling CI by sha, assembling the PR body, cleaning worktrees | merge, approve, push `main`, author feature code, edit another ticket | a runner that merges or approves, touches `main`, or grows into a second master session (it exists to keep the root's window small, D73) |
 | worker | one ticket's `Touches`, its worktree | merge, push `main`, edit another ticket | a worker touching files outside `Touches`, or two tickets in one session |
 | reviewer | nothing (read-only) | edit, merge, approve its own work | a reviewer that returns no `file:line` |
 | architecture reviewer | one daily pass reading the design against the tree; finding issues and docs-only PRs | merge, approve or close its own issue/PR, push `main`, feature code, ticket branches, `docs/DECISIONS.md`, `docs/FEATURES.md` coverage rows or totals, a contract change in `docs/ARCHITECTURE.md` §0/§2/§7 without a decision | an issue without file:line at a commit; a run that edits code, merges, or moves coverage/contract |
@@ -235,7 +244,8 @@ largest sessions with their `cwd`; a pass that sees a root session above the
 cap says so in `## Findings` and proposes a split (a scheduled audit session, a
 narrower ticket, or an integration runner that polls CI and updates branches —
 never a session that merges; merge authority with the pinned head stays in the
-master, D73). The master alarm is evaluated on the window the pass reports
+master, D73; the written role is `docs/WORKFLOW.md` §The integration runner).
+The master alarm is evaluated on the window the pass reports
 (one day for the daily pass); the lifetime count stays printed but is context,
 not the verdict: a lead that runs for a month always exceeds a lifetime cap.
 
@@ -264,15 +274,21 @@ if it changes who may merge.
   file, not the anchor), `proof` is not the artifact itself, and a
   `enforced`/`dormant` proof is a `.test.mjs` file;
 - `enforced` has a machine mechanism (hook/ci/lint); `dormant` has the same
-  proof but says it is not installed; `open` has a tracking issue; ids are
-  unique and `F<number>`; docs cannot be `enforced`;
+  proof but says it is not installed; `open` has a tracking issue; `accepted`
+  has an `owner` and a `reviewBy` ISO date; ids are unique and `F<number>`;
+  docs cannot be `enforced`; `documented` is refused with the §11 reason — it is
+  not a status, so prose alone is `open` with a tracking issue or `accepted`
+  with an owner and a date;
 - the identity fields (`id`, `title`, `mechanism`, `artifact`) are pinned in
   `docs/audit.lock.json`: a new finding needs `--update`, and a locked finding
   cannot be deleted or renamed in place (retire it and add a new one);
 - at least one report exists (`YYYY-MM-DD.md` or `rig-YYYY-MM-DD.md`), each
   required heading is a real heading with a body (not inside a fence), every
   finding id in a report is in the ledger, no report is dated in the future, and
-  the ledger's `updated` date is not older than the latest report.
+  the ledger's `updated` date is not older than the latest report;
+- a report's `## Open` lists every `open`, `dormant` and `accepted` entry and
+  nothing else, so a deferred finding cannot fall out of the next pass's
+  checklist and a closed one cannot linger in it.
 
 It does **not** check that the mechanism works. That is the reviewer's job and
 the weekly mutation check. A green `check:audit` means the ledger is honest
@@ -294,30 +310,40 @@ about its own shape, not that the process is fixed.
 
 Append-only history: an entry is never deleted. A mechanism that is replaced
 gets `status: "retired"` and a new entry; a finding that is no longer true is
-retired with the reason in `rationale`, not removed. `reviewed` means a
-recorded check exists; a mechanism change needs two independent verdicts, while
-a schedule that only reports status is reviewed by the daily pass. `documented`
-means prose only. `dormant` means the mechanism is implemented and tested but
-not active on this machine (F1); it is not a synonym for `enforced`. The
-`updated` date moves on every edit.
+retired with the reason in `rationale`, not removed. A finding is exactly one
+of `enforced`, `reviewed`, `dormant`, `open`, `retired` or `accepted`.
+`reviewed` means a recorded check exists; a mechanism change needs two
+independent verdicts, while a schedule that only reports status is reviewed by
+the daily pass. `accepted` means the pass decided not to act on a finding that
+is still true: the entry carries `owner` (who owns the risk) and `reviewBy`
+(the ISO date on which the next pass re-decides it), both required by the gate,
+and the finding appears in the report's `## Open` so the checklist and the
+ledger agree. `dormant` means the mechanism is implemented and tested but not
+active on this machine; F1 was the last entry to hold it, until the guard
+install on 2026-11-23. It is not a synonym for `enforced`. `documented`
+is retired (D88): prose is not an action, so a finding whose only mechanism is
+documentation is `open` with a tracking issue until a lever exists, or
+`accepted` with an owner and a review date. The `updated` date moves on every
+edit.
 
 <!-- audit-ledger:start -->
 ```json
 {
   "version": 1,
-  "updated": "2026-11-22",
+  "updated": "2026-11-23",
   "entries": [
     {
       "id": "F1",
       "title": "A push to main is refused by the guard's push whitelist",
       "mechanism": "hook",
-      "status": "dormant",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
-      "rationale": "The most expensive single mistake is a direct push to main. The rule is tested against nine push shapes, including force and multi-refspec, and applies to root and worker sessions. On 2026-11-22 the guard was implemented but not installed (no pre-push hook), so the rule is dormant, not enforced; F2 watches the installation.",
+      "rationale": "The most expensive single mistake is a direct push to main. The rule is tested against nine push shapes, including force and multi-refspec, and applies to root and worker sessions. Installed on 2026-11-23 (#221): `npm run guard:status` reports `status current`, the installed worktrees are `/tmp/anyplugin-wt/ticket-*`, and `.git/hooks/pre-push` is current, so the whitelist runs on every push from this checkout; the checkout's `.audit/guard-denials.jsonl` records live refusals under rule `git-push-shape`. Territory is D80's: this checkout and its ticket worktrees only.",
       "evidence": [
         "D47 authority table",
         "guard.test.mjs push matrix",
-        "2026-11-22 guard:status not-installed"
+        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current",
+        "2026-11-23 live evidence: .audit/guard-denials.jsonl records push-shape refusals from the installed hook"
       ],
       "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
     },
@@ -327,10 +353,12 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "schedule",
       "status": "reviewed",
       "artifact": "scripts/audit-evidence.mjs",
-      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. A daily digest reports guard status so dormancy is visible the next morning; installing it remains an operator action, so this is reviewed, not enforced.",
+      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. The daily digest reports the guard's install state as one line that distinguishes the six states current, not-installed, installed-with-stale-paths, stale, refused and unavailable, and derives duplicate when a second guard id sits outside the managed block (a probe that cannot report says why, and never fails the digest); installing it remains an operator action, so this is reviewed, not enforced.",
       "evidence": [
         "2026-11-22 evidence: guard not-installed, pre-push missing, 23 worktrees",
-        "docs/audits/2026-11-22.md"
+        "docs/audits/2026-11-22.md",
+        "2026-11-23 digest line: `- guard: **stale**; source present; worktree entries 1 desired / 1 installed; the installed block differs from the tree at line 4; hooks pre-push current`",
+        "scripts/audit-evidence.test.mjs: current, not-installed on exit 1, installed-with-stale-paths, stale+difference line, duplicate, refused with its reason, unavailable on spawn failure, unavailable on timeout, unavailable on unparsable output"
       ],
       "proof": ".dsh/skills/dsh-anyplugin-audit/SKILL.md"
     },
@@ -462,13 +490,13 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F12",
       "title": "The master merges a head that was not the head reviewed",
       "mechanism": "hook",
-      "status": "dormant",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "tracking": "#163",
-      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Dormant on this machine because the guard is not installed (F1); enforced on the modelled gh merge paths wherever the guard is installed, proven by guard.test.mjs. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
+      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Installed on 2026-11-23 (#221): `npm run guard:status` reports `status current` with `/tmp/anyplugin-wt/ticket-*` worktrees and a current `.git/hooks/pre-push`; the same policy judged 123/123 payloads when the profile was recomposed. Enforced on the modelled gh merge paths, proven by guard.test.mjs. Territory is D80's: this checkout and its ticket worktrees only. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
       "evidence": [
         "2026-11-22 evidence: 100 PRs, 99 merged; #89 11 comments",
-        "guard:status not-installed; pre-push hook missing (F1/F2)",
+        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current, 123/123 dry-run payloads",
         "guard.test.mjs merge-pin matrix and installed-mount test; 123-row dry-run table"
       ],
       "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
@@ -477,46 +505,56 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F13",
       "title": "Every bash call repeats a leading cd into the worktree",
       "mechanism": "skill",
-      "status": "documented",
+      "status": "accepted",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "86 % of 25,772 bash calls in the baseline prefix cd <dir> && although the harness has workdir. The skill tells the daily pass and workers to pass workdir instead; this is documentation because a hook cannot see the intent behind a cd.",
+      "rationale": "86 % of 25,772 bash calls in the baseline prefix cd <dir> && although the harness has workdir. The isolation example in docs/WORKFLOW.md ended in a cd and now passes workdir as the per-call directory instead; the audit skill states the mapping. This is accepted, not enforced: a hook sees the literal cd but not the intent behind it — a deliberate cwd change (a subdirectory, or a guard-rail cd before a destructive command) and a redundant prefix look identical to a policy, so refusing the shape would fail legitimate calls. The daily digest counts the ratio and the next pass re-decides the risk on reviewBy.",
+      "owner": "the master",
+      "reviewBy": "2026-11-30",
       "evidence": [
-        "2026-11-22 evidence: 22,111/25,772 cd prefixes; 1,272 workdir"
+        "2026-11-22 evidence: 22,111/25,772 cd prefixes; 1,272 workdir",
+        "2026-11-23 #240/D88: docs/WORKFLOW.md isolation example passes workdir; accepted risk, review 2026-11-30"
       ]
     },
     {
       "id": "F14",
       "title": "verify is run many times per session where one gate would do",
       "mechanism": "skill",
-      "status": "documented",
+      "status": "accepted",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "950 npm run verify vs 325 narrow check runs in the window. The skill gives the narrow-first order (check:decisions, check:arch, a single test file) and keeps verify for the pre-push gate; a script cannot know whether the edit touched a gate.",
+      "rationale": "950 npm run verify vs 325 narrow check runs in the window. The skill gives the narrow-first order (check:decisions, check:arch, a single test file) and keeps verify for the pre-push gate. Accepted, not enforced: a script cannot know whether the edit touched a gate or whether this is the one run that belongs before a push, so a rule on top of verify would either duplicate the gate or count a legitimate first run as waste. The digest re-reads the ratio and the next pass re-decides the risk on reviewBy.",
+      "owner": "the master",
+      "reviewBy": "2026-11-30",
       "evidence": [
         "2026-11-22 evidence: 950 verify, 325 check:*",
-        "AGENTS.md §5 verify is the gate"
+        "AGENTS.md §5 verify is the gate",
+        "2026-11-23 #240/D88: accepted risk, review 2026-11-30; no check can see the edit's scope"
       ]
     },
     {
       "id": "F15",
       "title": "Agents use sed/grep/cat on files instead of read/grep tools",
       "mechanism": "skill",
-      "status": "documented",
+      "status": "accepted",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "sed 5,966 and grep 4,951 calls against read 1,148. The shell forms evade the file-access sandbox and the read tool line discipline, and they cost more tokens for the same context. The skill states the tool mapping.",
+      "rationale": "sed 5,966 and grep 4,951 calls against read 1,148. The shell forms evade the file-access sandbox and the read tool line discipline, and they cost more tokens for the same context. The skill states the tool mapping. Accepted, not enforced: the guard sees sed/grep/cat in a command string but not whether it reads a file (the mapping applies) or filters a pipe or log (the shell form is the right one), so a deny rule would refuse legitimate pipelines. The digest re-reads the counts and the next pass re-decides the risk on reviewBy.",
+      "owner": "the master",
+      "reviewBy": "2026-11-30",
       "evidence": [
-        "2026-11-22 evidence: sed 5,966, grep 4,951, read 1,148"
+        "2026-11-22 evidence: sed 5,966, grep 4,951, read 1,148",
+        "2026-11-23 #240/D88: accepted risk, review 2026-11-30; no check can tell a file read from a pipe filter"
       ]
     },
     {
       "id": "F16",
       "title": "Guard denials are not observable",
       "mechanism": "hook",
-      "status": "dormant",
+      "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "proof": "packages/dsh-anyplugin-guard/test/denials.test.mjs",
-      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), but on this machine the guard is not installed (F1): no pre-push hook, 0 installed worktrees, and no log file. Under §11 that is the definition of dormant, not enforced — the baseline's `enforced` read a merged mechanism as an active one. Activation is tracked by F1, not by a separate ticket.",
+      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), and the rule is enforced since the install on 2026-11-23 (#221): `npm run guard:status` reports `status current`, installed worktrees `/tmp/anyplugin-wt/ticket-*` and a current pre-push hook, and the log holds live rows. The first observed live refusal this session was a `shell-unmodelled` deny whose message names a double-quoted expansion; the log's first row is 2026-11-23T08:19:56.412Z under the same rule. Territory is D80's: this checkout and its ticket worktrees only.",
       "evidence": [
-        "2026-11-22 09:00 evidence: guard not-installed, 1 desired / 0 installed, pre-push missing, no .audit/guard-denials.jsonl",
+        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current; live log rows from 2026-11-23T08:19:56.412Z",
+        "2026-11-23 live evidence: .audit/guard-denials.jsonl holds rows for shell-unmodelled, write-outside-worktree, decisions-append-only, git-push-shape, git-unknown-subcommand and interpreter-write, aggregated by npm run audit:evidence; the first row is shell-unmodelled on a double-quoted expansion",
         "2026-11-22 D68: structured log merged in #181; digest counts total/by-rule/by-role and last five",
         "denials.test.mjs: one record per denial, dedupe by session+callId, four checkout layouts"
       ]
@@ -540,11 +578,11 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "mechanism": "reviewer",
       "status": "reviewed",
       "artifact": "docs/AUDIT.md",
-      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199: an integrator session owns merge mechanics and PR-body assembly; the root keeps dispatch, decisions, and verdicts.",
+      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199 and written down in D73: an integration runner child (`integrator-*`) owns CI polling, `origin/main` merges into the ticket branch, the push of that branch, PR-body assembly and worktree cleanup; the root keeps dispatch, decisions, verdicts and the one pinned merge call. The role is written in docs/WORKFLOW.md §Roles and §The integration runner, and the role table above names it.",
       "evidence": [
         "2026-11-22 00:20 evidence: root session-522222a9 2,470 tools, next child 1,073",
         "2026-11-22 09:00 evidence: same root 2,991 lifetime (1,112 in window), next child 1,073; split proposal #199",
-        "docs/AUDIT.md §7 role caps"
+        "2026-11-23 evidence: the written role — docs/WORKFLOW.md §Roles (row) and §The integration runner (input, steps, output, stops), named in docs/AUDIT.md §7"
       ]
     },
     {
