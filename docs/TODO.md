@@ -87,9 +87,12 @@ with the exact anchor so the proposal is reviewable without a checkout.
       `claude-code.d.ts` (D14 forbids vendoring the artifact, and the licence
       does not grant redistribution) or derive an inline subset whose shapes are
       no longer copied verbatim (a different claim under D57).
-      Blocked on: D14 (read the pin, do not vendor it), D57 (a served shape is
-      copied verbatim), and a decision entry for the inline-subset path (D59
-      proposed in #150; #144 generated the internal file).
+      Blocked on: D14 (read the pin, do not vendor it), D57 (a served member
+      keeps the pin's own shape, asserted not guessed), and D60 (the generated
+      file is internal; shipping a surface is a separate decision, taken with
+      #150 after #144 generated the file). D60's consequences name the only two
+      exits: negotiate redistribution, or publish a derived subset under a new
+      decision that says so.
 - [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
       cannot be reimplemented on this runtime; S16 annotates the faces
       `unsupported`, and delegating the component to the real host is the only
