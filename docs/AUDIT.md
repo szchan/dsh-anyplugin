@@ -84,8 +84,11 @@ that contains a token, an email, or a customer path.
 
 ## 4. The daily pass
 
-1. **Read the previous report's `## Open`** and the ledger's `open` entries.
-   The first job of a pass is to check whether last pass's actions happened.
+1. **Read the previous report's `## Open`** and the ledger's `open`, `dormant`
+   and `accepted` entries. The first job of a pass is to check whether last
+   pass's actions happened. An `accepted` risk whose `reviewBy` date has arrived
+   is re-decided in this pass (renew the date, retire it, or move it to a lever);
+   the rest are checked for the date, not re-argued.
 2. Run the evidence script for the window since the previous report.
 3. Check the three recurring shapes against the window:
    - **claim > proof** — a PR body or comment asserting behavior its test does
@@ -105,8 +108,9 @@ that contains a token, an email, or a customer path.
    check:audit`, and open the PR in the same pass. A report-only PR is docs; a
    PR that changes a mechanism also carries the code and its test. Every
    finding gets an action in this pass: the fix in the PR, a tracking issue, or
-   an explicit accepted risk with an owner and a review date. A finding with no
-   action is a plan, not a finding; it does not become next pass's backlog.
+   an accepted risk — status `accepted`, with an `owner` and a `reviewBy` date.
+   A finding with no action is a plan, not a finding; it does not become next
+   pass's backlog.
 7. Open the PR and hand it to the master. The review path in §6 belongs to the
    master; the auditor's part ends at the PR.
 
@@ -134,8 +138,12 @@ what changed in this pass, with the finding id. An issue or PR opened in the
 same pass is an action; "investigate later" is not.
 
 ## Open
-only findings that are genuinely blocked or deferred, each with a tracking
-issue, an owner, and the condition that reopens it. `Open` is not a backlog.
+only findings that are genuinely blocked or deferred — `open`, `dormant` or
+`accepted` in the ledger — each with its status, an owner, and the condition
+that reopens it. An `open` finding names its tracking issue; an `accepted` one
+names its `reviewBy` date. Every `open`, `dormant` and `accepted` entry in the
+ledger appears here: this section is the next pass's checklist, and `Open` is
+not a backlog.
 ```
 
 A report is not a diary. If nothing new was found, the report says which
@@ -264,15 +272,21 @@ if it changes who may merge.
   file, not the anchor), `proof` is not the artifact itself, and a
   `enforced`/`dormant` proof is a `.test.mjs` file;
 - `enforced` has a machine mechanism (hook/ci/lint); `dormant` has the same
-  proof but says it is not installed; `open` has a tracking issue; ids are
-  unique and `F<number>`; docs cannot be `enforced`;
+  proof but says it is not installed; `open` has a tracking issue; `accepted`
+  has an `owner` and a `reviewBy` ISO date; ids are unique and `F<number>`;
+  docs cannot be `enforced`; `documented` is refused with the §11 reason — it is
+  not a status, so prose alone is `open` with a tracking issue or `accepted`
+  with an owner and a date;
 - the identity fields (`id`, `title`, `mechanism`, `artifact`) are pinned in
   `docs/audit.lock.json`: a new finding needs `--update`, and a locked finding
   cannot be deleted or renamed in place (retire it and add a new one);
 - at least one report exists (`YYYY-MM-DD.md` or `rig-YYYY-MM-DD.md`), each
   required heading is a real heading with a body (not inside a fence), every
   finding id in a report is in the ledger, no report is dated in the future, and
-  the ledger's `updated` date is not older than the latest report.
+  the ledger's `updated` date is not older than the latest report;
+- a report's `## Open` lists every `open`, `dormant` and `accepted` entry and
+  nothing else, so a deferred finding cannot fall out of the next pass's
+  checklist and a closed one cannot linger in it.
 
 It does **not** check that the mechanism works. That is the reviewer's job and
 the weekly mutation check. A green `check:audit` means the ledger is honest
@@ -294,18 +308,26 @@ about its own shape, not that the process is fixed.
 
 Append-only history: an entry is never deleted. A mechanism that is replaced
 gets `status: "retired"` and a new entry; a finding that is no longer true is
-retired with the reason in `rationale`, not removed. `reviewed` means a
-recorded check exists; a mechanism change needs two independent verdicts, while
-a schedule that only reports status is reviewed by the daily pass. `documented`
-means prose only. `dormant` means the mechanism is implemented and tested but
-not active on this machine (F1); it is not a synonym for `enforced`. The
-`updated` date moves on every edit.
+retired with the reason in `rationale`, not removed. A finding is exactly one
+of `enforced`, `reviewed`, `dormant`, `open`, `retired` or `accepted`.
+`reviewed` means a recorded check exists; a mechanism change needs two
+independent verdicts, while a schedule that only reports status is reviewed by
+the daily pass. `accepted` means the pass decided not to act on a finding that
+is still true: the entry carries `owner` (who owns the risk) and `reviewBy`
+(the ISO date on which the next pass re-decides it), both required by the gate,
+and the finding appears in the report's `## Open` so the checklist and the
+ledger agree. `dormant` means the mechanism is implemented and tested but not
+active on this machine (F1); it is not a synonym for `enforced`. `documented`
+is retired (D88): prose is not an action, so a finding whose only mechanism is
+documentation is `open` with a tracking issue until a lever exists, or
+`accepted` with an owner and a review date. The `updated` date moves on every
+edit.
 
 <!-- audit-ledger:start -->
 ```json
 {
   "version": 1,
-  "updated": "2026-11-22",
+  "updated": "2026-11-23",
   "entries": [
     {
       "id": "F1",
@@ -477,34 +499,43 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
       "id": "F13",
       "title": "Every bash call repeats a leading cd into the worktree",
       "mechanism": "skill",
-      "status": "documented",
+      "status": "accepted",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "86 % of 25,772 bash calls in the baseline prefix cd <dir> && although the harness has workdir. The skill tells the daily pass and workers to pass workdir instead; this is documentation because a hook cannot see the intent behind a cd.",
+      "rationale": "86 % of 25,772 bash calls in the baseline prefix cd <dir> && although the harness has workdir. The isolation example in docs/WORKFLOW.md ended in a cd and now passes workdir as the per-call directory instead; the audit skill states the mapping. This is accepted, not enforced: a hook sees the literal cd but not the intent behind it — a deliberate cwd change (a subdirectory, or a guard-rail cd before a destructive command) and a redundant prefix look identical to a policy, so refusing the shape would fail legitimate calls. The daily digest counts the ratio and the next pass re-decides the risk on reviewBy.",
+      "owner": "the master",
+      "reviewBy": "2026-11-30",
       "evidence": [
-        "2026-11-22 evidence: 22,111/25,772 cd prefixes; 1,272 workdir"
+        "2026-11-22 evidence: 22,111/25,772 cd prefixes; 1,272 workdir",
+        "2026-11-23 #240/D88: docs/WORKFLOW.md isolation example passes workdir; accepted risk, review 2026-11-30"
       ]
     },
     {
       "id": "F14",
       "title": "verify is run many times per session where one gate would do",
       "mechanism": "skill",
-      "status": "documented",
+      "status": "accepted",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "950 npm run verify vs 325 narrow check runs in the window. The skill gives the narrow-first order (check:decisions, check:arch, a single test file) and keeps verify for the pre-push gate; a script cannot know whether the edit touched a gate.",
+      "rationale": "950 npm run verify vs 325 narrow check runs in the window. The skill gives the narrow-first order (check:decisions, check:arch, a single test file) and keeps verify for the pre-push gate. Accepted, not enforced: a script cannot know whether the edit touched a gate or whether this is the one run that belongs before a push, so a rule on top of verify would either duplicate the gate or count a legitimate first run as waste. The digest re-reads the ratio and the next pass re-decides the risk on reviewBy.",
+      "owner": "the master",
+      "reviewBy": "2026-11-30",
       "evidence": [
         "2026-11-22 evidence: 950 verify, 325 check:*",
-        "AGENTS.md §5 verify is the gate"
+        "AGENTS.md §5 verify is the gate",
+        "2026-11-23 #240/D88: accepted risk, review 2026-11-30; no check can see the edit's scope"
       ]
     },
     {
       "id": "F15",
       "title": "Agents use sed/grep/cat on files instead of read/grep tools",
       "mechanism": "skill",
-      "status": "documented",
+      "status": "accepted",
       "artifact": ".dsh/skills/dsh-anyplugin-audit/SKILL.md",
-      "rationale": "sed 5,966 and grep 4,951 calls against read 1,148. The shell forms evade the file-access sandbox and the read tool line discipline, and they cost more tokens for the same context. The skill states the tool mapping.",
+      "rationale": "sed 5,966 and grep 4,951 calls against read 1,148. The shell forms evade the file-access sandbox and the read tool line discipline, and they cost more tokens for the same context. The skill states the tool mapping. Accepted, not enforced: the guard sees sed/grep/cat in a command string but not whether it reads a file (the mapping applies) or filters a pipe or log (the shell form is the right one), so a deny rule would refuse legitimate pipelines. The digest re-reads the counts and the next pass re-decides the risk on reviewBy.",
+      "owner": "the master",
+      "reviewBy": "2026-11-30",
       "evidence": [
-        "2026-11-22 evidence: sed 5,966, grep 4,951, read 1,148"
+        "2026-11-22 evidence: sed 5,966, grep 4,951, read 1,148",
+        "2026-11-23 #240/D88: accepted risk, review 2026-11-30; no check can tell a file read from a pipe filter"
       ]
     },
     {

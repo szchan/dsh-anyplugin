@@ -31,7 +31,13 @@ const asJson = argv.includes('--json')
 const update = argv.includes('--update')
 
 const MECHANISMS = new Set(['hook', 'ci', 'lint', 'skill', 'reviewer', 'docs', 'schedule'])
-const STATUSES = new Set(['enforced', 'reviewed', 'documented', 'dormant', 'open', 'retired'])
+// The ledger vocabulary in docs/AUDIT.md §11. `documented` was retired by D88:
+// prose is not an action, so a sentence is not a status.
+const STATUSES = new Set(['enforced', 'reviewed', 'dormant', 'open', 'retired', 'accepted'])
+// The statuses a deferred finding can hold. With `open` and `dormant`, an
+// `accepted` risk is a promise to re-decide it on `reviewBy`, so every report's
+// ## Open carries it and the next pass sees it without reading the ledger.
+const DEFERRED = new Set(['open', 'dormant', 'accepted'])
 const MACHINE = new Set(['hook', 'ci', 'lint'])
 const REQUIRED = ['id', 'title', 'mechanism', 'status', 'artifact', 'rationale']
 const SECTIONS = ['## Evidence', '## Findings', '## Actions', '## Open']
@@ -44,6 +50,14 @@ const isFile = (path) => {
   } catch {
     return false
   }
+}
+// An accepted risk is a date, not a phrase: the next pass comes back on
+// `reviewBy`, so "soon" is not usable and "2026-02-31" is not a calendar day
+// even though Date.parse would roll it into March.
+const isIsoDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
+  const date = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
 }
 
 if (!existsSync(auditPath)) {
@@ -87,7 +101,14 @@ for (const entry of ledger.entries ?? []) {
   known.add(entry.id)
   statusById.set(entry.id, entry.status)
   if (!MECHANISMS.has(entry.mechanism)) fail(`${where}: unknown mechanism ${String(entry.mechanism)}`)
-  if (!STATUSES.has(entry.status)) fail(`${where}: unknown status ${String(entry.status)}`)
+  // Say why `documented` is refused instead of the generic unknown-status line:
+  // it was a status once, so it is the spelling a pass is most likely to reach
+  // for, and the correction is in §11 (owner + reviewBy, or open + tracking).
+  if (entry.status === 'documented') {
+    fail(`${where}: status documented is retired by docs/AUDIT.md §11 (D88): prose only is not an action; use accepted with owner and reviewBy, or open with a tracking issue`)
+  } else if (!STATUSES.has(entry.status)) {
+    fail(`${where}: unknown status ${String(entry.status)}`)
+  }
   if (!Array.isArray(entry.evidence) || entry.evidence.length === 0) fail(`${where}: evidence must be a non-empty array`)
   if (entry.mechanism === 'docs' && entry.status === 'enforced') fail(`${where}: docs cannot enforce; use hook/ci/lint`)
 
@@ -116,6 +137,16 @@ for (const entry of ledger.entries ?? []) {
   }
   if (entry.status === 'open' && !/#\d+|https?:\/\//u.test(String(entry.tracking ?? ''))) {
     fail(`${where}: status open needs tracking (#issue or URL)`)
+  }
+  // `accepted` is a decision with an owner and a date, not a sentence. An entry
+  // that says "known" without either is `open` with a tracking issue or nothing.
+  if (entry.status === 'accepted') {
+    if (typeof entry.owner !== 'string' || entry.owner.trim() === '') fail(`${where}: status accepted needs an owner`)
+    if (typeof entry.reviewBy !== 'string' || entry.reviewBy.trim() === '') {
+      fail(`${where}: status accepted needs a reviewBy date`)
+    } else if (!isIsoDate(entry.reviewBy)) {
+      fail(`${where}: status accepted needs reviewBy as a YYYY-MM-DD date, not ${String(entry.reviewBy)}`)
+    }
   }
 }
 
@@ -225,9 +256,9 @@ if (!existsSync(reportsDir)) {
     for (const match of text.matchAll(/\bF-?\d+\b/gu)) {
       if (!known.has(match[0])) fail(`docs/audits/${report}: ${match[0]} is not in the ledger`)
     }
-    // ## Open is the next pass's checklist. A reviewed or documented finding in
-    // that list sends the next pass after work that is not open, and an
-    // open/dormant finding missing from it is never picked up.
+    // ## Open is the next pass's checklist. A reviewed finding in that list
+    // sends the next pass after work that is not deferred, and an open,
+    // dormant or accepted finding missing from it is never picked up.
     const openStart = sections.get('## Open')
     if (openStart !== undefined) {
       let openEnd = lines.length
@@ -241,12 +272,12 @@ if (!existsSync(reportsDir)) {
       const inOpen = new Set([...openBody.matchAll(/\bF-?\d+\b/gu)].map((match) => match[0]))
       for (const id of inOpen) {
         const status = statusById.get(id)
-        if (status !== undefined && status !== 'open' && status !== 'dormant') {
+        if (status !== undefined && !DEFERRED.has(status)) {
           fail(`docs/audits/${report}: ${id} is in ## Open but its ledger status is ${status}`)
         }
       }
       for (const entry of ledger.entries) {
-        if ((entry.status === 'open' || entry.status === 'dormant') && !inOpen.has(entry.id)) {
+        if (DEFERRED.has(entry.status) && !inOpen.has(entry.id)) {
           fail(`docs/audits/${report}: ${entry.id} is ${entry.status} but missing from ## Open`)
         }
       }

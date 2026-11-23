@@ -133,6 +133,61 @@ test('## Open must list every open finding', () => {
   assert.match(result.stderr, /F1 is open but missing from ## Open/u)
 })
 
+// `documented` was removed from the vocabulary by docs/AUDIT.md §11 (D88). The
+// refusal has to name that, because "unknown status" would not tell a pass that
+// the fix is an owner and a review date rather than a typo.
+test('documented is refused with the §11 reason', () => {
+  const result = run(makeRoot([baseEntry({ status: 'documented' })]))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /documented is retired by docs\/AUDIT\.md §11/u)
+})
+
+test('an accepted risk needs an owner', () => {
+  const entry = baseEntry({ status: 'accepted', proof: undefined, reviewBy: '2026-11-30' })
+  const text = report.replace('nothing open', 'F1 is accepted.')
+  const result = run(makeRoot([entry], { reports: { '2026-11-22.md': text } }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /status accepted needs an owner/u)
+})
+
+test('an accepted risk needs a review date', () => {
+  const entry = baseEntry({ status: 'accepted', proof: undefined, owner: 'the master' })
+  const text = report.replace('nothing open', 'F1 is accepted.')
+  const result = run(makeRoot([entry], { reports: { '2026-11-22.md': text } }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /status accepted needs a reviewBy date/u)
+})
+
+test('a reviewBy phrase is not a date', () => {
+  const entry = baseEntry({ status: 'accepted', proof: undefined, owner: 'the master', reviewBy: 'soon' })
+  const text = report.replace('nothing open', 'F1 is accepted.')
+  const result = run(makeRoot([entry], { reports: { '2026-11-22.md': text } }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /reviewBy as a YYYY-MM-DD date/u)
+})
+
+test('a reviewBy cannot be a rolled-over calendar day', () => {
+  const entry = baseEntry({ status: 'accepted', proof: undefined, owner: 'the master', reviewBy: '2026-02-31' })
+  const text = report.replace('nothing open', 'F1 is accepted.')
+  const result = run(makeRoot([entry], { reports: { '2026-11-22.md': text } }))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /reviewBy as a YYYY-MM-DD date/u)
+})
+
+test('## Open may list an accepted finding', () => {
+  const entry = baseEntry({ status: 'accepted', proof: undefined, owner: 'the master', reviewBy: '2026-11-30' })
+  const text = report.replace('nothing open', 'F1 is accepted with a review date.')
+  const result = run(makeRoot([entry], { reports: { '2026-11-22.md': text } }))
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test('## Open must list every accepted finding', () => {
+  const entry = baseEntry({ status: 'accepted', proof: undefined, owner: 'the master', reviewBy: '2026-11-30' })
+  const result = run(makeRoot([entry]))
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /F1 is accepted but missing from ## Open/u)
+})
+
 test('a dormant mechanism still has to be a machine mechanism', () => {
   const result = run(makeRoot([baseEntry({ status: 'dormant', mechanism: 'docs' })]))
   assert.equal(result.status, 1)

@@ -95,8 +95,16 @@ root=${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}
 mkdir -p "$root"
 dir=$root/ticket-<n>
 git worktree add "$dir" -b ticket/<n> origin/main    # the master creates it
-cd "$dir"
 ```
+
+Every call after that sets the directory on the call — `workdir: "$dir"` — not
+a `cd "$dir" &&` prefix. A `cd` only repeats the directory the call already
+carries, and it is the same cost on every call; a command that must run in a
+subdirectory passes that subdirectory as the workdir too. The difference is not
+enforceable: a hook can see the literal `cd` but not whether it changes
+directory on purpose (into a subdirectory, or before a command that must not run
+at the top level), so this is a review convention, not a guard rule — the audit
+carries it as an accepted risk (F13, D88).
 
 The shared parent and the `ticket-<n>` stem matter to the guard:
 `npm run guard:install` writes one pattern (`$root/ticket-*`), not a snapshot of

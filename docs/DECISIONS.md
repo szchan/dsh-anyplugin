@@ -4008,3 +4008,67 @@ points at `docs/WORKFLOW.md` §Escalation; §Escalation points back and states t
 declared-default path. `npm run check:decisions` locks this entry. There is no
 code and no test: the enforcement is procedural, so the evidence is the text the
 worker and the reviewer read.
+
+## D88 — Retire the documented finding status; accepted risks carry an owner and a review date
+
+**Decided 2026-11-23** (#240, finding 6 of the 2026-11-22 workflow review).
+`docs/AUDIT.md` §11 listed `documented` as a finding status: "prose only". F13,
+F14 and F15 were filed that way even though the evidence in the same pass showed
+the behavior still happening, so the next pass had no action to take except to
+write the same paragraphs again. A status whose only exit is another pass of the
+same prose is not a status; it is a deferral that never expires.
+
+1. **The status set is closed, and it is enforced.** A finding is exactly one of
+   `enforced`, `reviewed`, `dormant`, `open`, `retired` or `accepted`.
+   `scripts/check-audit.mjs` refuses `documented` by name, with the §11 reason
+   and the two exits (an `open` finding needs a tracking issue; an `accepted`
+   one needs an owner and a review date), so a pass cannot reintroduce the word
+   as a typo-shaped status. The status list is not a suggestion the report can
+   widen; §9 of `docs/AUDIT.md` is the gate.
+2. **`accepted` is a decision with a name and an expiry, not a deferral.**
+   An accepted entry carries `owner` (who owns the risk) and `reviewBy` (the ISO
+   date the next pass re-decides it), both required by the gate, and `reviewBy`
+   is a real calendar day: `2026-02-31` and `soon` are refused, because a phrase
+   is how the old status died. When the date arrives the pass renews the date,
+   retires the finding, or moves it to a lever; it does not re-argue the risk.
+   This is why the status is not called "documented" again: the sentence that
+   documents it was never the part that was missing.
+3. **An accepted finding stays on the next pass's checklist.** The gate requires
+   every `open`, `dormant` and `accepted` entry to appear in every report's
+   `## Open`, and every id named there to hold one of those three statuses; the
+   report and the ledger cannot drift apart, and a deferred finding cannot fall
+   out of the next pass by being deleted from the report. F13–F15 are in
+   `docs/audits/2026-11-22.md` `## Open` with owner the master and
+   `reviewBy: 2026-11-30`.
+4. **Where prose could carry a lever, the prose changed in this PR.** The
+   worktree setup example in `docs/WORKFLOW.md` §Isolation ended in
+   `cd "$dir"`, which is what the per-call `cd` prefix copies; it now teaches
+   `workdir` as the directory on the call (including a subdirectory) and says
+   why the shape is not hook-checkable: a guard sees the literal `cd` but not
+   whether it is a redundant prefix or a deliberate directory change. F13 stays
+   `accepted` for that reason, not because nothing changed — the example that
+   taught the habit is fixed.
+5. **No finding is deleted to make the ledger greener.** F13, F14 and F15 keep
+   their ids, titles, mechanism and artifact (the lock still pins the identity);
+   they change status and gain the reason no check can see the intent. Deleting
+   them would make the counts look better and the process worse.
+
+**Not claimed.** That `accepted` is a way to park work: it expires, the next
+pass re-decides it, and the weekly mutation check is still the only defense
+against a green mechanism that does nothing. That the gate checks the mechanism
+works; §9 of `docs/AUDIT.md` says it checks shape, and the reviewer and the
+weekly check are the rest. That a hook can see intent — if it could, F13 would
+be `enforced`. That F14 and F15 have a lever a check can see: none was found, so
+they are `accepted` with the reason (edit scope, and file read versus pipe
+filter, are not visible in the command string), and the next pass re-decides
+them at `reviewBy`.
+
+**Evidence.** `docs/AUDIT.md` §11 states the closed vocabulary and the
+`accepted` fields; §9 states the gate bullets that enforce it. `scripts/
+check-audit.mjs` holds `STATUSES` (`documented` gone), the named `documented`
+refusal, the `owner`/`reviewBy` validation and the `## Open` membership rule;
+`scripts/check-audit.test.mjs` adds seven tests for those paths and passes 29/29
+locally. `docs/audits/2026-11-22.md` `## Open` carries F13–F15, and its
+daily-pass `## Actions` records the 2026-11-23 correction. `docs/WORKFLOW.md`
+§Isolation teaches `workdir` and states the hook limit. `npm run check:audit`
+passes; the entry is locked by `npm run check:decisions`.
