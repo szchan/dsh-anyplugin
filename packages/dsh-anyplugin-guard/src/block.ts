@@ -312,8 +312,13 @@ function resolvePlain(text: string, line: number): unknown {
   if (/^(?:[-+]?[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u.test(text)) return Number(text)
   // A plain scalar the reader cannot type confidently is refused: the loader
   // may throw on it (`foo: bar`, `- b`) or type it as something we do not model
-  // (`0b`, `1_000`, `.inf`). A refusal makes the comparison stale, never
-  // current, which is the direction F20 needs.
+  // (`.inf`, `.NaN` — the loader's schema reads them as non-finite numbers,
+  // which the block cannot have meant and which do not survive a JSON report).
+  // A refusal makes the comparison stale, never current, which is the direction
+  // F20 needs.
+  if (/^[-+]?(?:\.inf|\.Inf|\.INF|\.nan|\.NaN|\.NAN)$/u.test(text)) {
+    fail(line, `plain value ${JSON.stringify(text)} is not a finite number; quote it`)
+  }
   if (text.includes(': ') || text.startsWith('- ') || text.startsWith('? ') || /^[&*!|>{[\]}]/u.test(text)) {
     fail(line, `plain value ${JSON.stringify(text)} is not read; quote it`)
   }
@@ -414,7 +419,11 @@ function parseQuoted(document: Document, line: number, column: number, quote: st
     value += escapedBreak ? pending : ' '
     pending = ''
     current = next
+    // A fold discards the continuation's leading whitespace. js-yaml treats a
+    // leading tab the same way (`"x\` + LF + TAB + `y"` is `xy`), so a tab can
+    // never be content at the start of a folded line (F20 follow-up).
     position = indentOf(continuation)
+    while (continuation[position] === '\t') position += 1
     document.index = Math.max(document.index, current)
   }
 }

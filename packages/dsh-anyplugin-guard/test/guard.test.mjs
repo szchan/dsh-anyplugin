@@ -1779,6 +1779,22 @@ test('the block reader types plain scalars the way the loader does, and folds wh
   assert.equal(escapedSpaceFold.ok, true, escapedSpaceFold.ok ? '' : escapedSpaceFold.reason)
   assert.deepEqual({ ...escapedSpaceFold.value }, { name: 'src/ind  ex.ts' }, 'a bare fold adds a space next to an escaped one')
 
+  // A *bare* break drops the raw whitespace that sits before it, and a fold
+  // discards the continuation's leading whitespace including a tab. Both are
+  // js-yaml's reading (`"x  \n  y"` is `x y`, `"x\` + LF + TAB + `y"` is `xy`),
+  // and both are pinned here so a lenient reader cannot pass.
+  const bareTrailing = parseBlock('name: "src/ind   \n        ex.ts"\n')
+  assert.equal(bareTrailing.ok, true, bareTrailing.ok ? '' : bareTrailing.reason)
+  assert.deepEqual({ ...bareTrailing.value }, { name: 'src/ind ex.ts' }, 'a bare break drops raw trailing whitespace')
+
+  const bareTrailingTab = parseBlock('name: "src/ind\t\n        ex.ts"\n')
+  assert.equal(bareTrailingTab.ok, true, bareTrailingTab.ok ? '' : bareTrailingTab.reason)
+  assert.deepEqual({ ...bareTrailingTab.value }, { name: 'src/ind ex.ts' }, 'a bare break drops a raw trailing tab')
+
+  const tabContinuation = parseBlock('name: "src/index.ts\\\n\tex.mjs"\n')
+  assert.equal(tabContinuation.ok, true, tabContinuation.ok ? '' : tabContinuation.reason)
+  assert.deepEqual({ ...tabContinuation.value }, { name: 'src/index.tsex.mjs' }, 'a fold skips a leading tab in the continuation')
+
   // Plain scalars are typed by the YAML schema, so `TRUE` is a boolean and
   // `0x10` is 16: reading them as strings would make two different loader
   // documents compare equal.
@@ -1799,6 +1815,16 @@ test('the block reader types plain scalars the way the loader does, and folds wh
   const sequenceLike = parseBlock('a: - b\n')
   assert.equal(sequenceLike.ok, false)
   assert.match(sequenceLike.ok ? '' : sequenceLike.reason, /plain value "- b" is not read/u)
+
+  // The loader's schema types `.inf` / `.NaN` as non-finite numbers; the block
+  // cannot mean them, and a JSON report cannot round-trip them, so they are
+  // refused (stale, never current).
+  const infinite = parseBlock('a: .inf\n')
+  assert.equal(infinite.ok, false)
+  assert.match(infinite.ok ? '' : infinite.reason, /is not a finite number; quote it/u)
+  const notANumber = parseBlock('a: -.NaN\n')
+  assert.equal(notANumber.ok, false)
+  assert.match(notANumber.ok ? '' : notANumber.reason, /is not a finite number; quote it/u)
 
   // `guardWorktrees` selects the guard's own insert row, not the first one, and
   // a malformed config is "unknown", never a guess (m3-drop-id-check mutation).

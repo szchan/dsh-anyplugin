@@ -4221,13 +4221,17 @@ value. #268 was a false `stale` for exactly that reason.
    dependency; D23's rationale) refuses duplicate keys, anchors, aliases, tags,
    flow collections, block scalars and quoted scalars it cannot fold. It folds
    a quoted scalar the way the loader does — an escaped line break removes the
-   break and the continuation's indentation while spaces before the backslash
-   and spaces decoded from `\ ` stay content; a bare break folds to one space
-   and drops only raw trailing whitespace. Plain scalars are typed the way the
-   loader's schema types them (`TRUE`/`True` booleans, `Null`/`~` null,
-   `0x10`/`0o12`/`0b101`/`012`/`+1`/`.5` numbers) and a plain scalar the loader
-   would reject (`foo: bar`, `- b`) is refused. #274 review showed both lenient
-   readings produced a false `current`.
+   break and the continuation's indentation (spaces and tabs; a tab can never
+   start content after a fold) while spaces before the backslash and spaces
+   decoded from `\ ` stay content; a bare break folds to one space and drops
+   only raw trailing whitespace. Plain scalars are typed the way the loader's
+   schema types them (`TRUE`/`True` booleans, `Null`/`~` null,
+   `0x10`/`0o12`/`0b101`/`012`/`+1`/`.5` numbers); a plain scalar the loader
+   would reject (`foo: bar`, `- b`) is refused, and so is one the loader types
+   as a non-finite number (`.inf`, `.nan`), because the block cannot mean it and
+   a JSON report cannot round-trip it. #274 review showed both lenient readings
+   produced a false `current`, and its round-2 re-check found the two accepted
+   inputs this paragraph now covers.
 5. **A serialisation that differs while the values match is reported.** Status
    stays `current`; the human output and JSON `reserialised: true` say so, so a
    folded block is visibly read, not silently accepted.
@@ -4249,3 +4253,4 @@ whitespace the way YAML does` and the status regression by `guard:status reads a
 folded block as current, and still refuses a changed, a duplicated or an
 unreadable one` in `packages/dsh-anyplugin-guard/test/guard.test.mjs` (91 guard
 tests), with `verify` on the merge head.
+
