@@ -17,11 +17,13 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import zlib from 'node:zlib'
 
 import { apply } from '../packages/dsh-anyplugin-guard/src/index.ts'
+import { mainCheckout } from './audit-checkout.mjs'
 import { GUARD_PROBE_TIMEOUT_MS, parseProbeTimeout } from './guard-probe-timeout.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -448,4 +450,237 @@ test('a probe that times out is unavailable, and the digest still exits 0', () =
   )
   assert.equal(evidence.guard.status, 'unavailable')
   assert.match(evidence.guard.error, /timed out after 100 ms/u)
+})
+
+// F21: a seeded fork's transcript opens with a byte copy of its ancestor's
+// events, so counting the whole file lists inherited work as the child's own.
+// The digest must count the independent tail after the tagged cut, sort the
+// eight largest by that independent window work (the role-cap unit, D73), name
+// a seeded session whose cut cannot be read, and print the greatest decision
+// number rather than the last line. These fixtures build a DSH home and spawn
+// the CLI without `--no-sessions`, because the digest text and the evidence
+// JSON are the contract an auditor reads.
+const projectRoot = mainCheckout(root)
+const sessionBucketName = `--${projectRoot.replaceAll(sep, '-').replace(/^-+/u, '')}--`
+
+// zstd is only needed to build transcript fixtures. Native support landed in
+// Node 22.15; older Node falls back to the CLI so this file still loads there.
+function compress(bytes) {
+  if (typeof zlib.zstdCompressSync === 'function') return zlib.zstdCompressSync(Buffer.from(bytes))
+  const result = spawnSync('zstd', ['-q', '-c'], { input: Buffer.from(bytes), maxBuffer: 64 * 1024 * 1024 })
+  assert.equal(result.status, 0, `no native zstd and \`zstd -q -c\` failed: ${String(result.stderr ?? result.error)}`)
+  return result.stdout
+}
+
+function sessionAuditFixtures() {
+  const home = mkdtempSync(join(tmpdir(), 'audit-sessions-'))
+  const bucket = join(home, 'sessions', sessionBucketName)
+  mkdirSync(bucket, { recursive: true })
+  return { home, bucket }
+}
+
+function writeSessionFixture(bucket, id, events) {
+  const dir = join(bucket, id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'session.v4.jsonl.zstd'), compress(`${events.map((event) => JSON.stringify(event)).join('\n')}\n`))
+}
+
+// The projection cache is the digest's second source for a seed's cut; it may
+// only sharpen the "cannot tell" note, never replace the transcript.
+function writeProjectionFixture(home, id, identity) {
+  const dir = join(home, 'storages', 'session_projcache', 'sessions')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify({ version: 7, record: { identity } }))
+}
+
+function runAuditSessions(home, dir, args = []) {
+  return spawnSync(process.execPath, [script, ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, DSH_ANYPLUGIN_AUDIT_DIR: dir, DSH_HOME: home },
+  })
+}
+
+function headerLine(id, { seeded = false, depth = 0 } = {}) {
+  return {
+    type: 'session',
+    version: 4,
+    id,
+    createdAt: new Date().toISOString(),
+    cwd: root,
+    isSeeded: seeded,
+    delegationDepth: depth,
+    agentPreset: 'standard',
+  }
+}
+
+function call(seq, name, time) {
+  const args = name === 'bash' ? { command: 'npm run check:features' } : { file_path: '/work/repo/x.md' }
+  return { seq, time, type: 'tool/call', data: { callId: `call-${seq}`, name, arguments: JSON.stringify(args) } }
+}
+
+function inheritedMarker(seq, time) {
+  return { seq, time, type: 'session/end-seed', data: { inherited: true } }
+}
+
+test('a seeded fork counts only events after its tagged cut, and the eight largest are ordered by independent window work', () => {
+  const dir = audit('seeded-fork')
+  const { home, bucket } = sessionAuditFixtures()
+  const now = Date.now()
+  const old = now - 10 * 86_400_000
+  writeSessionFixture(bucket, 'root-session-01', [
+    headerLine('root-session-01', { depth: 0 }),
+    call(0, 'bash', now),
+    call(1, 'bash', now),
+    call(2, 'bash', now),
+  ])
+  // Four inherited calls, a tagged cut, then independent work: two bash calls in
+  // the window and one read older than it (lifetime but not window).
+  writeSessionFixture(bucket, 'seeded-child-01', [
+    headerLine('seeded-child-01', { seeded: true, depth: 1 }),
+    call(0, 'bash', old),
+    call(1, 'bash', old),
+    call(2, 'bash', old),
+    call(3, 'bash', old),
+    inheritedMarker(4, old),
+    call(5, 'bash', now),
+    call(6, 'read', old),
+    call(7, 'bash', now),
+  ])
+  writeProjectionFixture(home, 'seeded-child-01', {
+    formatVersion: 4,
+    cwd: root,
+    isSeeded: true,
+    inheritedEventCount: 4,
+  })
+  writeSessionFixture(bucket, 'plain-child-01', [
+    headerLine('plain-child-01', { depth: 1 }),
+    call(0, 'bash', now),
+  ])
+  writeProjectionFixture(home, 'plain-child-01', {
+    formatVersion: 4,
+    cwd: root,
+    isSeeded: false,
+    inheritedEventCount: 0,
+  })
+
+  const result = runAuditSessions(home, dir, ['--days', '1'])
+  assert.equal(result.status, 0, result.stderr)
+  // The copied prefix is reported as excluded, never silently dropped.
+  assert.match(
+    result.stdout,
+    /^- inherited prefixes excluded: 1 seeded session\(s\), 4 copied tool calls \(not independent work\)$/mu,
+  )
+  // Aggregates count independent calls only: 3 root + 2 seeded + 1 plain bash calls.
+  assert.match(result.stdout, /^- bash 6 calls;/mu)
+  assert.match(result.stdout, /^- tools: bash 6, read 1$/mu)
+  // The eight largest show independent window work, with lifetime as context.
+  assert.match(result.stdout, /seeded-child-01 d1 window 2 lifetime 3 inherited 4/u)
+
+  const evidence = JSON.parse(runAuditSessions(home, dir, ['--days', '1', '--json']).stdout)
+  assert.deepEqual(
+    evidence.sessions.largest.map((row) => row.id),
+    ['root-session-01', 'seeded-child-01', 'plain-child-01'],
+    'the table is ordered by independent window work (3 > 2 > 1), not lifetime',
+  )
+  const seeded = evidence.sessions.largest.find((row) => row.id === 'seeded-child-01')
+  assert.deepEqual(
+    { window: seeded.window, lifetime: seeded.lifetime, inherited: seeded.inherited, seed: seeded.seed },
+    { window: 2, lifetime: 3, inherited: 4, seed: 'seeded' },
+  )
+  assert.deepEqual(evidence.sessions.inherited, { sessions: 1, tools: 4 })
+  assert.deepEqual(evidence.sessions.unknownSeed, [])
+  assert.equal(evidence.sessions.toolCalls.find((row) => row.name === 'bash')?.count, 6)
+})
+
+test('decisions.last is the greatest decision number, not the last line in the file', () => {
+  const dir = audit('decisions-order')
+  const home = mkdtempSync(join(tmpdir(), 'audit-empty-home-'))
+  const file = join(mkdtempSync(join(tmpdir(), 'decisions-order-')), 'DECISIONS.md')
+  writeFileSync(file, ['## D85 — five', '', '## D88 — eight', '', '## D84 — four', '', '## D86 — six', ''].join('\n'))
+  const env = { DSH_ANYPLUGIN_AUDIT_DECISIONS: file, DSH_HOME: home }
+  const result = runAudit(dir, ['--days', '1'], env)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /^- decisions: 4 \(last D88; duplicates: none\)$/mu)
+  const evidence = JSON.parse(runAudit(dir, ['--days', '1', '--json'], env).stdout)
+  assert.deepEqual(evidence.decisions, { entries: 4, last: 'D88', duplicates: [] })
+})
+
+test('a seeded header whose cut cannot be read is excluded and named, not counted as independent work', () => {
+  const dir = audit('unknown-seed')
+  const { home, bucket } = sessionAuditFixtures()
+  const now = Date.now()
+  // Seeded header, no tagged cut: the projection cache knows how much is
+  // inherited, but the digest must say it cannot tell, not guess.
+  writeSessionFixture(bucket, 'broken-seed-01', [
+    headerLine('broken-seed-01', { seeded: true, depth: 1 }),
+    call(0, 'bash', now),
+    call(1, 'bash', now),
+    call(2, 'bash', now),
+  ])
+  writeProjectionFixture(home, 'broken-seed-01', {
+    formatVersion: 4,
+    cwd: root,
+    isSeeded: true,
+    inheritedEventCount: 7,
+  })
+  writeSessionFixture(bucket, 'plain-child-01', [
+    headerLine('plain-child-01', { depth: 1 }),
+    call(0, 'bash', now),
+    call(1, 'bash', now),
+  ])
+
+  const result = runAuditSessions(home, dir, ['--days', '1'])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(
+    result.stdout,
+    /^- seeded prefixes unreadable, excluded from the counts \(the digest cannot tell inherited history from independent work\): broken-seed-01 \(seeded header without a tagged end-of-seed marker; the projection cache says 7 inherited events\)$/mu,
+  )
+  // Only the readable session's calls are counted.
+  assert.match(result.stdout, /^- bash 2 calls;/mu)
+  assert.match(result.stdout, /plain-child-01 d1 window 2 lifetime 2 inherited 0/u)
+  assert.doesNotMatch(result.stdout, /broken-seed-01 d1/u, 'an unreadable seed prefix must not be listed as independent work')
+
+  const evidence = JSON.parse(runAuditSessions(home, dir, ['--days', '1', '--json']).stdout)
+  assert.deepEqual(evidence.sessions.unknownSeed, [
+    { id: 'broken-seed-01', reason: 'seeded header without a tagged end-of-seed marker', projection: 7 },
+  ])
+  assert.deepEqual(evidence.sessions.largest.map((row) => row.id), ['plain-child-01'])
+  assert.equal(evidence.sessions.toolCalls.find((row) => row.name === 'bash')?.count, 2)
+})
+
+test('the last tagged cut wins, so a fork of a fork does not count its inner interval as work', () => {
+  const dir = audit('nested-seed')
+  const { home, bucket } = sessionAuditFixtures()
+  const now = Date.now()
+  // Two tagged cuts (a fork of a fork) and one untagged restore boundary: only
+  // the last tagged cut is the session's seed boundary, and the interval between
+  // the tagged cuts is still inherited history.
+  writeSessionFixture(bucket, 'nested-seed-01', [
+    headerLine('nested-seed-01', { seeded: true, depth: 2 }),
+    call(0, 'bash', now),
+    { seq: 1, time: now, type: 'session/end-seed', data: { inherited: false } },
+    call(2, 'bash', now),
+    inheritedMarker(3, now),
+    call(4, 'bash', now),
+    inheritedMarker(5, now),
+    call(6, 'bash', now),
+    call(7, 'read', now),
+  ])
+  writeProjectionFixture(home, 'nested-seed-01', {
+    formatVersion: 4,
+    cwd: root,
+    isSeeded: true,
+    inheritedEventCount: 5,
+  })
+
+  const evidence = JSON.parse(runAuditSessions(home, dir, ['--days', '1', '--json']).stdout)
+  const row = evidence.sessions.largest.find((candidate) => candidate.id === 'nested-seed-01')
+  assert.ok(row, 'the seeded session must still appear in the eight largest')
+  assert.deepEqual(
+    { window: row.window, lifetime: row.lifetime, inherited: row.inherited, seed: row.seed },
+    { window: 2, lifetime: 2, inherited: 3, seed: 'seeded' },
+  )
+  assert.deepEqual(evidence.sessions.inherited, { sessions: 1, tools: 3 })
 })
