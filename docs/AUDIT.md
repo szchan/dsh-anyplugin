@@ -616,33 +616,44 @@ edit.
       "id": "F20",
       "title": "Guard status reports a current install as stale",
       "mechanism": "hook",
-      "status": "open",
+      "status": "enforced",
       "artifact": "scripts/guard-status.mjs",
-      "tracking": "#268",
-      "rationale": "On 2026-11-23 `npm run guard:status` exited 1 with status `stale` and `the installed block differs from the tree at line 4`. The installed profile block is a folded double-quoted YAML scalar (the path is split as `.../src/ind` + `ex.ts` across two lines); the status tool compares raw lines, while the parsed value is `.../src/index.ts`, the same mount the current block names. The pre-push hook is current and `.audit/guard-denials.jsonl` holds live rows from the last day (its aggregation is covered by `scripts/audit-evidence.test.mjs`), so the guard is installed and live; only the comparison and its report are wrong. The fix is to parse the YAML scalar (or normalize the mount before comparing) and add a test whose installed block is folded; the digest line then reports current, and F2's input is honest again.",
+      "rationale": "On 2026-11-23 `npm run guard:status` exited 1 with status `stale` and `the installed block differs from the tree at line 4`. The installed profile block is a folded double-quoted YAML scalar (the path is split as `.../src/ind` + `ex.ts` across two lines); the status tool compared raw lines while the parsed value is `.../src/index.ts`, the same mount the current block names. Fixed the same day in #274 (`8157507`): `packages/dsh-anyplugin-guard/src/block.ts` now reads the managed block (JSON-schema subset, folded/quoted scalars, JSON plain scalars) and `scripts/guard-status.mjs` compares parsed values on both sides, so a folded scalar or a reseated comment no longer reads as drift while a changed value still does. Fail-closed: any side the reader cannot account for is `stale` with a reason, never `current`. D90 records the contract (`false stale, never false current`). 2026-11-23 verification: on the real profile the status is `current` with `reserialised: true` and the pre-push hook current.",
       "evidence": [
-        "2026-11-23 guard:status: status stale, first difference line 4; profile /home/szchan/.dsh/profiles/desktop/cordis.patch.yml",
-        "installed block: name: \"/home/.../packages/dsh-anyplugin-guard/src/ind\" + newline + ex.ts\"; current block: name: \".../src/index.ts\"",
-        "pre-push hook current; the log's live rows (2026-11-22T17:00Z–2026-11-23T17:03Z) are aggregated by `scripts/audit-evidence.test.mjs`"
+        "2026-11-23 before: status stale, first difference line 4; profile /home/szchan/.dsh/profiles/desktop/cordis.patch.yml",
+        "installed block is folded: name: \"/home/.../packages/dsh-anyplugin-guard/src/ind\" + newline + ex.ts\"",
+        "2026-11-23 after #274: status current, reserialised true, hook current; folded/quoted fold corpus and JSON plain-scalar typing agree with js-yaml JSON_SCHEMA; refused inputs include anchors/aliases/tags, flow collections, block scalars, ambiguous plains and non-finite numbers",
+        "review rounds: #274 comment 7112074975 (fold and plain-scalar fail-open), 7112790643, and 7113416525 (CHECKED at 999f4515); verify run 45260542060, 1,204 tests / 0 skipped on both pins"
       ],
-      "owner": "the master",
-      "reviewBy": "2026-11-30"
+      "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
     },
     {
       "id": "F21",
       "title": "The evidence digest counts inherited seeded-session history as independent work",
       "mechanism": "reviewer",
-      "status": "open",
+      "status": "retired",
       "artifact": "scripts/audit-evidence.mjs",
-      "tracking": "#269",
-      "rationale": "The 2026-11-23 digest lists two children at 3,685 tool calls each, but both are seeded forks of the root prefix (each session's projection record says `isSeeded: true`, and its end-seed marker is seq 25,690); their counts are inherited, not independent work, and the eight-largest table double-counts 7,370 calls. The same digest prints `decisions.last: D84` while the file order ends at D84 and the highest id is D88. The role cap reads the root's window (1,931 at evidence time), not the lifetime column, but the table invites the wrong unit. The fix is to exclude the inherited prefix from the per-session counts, print a window column as the cap unit, take the numeric maximum decision id, and pin a seeded-fork fixture; the audit then reports independent work and a true `last`.",
+      "rationale": "Retired on 2026-11-23: the behaviour was fixed and merged (#275, `626ac82`), but this entry was recorded with the `reviewer` mechanism, which cannot enforce a status (D88 and docs/AUDIT.md section 11: only hook/ci/lint can). The ledger's identity rule forbids re-mechanising an existing id, so the fix is recorded as F22 with the CI mechanism and this finding is retired. The original text: the 2026-11-23 digest lists two children at 3,685 tool calls each, but both are seeded forks of the root prefix (each session's projection record says `isSeeded: true`, and its end-seed marker is seq 25,690); their counts are inherited, not independent work, and the eight-largest table double-counts 7,370 calls. The same digest prints `decisions.last: D84` while the file order ends at D84 and the highest id is D88.",
       "evidence": [
-        "2026-11-23 digest: a5d42890 and ca312f93 each 3,685 lifetime tool calls, cwd repo root; the session projections say isSeeded true, with end-seed markers at seq 25,690 (the digest itself prints lifetime without separating inherited work)",
-        "2026-11-23 digest: decisions 88 entries, last \"D84\"; at that pass `docs/DECISIONS.md` had highest id D88 (D89 landed later the same day)",
-        "2026-11-23 root transcript: 4,922 lifetime / 1,931 window under the evidence-time upper bound (2,008 on a review-time recount with the lower bound alone; a live snapshot either way); other children 384/368/231/230/220"
+        "2026-11-23 digest: a5d42890 and ca312f93 each 3,685 lifetime tool calls; the session projections say isSeeded true, with end-seed markers at seq 25,690",
+        "2026-11-23 digest: decisions 88 entries, last \"D84\" while the highest id was D88",
+        "fix landed as #275 / 626ac82; behaviour and enforcement recorded in F22"
+      ]
+    },
+    {
+      "id": "F22",
+      "title": "The evidence digest separates inherited seeded-session history from independent work",
+      "mechanism": "ci",
+      "status": "enforced",
+      "artifact": "scripts/audit-evidence.mjs",
+      "rationale": "2026-11-23: the digest counted seeded-session history as independent work (two forks of the root prefix at 3,685 tool calls each, so the eight-largest table double-counted 7,370 calls) and printed `decisions.last` in file order (D84) rather than by numeric maximum (D88). Fixed the same day in #275 (`626ac82`): `scripts/audit-evidence.mjs` reads each projection's `isSeeded` flag and the last `session/end-seed` marker (`data.inherited === true`, the last marker for a fork of a fork) to cut the inherited prefix, prints `lifetime | window | inherited` per session, sorts the eight-largest table by the independent window (D73's cap unit), and takes the numeric maximum decision id. 2026-11-23 verification: the live digest excludes two seeded sessions and 7,370 calls, the two 3,685-call children leave the table, and a shuffled decision fixture (D85, D88, D84, D86) reports `last D88` where the old code reported D86.",
+      "evidence": [
+        "2026-11-23 before: digest double-counted 7,370 inherited calls; decisions last D84 while the highest id was D88",
+        "2026-11-23 after #275: digest excludes the two seeded forks (7,370 calls) and prints lifetime/window/inherited; shuffled fixture reports last D88",
+        "review: #275 rounds, including reviewer-275's ordering-evidence MUST and the CHECKED verdict; verify runs 45249807653 and 45242932892",
+        "D73 (the cap is the window) and D88 (the ledger vocabulary)"
       ],
-      "owner": "the master",
-      "reviewBy": "2026-11-30"
+      "proof": "scripts/audit-evidence.test.mjs"
     }
   ]
 }
