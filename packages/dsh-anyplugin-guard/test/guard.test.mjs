@@ -592,7 +592,9 @@ test('the plugin mounts one pre-execute listener and denies before the tool runs
   assert.equal(listeners.get('agent/pre-step')?.length, 1)
   assert.equal(disposers.length, 4, 'two seam mounts plus the created/disposed pair')
 
-  const exec = (name, args, agent = worker) => ({ callId: 1, name, arguments: args, agent })
+  // D80: the seams read the session header, not a hand-built view.
+  const runtime = (agent) => ({ session: { header: { id: agent.id, cwd: agent.cwd, ...(agent.worker ? { origin: 'subagent' } : {}) } } })
+  const exec = (name, args, agent = worker) => ({ callId: 1, name, arguments: args, agent: runtime(agent) })
   let ran = 0
   const next = async () => {
     ran += 1
@@ -631,7 +633,7 @@ test('the installed guard denies an unpinned merge and allows a pinned one', asy
     const listener = listeners.get('tools/pre-execute')[0]
     assert.equal(typeof listener, 'function')
 
-    const rootAgent = { session: { header: { id: 'root-1', cwd: repo } } }
+    const rootAgent = { session: { header: { id: 'root-1', cwd: checkout } } }
     let ran = 0
     const next = async () => {
       ran += 1

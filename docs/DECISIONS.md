@@ -3448,3 +3448,36 @@ contract's own terms and is corrected here:
 
 D74's class, anchors and evidence stand; only the GA framing and the ordering
 of the remaining work are superseded.
+
+## D80 — The guard is scoped to this checkout and its ticket worktrees
+
+The guard is installed into a *user* profile, so DSH loads it for every session
+on the machine. `#221` named the consequence: the maintainer opened an
+unrelated project and the guard denied it. A layer that polices the whole host
+is not a layer anyone keeps installed.
+
+1. **Territory, not configuration.** The scope is derived from what the
+   installer already composes: `protectedRoots` (this checkout; the `.git`
+   entry is a write target, not a session cwd) and `worktrees` (exact ticket
+   paths, or `<stem>-*` namespaces). No new config key is invented, so the
+   dry-run table and the profile patch keep describing the same policy.
+2. **Inert outside.** For a session whose `header.cwd` is outside the
+   territory, both seams call `next()` before judging: no denial, no brief, no
+   denial record. The guard does not *observe* other projects either — a
+   dormant mechanism that still logs is a surveillance tool, not a guard.
+3. **Unknown cwd is outside.** With a territory configured, a session without
+   `header.cwd` is treated as outside rather than guessed at: the guard's own
+   view of a session is one path from the pin, and inventing a default would
+   police whatever directory the host happened to start in. An *unconfigured*
+   policy (a hand-written config, a unit test) keeps the previous global
+   behaviour, because silently switching an unconfigured guard off is the worse
+   failure.
+4. **Workers stay governed.** The worktree pattern is matched segment-wise
+   (`/tmp/anyplugin-wt/ticket-*` covers `/tmp/anyplugin-wt/ticket-225/…`, not
+   `/tmp/anyplugin-wt/notes`), and a worker whose cwd is a ticket worktree is
+   judged even though that path is outside the checkout.
+
+Evidence: `packages/dsh-anyplugin-guard/src/scope.ts` (unit table in
+`test/scope.test.mjs`), and two apply-level tests — one session outside the
+territory is accepted with no brief and no record, one inside a real ticket
+worktree is denied and recorded.
