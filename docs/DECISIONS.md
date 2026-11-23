@@ -3958,3 +3958,53 @@ veto, and §Review rubric states the step, the vocabulary and the bounce;
 `npm run check:decisions` locks the appended entry. There is no code and no test:
 the enforcement is procedural, so the evidence is the text the master reads and
 the pin on the merge. That limit is the point of rule 4.
+
+## D87 — A worker blocks only for the four human classes, and declares a default otherwise
+
+**Decided 2026-11-23** (#239, finding 4 of the 2026-11-22 workflow review).
+`docs/WORKFLOW.md` §Escalation told a worker to comment `BLOCKED: <question>`
+and stop whenever it could not proceed without a decision. `docs/TRIAGE.md` §6
+said no silent blocking: work that can proceed on a declared default proceeds
+and records it, and only a decision that would bend §3 waits. The same worker on
+the same ticket read two rules, so a decidable ambiguity could stall a ticket
+the master never had to see.
+
+1. **`BLOCKED` is a closed set, and the set is written down once.** A worker
+   comments `BLOCKED: <question>` and stops only for the four human classes
+   listed in `docs/TRIAGE.md` §6; that section is the definition, and
+   `docs/WORKFLOW.md` §Escalation references it rather than restating it, so the
+   two protocols cannot drift apart again. Every other decision is the
+   worker's: it states the default it will proceed on and proceeds.
+2. **The default is written down before the work continues, not after.** A
+   default reconstructed from the diff is not a default; it is a description of
+   what happened, and any choice can be rationalised once its consequences are
+   visible. The comment has to land first for two readers: the reviewer can
+   check the diff against the declared default, and the master can rewrite the
+   ticket before work is built on an assumption neither of them chose. A default
+   that would bend §3 of `AGENTS.md` is not a default; that ticket takes the
+   human path.
+3. **The default is not an escape from the work.** "I am not sure" is not one of
+   the four classes (`docs/TRIAGE.md` §6 says so in the same words); the default
+   is the normal path for a decidable ticket, and a worker that blocks on an
+   ambiguity it can settle is misusing the queue. The master's rewrite path for
+   an underspecified ticket is unchanged: a worker does not silently reinterpret
+   the ticket in the default's name, and a `BLOCKED` ticket is answered or
+   rewritten by the master, never resolved by the worker choosing the easier
+   path.
+4. **Why policy, not a gate.** Nothing parses the ticket comment to check that a
+   default was declared; the reviewer reads the comment against the diff, and
+   the master's rewrite is the correction. A gate on comment text would be
+   written by the same bot that writes the comment — it would check that a
+   string was typed, not that a decision was made before the work.
+
+**Not claimed.** That the four classes are exhaustive of what a maintainer may
+decide: the queue is theirs to widen with a new decision, and this entry only
+fixes the reading the two documents disagreed on. That a default may bend §3,
+stand in for the master's answer, or replace the rewrite path. That the comment
+is machine-checked — rule 4 says why it is not.
+
+**Evidence.** `docs/TRIAGE.md` §6 holds the single list of the four classes and
+points at `docs/WORKFLOW.md` §Escalation; §Escalation points back and states the
+declared-default path. `npm run check:decisions` locks this entry. There is no
+code and no test: the enforcement is procedural, so the evidence is the text the
+worker and the reviewer read.

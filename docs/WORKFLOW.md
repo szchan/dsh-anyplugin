@@ -316,7 +316,23 @@ a skip is a bug.
 
 ## Escalation
 
-Worker cannot proceed without a decision → comment `BLOCKED: <question>` on the
-ticket, open nothing else, and stop. The master either answers in the issue (and
-records a decision if it outlives the ticket) or rewrites the ticket. A worker
-never resolves a blocked decision by choosing the easier path.
+Only for the four human classes in `docs/TRIAGE.md` §6 does a worker comment
+`BLOCKED: <question>` on the ticket, open nothing else, and stop — that section
+holds the list, and this one references it instead of restating it (D87).
+
+For every other decision the worker states the default it will proceed on in a
+ticket comment *before* the work continues, and proceeds. The default is the
+normal path, not an escape from it: "I am not sure" is not a human class, so it
+does not buy a block.
+
+A default that would bend §3 of `AGENTS.md` is not a default: that work stops
+and goes out as a `[HUMAN]` issue under `docs/TRIAGE.md` §6. A worker never
+resolves a human-class block by choosing the easier path, and never writes the
+default after the fact — a default recorded after the work is a rationalisation
+of it, so the comment has to land first and the reviewer reads the diff against
+it.
+
+The master either answers a `BLOCKED` ticket (and records a decision if it
+outlives the ticket) or rewrites the ticket. The rewrite path stays for an
+underspecified ticket: the master narrows or re-scopes it, and a worker does not
+silently reinterpret it in the default's name.
