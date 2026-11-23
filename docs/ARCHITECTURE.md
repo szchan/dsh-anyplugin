@@ -1706,8 +1706,13 @@ and emptiness as emptiness instead of leaving `[]` behind; a user row inside
 the marked block, a duplicate id in either YAML quote style, and an unbalanced
 marker are refused rather than silently rewritten. `--dry-run` composes the
 same block, prints it and runs the payload→verdict table through the same judge,
-writing nothing; `guard:status` re-composes and compares (ignoring the state
-line), so a stale block is visible without loading the profile.
+writing nothing; `guard:status` re-composes and compares the two blocks as
+parsed YAML values, so a stale block is visible without loading the profile.
+The comparison is by value because the profile writer is not us: DSH rewrites
+`cordis.patch.yml` through a comment-preserving YAML document API that may fold
+a long double-quoted scalar or reseat a comment without changing one value, and
+the state line is not part of the policy. A side that cannot be parsed is not
+provably equal, so it is reported stale with the reason, never current.
 
 The block's `worktrees` entry is a **pattern derived from the discovered ticket
 directories** (`/tmp/anyplugin-wt/ticket-*`), not a snapshot of the paths that
