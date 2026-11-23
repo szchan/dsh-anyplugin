@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import { apply } from '../packages/dsh-anyplugin-guard/src/index.ts'
+import { GUARD_PROBE_TIMEOUT_MS, parseProbeTimeout } from './guard-probe-timeout.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const script = join(root, 'scripts', 'audit-evidence.mjs')
@@ -409,6 +410,19 @@ test('a refused report is cannot-tell with its reason, not invented negative fac
   )
   assert.equal(evidence.guard.status, 'refused')
   assert.equal(evidence.guard.reason, 'a second anyplugin-guard id sits outside the managed block')
+})
+
+// The timeout rule is imported directly: the audit script runs its main body on
+// import, so the parse lives in a module a test can load without spawning it.
+// `0x10` is the regression: `Number()` read it as 16 ms and silently shortened
+// the probe, while the end-to-end case below proves the accepted override path.
+test('the probe timeout accepts only positive integer digits and falls back to 25 s', () => {
+  assert.equal(GUARD_PROBE_TIMEOUT_MS, 25_000)
+  assert.equal(parseProbeTimeout('100'), 100)
+  for (const value of ['', '0', '-1', '1.5', '0x10', 'garbage']) {
+    assert.equal(parseProbeTimeout(value), 25_000, `${JSON.stringify(value)} must fall back to 25 000 ms`)
+  }
+  assert.equal(parseProbeTimeout(undefined), 25_000, 'an unset variable uses the 25 s default')
 })
 
 test('a probe that times out is unavailable, and the digest still exits 0', () => {

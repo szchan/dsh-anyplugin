@@ -352,7 +352,7 @@ edit.
       "mechanism": "schedule",
       "status": "reviewed",
       "artifact": "scripts/audit-evidence.mjs",
-      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. The daily digest reports the guard's install state as one line that distinguishes current, not-installed, installed-with-stale-paths, duplicate, refused and unavailable (a probe that cannot report says why, and never fails the digest); installing it remains an operator action, so this is reviewed, not enforced.",
+      "rationale": "On 2026-11-22 the guard reported not-installed, its pre-push hook was missing, and 23 worktrees were stale. The daily digest reports the guard's install state as one line that distinguishes the six states current, not-installed, installed-with-stale-paths, stale, refused and unavailable, and derives duplicate when a second guard id sits outside the managed block (a probe that cannot report says why, and never fails the digest); installing it remains an operator action, so this is reviewed, not enforced.",
       "evidence": [
         "2026-11-22 evidence: guard not-installed, pre-push missing, 23 worktrees",
         "docs/audits/2026-11-22.md",
