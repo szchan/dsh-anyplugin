@@ -338,7 +338,7 @@ edit.
       "mechanism": "hook",
       "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
-      "rationale": "The most expensive single mistake is a direct push to main. The rule is tested against nine push shapes, including force and multi-refspec, and applies to root and worker sessions. Installed on 2026-11-23 (#221): `npm run guard:status` reports `status current`, the installed worktrees are `/tmp/anyplugin-wt/ticket-*`, and `.git/hooks/pre-push` is current, so the whitelist runs on every push from this checkout; the checkout's `.audit/guard-denials.jsonl` records live refusals under rule `git-push-shape`. Territory is D80's: this checkout and its ticket worktrees only.",
+      "rationale": "The most expensive single mistake is a direct push to main. The rule is tested against nine push shapes, including force and multi-refspec, and applies to root and worker sessions. Installed on 2026-11-23 (#221): the installed worktrees are `/tmp/anyplugin-wt/ticket-*` and `.git/hooks/pre-push` is current, so the whitelist runs on every push from this checkout; `npm run guard:status` reported `status current` at install, and the 2026-11-23 probe reports `stale` on a folded YAML scalar (a false stale, F20); the checkout's `.audit/guard-denials.jsonl` records live refusals under rule `git-push-shape`. Territory is D80's: this checkout and its ticket worktrees only.",
       "evidence": [
         "D47 authority table",
         "guard.test.mjs push matrix",
@@ -358,6 +358,7 @@ edit.
         "2026-11-22 evidence: guard not-installed, pre-push missing, 23 worktrees",
         "docs/audits/2026-11-22.md",
         "2026-11-23 digest line: `- guard: **stale**; source present; worktree entries 1 desired / 1 installed; the installed block differs from the tree at line 4; hooks pre-push current`",
+        "2026-11-23: the stale line is the status tool's false stale (F20); the hook is current and `.audit/guard-denials.jsonl` holds live rows in the last day (its aggregation is covered by `scripts/audit-evidence.test.mjs`)",
         "scripts/audit-evidence.test.mjs: current, not-installed on exit 1, installed-with-stale-paths, stale+difference line, duplicate, refused with its reason, unavailable on spawn failure, unavailable on timeout, unavailable on unparsable output"
       ],
       "proof": ".dsh/skills/dsh-anyplugin-audit/SKILL.md"
@@ -493,10 +494,10 @@ edit.
       "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "tracking": "#163",
-      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Installed on 2026-11-23 (#221): `npm run guard:status` reports `status current` with `/tmp/anyplugin-wt/ticket-*` worktrees and a current `.git/hooks/pre-push`; the same policy judged 123/123 payloads when the profile was recomposed. Enforced on the modelled gh merge paths, proven by guard.test.mjs. Territory is D80's: this checkout and its ticket worktrees only. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
+      "rationale": "The guard refused gh pr merge only for workers; a master could merge an unpinned head. The rule now requires --match-head-commit <40-hex> for every role, including --auto, and refuses a malformed sha, a pin swallowed by a value flag, a merge hidden behind -R/--repo or a line continuation, and any-method gh api .../merge. --disable-auto is allowed because it performs no merge. Installed on 2026-11-23 (#221): the installed worktrees are `/tmp/anyplugin-wt/ticket-*` and `.git/hooks/pre-push` is current; `npm run guard:status` reported `status current` at install, and the 2026-11-23 probe reports `stale` on a folded YAML scalar (a false stale, F20); the same policy judged 123/123 payloads when the profile was recomposed. Enforced on the modelled gh merge paths, proven by guard.test.mjs. Territory is D80's: this checkout and its ticket worktrees only. A merge through an unmodelled client remains a residual outside the guard, including a pre-existing git/client-side alias, which root may run.",
       "evidence": [
         "2026-11-22 evidence: 100 PRs, 99 merged; #89 11 comments",
-        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current, 123/123 dry-run payloads",
+        "2026-11-23 install evidence (#221): guard:status reported `status current` at install (the 2026-11-23 probe reports a false stale, F20), installed worktrees /tmp/anyplugin-wt/ticket-*, hook current, 123/123 dry-run payloads",
         "guard.test.mjs merge-pin matrix and installed-mount test; 123-row dry-run table"
       ],
       "proof": "packages/dsh-anyplugin-guard/test/guard.test.mjs"
@@ -512,6 +513,7 @@ edit.
       "reviewBy": "2026-11-30",
       "evidence": [
         "2026-11-22 evidence: 22,111/25,772 cd prefixes; 1,272 workdir",
+        "2026-11-23 evidence: 12,415/14,180 cd prefixes (88%), 501 workdir (4%)",
         "2026-11-23 #240/D88: docs/WORKFLOW.md isolation example passes workdir; accepted risk, review 2026-11-30"
       ]
     },
@@ -526,6 +528,7 @@ edit.
       "reviewBy": "2026-11-30",
       "evidence": [
         "2026-11-22 evidence: 950 verify, 325 check:*",
+        "2026-11-23 evidence: 239 verify, 137 check:*",
         "AGENTS.md §5 verify is the gate",
         "2026-11-23 #240/D88: accepted risk, review 2026-11-30; no check can see the edit's scope"
       ]
@@ -541,6 +544,7 @@ edit.
       "reviewBy": "2026-11-30",
       "evidence": [
         "2026-11-22 evidence: sed 5,966, grep 4,951, read 1,148",
+        "2026-11-23 evidence: sed 2,126 + grep 2,153 vs read 607",
         "2026-11-23 #240/D88: accepted risk, review 2026-11-30; no check can tell a file read from a pipe filter"
       ]
     },
@@ -551,9 +555,9 @@ edit.
       "status": "enforced",
       "artifact": "packages/dsh-anyplugin-guard/src/policy.ts",
       "proof": "packages/dsh-anyplugin-guard/test/denials.test.mjs",
-      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), and the rule is enforced since the install on 2026-11-23 (#221): `npm run guard:status` reports `status current`, installed worktrees `/tmp/anyplugin-wt/ticket-*` and a current pre-push hook, and the log holds live rows. The first observed live refusal this session was a `shell-unmodelled` deny whose message names a double-quoted expansion; the log's first row is 2026-11-23T08:19:56.412Z under the same rule. Territory is D80's: this checkout and its ticket worktrees only.",
+      "rationale": "Denials used to exist only as DENY text in a tool result, indistinguishable from the guard's own test matrix. Every denial now appends one redacted JSONL record to <checkout>/.audit/guard-denials.jsonl and audit:evidence aggregates it; nothing fails on the log's absence (D68). The code and its test exist (#181, #164), and the rule is enforced since the install on 2026-11-23 (#221): the installed worktrees are `/tmp/anyplugin-wt/ticket-*`, the pre-push hook is current, and the log holds live rows; `npm run guard:status` reported `status current` at install, and the 2026-11-23 probe reports `stale` on a folded YAML scalar (a false stale, F20). The first observed live refusal this session was a `shell-unmodelled` deny whose message names a double-quoted expansion; the log's first row is 2026-11-23T08:19:56.412Z under the same rule. Territory is D80's: this checkout and its ticket worktrees only.",
       "evidence": [
-        "2026-11-23 install evidence (#221): guard:status `status current`, installed worktrees /tmp/anyplugin-wt/ticket-*, hook current; live log rows from 2026-11-23T08:19:56.412Z",
+        "2026-11-23 install evidence (#221): guard:status reported `status current` at install (the 2026-11-23 probe reports a false stale, F20), installed worktrees /tmp/anyplugin-wt/ticket-*, hook current; live log rows from 2026-11-23T08:19:56.412Z",
         "2026-11-23 live evidence: .audit/guard-denials.jsonl holds rows for shell-unmodelled, write-outside-worktree, decisions-append-only, git-push-shape, git-unknown-subcommand and interpreter-write, aggregated by npm run audit:evidence; the first row is shell-unmodelled on a double-quoted expansion",
         "2026-11-22 D68: structured log merged in #181; digest counts total/by-rule/by-role and last five",
         "denials.test.mjs: one record per denial, dedupe by session+callId, four checkout layouts"
@@ -578,11 +582,12 @@ edit.
       "mechanism": "reviewer",
       "status": "reviewed",
       "artifact": "docs/AUDIT.md",
-      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199 and written down in D73: an integration runner child (`integrator-*`) owns CI polling, `origin/main` merges into the ticket branch, the push of that branch, PR-body assembly and worktree cleanup; the root keeps dispatch, decisions, verdicts and the one pinned merge call. The role is written in docs/WORKFLOW.md §Roles and §The integration runner, and the role table above names it.",
+      "rationale": "The largest root session in the 14-day window ran 2,470 tool calls and the 2026-11-22 pass did not flag it; the cap existed only as prose. The audit role step now compares every largest session against the ~1,500 cap, names the split (a scheduled audit, an integrator, a narrower ticket), and F18 records the miss. The next daily pass found the same root at 2,991 calls (1,112 inside the 1-day window) with the next child at 1,073, so the check fired again and the split is now named in #199 and written down in D73: an integration runner child (`integrator-*`) owns CI polling, `origin/main` merges into the ticket branch, the push of that branch, PR-body assembly and worktree cleanup; the root keeps dispatch, decisions, verdicts and the one pinned merge call. The role is written in docs/WORKFLOW.md §Roles and §The integration runner, and the role table above names it. The 2026-11-23 pass found the root at 1,931 tool calls in the 1-day window (4,922 lifetime) against the ~1,500 cap; #199 was closed on 2026-11-22T19:03Z and the split is implemented in #264 (open), so the check fired again and the remaining action is the master's merge path, not a new issue.",
       "evidence": [
         "2026-11-22 00:20 evidence: root session-522222a9 2,470 tools, next child 1,073",
         "2026-11-22 09:00 evidence: same root 2,991 lifetime (1,112 in window), next child 1,073; split proposal #199",
-        "2026-11-23 evidence: the written role — docs/WORKFLOW.md §Roles (row) and §The integration runner (input, steps, output, stops), named in docs/AUDIT.md §7"
+        "2026-11-23 evidence: the written role — docs/WORKFLOW.md §Roles (row) and §The integration runner (input, steps, output, stops), named in docs/AUDIT.md §7",
+        "2026-11-23 09:00 evidence: root 4,922 lifetime / 1,931 in the 1-day window; #199 closed 2026-11-22T19:03Z; #264 open implements the split"
       ]
     },
     {
@@ -598,6 +603,38 @@ edit.
         "scripts/triage-rules.test.mjs: a receipt after a maintainer reply is a resume row",
         "AGENTS.md §5 and docs/TRIAGE.md §6"
       ]
+    },
+    {
+      "id": "F20",
+      "title": "Guard status reports a current install as stale",
+      "mechanism": "hook",
+      "status": "open",
+      "artifact": "scripts/guard-status.mjs",
+      "tracking": "#268",
+      "rationale": "On 2026-11-23 `npm run guard:status` exited 1 with status `stale` and `the installed block differs from the tree at line 4`. The installed profile block is a folded double-quoted YAML scalar (the path is split as `.../src/ind` + `ex.ts` across two lines); the status tool compares raw lines, while the parsed value is `.../src/index.ts`, the same mount the current block names. The pre-push hook is current and `.audit/guard-denials.jsonl` holds live rows from the last day (its aggregation is covered by `scripts/audit-evidence.test.mjs`), so the guard is installed and live; only the comparison and its report are wrong. The fix is to parse the YAML scalar (or normalize the mount before comparing) and add a test whose installed block is folded; the digest line then reports current, and F2's input is honest again.",
+      "evidence": [
+        "2026-11-23 guard:status: status stale, first difference line 4; profile /home/szchan/.dsh/profiles/desktop/cordis.patch.yml",
+        "installed block: name: \"/home/.../packages/dsh-anyplugin-guard/src/ind\" + newline + ex.ts\"; current block: name: \".../src/index.ts\"",
+        "pre-push hook current; the log's live rows (2026-11-22T17:00Z–2026-11-23T17:03Z) are aggregated by `scripts/audit-evidence.test.mjs`"
+      ],
+      "owner": "the master",
+      "reviewBy": "2026-11-30"
+    },
+    {
+      "id": "F21",
+      "title": "The evidence digest counts inherited seeded-session history as independent work",
+      "mechanism": "reviewer",
+      "status": "open",
+      "artifact": "scripts/audit-evidence.mjs",
+      "tracking": "#269",
+      "rationale": "The 2026-11-23 digest lists two children at 3,685 tool calls each, but both are seeded forks of the root prefix (`isSeeded: true`, `inheritedEventCount: 25,690`); their counts are inherited, not independent work, and the eight-largest table double-counts 7,370 calls. The same digest prints `decisions.last: D84` while the file order ends at D84 and the highest id is D88. The role cap reads the root's window (1,931), not the lifetime column, but the table invites the wrong unit. The fix is to exclude the inherited prefix from the per-session counts, print a window column as the cap unit, take the numeric maximum decision id, and pin a seeded-fork fixture; the audit then reports independent work and a true `last`.",
+      "evidence": [
+        "2026-11-23 digest: a5d42890 and ca312f93 each 3,685 tool calls, 2,641 bash, cwd repo root; isSeeded true, inheritedEventCount 25,690",
+        "2026-11-23 digest: decisions 88 entries, last \"D84\"; docs/DECISIONS.md highest id D88",
+        "2026-11-23 root: 4,922 lifetime / 1,931 window; other children 384/368/231/230/220"
+      ],
+      "owner": "the master",
+      "reviewBy": "2026-11-30"
     }
   ]
 }
