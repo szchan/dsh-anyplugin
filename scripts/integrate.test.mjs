@@ -16,6 +16,7 @@ import test from 'node:test'
 
 import {
   PREFLIGHT_FIELDS,
+  formatLocationFix,
   formatWorktreeAdd,
   parseArgs,
   run,
@@ -100,9 +101,9 @@ function behindGit({ push = { status: 0 } } = {}) {
   })
 }
 
-function upToDateGit() {
+function upToDateGit(path = WORKTREE) {
   return fakeGit({
-    'worktree list --porcelain': { stdout: porcelain() },
+    'worktree list --porcelain': { stdout: porcelain({ path }) },
     'rev-parse --verify --quiet MERGE_HEAD': { status: 1 },
     'diff --name-only --diff-filter=U': { stdout: '' },
     'status --porcelain': { stdout: '' },
@@ -200,6 +201,28 @@ test('worktreeLocationProblem allows the ticket worktree under the root', () => 
       root: ROOT,
     }),
     undefined,
+  )
+})
+
+test('formatLocationFix moves a linked worktree but switches the primary checkout off the branch', () => {
+  assert.equal(
+    formatLocationFix({
+      worktree: { path: '/tmp/not-a-ticket-worktree', branch: 'ticket/225' },
+      primaryPath: PRIMARY,
+      branch: 'ticket/225',
+      root: ROOT,
+    }),
+    `move the worktree with: git worktree move /tmp/not-a-ticket-worktree ${WORKTREE}`,
+  )
+  // `git worktree move` cannot move the primary checkout, so the branch is freed first.
+  assert.equal(
+    formatLocationFix({
+      worktree: { path: PRIMARY, branch: 'ticket/225' },
+      primaryPath: PRIMARY,
+      branch: 'ticket/225',
+      root: ROOT,
+    }),
+    `check main out in the primary checkout with: git -C ${PRIMARY} switch main, then create the ticket worktree with: git worktree add ${WORKTREE} ticket/225`,
   )
 })
 
@@ -376,7 +399,6 @@ test('run stops when the branch is checked out in the primary checkout', () => {
   const cap = capture()
   const records = fakeGit({
     'worktree list --porcelain': { stdout: primaryPorcelain() },
-    'rev-parse --verify --quiet refs/heads/ticket/225': { status: 0 },
   })
   const code = run(['225', HEAD], cap.io, {
     root: ROOT,
@@ -386,24 +408,19 @@ test('run stops when the branch is checked out in the primary checkout', () => {
   })
   assert.equal(code, 2)
   assert.equal(cap.stdout(), '')
-  assert.match(
+  assert.equal(
     cap.stderr().trim().split('\n').at(-1),
-    new RegExp(
-      `^integrate: the primary checkout ${PRIMARY} checks out ticket/225; the integration runner works only in the ticket worktree ${WORKTREE}, never the primary checkout; create the ticket worktree with: git worktree add ${WORKTREE} ticket/225$`,
-    ),
+    `integrate: the primary checkout ${PRIMARY} checks out ticket/225; the integration runner works only in the ticket worktree ${WORKTREE}, never the primary checkout; check main out in the primary checkout with: git -C ${PRIMARY} switch main, then create the ticket worktree with: git worktree add ${WORKTREE} ticket/225`,
   )
   // The refusal comes before any fetch, merge or push.
-  assert.deepEqual(records.calls.map((call) => call.args.join(' ')), [
-    'worktree list --porcelain',
-    'rev-parse --verify --quiet refs/heads/ticket/225',
-  ])
+  assert.deepEqual(records.calls.map((call) => call.args.join(' ')), ['worktree list --porcelain'])
 })
 
 test('run stops when the branch worktree lies outside the ticket root', () => {
   const cap = capture()
+  const outside = '/tmp/not-a-ticket-worktree'
   const records = fakeGit({
-    'worktree list --porcelain': { stdout: porcelain({ path: '/tmp/not-a-ticket-worktree' }) },
-    'rev-parse --verify --quiet refs/heads/ticket/225': { status: 1 },
+    'worktree list --porcelain': { stdout: porcelain({ path: outside }) },
   })
   const code = run(['225', HEAD], cap.io, {
     root: ROOT,
@@ -413,16 +430,53 @@ test('run stops when the branch worktree lies outside the ticket root', () => {
   })
   assert.equal(code, 2)
   assert.equal(cap.stdout(), '')
-  assert.match(
+  assert.equal(
     cap.stderr().trim().split('\n').at(-1),
-    new RegExp(
-      `^integrate: the worktree for ticket/225 is /tmp/not-a-ticket-worktree, not the ticket worktree ${WORKTREE}; the integration runner works only in a linked worktree there, never the primary checkout; create the ticket worktree with: git worktree add ${WORKTREE} -b ticket/225 origin/ticket/225$`,
-    ),
+    `integrate: the worktree for ticket/225 is ${outside}, not the ticket worktree ${WORKTREE}; the integration runner works only in a linked worktree there, never the primary checkout; move the worktree with: git worktree move ${outside} ${WORKTREE}`,
   )
-  assert.deepEqual(records.calls.map((call) => call.args.join(' ')), [
-    'worktree list --porcelain',
-    'rev-parse --verify --quiet refs/heads/ticket/225',
-  ])
+  assert.deepEqual(records.calls.map((call) => call.args.join(' ')), ['worktree list --porcelain'])
+})
+
+test('run takes the ticket root from ANYPLUGIN_WORKTREE_ROOT when no root is injected', () => {
+  const altRoot = '/tmp/probe-wt-root'
+  const altWorktree = join(altRoot, 'ticket-225')
+  const previous = process.env.ANYPLUGIN_WORKTREE_ROOT
+  process.env.ANYPLUGIN_WORKTREE_ROOT = altRoot
+  try {
+    // A linked worktree elsewhere is refused with the overridden expected path in the hint.
+    const refused = capture()
+    const refusalRecords = fakeGit({ 'worktree list --porcelain': { stdout: porcelain({ path: '/tmp/not-a-ticket-worktree' }) } })
+    const refusedCode = run(['225', HEAD], refused.io, {
+      gh: () => pull(),
+      git: refusalRecords.runGit,
+      waitForCi: () => assert.fail('must not wait for CI'),
+    })
+    assert.equal(refusedCode, 2)
+    assert.equal(refused.stdout(), '')
+    assert.equal(
+      refused.stderr().trim().split('\n').at(-1),
+      `integrate: the worktree for ticket/225 is /tmp/not-a-ticket-worktree, not the ticket worktree ${altWorktree}; the integration runner works only in a linked worktree there, never the primary checkout; move the worktree with: git worktree move /tmp/not-a-ticket-worktree ${altWorktree}`,
+    )
+
+    // The worktree under the overridden root is the one the runner uses.
+    const cap = capture()
+    const records = upToDateGit(altWorktree)
+    const waits = []
+    const code = run(['225', '--head', HEAD], cap.io, {
+      gh: () => pull(),
+      git: records.runGit,
+      waitForCi: (head, cwd) => {
+        waits.push({ head, cwd })
+        return { ok: true, exitCode: 0 }
+      },
+    })
+    assert.equal(code, 0)
+    assert.equal(cap.stdout(), `gh pr merge 225 --squash --match-head-commit ${HEAD}\n`)
+    assert.deepEqual(waits, [{ head: HEAD, cwd: altWorktree }])
+  } finally {
+    if (previous === undefined) delete process.env.ANYPLUGIN_WORKTREE_ROOT
+    else process.env.ANYPLUGIN_WORKTREE_ROOT = previous
+  }
 })
 
 test('run stops when the worktree is not at the dispatched head', () => {
@@ -551,9 +605,15 @@ test('run refuses to report a push the PR head does not show, retrying five time
   assert.equal(gh.calls.length, 7)
 })
 
-test('run reports a rejected push as a failed step with the recovery step', () => {
+test("run reports a rejected push as a failed step that keeps git's multi-line stderr", () => {
   const cap = capture()
-  const records = behindGit({ push: { status: 1, stderr: '! [rejected] ticket/225 -> ticket/225 (fetch first)\n' } })
+  const rejected = [
+    '! [rejected]        ticket/225 -> ticket/225 (fetch first)',
+    "error: failed to push some refs to '/tmp/anyplugin-origin.git'",
+    'hint: Updates were rejected because the remote contains work that you do not',
+    'hint: have locally.',
+  ].join('\n') + '\n'
+  const records = behindGit({ push: { status: 1, stderr: rejected } })
   const gh = fakeGh(pull(), { headAfterPush: NEW })
   const code = run(['225', '--head', HEAD], cap.io, {
     root: ROOT,
@@ -563,9 +623,16 @@ test('run reports a rejected push as a failed step with the recovery step', () =
   })
   assert.equal(code, 1)
   assert.equal(cap.stdout(), '')
-  assert.match(
-    cap.stderr(),
-    /^integrate: failed at push: ! \[rejected\] ticket\/225 -> ticket\/225 \(fetch first\); nothing was pushed — reset the worktree with git reset --hard origin\/ticket\/225 and re-dispatch from the dispatched head$/m,
+  // Exit 1 names the step and quotes git's own output; that report can be several lines.
+  const lines = cap.stderr().trim().split('\n')
+  const failure = lines.slice(lines.findIndex((line) => line.startsWith('integrate: failed at push:')))
+  assert.equal(failure.length, 4, `the quoted git lines must survive: ${cap.stderr()}`)
+  assert.equal(failure[0], 'integrate: failed at push: ! [rejected]        ticket/225 -> ticket/225 (fetch first)')
+  assert.equal(failure[1], "error: failed to push some refs to '/tmp/anyplugin-origin.git'")
+  assert.equal(failure[2], 'hint: Updates were rejected because the remote contains work that you do not')
+  assert.equal(
+    failure[3],
+    'hint: have locally.; nothing was pushed — reset the worktree with git reset --hard origin/ticket/225 and re-dispatch from the dispatched head',
   )
 })
 

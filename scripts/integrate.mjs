@@ -128,6 +128,23 @@ export function worktreeLocationProblem({ worktree, primaryPath, branch, root = 
 }
 
 /**
+ * The command that actually fixes a location refusal. The refusal only fires
+ * when the branch is already checked out, so `git worktree add <expected>
+ * <branch>` cannot succeed there: a linked worktree is relocated with `git
+ * worktree move`, while git refuses to move the primary checkout at all, so
+ * that one must first switch to `main` to free the branch before the ticket
+ * worktree can be created.
+ */
+export function formatLocationFix({ worktree, primaryPath, branch, root = DEFAULT_ROOT }) {
+  const expected = join(root, String(branch).replaceAll('/', '-'))
+  const found = worktree.path
+  if (primaryPath !== undefined && resolve(found) === resolve(primaryPath)) {
+    return `check main out in the primary checkout with: git -C ${found} switch main, then create the ticket worktree with: git worktree add ${expected} ${branch}`
+  }
+  return `move the worktree with: git worktree move ${found} ${expected}`
+}
+
+/**
  * Why the located worktree is not in the state the runner was dispatched for,
  * or `undefined` when it is. The dispatched head is the commit the master
  * dispatched (the one the reviewer verdicted): the worktree must be there, with
@@ -222,7 +239,6 @@ export function run(argv, io = {}, deps = {}) {
   const runGh = deps.gh ?? ghJson
   const sleepFn = deps.sleep ?? sleep
   const root = deps.root ?? process.env.ANYPLUGIN_WORKTREE_ROOT ?? DEFAULT_ROOT
-  let worktreePath
   const ciWait = deps.waitForCi ?? ((head, cwd) => waitForCi(head, cwd, err))
   const readPr = (fields) => runGh(['pr', 'view', String(number), ...repoArgs(), '--json', fields])
   const readHead = () => {
@@ -260,11 +276,8 @@ export function run(argv, io = {}, deps = {}) {
     }
     const locationProblem = worktreeLocationProblem({ worktree, primaryPath, branch, root })
     if (locationProblem !== undefined) {
-      const local = runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], undefined, { allowFailure: true })
-        .status === 0
-      throw new Refusal(`${locationProblem}; create the ticket worktree with: ${formatWorktreeAdd({ branch, root, localBranch: local })}`)
+      throw new Refusal(`${locationProblem}; ${formatLocationFix({ worktree, primaryPath, branch, root })}`)
     }
-    worktreePath = worktree.path
     err.write(`integrate: worktree ${worktree.path}\n`)
 
     const problem = worktreeProblem({ worktree, head: dispatchedHead, branch, run: runGit })

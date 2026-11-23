@@ -227,10 +227,12 @@ not a `cd` prefix (§Isolation).
 
 `npm run integrate -- <n> --head <40-hex>` performs steps 1–4 below and prints
 the report; steps 5 and 6 are still the runner's own work. It exits 2 when it
-refuses to start and 1 when a step failed, with one actionable line in both
-cases. `npm run` forwards only the arguments after `--`, so the head follows it;
-`npm run integrate <n> <40-hex>` is the same input as a second positional
-argument.
+refuses to start, with one actionable refusal line. It exits 1 when a step
+failed: that report names the failed step and quotes the failed command's
+output — git's own stderr where git produced one, which can be several lines —
+plus the recovery step where the script knows one. `npm run` forwards only the
+arguments after `--`, so the head follows it; `npm run integrate <n> <40-hex>`
+is the same input as a second positional argument.
 
 The head argument is the dispatched head — the sha the master dispatched and
 the reviewer verdicted. It is required: the script checks it against the PR
@@ -248,12 +250,19 @@ after the verdict stops the run instead of being integrated silently.
    with `git worktree list --porcelain` (`HEAD`, not the branch name alone, must
    be the dispatched head). If there is none it prints the exact
    `git worktree add` line the runner should have been given; the runner does
-   not invent one. A worktree that is not the ticket worktree
-   `${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}/ticket-<n>` — the primary
-   checkout, or any other linked worktree — is refused the same way: the runner
-   never works in the primary checkout (§Isolation). A worktree at another head,
-   a merge already in progress, unmerged paths or a dirty tree are refused the
-   same way.
+   not invent one. The located worktree must be the ticket worktree of the PR's
+   head branch: `<root>/<branch with / replaced by ->`, with `<root>` =
+   `${ANYPLUGIN_WORKTREE_ROOT:-/tmp/anyplugin-wt}` and branch `ticket/263`
+   meaning `/tmp/anyplugin-wt/ticket-263`. The path follows the branch, not the
+   PR number: the ticket number in it is the branch's, and the PR number can
+   differ (PR #264 runs in `ticket-263`). The primary checkout, or any other
+   linked worktree, is refused the same way: the runner never works in the
+   primary checkout (§Isolation). That refusal prints the step that can actually
+   succeed — `git worktree move <found> <expected>` for another linked worktree,
+   and for the primary checkout `git -C <primary> switch main` followed by the
+   `git worktree add <expected> <branch>` line, because git refuses to move the
+   main working tree. A worktree at another head, a merge already in progress,
+   unmerged paths or a dirty tree are refused with one line the same way.
 2. **Bring `main` in.** The script runs `git fetch origin`, then
    `git merge-base --is-ancestor origin/main HEAD`: exit 0 means nothing to
    merge; exit 1 means the branch is behind, so it merges `origin/main`, pushes
