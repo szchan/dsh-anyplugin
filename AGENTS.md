@@ -118,8 +118,15 @@ npm run audit:evidence -- --days 1 --github   # daily evidence digest (writes .a
 npm run check:audit               # the audit ledger/report gate (part of verify)
 npm run verify:release -- --version <v>   # post-publish probe: registry + packed bin + its report
 npm run triage                    # the GitHub queue; read docs/TRIAGE.md before acting
+npm run inbox                     # exit 1 if a maintainer answer or new ask waits, 2 if a thread could not be read
 npm run gh-bot -- --whoami        # the bot identity every agent writes GitHub as
 ```
+
+A round starts with `npm run inbox`, before any other step: it lists the
+maintainer answers with no agent reply and the maintainer-opened issues nothing
+has picked up, and exits 1 when there is one (2 when a thread could not be
+read). A `Seen.` receipt is not an answer (D79) — never judge a thread by its
+last comment.
 
 `verify:release` is the post-publish probe from `docs/RELEASING.md` — a
 maintainer step, not a gate: it needs the network and a version the registry

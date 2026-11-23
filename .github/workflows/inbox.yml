@@ -1,0 +1,70 @@
+name: inbox
+
+# The 2026-11-22 miss (F19): the maintainer answered #170/#175/#177, the intake
+# path posted a Seen. receipt, and the next round reported "queue empty" from
+# docs/TODO.md. The rule that came out of it — a round starts with the inbox,
+# and a receipt is not an answer — is enforced by scripts/triage-rules.mjs and
+# this job. A red run alone reaches the workflow author (the bot), not a human,
+# so the failure step below opens or updates an issue labelled maintainer-question
+# with the same body — that is the alarm the maintainer actually receives (D79).
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  checks: read
+
+jobs:
+  inbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Who is waiting on us
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAINTAINER_LOGINS: szchan
+        run: node scripts/triage.mjs --waiting
+      - name: Escalate to the maintainer
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Re-derive the message, but only raise an alarm when the re-read
+          # still says a human is waiting (exit 1) or could not be read (2).
+          # A transient failure that clears must not file an issue
+          # (reviewer finding on #228).
+          status=0
+          node scripts/triage.mjs --waiting > /tmp/inbox.txt 2>&1 || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "inbox: the re-read found nothing waiting; not filing an alert"
+            exit 0
+          fi
+          gh label create inbox-alert --color B60205 --description "Opened by the inbox workflow; closes when the wait clears" 2>/dev/null || true
+          open=$(gh issue list --label inbox-alert --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body-file /tmp/inbox.txt
+          else
+            gh issue create --label inbox-alert \
+              --title "inbox: a maintainer thread is waiting or unreadable" \
+              --body-file /tmp/inbox.txt --assignee szchan
+          fi
+      - name: Clear the alarm once nothing waits
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # The alarm must clear itself; an issue that stays open after the
+          # answer lands is a permanent false queue item (reviewer finding).
+          gh issue list --label inbox-alert --state open --json number --jq '.[].number' |
+          while read -r number; do
+            gh issue comment "$number" --body "inbox: nothing waits any more; closing the alarm."
+            gh issue close "$number"
+          done

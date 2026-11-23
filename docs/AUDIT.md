@@ -546,6 +546,20 @@ not active on this machine (F1); it is not a synonym for `enforced`. The
         "2026-11-22 09:00 evidence: same root 2,991 lifetime (1,112 in window), next child 1,073; split proposal #199",
         "docs/AUDIT.md §7 role caps"
       ]
+    },
+    {
+      "id": "F19",
+      "title": "A maintainer's reply waits a day because a receipt reads as an answer",
+      "mechanism": "ci",
+      "status": "enforced",
+      "artifact": "scripts/triage-rules.mjs",
+      "proof": "scripts/triage-rules.test.mjs",
+      "rationale": "On 2026-11-22 the maintainer answered #170 at 10:19 UTC (receipt 10:26) and #175/#177 between 12:25 and 12:31 UTC (receipts at 12:45), and every later read treated the thread as answered because the receipt was the last comment — one round reported an empty queue from docs/TODO.md instead of the tracker. Three rules hold now: a Seen. receipt is not an agent reply (isReceipt in the artifact, pinned by the proof); a round starts with npm run inbox, which exits 1 while a substantive maintainer comment is unanswered (scripts/triage.mjs --waiting); and .github/workflows/inbox.yml runs that command daily with MAINTAINER_LOGINS=szchan, so a waiting reply becomes a failing run instead of a silent wait (D79).",
+      "evidence": [
+        "2026-11-22 #170 szchan 10:19Z, receipt 10:26Z; #177 szchan 12:31Z, receipt 12:45Z; #175 szchan 12:25Z, receipt 12:45Z",
+        "scripts/triage-rules.test.mjs: a receipt after a maintainer reply is a resume row",
+        "AGENTS.md §5 and docs/TRIAGE.md §6"
+      ]
     }
   ]
 }

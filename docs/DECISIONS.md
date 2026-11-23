@@ -3656,6 +3656,45 @@ Evidence: `packages/dsh-anyplugin-guard/src/scope.ts` (unit table in
 territory is accepted with no brief and no record, one inside a real ticket
 worktree is denied and recorded.
 
+## D79 — A receipt is not an answer, and a round starts with the inbox
+
+**Decided 2026-11-22** (F19, maintainer-observed). On 2026-11-22 the maintainer
+answered #170 at 10:19 UTC (receipt 10:26) and #175/#177 between 12:25 and 12:31 UTC
+(receipts at 12:45).
+Every later read of those threads treated them as answered, because the receipt
+was the last comment — one round went further and reported an empty queue from
+`docs/TODO.md` without asking the tracker at all. The work sat for about
+fourteen hours.
+
+The failure is not "nobody was told"; it is that the tooling counted an
+acknowledgement as a reply and the loop had no step that forced the question.
+Three rules follow:
+
+1. **A receipt is not a reply.** `scripts/triage-rules.mjs` classifies an agent
+   comment whose body opens with the fixed template
+   `Seen. The master acts on this at its next turn boundary` (optionally after
+   the `<!-- dsh-anyplugin-agent -->` marker) as an acknowledgement:
+   `lastAgentReply` skips it, so a maintainer comment followed by a receipt is a
+   resume row, not a closed thread. A bare `Seen.` prefix is not enough —
+   "Seen. Fixed in 123abc" is a real answer and moves the row.
+   `scripts/triage-rules.test.mjs` pins both directions, using the real #177
+   body.
+2. **The queue is GitHub, not `docs/TODO.md`.** `npm run inbox`
+   (`scripts/triage.mjs --waiting`) lists resume rows, blocked escalations and
+   brand-new maintainer asks, and **exits 1** when a maintainer comment has no
+   agent answer or a maintainer opened an issue nothing has picked up, so
+   "queue empty" cannot be reported without reading it. `AGENTS.md` §5 makes it
+   the first command of a round.
+3. **The wait is observable.** `.github/workflows/inbox.yml` runs the same
+   command daily with `MAINTAINER_LOGINS=szchan`. A red run opens (or comments
+   on) an `inbox-alert` issue assigned to the maintainer — the run alone only
+   notifies the bot — and the next green run closes it. Unreadable threads exit
+   2 rather than reporting "nothing waits". The alarm issue is excluded from the
+   triage queue. The audit ledger records the miss as F19.
+
+A thread is read by author and time, never by `.comments[-1]`: the last comment
+is the one most likely to be our own receipt.
+
 ## D82 — The architecture reviewer is a scheduled role with write authority
 
 **Decision.** A second scheduled role, the *architecture reviewer*, reads the
