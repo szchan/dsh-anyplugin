@@ -66,7 +66,7 @@ const comments = (number) => {
   }
 }
 
-const commentFailures = []
+const readFailures = []
 
 const sections = {
   'Maintainer asks (new)': [],
@@ -87,6 +87,10 @@ try {
   process.exit(1)
 }
 
+// The inbox alarm is a meta issue, not a ticket: it must not appear in the
+// queue it raises (reviewer finding on #228).
+const queueIssues = issues.filter((issue) => !(issue.labels ?? []).some((label) => label.name === 'inbox-alert'))
+
 let prs = []
 try {
   prs = ghJson(['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,author,isDraft,reviewDecision,statusCheckRollup,headRefOid,updatedAt,body'])
@@ -95,6 +99,9 @@ try {
   // round would re-dispatch work already in flight. Print it; the queue below
   // is still readable.
   console.error(`triage: could not list pull requests: ${error.message}`)
+  // A missing PR list flips open-PR issues into false asks, so it is an
+  // unreadable-read failure, not a printed note (reviewer finding on #228).
+  readFailures.push({ number: 0, title: 'pull requests', message: error.message })
 }
 
 // An issue whose PR is already open is not an ask, an answer, or an untriaged
@@ -107,7 +114,7 @@ for (const pr of prs) {
   }
 }
 
-for (const issue of issues) {
+for (const issue of queueIssues) {
   if (linkedIssues.has(issue.number)) {
     sections['In review (PR open)'].push({ number: issue.number, title: issue.title, role: roleOf(issue, identity), labels: labelsOf(issue), lastSpeaker: 'in flight' })
     continue
@@ -123,7 +130,7 @@ for (const issue of issues) {
   try {
     list = comments(issue.number)
   } catch (error) {
-    commentFailures.push({ number: issue.number, title: issue.title, message: error.message })
+    readFailures.push({ number: issue.number, title: issue.title, message: error.message })
     console.error(`triage: ${error.message}`)
     continue
   }
@@ -157,17 +164,20 @@ const total = Object.values(sections).reduce((sum, list) => sum + list.length, 0
 // cannot report "queue empty" — the exact failure that let #170/#175/#177 sit
 // for a day.
 if (waiting) {
-  const verdict = inboxVerdict(sections, commentFailures)
+  const verdict = inboxVerdict(sections, readFailures)
   process.stdout.write(`${verdict.summary}\n`)
-  for (const item of verdict.waiting) process.stdout.write(`  reply to #${item.number} ${item.title}\n`)
+  for (const item of verdict.waiting) {
+    const kind = item.section === 'Maintainer asks (new)' ? 'new ask' : 'reply'
+    process.stdout.write(`  ${kind}: #${item.number} ${item.title}\n`)
+  }
   for (const item of verdict.blocked) process.stdout.write(`  still blocked on a human: #${item.number} ${item.title}\n`)
   for (const failure of verdict.failures) console.error(`inbox: unreadable thread #${failure.number}: ${failure.message}`)
   process.exit(verdict.exitCode)
 }
 
 if (json) {
-  process.stdout.write(`${JSON.stringify({ maintainers, total, sections }, null, 2)}\n`)
-  process.exit(0)
+  process.stdout.write(`${JSON.stringify({ maintainers, total, sections, failures: readFailures }, null, 2)}\n`)
+  process.exit(readFailures.length > 0 ? 2 : 0)
 }
 
 process.stdout.write(`# Triage queue (${total} item(s), maintainers: ${maintainers.join(', ')})\n`)

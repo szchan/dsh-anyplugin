@@ -3464,18 +3464,25 @@ acknowledgement as a reply and the loop had no step that forced the question.
 Three rules follow:
 
 1. **A receipt is not a reply.** `scripts/triage-rules.mjs` classifies an agent
-   comment whose body opens with `Seen.` as an acknowledgement:
+   comment whose body opens with the fixed template
+   `Seen. The master acts on this at its next turn boundary` (optionally after
+   the `<!-- dsh-anyplugin-agent -->` marker) as an acknowledgement:
    `lastAgentReply` skips it, so a maintainer comment followed by a receipt is a
-   resume row, not a closed thread. `scripts/triage-rules.test.mjs` pins the
-   exact shape from #177.
+   resume row, not a closed thread. A bare `Seen.` prefix is not enough —
+   "Seen. Fixed in 123abc" is a real answer and moves the row.
+   `scripts/triage-rules.test.mjs` pins both directions, using the real #177
+   body.
 2. **The queue is GitHub, not `docs/TODO.md`.** `npm run inbox`
    (`scripts/triage.mjs --waiting`) lists resume rows and blocked escalations
    and **exits 1** when a substantive maintainer comment is unanswered, so
    "queue empty" cannot be reported without reading it. `AGENTS.md` §5 makes it
    the first command of a round.
 3. **The wait is observable.** `.github/workflows/inbox.yml` runs the same
-   command daily with `MAINTAINER_LOGINS=szchan`; a waiting reply fails a run
-   instead of sitting in a thread. The audit ledger records the miss as F19.
+   command daily with `MAINTAINER_LOGINS=szchan`. A red run opens (or comments
+   on) an `inbox-alert` issue assigned to the maintainer — the run alone only
+   notifies the bot — and the next green run closes it. Unreadable threads exit
+   2 rather than reporting "nothing waits". The alarm issue is excluded from the
+   triage queue. The audit ledger records the miss as F19.
 
 A thread is read by author and time, never by `.comments[-1]`: the last comment
 is the one most likely to be our own receipt.

@@ -35,7 +35,7 @@ test('a receipt after a maintainer reply does not count as the agent answering (
     [
       comment('szchan-bot', '2026-11-22T08:00:00Z', '<!-- dsh-anyplugin-agent --> asking'),
       comment('szchan', '2026-11-22T12:31:05Z', 'accepted, implement it'),
-      comment('szchan-bot', '2026-11-22T12:45:39Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary; this note exists so the thread has an owner.'),
+      comment('szchan-bot', '2026-11-22T12:45:39Z', '<!-- dsh-anyplugin-agent --> Seen. The master acts on this at its next turn boundary; this note exists so the reply is not a silent queue.'),
     ],
     options,
   )
@@ -138,5 +138,5 @@ test('the inbox exit contract counts asks, answers and unreadable threads', () =
   assert.equal(inboxVerdict(sections('Maintainer answers (resume)')).exitCode, 1)
   assert.equal(inboxVerdict(sections('Blocked on a human')).exitCode, 0)
   assert.equal(inboxVerdict(sections('Maintainer answers (resume)'), [{ number: 2, message: 'EOF' }]).exitCode, 2)
-  assert.equal(inboxVerdict({}).summary, 'inbox: 0 answer(s) waiting, 0 escalation(s) open, 0 thread(s) unreadable')
+  assert.equal(inboxVerdict({}).summary, 'inbox: 0 thread(s) waiting, 0 escalation(s) open, 0 thread(s) unreadable')
 })

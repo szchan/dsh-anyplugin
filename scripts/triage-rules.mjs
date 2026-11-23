@@ -65,9 +65,11 @@ export const classifyIssue = (issue, comments, options) => {
   const reply = lastAgentReply(comments, options)
   const human = lastMaintainerComment(comments, options)
   const lastHuman = lastNonAgentComment(comments, options)
-  // Ordering uses any human word (a reporter's answer is still an answer); the
-  // right to *resume* an escalation belongs to a maintainer alone.
+  // Ordering uses any human word for "someone replied after the agent"; the
+  // right to *resume* an escalation belongs to a maintainer alone, so a
+  // bystander's "+1" cannot move a row (reviewer finding on #228).
   const agentAfterHuman = reply !== undefined && (lastHuman === undefined || (reply.createdAt ?? '') > (lastHuman.createdAt ?? ''))
+  const agentAfterMaintainer = reply !== undefined && (human === undefined || (reply.createdAt ?? '') > (human.createdAt ?? ''))
   const lastSpeaker =
     reply === undefined
       ? lastHuman === undefined
@@ -87,12 +89,12 @@ export const classifyIssue = (issue, comments, options) => {
   if (hasLabel(issue, 'maintainer-question') && agent !== undefined) {
     // No maintainer word, or the agent has the last word after one: the
     // escalation is still open. Only a maintainer's later word resumes it.
-    if (human === undefined || agentAfterHuman) return { section: 'Blocked on a human', lastSpeaker }
+    if (human === undefined || agentAfterMaintainer) return { section: 'Blocked on a human', lastSpeaker }
     return { section: 'Maintainer answers (resume)', lastSpeaker }
   }
   if (who === 'maintainer') {
     if (agent === undefined) return { section: 'Maintainer asks (new)', lastSpeaker }
-    if (!agentAfterHuman && human !== undefined) return { section: 'Maintainer answers (resume)', lastSpeaker }
+    if (!agentAfterMaintainer && human !== undefined) return { section: 'Maintainer answers (resume)', lastSpeaker }
     return { section: null, lastSpeaker }
   }
   if (agent === undefined) return { section: 'External, untriaged', lastSpeaker }
@@ -113,15 +115,16 @@ export const roleOfPullRequest = (pr, options) => (isOurs(pr.author?.login, opti
  * lie. Receipts are not answers (D79).
  */
 export const inboxVerdict = (sections, failures = []) => {
-  const resume = sections['Maintainer answers (resume)'] ?? []
-  const asks = sections['Maintainer asks (new)'] ?? []
-  const blocked = sections['Blocked on a human'] ?? []
+  const tag = (name) => (sections[name] ?? []).map((item) => ({ ...item, section: name }))
+  const resume = tag('Maintainer answers (resume)')
+  const asks = tag('Maintainer asks (new)')
+  const blocked = tag('Blocked on a human')
   const waiting = [...asks, ...resume]
   return {
     waiting,
     blocked,
     failures,
     exitCode: failures.length > 0 ? 2 : waiting.length > 0 ? 1 : 0,
-    summary: `inbox: ${waiting.length} answer(s) waiting, ${blocked.length} escalation(s) open, ${failures.length} thread(s) unreadable`,
+    summary: `inbox: ${waiting.length} thread(s) waiting, ${blocked.length} escalation(s) open, ${failures.length} thread(s) unreadable`,
   }
 }
