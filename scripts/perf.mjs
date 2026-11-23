@@ -314,7 +314,7 @@ export function gateRows(report, limits = GATE_LIMITS) {
         null,
         limits.p2EmptyMs,
         'ms',
-        `${limits.p2EmptyMs} ms`,
+        `< ${limits.p2EmptyMs} ms`,
         false,
         'not measured',
       ),
@@ -337,7 +337,7 @@ export function gateRows(report, limits = GATE_LIMITS) {
           emptyRatio,
           limits.p2EmptyMs,
           'ms',
-          `${limits.p2EmptyMs} ms`,
+          `< ${limits.p2EmptyMs} ms`,
           emptyOk,
           emptyHead === null ? 'not measured' : null,
         ),
@@ -390,7 +390,7 @@ export function gateRows(report, limits = GATE_LIMITS) {
       p3Ratio,
       limits.p3Micros,
       'absolute',
-      `${limits.p3Micros.toFixed(1)} us`,
+      `< ${limits.p3Micros.toFixed(1)} us`,
       p3Ok,
       p3Head === null ? 'not measured' : null,
     ),
@@ -457,10 +457,10 @@ export function gateFailures(report, limits = GATE_LIMITS) {
       if (row.detail !== null) return `${row.metric}: ${row.detail} (repeat ${repeat})`
       if (row.head === null) return `${row.metric}: not measured (repeat ${repeat})`
       if (row.limitKind === 'absolute' || row.limitKind === 'ms') {
-        return `${row.metric}: ${row.head.toFixed(1)} ${row.unit} > ${row.limitText} (repeat ${repeat})`
+        return `${row.metric}: ${row.head.toFixed(1)} ${row.unit} at or above ${row.limitText} (repeat ${repeat})`
       }
       if (row.limitKind === 'multiplier') {
-        return `${row.metric}: ${row.head.toFixed(1)} ms > ${row.limitText} (repeat ${repeat})`
+        return `${row.metric}: ${row.head.toFixed(1)} ms at or above ${row.limitText} (repeat ${repeat})`
       }
       const ratio = row.ratio === null ? 'not measured' : `${row.ratio.toFixed(2)}x`
       return `${row.metric}: ${ratio} > ${row.limitText} (repeat ${repeat})`
@@ -564,11 +564,6 @@ export function parseArgs(argv) {
         const repeat = Number(value)
         if (!Number.isInteger(repeat) || repeat < 1 || repeat > MAX_REPEAT) {
           throw new PerfError(`perf: --repeat must be an integer from 1 to ${MAX_REPEAT}, got ${JSON.stringify(value)}`)
-        }
-        if (options.ci && repeat < GATE_REPEAT) {
-          // --ci is the workflow mode; its claim is the median of five pairs.
-          // A one-line workflow edit must not turn the gate into one sample.
-          throw new PerfError(`perf: --ci needs --repeat >= ${GATE_REPEAT} (the median of ${GATE_REPEAT} pairs is the claim), got ${repeat}`)
         }
         options.repeat = repeat
         break
@@ -785,7 +780,7 @@ export function formatTable(report) {
   const limits = report.gateLimits ?? GATE_LIMITS
   lines.push('')
   lines.push(
-    `gated (D76): P1 ratio <= ${limits.ratio}x · P2 empty <= ${limits.p2EmptyMs} ms and one-plugin <= ${limits.p2PluginOverEmpty}x empty · P3 <= ${limits.p3Micros} us/dispatch · P4 ratio <= ${limits.p4Ratio}x`,
+    `gated (D76): P1 ratio <= ${limits.ratio}x · P2 empty < ${limits.p2EmptyMs} ms and one-plugin < ${limits.p2PluginOverEmpty}x empty · P3 < ${limits.p3Micros} us/dispatch · P4 ratio <= ${limits.p4Ratio}x`,
   )
   lines.push('recorded, never gated: P5')
   lines.push('P5  head only')

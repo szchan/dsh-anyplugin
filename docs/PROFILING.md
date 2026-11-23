@@ -49,7 +49,10 @@ numbers read "< 3 s", "< 2× empty" and "< 50 µs" — so 3000 ms, exactly 2× a
 50 µs are red (`exceedsCap`). A missing P2 pin or an unmeasured probe is
 a **failed** row, not a skipped gate. The P2 base/head ratio is still printed,
 but it is description: its noise is why D69 did not gate it, and D76 keeps that
-objection while gating the head's absolute boot instead.
+objection while gating the head's absolute boot instead. The absolute caps are
+hard walls, not a noise band: a single sample at the boundary is red, and the
+verdict line says "all gated" rather than "all ratios" so the recorded P2 boot
+ratio is never implied to have been checked.
 
 `npm run perf` on a workstation is **local-only for debugging and never a
 merge gate**. `npm run verify` does not read perf; the `perf` workflow is its

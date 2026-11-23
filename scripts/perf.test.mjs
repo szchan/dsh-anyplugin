@@ -292,13 +292,13 @@ test('gateRows builds P1, two P2 rows per pin, P3, P4, and four P5 records', () 
   assert.equal(rows.filter((entry) => entry.verdict === 'record').length, 4)
   const empty = rows.find((entry) => entry.metric.startsWith('P2 empty boot'))
   assert.equal(empty.verdict, 'pass')
-  assert.equal(empty.limitText, '3000 ms')
+  assert.equal(empty.limitText, '< 3000 ms')
   const one = rows.find((entry) => entry.metric.startsWith('P2 one-plugin boot'))
   assert.equal(one.verdict, 'pass')
   assert.equal(one.limitKind, 'multiplier')
   assert.match(one.limitText, /^2\.00x empty \(21\.0 ms\)$/)
   const p3 = rows.find((entry) => entry.probe === 'P3')
-  assert.equal(p3.limitText, '50.0 us')
+  assert.equal(p3.limitText, '< 50.0 us')
   const p5 = rows.filter((entry) => entry.probe === 'P5')
   assert.ok(p5.every((entry) => entry.verdict === 'record' && entry.limitText === 'record only'))
 })
@@ -323,9 +323,9 @@ test('gateRows fails P3 on the absolute cap and P2 on either cap', () => {
     { version: '0.2.2-rc.2', ...row(300, 310), empty: row(200, 3010) },
   ]
   assert.deepEqual(gateFailures(report), [
-    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 650.0 ms > 2.00x empty (250.0 ms) (repeat 5)',
-    'P2 empty boot @ dsh 0.2.2-rc.2: 3010.0 ms > 3000 ms (repeat 5)',
-    'P3 pre-execute fan-out: 51.0 us > 50.0 us (repeat 5)',
+    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 650.0 ms at or above 2.00x empty (250.0 ms) (repeat 5)',
+    'P2 empty boot @ dsh 0.2.2-rc.2: 3010.0 ms at or above < 3000 ms (repeat 5)',
+    'P3 pre-execute fan-out: 51.0 us at or above < 50.0 us (repeat 5)',
   ])
 })
 
@@ -335,7 +335,7 @@ test('a P2 one-plugin/empty multiplier is the gate, not the base/head ratio', ()
   // 18.9x is the descriptive base/head ratio; the gate is 189 ms against
   // 2 x 10 ms, and the failure says so rather than calling the ratio the cap.
   assert.deepEqual(gateFailures(report), [
-    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 189.0 ms > 2.00x empty (10.0 ms) (repeat 5)',
+    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 189.0 ms at or above 2.00x empty (10.0 ms) (repeat 5)',
   ])
 })
 
@@ -366,9 +366,9 @@ test('formatGateTable prints metric, base, head, ratio, limit and verdict', () =
   assert.match(table, /^dsh-anyplugin perf gates — base aaaaaaaa \(origin\/main\) -> head bbbbbbbb · repeat 5$/mu)
   assert.match(table, /metric\s+base\s+head\s+ratio\s+limit\s+verdict/u)
   assert.match(table, /P1 cold mod load\s+200\.0 ms\s+220\.0 ms\s+1\.10x\s+1\.50x\s+pass/u)
-  assert.match(table, /P2 empty boot @ dsh 0\.2\.2-rc\.5\s+20\.0 ms\s+21\.0 ms\s+1\.05x\s+3000 ms\s+pass/u)
+  assert.match(table, /P2 empty boot @ dsh 0\.2\.2-rc\.5\s+20\.0 ms\s+21\.0 ms\s+1\.05x\s+< 3000 ms\s+pass/u)
   assert.match(table, /P2 one-plugin boot @ dsh 0\.2\.2-rc\.5.*2\.00x empty \(21\.0 ms\)\s+pass/u)
-  assert.match(table, /P3 pre-execute fan-out\s+8\.00 us\s+8\.80 us\s+1\.10x\s+50\.0 us\s+pass/u)
+  assert.match(table, /P3 pre-execute fan-out\s+8\.00 us\s+8\.80 us\s+1\.10x\s+< 50\.0 us\s+pass/u)
   assert.match(table, /P4 compile \(7 upstream \+ fixtures\)\s+100\.0 ms\s+101\.0 ms\s+1\.01x\s+1\.50x\s+pass/u)
   assert.match(table, /P5 tarball bytes\s+-\s+186,325 B\s+-\s+record only\s+record/u)
   assert.match(table, /P5 boot peak RSS\s+-\s+131,000 KiB\s+-\s+record only\s+record/u)
@@ -379,7 +379,7 @@ test('formatGateTable shows FAIL and the measured limit for a red row', () => {
   const report = sampleReport()
   report.probes.P3 = row(8, 60, { unit: 'us' })
   const table = formatGateTable(report)
-  assert.match(table, /P3 pre-execute fan-out\s+8\.00 us\s+60\.00 us\s+7\.50x\s+50\.0 us\s+FAIL/u)
+  assert.match(table, /P3 pre-execute fan-out\s+8\.00 us\s+60\.00 us\s+7\.50x\s+< 50\.0 us\s+FAIL/u)
 })
 
 test('formatTable shows base, head and ratio, and records P5 without gating it', () => {
@@ -388,7 +388,7 @@ test('formatTable shows base, head and ratio, and records P5 without gating it',
   assert.match(table, /P2 5 paired boots per profile\/side/)
   assert.match(
     table,
-    /gated \(D76\): P1 ratio <= 1\.5x · P2 empty <= 3000 ms and one-plugin <= 2x empty · P3 <= 50 us\/dispatch · P4 ratio <= 1\.5x/u,
+    /gated \(D76\): P1 ratio <= 1\.5x · P2 empty < 3000 ms and one-plugin < 2x empty · P3 < 50 us\/dispatch · P4 ratio <= 1\.5x/u,
   )
   assert.match(table, /recorded, never gated: P5/u)
   assert.match(table, /P1\s+cold mod load: diff \(loadMod \+ evaluate\)\s+200\.0 ms\s+220\.0 ms\s+1\.10x/u)
@@ -572,14 +572,14 @@ test('an absolute budget fails at its boundary, a ratio does not', () => {
   edge.probes.P3 = row(8, 50, { unit: 'us' })
   edge.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 20), empty: row(10, 10) }]
   assert.deepEqual(gateFailures(edge), [
-    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 20.0 ms > 2.00x empty (10.0 ms) (repeat 5)',
-    'P3 pre-execute fan-out: 50.0 us > 50.0 us (repeat 5)',
+    'P2 one-plugin boot @ dsh 0.2.2-rc.5: 20.0 ms at or above 2.00x empty (10.0 ms) (repeat 5)',
+    'P3 pre-execute fan-out: 50.0 us at or above < 50.0 us (repeat 5)',
   ])
 
   const emptyEdge = sampleReport()
   emptyEdge.probes.P2 = [{ version: '0.2.2-rc.5', ...row(10, 345), empty: row(10, 3000) }]
   assert.deepEqual(gateFailures(emptyEdge), [
-    'P2 empty boot @ dsh 0.2.2-rc.5: 3000.0 ms > 3000 ms (repeat 5)',
+    'P2 empty boot @ dsh 0.2.2-rc.5: 3000.0 ms at or above < 3000 ms (repeat 5)',
   ])
 
   const justUnder = sampleReport()
