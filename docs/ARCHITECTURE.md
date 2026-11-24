@@ -3049,6 +3049,77 @@ the compiled binary's own palette object and validators (`TX`, `Uce`,
 `Kir`), not from a user-authored theme file, and the interactive `/theme`
 path was not exercised.
 
+### S25 — what renderer surface a client plugin can reach
+
+**Question.** A DSH client plugin that lives outside the installation — the
+shape of our panel — is loaded into the web shell's page realm. What renderer
+surface can it reach at both pins (`0.2.2-rc.5`, `0.2.2-rc.2`)? Specifically:
+can it register a pane and be mounted by the host layout; receive a DOM or React
+mount point; receive keyboard/focus events and move focus; read layout size or
+observe resize; request animation frames or pace redraws; and talk to the main
+process over a declared channel with a request/response round trip? (issue #280;
+this is the client-side counterpart of the element-runtime gap in §7.3/§7.4.)
+
+**Method.** `spikes/s25-client-surface/run.mjs` reuses the S21 loading path: a
+mod-shaped fixture package (`dsh.client.platform: 'web'`, `exports['./client']`,
+`cordis.patch.yml`, host half + classic page-script client half) copied into a
+temporary profile, the real Cordis context, real `cordis-plugin-loader` and real
+`dsh-client-modules` registry composing the boot graph and serving the bundle
+through the same `/plugins` route; the harness's own browser-half module system
+executes the bundle in a `node:vm` page. New for S25: the real client stack is
+executed too — `dsh-client-ui-renderer`'s `SlotRegistry`/`createSlotRenderer`,
+the `dsh-client-ui-layout` `AppFrame` root occupant, and the
+`dsh-client-shortcuts` service, with the real `dsh-client-ui-slots`,
+`dsh-client-store` and React 18.3.1 (the identity the Desktop frontend bundle
+pins). Because the published renderer is client-DOM-only (its bundled
+`useSyncExternalStore` shim passes no `getServerSnapshot`, so `react-dom/server`
+refuses), the frame is mounted through `ctx.uiRenderer.mount(container)` in a
+jsdom 31.0.1 page. The host channel is a real `dsh-host-webserver` on an
+ephemeral loopback port, so the round trip is a real `fetch`. Session scope,
+theme, locale and the `dsh-client-ui-primitives` helpers are named stubs; none
+is on the measured path. Thirty-three assertions, run at both pins; the fetched
+union gains `dsh-client-ui-slots`, `dsh-client-ui-renderer`,
+`dsh-client-ui-primitives`, `dsh-client-store`, `dsh-client-shortcuts`,
+`dsh-host-webserver` (plus React/jsdom/zustand/immer support), and CI runs the
+spike at both pins.
+
+**Answer.** **Partially buildable, at both pins.** A client plugin outside the
+installation can own a keyed `main` pane and an additive `shell.overlay`
+surface (`dsh-client-ui-layout/src/client/index.ts:197`, `:200`; outlets
+`AppFrame.tsx:49`, `:281`), be mounted by the real frame (the spike mounts it in
+jsdom: the outside pane and overlay render in the same frame), be selected with
+`ctx.layout.selectPanel` (`service.ts:74` throws on an unregistered id), draw
+arbitrary React content there, register configurable and fixed keyboard
+commands (`dsh-client-shortcuts`, observed with a real DOM `KeyboardEvent`:
+region `page`, target `BODY`, consumed; fixed `F9` delivered to
+`observeFixedInput`), and request/respond over its own host-half HTTP routes
+(real `dsh-host-webserver`; the shipped panel already does this at
+`packages/dsh-anyplugin-install/src/panel.ts:355`).
+
+The missing primitives are the ones that would make a *host-owned* drawing
+bridge: a mounted `main` pane receives standard hooks and a factory-children
+seat, but no container/node prop and no geometry feed (only the occupied single
+seats get `{width, viewportWidth}` — `AppFrame.tsx:322`); there is no declared
+focus service (`focusin` only resets pending sequences,
+`dsh-client-shortcuts/src/client/dom.ts:97`) and no host redraw/pacing API —
+`requestAnimationFrame` and `ResizeObserver` are page globals the frame itself
+uses (`AppFrame.tsx:99`, `:143-155`). The generic `ctx.remote` RPC is fixed at
+build time (`dsh-api-remotes` README), so a third-party namespace still needs a
+host change; the Desktop transport is `file://` + an IPC fetch bridge
+(`dsh-host-webserver/README.md:12`), which the loopback probe does not exercise.
+A derived renderer bridge can therefore live in this repo as our own pane, our
+own React/DOM drawing, our own keyboard commands and our own host routes, but
+host-owned layout/focus/invalidate semantics remain §7.3 work.
+
+**What this does not prove.** The mount is real React and the real client
+artifacts, but the DOM is jsdom: no pixels, no Desktop/Electron renderer, no
+real browser page, and the Electron preload bridge and the shortcuts Desktop
+runtime are untouched (the probe runs the Web runtime). Session, theme, locale
+and primitives are stubs, so session-bound panes, live theming and translated
+labels are outside the claim. The frame's rAF throttling and invalidate
+coalescing are read from source, not measured. Nothing here measures drawing
+fidelity against Claude's TUI roles — that is S24 and the element-runtime gap.
+
 ## 11. Non-goals
 
 - Running Claude Code's JavaScript runtime to interpret plugins. (Mods are the

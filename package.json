@@ -72,6 +72,7 @@
     "spike:s19": "node spikes/s19-path/run.mjs",
     "spike:s21": "node spikes/s21-client-panel/run.mjs",
     "spike:s24": "node spikes/s24-theme-seam/run.mjs",
+    "spike:s25": "node spikes/s25-client-surface/run.mjs",
     "check:features": "node scripts/check-features.mjs",
     "guard:install": "node scripts/guard-install.mjs",
     "guard:status": "node scripts/guard-status.mjs",

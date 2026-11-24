@@ -341,6 +341,35 @@ jobs:
           fi
           npm run spike:s24
 
+      # S25 answers issue #280: what renderer surface a client plugin that lives
+      # outside the installation can reach. The spike boots the real client stack
+      # (slot registry, renderer, layout frame, keyboard service) and a real host
+      # HTTP route at both pins, so a pane registration, mount path, keyboard
+      # route or host round trip that drifts reddens here instead of staying a
+      # read claim.
+      - name: S25 client-surface spike (rc.5)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc5 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.5
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S25 spike would skip"
+            exit 1
+          fi
+          npm run spike:s25
+      - name: S25 client-surface spike (rc.2)
+        env:
+          DSH_HARNESS_DIR: ${{ steps.fetch.outputs.dir_rc2 }}
+          DSH_HARNESS_VERSION: 0.2.2-rc.2
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.2; the S25 spike would skip"
+            exit 1
+          fi
+          npm run spike:s25
+
       # continue-on-error deliberately kept the job alive; make the fetch
       # failure fail the job after the successfully fetched pin has run.
       - name: Fail if a harness fetch failed
