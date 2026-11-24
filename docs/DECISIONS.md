@@ -4476,3 +4476,101 @@ measured byte count in its comment; `docs/ARCHITECTURE.md` §2 records the move;
 `AGENTS.md` keeps the ratified range current as D1–D94. No dependency, pin,
 workflow or kernel limit moved.
 
+## D95 — Ship the authored served type surface, generated from the ledger; never redistribute the pinned declaration
+
+**Decided 2026-11-24** (#282).
+
+#282 asked whether mod authors get a type surface, and the answer had been no:
+the generated `types/mod.d.ts` was an internal shape guard (D60). The two exits
+D60 named were negotiation with Anthropic for redistribution, or a published
+derived subset under a new decision. This is the second exit, taken explicitly.
+
+1. **We ship our own authored declaration of our own served surface.**
+   `types/mod.d.ts` is generated from `fixtures/mods/coverage.json` alone and
+   shipped in the root tarball. The pin is named in the header and in the ledger
+   (`@anthropic-ai/claude-code@2.1.329`, `mods/types/claude-code.d.ts`, its
+   sha256), but no pin text is read at generation time and no pin artifact is
+   redistributed (D14); `check:pack` asserts both the declaration ships and no
+   `claude-code.d.ts` / `mods/types/` copy does.
+2. **Served members get real shapes; unsupported members are compile errors.**
+   The 9 served `$` namespaces and their 26 members, the 24 served event routes
+   and their payloads are typed with the shapes the mod host actually returns.
+   Absent and refused members are still declared but typed `never` with a
+   `@deprecated` reason ("this layer does not serve it: ..."), so using one fails
+   at compile time on the author's machine as the runtime would refuse it.
+   Inside a served shape, fields this layer does not model stay optional with a
+   `planned` note (D57). The shapes are authored in the generator; the ledger
+   decides which members exist and is the authority when they disagree.
+3. **The file is generated, capped and drift-gated.** `npm run gen:types`
+   rewrites it; `npm run check:types` fails when the committed file and the
+   ledger disagree and when the file grows past the 16 KiB raw cap; it runs inside
+   `npm run check` and as its own `verify.yml` step. A hand edit is a CI
+   failure, not a review question.
+4. **No budget decision of our own.** The file is 10,944 bytes raw / 2,487 bytes
+   gzip -9, and its in-tarball growth (measured at ~2.4 KiB by the packed-size
+   probe) stays under the 4,486 bytes the 213 KiB ceiling (D94) had left after
+   the renderer bridge, so this decision does not move the ceiling.
+5. **The no-install rule is stated in the file and enforced by D96.** The header
+   says no Claude Code installation is needed and how to map the `claude-code`
+   specifier in `tsconfig`; the declaration imports nothing.
+
+**Not claimed.** This is not the pin's declaration and claims no shape parity
+with it: a member absent here may exist upstream and work under Claude Code; the
+per-fixture fidelity report, not this file, is the authority. Wildcard/matcher
+forms are accepted at run time but not typed yet (planned), and classic-hook
+payloads are `Readonly<Record<string, unknown>>` rather than the pin's per-event
+interfaces. The types are compile-time only; they are not a runtime validator.
+
+**Evidence.** `scripts/gen-mod-types.mjs` renders only from the ledger and
+`npm run check:types` prints `types/mod.d.ts matches fixtures/mods/coverage.json
+(10944 bytes raw, 2487 bytes gzip -9, cap 16384 bytes)`; mutation probes show
+each guard fails when removed. Tests in
+`packages/dsh-anyplugin-mod-host/test/types.test.mjs`: `the committed
+declaration is what the generator renders, under the raw-size cap`, `two
+generator runs write identical bytes, matching the committed file`, `--check
+fails when the committed file is hand-edited out of date`, `--check fails when
+the ledger and the committed file disagree`, `--check enforces the raw-size cap,
+and the generator refuses a ledger with broken arithmetic`, `the $ surface
+declares every served member and marks absent/refused members never`, `the event
+surface is exactly the served routes, with the served payload shapes`, `the
+declaration copies nothing from the pinned declaration`, and `the drift gate is
+wired into the package scripts and CI`; `check:pack` measures the tarball with
+the declaration inside the ceiling, and `verify` runs on the merge head.
+
+## D96 — Never assume the user machine has Claude Code
+
+**Decided 2026-11-24** (#282).
+
+The product claim is that DSH runs plugins written for Claude Code without Claude
+Code present. The oracle exists so this repository can *measure* that claim (D8);
+it is not a dependency of the product. Every path that runs on a user machine —
+install, materialize, load, run, the shipped panel, the shipped types — must not
+read, execute, import or require `claude` or `@anthropic-ai/claude-code`.
+
+1. **The rule.** Never assume the user machine has Claude Code installed. A code
+   path that needs the oracle to function is a bug, not a dependency: detect,
+   degrade with a recorded reason, or refuse with a typed code.
+2. **Where it is recorded.** AGENTS.md §3 item 10 makes it a non-negotiable; the
+   shipped declaration's header tells mod authors to map the `claude-code`
+   specifier in `tsconfig` instead of installing anything, and the declaration
+   imports nothing (D95).
+3. **Scope.** Development and CI probes may use the oracle — that is what it is
+   for, and the fetch scripts pin it (D8, D24). No shipped `lib/`, materializer,
+   mod-host or panel path may shell out to or import it; no shipped path may
+   test for its presence and behave differently on a user machine. The packed
+   `bin` is already run by `check:pack` with no DSH environment.
+4. **Types are the testable half.** The author-facing surface is the one shipped
+   artifact that names the foreign module specifier, so it states the rule where
+   an author reads it: the specifier is mapped to a local file, not resolved
+   through an installation (D95).
+
+**Not claimed.** This does not remove `claude` from the development rig or CI,
+and does not add a new runtime dependency scanner: the existing gates (shipped
+`lib/` lint, `check:pack`'s extracted-bin run, the conformance rig's pinned
+fetch) are what a violation would have to pass.
+
+**Evidence.** AGENTS.md §3.10; the generated header in `types/mod.d.ts`; the
+test `the declaration copies nothing from the pinned declaration` in
+`packages/dsh-anyplugin-mod-host/test/types.test.mjs` asserts the shipped file
+has no `from 'claude-code'` import, and `check:pack` runs the packed bin with
+`DSH_INSTALL_DIR`/`CLAUDE_BIN` unset; `verify` runs on the merge head.

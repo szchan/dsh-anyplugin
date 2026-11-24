@@ -43,6 +43,9 @@ jobs:
       - run: npm run check:arch
       - run: npm run check:features
       - run: npm run check:decisions
+      # The author-facing declaration is generated from the coverage ledger; a
+      # hand edit or a drifted ledger must fail here, not on an author's machine.
+      - run: npm run check:types
 
       # The upstream mods table scans and loads every mod that ships under
       # `mods/` at the pinned Claude Code commit. Fetching is explicit, like
