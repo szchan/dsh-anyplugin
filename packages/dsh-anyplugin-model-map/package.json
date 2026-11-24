@@ -1,0 +1,8 @@
+{
+  "name": "dsh-anyplugin-model-map",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "This layer's own policy for Claude agent model aliases: an overridable document that resolves a frontmatter model/effort to a provider route the session catalog advertises (D91).",
+  "exports": { ".": "./src/index.ts" }
+}

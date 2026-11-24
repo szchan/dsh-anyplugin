@@ -19,6 +19,7 @@ import { CLAUDE_CODE_PIN, readClaudePlugin } from '../../dsh-anyplugin-dialect-c
 import { defaultMaterializers } from '../../dsh-anyplugin-emit/src/index.ts'
 import { buildTransplantReport, formatTransplantReport } from '../src/report.ts'
 import { classify, emptyGrants, grant, pluginIdentity } from '../../dsh-anyplugin-trust/src/index.ts'
+import { loadEffectiveModelMap } from '../../dsh-anyplugin-model-map/src/index.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const fixture = join(repoRoot, 'fixtures', 'claude-commands-flat')
@@ -112,6 +113,11 @@ test('rig report prints the compile-side report as JSON', () => {
   const report = JSON.parse(result.stdout)
   assert.equal(report.ok, true)
   assert.equal(report.pin.version, CLAUDE_CODE_PIN.version)
+  // A plugin-directory report annotates and reports in one run, so its map is
+  // the map the IR was built against; the `--ir` provenance caveat must not leak
+  // into this path.
+  assert.equal(typeof report.preview, 'string')
+  assert.doesNotMatch(report.preview, /ambient model map/)
   assert.deepEqual(report.totals, { declared: 2, emitted: 2, refused: 0, skipped: 0 })
   assert.deepEqual(
     report.components.map((component) => [component.name, component.class, component.carried]),
@@ -170,6 +176,10 @@ test('rig report fails on an IR that violates the contract', () => {
     const result = runRig(['report', '--ir', irPath])
 
     assert.equal(result.status, 1, result.stderr)
+    // The IR carries no model-map provenance, so the CLI has to say that the
+    // effectiveMapping it prints is the ambient document, not the map this IR
+    // was annotated against (known gap; see report.ts).
+    assert.match(result.stdout, /^preview only: .*--ir: effectiveMapping is the ambient model map at report time/m)
     assert.match(result.stdout, /^skills\/migrate {2}class=planned {2}carry=skipped$/m)
     assert.match(result.stdout, /^skills\/review {2}class=planned {2}carry=emitted$/m)
     assert.match(result.stdout, /^totals: 2 declared, 1 emitted, 0 refused, 1 skipped$/m)
@@ -249,4 +259,56 @@ test('rig report calls itself a preview, in text and in JSON', () => {
     /^preview only: rig report does not read installs\.yml/,
     'a preview must not be readable as the controller install decision',
   )
+})
+
+// D91: every report carries the effective model map, so a user can see which
+// route an agent alias resolves to and where that document came from.
+test('report carries the effective model map, in JSON shape and as one text line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-report-model-map-'))
+  try {
+    const env = { ANYPLUGIN_MODEL_MAP: join(dir, 'missing.json') }
+    const modelMap = loadEffectiveModelMap({ env, homedir: dir })
+    const ir = readClaudePlugin(fixture, { source: 'plugin-dir:test', modelMap })
+    const report = buildTransplantReport(ir, { materializers, modelMap })
+
+    assert.deepEqual(report.effectiveMapping.path, join(dir, 'missing.json'))
+    assert.equal(report.effectiveMapping.document, null)
+    assert.deepEqual(report.effectiveMapping.overrides, [])
+    assert.deepEqual(report.effectiveMapping.problems, [])
+    assert.deepEqual(
+      report.effectiveMapping.entries.map((entry) => entry.alias),
+      ['haiku', 'opus', 'sonnet'],
+    )
+    // The report is JSON-serializable with the section in place.
+    assert.match(JSON.stringify(report), /"effectiveMapping"/)
+
+    const text = formatTransplantReport(report)
+    assert.match(text, /^model-map: .*missing\.json/m)
+    assert.match(text, /opus -> deepseek-account\/deepseek-flash @ max \(default\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('report shows a user override and a malformed document visibly', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-report-model-map-user-'))
+  try {
+    const path = join(dir, 'map.json')
+    writeFileSync(path, '{"models":{"sonnet":{"provider":"acme","model":"acme-flash","effort":"low"}}}')
+    const modelMap = loadEffectiveModelMap({ env: { ANYPLUGIN_MODEL_MAP: path }, homedir: dir })
+    const report = buildTransplantReport(readClaudePlugin(fixture, { modelMap }), { materializers, modelMap })
+    assert.deepEqual(report.effectiveMapping.overrides, ['sonnet'])
+    assert.match(formatTransplantReport(report), /sonnet -> acme\/acme-flash @ low \(user\)/)
+
+    writeFileSync(path, '{"models":{"sonnet":{"model":"m","effort":"turbo"}}}')
+    const malformed = loadEffectiveModelMap({ env: { ANYPLUGIN_MODEL_MAP: path }, homedir: dir })
+    const broken = buildTransplantReport(readClaudePlugin(fixture, { modelMap: malformed }), {
+      materializers,
+      modelMap: malformed,
+    })
+    assert.equal(broken.effectiveMapping.problems.length, 1)
+    assert.match(formatTransplantReport(broken), /problems: .*unknown effort "turbo"/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

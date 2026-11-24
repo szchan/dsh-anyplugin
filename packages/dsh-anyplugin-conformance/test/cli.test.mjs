@@ -8,7 +8,7 @@
 // exercised in `packed-cli.test.mjs`.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -155,6 +155,145 @@ test('published bin: per-command --help still comes from the rig', () => {
 
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /dsh-anyplugin install <plugin-dir> \[--scope <s>\]/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// D91: the user document for the agent model map. get prints the effective
+// map as JSON, set validates strictly, reset returns to the shipped defaults.
+// The document path is the home config path, or ANYPLUGIN_MODEL_MAP when set;
+// profile config is never written.
+const mapPathIn = (home) => join(home, '.config', 'dsh-anyplugin', 'model-map.json')
+
+test('published bin: model-map get prints the shipped defaults as JSON', () => {
+  const home = scratch()
+  try {
+    const result = run(['model-map', 'get'], home)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stderr, '')
+    const map = JSON.parse(result.stdout)
+    assert.equal(map.path, mapPathIn(home))
+    assert.equal(map.document, null)
+    assert.deepEqual(map.overrides, [])
+    assert.deepEqual(map.problems, [])
+    assert.deepEqual(
+      map.entries.map((entry) => entry.alias + '=' + entry.provider + '/' + entry.model + '@' + entry.effort + '(' + entry.source + ')'),
+      [
+        'haiku=deepseek-account/deepseek-flash@low(default)',
+        'opus=deepseek-account/deepseek-flash@max(default)',
+        'sonnet=deepseek-account/deepseek-flash@high(default)',
+      ],
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('published bin: model-map set writes the user document and get reports its provenance', () => {
+  const home = scratch()
+  try {
+    const inline = '{"models":{"opus":{"provider":"deepseek-account","model":"deepseek-flash","effort":"low"}}}'
+    const set = run(['model-map', 'set', inline], home)
+    assert.equal(set.status, 0, set.stderr)
+    assert.match(set.stdout, /model-map: wrote /)
+    assert.equal(
+      readFileSync(mapPathIn(home), 'utf8'),
+      '{\n  "models": {\n    "opus": {\n      "model": "deepseek-flash",\n      "provider": "deepseek-account",\n      "effort": "low"\n    }\n  }\n}\n',
+    )
+
+    const get = run(['model-map', 'get'], home)
+    assert.equal(get.status, 0, get.stderr)
+    const map = JSON.parse(get.stdout)
+    assert.equal(map.document, mapPathIn(home))
+    assert.deepEqual(map.overrides, ['opus'])
+    const opus = map.entries.find((entry) => entry.alias === 'opus')
+    assert.deepEqual(opus, {
+      alias: 'opus',
+      provider: 'deepseek-account',
+      model: 'deepseek-flash',
+      effort: 'low',
+      source: 'user',
+    })
+    // Unnamed aliases keep the shipped route.
+    assert.equal(map.entries.find((entry) => entry.alias === 'sonnet').source, 'default')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('published bin: model-map set accepts a file and writes nothing when the document is invalid', () => {
+  const home = scratch()
+  try {
+    const input = join(home, 'map.json')
+    writeFileSync(input, '{"models":{"haiku":{"model":"tiny-model"}}}')
+    const set = run(['model-map', 'set', input], home)
+    assert.equal(set.status, 0, set.stderr)
+    assert.equal(JSON.parse(run(['model-map', 'get'], home).stdout).overrides[0], 'haiku')
+
+    const bad = join(home, 'bad.json')
+    writeFileSync(bad, '{"models":{"sonnet":{"model":"m","effort":"turbo"}}}')
+    const rejected = run(['model-map', 'set', bad], home)
+    assert.equal(rejected.status, 1)
+    assert.match(rejected.stderr, /unknown effort "turbo"/)
+    // The previous document is still in force: a rejected set never half-writes.
+    assert.deepEqual(JSON.parse(run(['model-map', 'get'], home).stdout).overrides, ['haiku'])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('published bin: model-map reset removes the user document and returns to defaults', () => {
+  const home = scratch()
+  try {
+    writeFileSync(join(home, 'inline.json'), '{"models":{"sonnet":{"model":"m"}}}')
+    assert.equal(run(['model-map', 'set', join(home, 'inline.json')], home).status, 0)
+    assert.equal(existsSync(mapPathIn(home)), true)
+
+    const reset = run(['model-map', 'reset'], home)
+    assert.equal(reset.status, 0, reset.stderr)
+    assert.match(reset.stdout, /shipped defaults in force/)
+    assert.equal(existsSync(mapPathIn(home)), false)
+    assert.deepEqual(JSON.parse(run(['model-map', 'get'], home).stdout).overrides, [])
+
+    const again = run(['model-map', 'reset'], home)
+    assert.equal(again.status, 0, again.stderr)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('published bin: model-map get names a malformed document and exits non-zero', () => {
+  const home = scratch()
+  try {
+    const path = join(home, 'env-map.json')
+    writeFileSync(path, '{"models":{},"route":{}}')
+    const result = run(['model-map', 'get'], home, { ANYPLUGIN_MODEL_MAP: path })
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /unknown top-level key "route"/)
+    const map = JSON.parse(result.stdout)
+    assert.equal(map.path, path)
+    assert.equal(map.document, path)
+    // The shipped defaults are still the visible fallback, and the problem is
+    // why the materializer refuses to forward them.
+    assert.equal(map.entries.length, 3)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('published bin: model-map rejects an unknown subcommand and unknown options', () => {
+  const home = scratch()
+  try {
+    const command = run(['model-map', 'frobnicate'], home)
+    assert.equal(command.status, 2)
+    assert.match(command.stderr, /unknown model-map subcommand "frobnicate"/)
+
+    const option = run(['model-map', 'get', '--bogus'], home)
+    assert.equal(option.status, 2)
+    assert.match(option.stderr, /unknown option --bogus for model-map/)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
