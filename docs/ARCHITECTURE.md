@@ -3070,30 +3070,48 @@ executes the bundle in a `node:vm` page. New for S25: the real client stack is
 executed too — `dsh-client-ui-renderer`'s `SlotRegistry`/`createSlotRenderer`,
 the `dsh-client-ui-layout` `AppFrame` root occupant, and the
 `dsh-client-shortcuts` service, with the real `dsh-client-ui-slots`,
-`dsh-client-store` and React 18.3.1 (the identity the Desktop frontend bundle
-pins). Because the published renderer is client-DOM-only (its bundled
-`useSyncExternalStore` shim passes no `getServerSnapshot`, so `react-dom/server`
-refuses), the frame is mounted through `ctx.uiRenderer.mount(container)` in a
-jsdom 31.0.1 page. The host channel is a real `dsh-host-webserver` on an
-ephemeral loopback port, so the round trip is a real `fetch`. Session scope,
-theme, locale and the `dsh-client-ui-primitives` helpers are named stubs; none
-is on the measured path. Thirty-three assertions, run at both pins; the fetched
-union gains `dsh-client-ui-slots`, `dsh-client-ui-renderer`,
-`dsh-client-ui-primitives`, `dsh-client-store`, `dsh-client-shortcuts`,
-`dsh-host-webserver` (plus React/jsdom/zustand/immer support), and CI runs the
-spike at both pins.
+`dsh-client-store` and React 18.3.1 (the version both fetched pins resolve,
+asserted from the loaded React). Because the published renderer is
+client-DOM-only (its bundled `useSyncExternalStore` shim passes no
+`getServerSnapshot`, so `react-dom/server` refuses), the frame is mounted
+through `ctx.uiRenderer.mount(container)` in a jsdom 31.0.1 page, and the spike
+sends a real `MouseEvent` click, a real `HTMLElement.focus()` and real
+`KeyboardEvent`s into that page. The host channel is a real `dsh-host-webserver`
+on an ephemeral loopback port: the probe asserts the listening socket with a raw
+TCP request, observes the host half's registrations through the real
+`webServer.register`, and the fixture's client half calls its own host route
+with `fetch` from the page realm (jsdom has no `fetch`, so the probe injects the
+Node realm's; the Electron IPC transport is read, not exercised). Session scope,
+theme and locale are named stubs off every measured path; the
+`dsh-client-ui-primitives` module is a partial seed *on* the keyboard path — the
+two helpers the shortcuts bundle requires are loaded from the pinned authored
+source, executed in the page and asserted (check 22), and the module's other
+exports are not loaded. Forty checks — 13 source reads + 27 executing — run at
+both pins; every executing check was shown non-vacuous by a source mutation (the
+PR records the table). The fetched union gains `dsh-client-ui-slots`,
+`dsh-client-ui-renderer`, `dsh-client-ui-primitives`, `dsh-client-store`,
+`dsh-client-shortcuts`, `dsh-host-webserver` (plus React/jsdom/zustand/immer
+support), and CI runs the spike at both pins; a run whose resolved tree is not
+the named pin refuses at startup.
 
 **Answer.** **Partially buildable, at both pins.** A client plugin outside the
 installation can own a keyed `main` pane and an additive `shell.overlay`
 surface (`dsh-client-ui-layout/src/client/index.ts:197`, `:200`; outlets
 `AppFrame.tsx:49`, `:281`), be mounted by the real frame (the spike mounts it in
-jsdom: the outside pane and overlay render in the same frame), be selected with
-`ctx.layout.selectPanel` (`service.ts:74` throws on an unregistered id), draw
-arbitrary React content there, register configurable and fixed keyboard
+jsdom: the outside pane and overlay render in the same frame, and the registry
+reads the outside registrations back), draw its own React element tree there —
+a container with text, a button and an input, whose markup bytes and tag
+sequence are asserted; a real DOM click runs the button's React handler and
+commits state, and a real `focus()` call lands on the input and runs its React
+focus handler — be selected with `ctx.layout.selectPanel` (`service.ts:74`
+throws on an unregistered id), register configurable and fixed keyboard
 commands (`dsh-client-shortcuts`, observed with a real DOM `KeyboardEvent`:
 region `page`, target `BODY`, consumed; fixed `F9` delivered to
 `observeFixedInput`), and request/respond over its own host-half HTTP routes
-(real `dsh-host-webserver`; the shipped panel already does this at
+(real `dsh-host-webserver`: the probe asserts the listening socket over raw TCP,
+the host half's two exact registrations and the 200/405/echo responses, and the
+fixture's client half fetches its own route from the page realm; the shipped
+panel already does the host half at
 `packages/dsh-anyplugin-install/src/panel.ts:355`).
 
 The missing primitives are the ones that would make a *host-owned* drawing
@@ -3114,11 +3132,18 @@ host-owned layout/focus/invalidate semantics remain §7.3 work.
 **What this does not prove.** The mount is real React and the real client
 artifacts, but the DOM is jsdom: no pixels, no Desktop/Electron renderer, no
 real browser page, and the Electron preload bridge and the shortcuts Desktop
-runtime are untouched (the probe runs the Web runtime). Session, theme, locale
-and primitives are stubs, so session-bound panes, live theming and translated
-labels are outside the claim. The frame's rAF throttling and invalidate
-coalescing are read from source, not measured. Nothing here measures drawing
-fidelity against Claude's TUI roles — that is S24 and the element-runtime gap.
+runtime are untouched (the probe runs the Web runtime); the page-realm `fetch`
+is the Node realm's `fetch` injected into jsdom, so the Electron IPC transport
+the Desktop shell uses is read from the webserver README, not exercised.
+Session, theme and locale are stubs, so session-bound panes, live theming and
+translated labels are outside the claim. `dsh-client-ui-primitives` is a partial
+seed: only the two helpers the shortcuts bundle requires are loaded and
+asserted, not the module's CSS-module imports, markdown or terminal helpers.
+The frame's rAF throttling and invalidate coalescing are read from source, not
+measured, and the probe never observes a plugin-issued
+`requestAnimationFrame` because the plugin has no declared pacing primitive to
+call. Nothing here measures drawing fidelity against Claude's TUI roles — that
+is S24 and the element-runtime gap.
 
 ## 11. Non-goals
 

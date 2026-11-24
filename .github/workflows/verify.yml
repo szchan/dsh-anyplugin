@@ -354,7 +354,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
-            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S25 spike would skip"
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.5; the S25 spike cannot run (fetch the tree first: node scripts/fetch-harness.mjs <pin>)"
             exit 1
           fi
           npm run spike:s25
@@ -365,7 +365,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DSH_HARNESS_DIR:-}" ] || [ ! -d "$DSH_HARNESS_DIR/node_modules/@deepseek-ai" ]; then
-            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.2; the S25 spike would skip"
+            echo "::error::DSH_HARNESS_DIR is unset for DSH 0.2.2-rc.2; the S25 spike cannot run (fetch the tree first: node scripts/fetch-harness.mjs <pin>)"
             exit 1
           fi
           npm run spike:s25

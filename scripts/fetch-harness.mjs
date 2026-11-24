@@ -139,11 +139,11 @@ const SUPPORTING = {
   '@deepseek-ai/cordis-plugin-group': '1.1.0',
   '@deepseek-ai/cordis-plugin-loader': '1.1.0',
   '@modelcontextprotocol/client': '2.2.0',
-  // S25 mounts the real layout frame and slot renderer in a jsdom page realm with
-  // the React identity the web shell's static module table pins: the Desktop
-  // frontend bundle (dsh-web-frontend rc.2) carries React 18.3.1, so the probe
-  // uses the same major/minor and claims nothing about React's own internals
-  // (issue #280). jsdom is the probe's page DOM, not a harness package.
+  // S25 mounts the real layout frame and slot renderer in a jsdom page realm.
+  // Both fetched pins resolve react@18.3.1 from their own dependency trees, and
+  // the spike asserts the version of the React it actually loads (check 36), so
+  // the pin names the version the run used and claims nothing about React's own
+  // internals (issue #280). jsdom is the probe's page DOM, not a harness package.
   react: '18.3.1',
   'react-dom': '18.3.1',
   jsdom: '31.0.1',
