@@ -49,6 +49,7 @@ const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
 // ---------------------------------------------------------------------------
 const ALLOWED = {
   'dsh-anyplugin-ir': [],
+  'dsh-anyplugin-model-map': [],
   'dsh-anyplugin-intercept': [],
   'dsh-anyplugin-mod-scan': [],
   'dsh-anyplugin-mod-host': [],
@@ -59,10 +60,10 @@ const ALLOWED = {
   'dsh-anyplugin-trust': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-emit': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-install': ['dsh-anyplugin-dialect-claude-code', 'dsh-anyplugin-dialect-codex', 'dsh-anyplugin-emit', 'dsh-anyplugin-trust'],
-  'dsh-anyplugin-dialect-claude-code': ['dsh-anyplugin-ir'],
+  'dsh-anyplugin-dialect-claude-code': ['dsh-anyplugin-ir', 'dsh-anyplugin-model-map'],
   'dsh-anyplugin-dialect-codex': ['dsh-anyplugin-ir'],
   'dsh-anyplugin-materialize-skill': ['dsh-anyplugin-ir'],
-  'dsh-anyplugin-materialize-agents': [],
+  'dsh-anyplugin-materialize-agents': ['dsh-anyplugin-model-map'],
   'dsh-anyplugin-materialize-command': ['dsh-anyplugin-ir', 'dsh-anyplugin-command-template'],
   'dsh-anyplugin-materialize-hook': ['dsh-anyplugin-hook-runner', 'dsh-anyplugin-intercept', 'dsh-anyplugin-mod-host', 'dsh-anyplugin-trust'],
   'dsh-anyplugin-materialize-mcp': [],

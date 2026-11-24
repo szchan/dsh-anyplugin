@@ -28,6 +28,15 @@ import type {
   IrUnmaterialized,
 } from '../../dsh-anyplugin-ir/src/index.ts'
 import { IR_SCHEMA, weakestAnnotation } from '../../dsh-anyplugin-ir/src/index.ts'
+import {
+  describeModelRoute,
+  EFFORT_NAMES,
+  findModelMapRoute,
+  isEffortName,
+  loadEffectiveModelMap,
+  modelMapRefusal,
+  type EffectiveModelMap,
+} from '../../dsh-anyplugin-model-map/src/index.ts'
 import { monitorClientText, type MonitorClientTextKey } from './monitor-client-text.ts'
 
 export const CLAUDE_CODE_PIN: IrPin = { tool: 'claude-code', version: '2.1.329' }
@@ -36,6 +45,12 @@ export interface ReadOptions {
   pin?: IrPin
   /** Label recorded in the IR, e.g. `plugin-dir:fixtures/claude-skills-only`. */
   source?: string
+  /**
+   * The effective model map the `model`/`effort` faces are annotated against.
+   * Defaults to this machine's user document over the shipped defaults; a
+   * caller that already resolved one passes it so the IR and the report agree.
+   */
+  modelMap?: EffectiveModelMap
 }
 
 export interface Frontmatter {
@@ -448,9 +463,13 @@ function readSkillsAndCommands(root: string): {
  * `isolation: worktree`, and receives no skill text. `agentOptions.model` does
  * reach the provider, but literally — `sonnet` arrives as a model id the
  * provider may know nothing about — and `agentOptions.reasoningEffort` only
- * works when the provider advertises that exact id. So model and effort are
- * `unsupported` (the escape layer that delegates to the real client is the only
- * path), tools and maxTurns are `unsupported`, isolation is `planned` behind a
+ * works when the provider advertises that exact id. So `model` and `effort` are
+ * carried by this layer's own model map (D91): an alias that the map resolves
+ * is `derived` (a policy of this layer with no upstream counterpart, never
+ * Claude semantics), and an alias or effort the map cannot resolve stays
+ * `unsupported` with the gap named. The materializer forwards a mapped route
+ * only when the session catalog advertises the model id and effort (S16).
+ * `tools` and `maxTurns` are `unsupported`, isolation is `planned` behind a
  * named child-composition seam, and `skills` is `equivalent` only when every
  * declared name resolves to a body this plugin ships (prepended to the child's
  * first user message), `planned` otherwise. The overall annotation is the
@@ -476,6 +495,7 @@ export function agentFaces(
   >,
   plugin: string,
   emptySkills: readonly string[] = [],
+  modelMap: EffectiveModelMap = loadEffectiveModelMap(),
 ): IrAgentFaces {
   const toolName = `${plugin}:${agent.name}`
   const catalog: Annotation = {
@@ -493,23 +513,67 @@ export function agentFaces(
 
   const faces: IrAgentFaces = { catalog, invocation }
 
+  const modelAlias = agent.model?.trim()
+  const mapped = modelAlias === undefined ? undefined : findModelMapRoute(modelMap, modelAlias)
+  const refusal = modelMapRefusal(modelMap)
+  const mapKeys = modelMap.entries.map((entry) => entry.alias)
+  const mapDocument = modelMap.document === null ? `${modelMap.path} (built-in defaults; no user document)` : modelMap.path
+
   if (agent.model !== undefined) {
-    faces.model = {
-      fidelity: 'unsupported',
-      reason:
-        `Frontmatter \`model: ${agent.model}\` names a Claude model or alias (sonnet/opus/haiku/...), not a route this deployment has. ` +
-        '`startActivation` carries only `agentOptions.model`; S16 observed it reach the child model call verbatim, so forwarding `sonnet` asks the provider for a model named "sonnet". ' +
-        'A vendor model identity cannot be reimplemented here: the escape layer that delegates the component to the real client (docs/TODO.md "Escape layer") is the only path.',
+    if (refusal !== undefined) {
+      faces.model = {
+        fidelity: 'unsupported',
+        reason:
+          `Frontmatter \`model: ${modelAlias}\` cannot be mapped: ${refusal}. ` +
+          'Nothing is forwarded and the agent runs on the session default; `report` prints the document problem.',
+      }
+    } else if (mapped === undefined) {
+      faces.model = {
+        fidelity: 'unsupported',
+        reason:
+          `Frontmatter \`model: ${modelAlias}\` is not an alias in this layer's model map (keys: ${mapKeys.length === 0 ? 'none' : JSON.stringify(mapKeys)}; document: ${mapDocument}). ` +
+          'This layer never forwards a model id it cannot resolve from the document (S16: an unexpected model or effort id fails the child turn), so nothing is forwarded and the agent runs on the session default.',
+      }
+    } else {
+      faces.model = {
+        fidelity: 'derived',
+        reason:
+          `Frontmatter \`model: ${modelAlias}\` is a Claude alias this layer maps by its own policy (D91), not a Claude semantic: the model map resolves it to ${describeModelRoute(mapped.route)}. ` +
+          'The materializer forwards that route only when the session catalog advertises the model id; otherwise the agent runs on the session default and the gap is logged. Mapping is visible in `report` and overridable through the user document.',
+      }
     }
   }
 
   if (agent.effort !== undefined) {
-    faces.effort = {
-      fidelity: 'unsupported',
-      reason:
-        `Frontmatter \`effort: ${agent.effort}\` names a Claude effort level, not a provider one. ` +
-        '`startActivation` carries `agentOptions.reasoningEffort`, but the ids are the provider\'s advertised set: S16 observed the requested id reach the child only after the provider advertised it, and with none advertised the turn dies with `UNSUPPORTED_REASONING_EFFORT`. ' +
-        'Claude\'s low/medium/high/xhigh/max are model-dependent, so naming one would guess at another vendor\'s route; the escape layer is the only path.',
+    const effortName = agent.effort.trim()
+    if (refusal !== undefined) {
+      faces.effort = {
+        fidelity: 'unsupported',
+        reason:
+          `Frontmatter \`effort: ${effortName}\` cannot be mapped: ${refusal}. ` +
+          'Nothing is forwarded and the agent runs on the session default; `report` prints the document problem.',
+      }
+    } else if (mapped !== undefined && isEffortName(effortName)) {
+      faces.effort = {
+        fidelity: 'derived',
+        reason:
+          `Frontmatter \`effort: ${effortName}\` is taken as a provider reasoning-effort id and attached to the mapped route by this layer's policy (D91), not a Claude semantic: \`model: ${modelAlias}\` resolves to ${describeModelRoute(mapped.route)}, and the frontmatter effort replaces that default effort. ` +
+          'The materializer forwards the effort only when the selected provider advertises that exact id (S16); otherwise the model runs without an effort override and the gap is logged.',
+      }
+    } else if (mapped === undefined) {
+      faces.effort = {
+        fidelity: 'unsupported',
+        reason:
+          `Frontmatter \`effort: ${effortName}\` has no mapped \`model\` alias to attach to: the effort-id space belongs to the provider (S16), and this layer will not guess a route for an effort alone. ` +
+          'Nothing is forwarded; the agent runs on the session default. The escape layer that delegates the component to the real client is the only path.',
+      }
+    } else {
+      faces.effort = {
+        fidelity: 'unsupported',
+        reason:
+          `Frontmatter \`effort: ${effortName}\` is not one of the effort ids this layer accepts (${EFFORT_NAMES.join(', ')}). ` +
+          'S16 observed an unadvertised reasoning-effort id fail the child turn, so the frontmatter effort is not forwarded: the agent runs on the mapped route with that route\'s default effort, and the materializer logs the dropped effort (D91).',
+      }
     }
   }
 
@@ -670,6 +734,7 @@ function readAgents(
   plugin: string,
   availableSkills: readonly IrSkill[],
   emptySkillNames: readonly string[],
+  modelMap: EffectiveModelMap,
 ): { agents: IrAgent[]; unsupported: IrUnmaterialized[] } {
   const agents: IrAgent[] = []
   const unsupported: IrUnmaterialized[] = []
@@ -766,6 +831,7 @@ function readAgents(
       },
       plugin,
       resolvedSkills.empty,
+      modelMap,
     )
     const agent: IrAgent = {
       kind: 'agent',
@@ -1948,7 +2014,8 @@ export function readClaudePlugin(root: string, options: ReadOptions = {}): Claud
   const pin = options.pin ?? CLAUDE_CODE_PIN
   const pluginName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : basename(root)
   const { skills, emptySkills: skillEmpty, pending: skillPending, unsupported: skillUnsupported } = readSkillsAndCommands(root)
-  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName, skills, skillEmpty)
+  const modelMap = options.modelMap ?? loadEffectiveModelMap()
+  const { agents, unsupported: agentUnsupported } = readAgents(root, pluginName, skills, skillEmpty, modelMap)
   const { hooks, pending: hookPending } = readHooks(root)
   const { mods, pending: modPending } = readMods(root)
   const { servers, pending: mcpPending, unsupported: mcpUnsupported } = readMcp(root, pluginName)

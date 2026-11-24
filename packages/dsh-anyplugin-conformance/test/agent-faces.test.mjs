@@ -17,10 +17,21 @@ import test from 'node:test'
 
 import { readClaudePlugin } from '../../dsh-anyplugin-dialect-claude-code/src/index.ts'
 import { emitPlugin } from '../../dsh-anyplugin-emit/src/index.ts'
+import { loadEffectiveModelMap } from '../../dsh-anyplugin-model-map/src/index.ts'
 import { harnessSkipReason, resolveHarness } from '../src/harness.ts'
 import { loadFromHarness, probeAgentInvocationWithDsh } from '../src/oracles/dsh.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
+
+// Hermetic: the model/effort faces are annotated against the shipped defaults,
+// not the developer's `~/.config/dsh-anyplugin/model-map.json` (the dialect
+// loads the ambient document when `modelMap` is omitted). The absent pinned
+// path is the same pin materialize-agents/test/materialize.test.mjs uses; the
+// env var also pins any call that forgets to pass `modelMap`.
+const MODEL_MAP_PATH = join(mkdtempSync(join(tmpdir(), 'anyplugin-agent-faces-map-')), 'no-user-document.json')
+process.env.ANYPLUGIN_MODEL_MAP = MODEL_MAP_PATH
+const MODEL_MAP = loadEffectiveModelMap({ env: { ANYPLUGIN_MODEL_MAP: MODEL_MAP_PATH }, homedir: tmpdir() })
+
 const harness = resolveHarness()
 const materializerUrl = (pkg) => pathToFileURL(join(repoRoot, 'packages', pkg, 'src', 'index.ts')).href
 const materializers = {
@@ -40,8 +51,8 @@ const SKILL_PROVIDER = 'anyplugin'
 const FACES = {
   catalog: 'exact',
   invocation: 'equivalent',
-  model: 'unsupported',
-  effort: 'unsupported',
+  model: 'derived',
+  effort: 'derived',
   tools: 'unsupported',
   maxTurns: 'unsupported',
   isolation: 'planned',
@@ -129,13 +140,23 @@ test(
   { skip: harness ? false : harnessSkipReason() },
   async () => {
     const root = makePlugin()
-    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-faces' })
+    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-faces', modelMap: MODEL_MAP })
     const agent = ir.agents.find((item) => item.name === 'helper')
     assert.ok(agent, 'helper is in the IR')
     assert.deepEqual(declared(agent), FACES)
     for (const [face, annotation] of Object.entries(agent.faces)) {
       assert.ok(annotation.reason.trim().length > 0, `${face} carries a reason`)
     }
+    // D91: a mapped alias is this layer's policy, never a Claude semantic. The
+    // reason has to name both the alias it read and the route it chose, or a
+    // reviewer cannot tell what was mapped.
+    for (const face of ['model', 'effort']) {
+      assert.match(agent.faces[face].reason, /policy \(D91\)/, `${face} names D91`)
+      assert.match(agent.faces[face].reason, /not a Claude semantic/, `${face} denies Claude semantics`)
+    }
+    assert.match(agent.faces.model.reason, /`model: sonnet`/, 'the model face names the alias it mapped')
+    assert.match(agent.faces.model.reason, /deepseek-flash/, 'the model face names the route it chose')
+    assert.match(agent.faces.effort.reason, /`effort: high`/, 'the effort face names the declared effort')
     assert.deepEqual(agent.skillContents, [{ name: SKILL_NAME, content: `${SKILL_MARKER}\n` }])
 
     const { entry } = emitPlugin(ir, { materializers })
@@ -198,7 +219,7 @@ test(
 
 test('a skill the plugin does not ship stays planned, with a named seam and no body', () => {
   const root = makePlugin({ agentSkills: ['absent-skill'], shipSkill: false })
-  const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-faces' })
+  const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-faces', modelMap: MODEL_MAP })
   const agent = ir.agents.find((item) => item.name === 'helper')
   assert.ok(agent, 'helper is in the IR')
   assert.equal(agent.faces.skills.fidelity, 'planned')
@@ -210,7 +231,7 @@ test('a zero-byte SKILL.md is reported as empty, not as missing', () => {
   const root = join(mkdtempSync(join(tmpdir(), 'anyplugin-agent-faces-')), 's16-empty-skill-file')
   mkdirSync(join(root, 'skills', 'blank'), { recursive: true })
   writeFileSync(join(root, 'skills', 'blank', 'SKILL.md'), '')
-  const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-empty-file' })
+  const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-empty-file', modelMap: MODEL_MAP })
   const row = ir.pending.find((item) => item.surface === 'skills' && item.name === 'blank')
   assert.ok(row, 'the empty skill slot is reported')
   assert.match(row.annotation.reason, /SKILL\.md is empty/)
@@ -222,7 +243,7 @@ test(
   { skip: harness ? false : harnessSkipReason() },
   async () => {
     const root = makeZeroBytePlugin()
-    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-zero-byte' })
+    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-zero-byte', modelMap: MODEL_MAP })
     const agent = ir.agents.find((item) => item.name === 'zerobody')
     assert.ok(agent, 'zerobody is in the IR')
     assert.equal(agent.faces.skills.fidelity, 'planned', 'an empty file is not a preload')
@@ -245,7 +266,7 @@ test(
 
 test('every frontmatter face is carried to the materializer as data, not silently dropped', () => {
   const root = makePlugin()
-  const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-faces' })
+  const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-faces', modelMap: MODEL_MAP })
   const { entry } = emitPlugin(ir, { materializers })
   const child = entry.config.find((item) => item.id === 'agents')
   const emitted = child.config.agents[0]
@@ -267,7 +288,7 @@ test(
   { skip: harness ? false : harnessSkipReason() },
   async () => {
     const root = makeEmptyBodyPlugin()
-    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-empty' })
+    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-empty', modelMap: MODEL_MAP })
     const agent = ir.agents.find((item) => item.name === 'empty')
     assert.ok(agent, 'empty is in the IR')
     assert.equal(agent.faces.skills.fidelity, 'planned')
@@ -292,7 +313,7 @@ test(
   { skip: harness ? false : harnessSkipReason() },
   async () => {
     const root = makeLoopPlugin()
-    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-loop' })
+    const ir = readClaudePlugin(root, { source: 'plugin-dir:s16-loop', modelMap: MODEL_MAP })
     const agent = ir.agents.find((item) => item.name === 'capped')
     assert.ok(agent, 'capped is in the IR')
     assert.equal(agent.faces.maxTurns.fidelity, 'unsupported')
