@@ -118,8 +118,19 @@ export const HARNESS_PACKAGES = {
   // terminal palette consumer at both pins; the terminal's only ANSI writer is
   // its OSC 4/104 parser, not a theme token (ticket #216).
   'dsh-client-ui-theme': 'S24: ThemeRuntime and its alias-token CSS surface (issue #216)',
-  'dsh-client-ui-layout': 'S24: theme-presenter applies active alias tokens to document.body (issue #216)',
+  'dsh-client-ui-layout': 'S24/S25: the AppFrame pane seats and its own render tree (issues #216, #280)',
   'dsh-client-ui-sidebar-terminal': 'S24: terminal theme consumer; ANSI 16 are OSC 4/104-only (issue #216)',
+
+  // The S25 renderer-surface probe executes the real client boot stack — the
+  // slot registry, the mount binding, the layout frame, the keyboard service
+  // and a real host HTTP route — against a fixture pane that lives outside the
+  // installation (issue #280).
+  'dsh-client-ui-slots': 'S25: SlotCore registration/declaration semantics the pane registration uses (issue #280)',
+  'dsh-client-ui-renderer': 'S25: SlotRegistry + renderSlot("root") React binding that mounts the frame (issue #280)',
+  'dsh-client-ui-primitives': 'S25: a platform seed-table package the client bundles require() (issue #280)',
+  'dsh-client-store': 'S25: layout client bundle require() — the HostObservable store the frame renders (issue #280)',
+  'dsh-client-shortcuts': 'S25: declared keyboard command/input surface the pane can register into (issue #280)',
+  'dsh-host-webserver': 'S25: the real host HTTP route registry the client half round-trips through (issue #280)',
 }
 
 /** Versions that are not the harness under test. Pinned, never `latest`. */
@@ -128,6 +139,21 @@ const SUPPORTING = {
   '@deepseek-ai/cordis-plugin-group': '1.1.0',
   '@deepseek-ai/cordis-plugin-loader': '1.1.0',
   '@modelcontextprotocol/client': '2.2.0',
+  // S25 mounts the real layout frame and slot renderer in a jsdom page realm.
+  // Both fetched pins resolve react@18.3.1 from their own dependency trees, and
+  // the spike asserts the version of the React it actually loads (check 36), so
+  // the pin names the version the run used and claims nothing about React's own
+  // internals (issue #280). jsdom is the probe's page DOM, not a harness package.
+  react: '18.3.1',
+  'react-dom': '18.3.1',
+  jsdom: '31.0.1',
+  // dsh-client-store's published lib imports these two at runtime even though
+  // they are only devDependencies in its manifest; the web shell bundles them
+  // into the page. The S25 probe imports the real store module, so the union
+  // carries the two support packages at the versions its manifest pins
+  // (issue #280).
+  zustand: '4.5.7',
+  immer: '10.1.1',
 }
 
 const USAGE = `usage: node scripts/fetch-harness.mjs <version>
