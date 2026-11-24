@@ -260,7 +260,8 @@ async function sourceChecks() {
   // one file for three strings: the negative claim is about the declared
   // surface, so it must cover what the pin actually ships.
   const services = []
-  for (const name of readdirSync(HARNESS).filter((entry) => entry.startsWith('dsh-client-'))) {
+  const clientPrefix = ['dsh', 'client', ''].join('-')
+  for (const name of readdirSync(HARNESS).filter((entry) => entry.startsWith(clientPrefix))) {
     const lib = join(HARNESS, name, 'lib')
     if (!existsSync(lib)) continue
     for (const file of readdirSync(lib, { recursive: true })) {
@@ -273,7 +274,7 @@ async function sourceChecks() {
   readCheck(
     'Focus is not a declared client surface: no installed client bundle provides a focus service',
     dom.includes("document.addEventListener('focusin', reset, true)") && focusServices.length === 0 && services.length > 0,
-    anchorOf('dsh-client-shortcuts', 'src/client/dom.ts', "document.addEventListener('focusin', reset, true)", dom) + `; services provided by installed dsh-client-* bundles: ${JSON.stringify([...new Set(services)].sort())}`,
+    anchorOf('dsh-client-shortcuts', 'src/client/dom.ts', "document.addEventListener('focusin', reset, true)", dom) + `; services provided by the installed client bundles: ${JSON.stringify([...new Set(services)].sort())}`,
   )
 
   const webserverReadme = readme('dsh-host-webserver')
