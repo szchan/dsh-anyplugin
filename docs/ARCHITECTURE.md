@@ -168,6 +168,10 @@ is not a package — its server half is bundled into `lib/index.js`, its client
 half into `lib/client.js`, and the root tarball carries both.
 The panel moves the packed size from D71's 190,257 bytes to 195,992 bytes (191.4 KiB) and
 `check:pack`'s ceiling from 188 KiB to 193 KiB (CI `check:pack`, D77).
+The agent model map (D91) raises the ceiling again to 200 KiB (D92): the same
+tarball carries the map resolver in `lib/index.js`, `lib/cli.js` and
+`lib/materialize/agents.js`, and `npm pack` measures 202,134 bytes in CI
+`check:pack`, +6,114 on the 196,020-byte merge base (`main` at `6855a57`).
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).
@@ -511,7 +515,7 @@ Capabilities, not plugins, are granted.
 | content (safe) | skill, command, output-style, theme, icons, workflow | auto |
 | network | mcp, lsp | prompt: show exact command / URL |
 | exec (full user privileges) | hook, monitor, bin, **mod** (later) | prompt: show exact command line; off by default |
-| model identity | agent `model:`/`effort:` | prompt: show substitution or delegate cost |
+| model identity | agent `model:`/`effort:` | auto: visible policy map (D91) in the report; delegate to a real client is the only true-identity path |
 
 Content classes are emitted without a grant. Exec-class artifacts are **default
 off**: `emitPlugin` only places a hook whose target is in its `trusted` list,
@@ -1493,7 +1497,7 @@ run degraded *by design*.
 | command registry (alias support) | accepts `alias` | drop alias, `equivalent` + UI note |
 | hook interception (per event) | S9 confirms 9 listener seams: `agent/pre-step`, `agent/created`/`disposed`, `agent/turn-stopping`, `approval/request`, `tools/post-execute` (failure filter), `subagent/start`/`end`, `fs/observed`; 5 notification-only seams: durable records `compaction/start`/`end`, `approval/decided`, `working-directory/change`, plus the `settings/document-updated` emit. S8 wires `tools/pre-execute` and `tools/post-execute`; the S9 lifecycle ticket wires `agent/created` (SessionStart), `agent/turn-stopping` (Stop), `agent/disposed` (SessionEnd), `subagent/start` and `subagent/end` (SubagentStart/Stop). The seams ticket wires the remaining four listener seams — `agent/pre-step` (UserPromptSubmit, step 1 and the newest user-source message), `approval/request` (PermissionRequest, report-only), the failure slice of `tools/post-execute` (PostToolUseFailure) and `fs/observed` (FileChanged, mutation tools only) — and the five notification records as payload-only occurrences: `compaction/start`/`end` (PreCompact/PostCompact), `approval/decided` (PermissionDenied), `working-directory/change` (CwdChanged) and `settings/document-updated` (ConfigChange, revision 0 on the first read). Every one is proved by a line its handler wrote on one real headless turn (`claude-hooks-seams`, §10 S9 oracle). The mounts translate every hook into a `classicHookRegistration` and call the intercept kernel's `runChain` with fan-out continuation, so tier order, matcher skips and decision aggregation are the kernel's; the materializer keeps the artifact re-hash, the spawn, the D20 verdict translation and the per-child SubagentStart→SubagentStop pair gate (one materializer load; a reload while a start chain is in flight is not covered). S23 probed the six S9-unprobed events: five have a host emitter and are now routed by this mount, notification-only — `TaskCreated` and `TaskCompleted` translate the `team/task` durable record (one run per record, on revision 1 and on status `completed`; `team_name` is a reported gap because `teamId` is the root-session Team identity, and TaskCreated reports `teammate_name` because a new task is unowned, while TaskCompleted takes it from `ownerName`), `WorktreeCreate` translates the `plugin:worktree/created` durable record (`branch` → `name`), `WorktreeRemove` fires once per removal on the settled `worktree/cleanup` record (`cleanup.status === 'removed'`, keyed session/path/revision; the scheduled record is an intent, and retained/failed are not removals); the cleanup record carries no session cwd, so `cwd` is the host process directory with a reported gap and `worktree_path` stays distinct from it, and `StopFailure` fires once per root session and turn on whichever of the error-shaped `turn/end` record and the `agent/error` emit arrives first (key session/turn); it reports `error` as a gap because the host failure code has no ratified mapping to Claude's class enum, and `last_assistant_message` because the failed turn commits no assistant message. All five report `transcript_path` as a gap (the host keeps no transcript path), `TaskCompleted` reports `permission_mode`, and `WorktreeRemove` reports `cwd`. Every one is proved by a line its handler wrote on one real headless run (`claude-hooks-seams`, §10 S23 oracle). `TeammateIdle` has no emitter at rc.5: driving a fork teammate through activation to idle produced only `agent/status {status, agent}` and no `team/member` record or emit, so it is **not fired**, not unprobed (§10 S23). Ten classic events remain refuted (§10 S9); `agent/request` is deprecated and refuted for model switch | event `unsupported` **with reason**, visible in report |
 | MCP client | package present | whole `mcp` node unsupported |
-| subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
+| subagent catalog | no catalog API at 0.2.2-rc.5 (S10); `dsh-tool-subagent` is one fixed tool per provider instance. A plugin can still register one tool per agent, scoped `<plugin>:<agent>` (Claude's Task convention) with the frontmatter description byte for byte, whose body is the first block of the child user message | catalog `exact`, invocation `equivalent`, per-key faces per §10 S16 (`skills` `equivalent` when the plugin ships a non-empty body, `model`/`effort` `derived` when the overridable model map resolves them and `unsupported` when it cannot (D91), `isolation` `planned`, the rest `unsupported`); a late `ctx.tools` is awaited with a recorded warning, and without `ctx.subagents` the catalog registers but invocation names the missing seam (§10 S10) |
 | per-plugin system-prompt section | reachable through the agent context: a command handler's `invocation.agent.ctx.systemPrompt.section({complete:true})` replaces that agent's prompt byte for byte; `createAgent(..., {setup})`, `agent/created`, `dsh-persona` and an agent preset reach the same scope (S11). The entry's own `apply(ctx)` is global and is not the seam. | output styles are carried byte for byte in the IR (`IrOutputStyle.body`) and applied at `agent/created` on the agent's own context (activation face `equivalent`), but the row stays `planned` overall because the `/<plugin>:<name>` command half still needs D10's alias; selection is explicit (profile record or `force-for-plugin`), never a global injection, and `keep-coding-instructions: false` is the only case that uses `complete: true` |
 | shell env PATH | managed-env `register()` accepts a `PATH` key (S19: it does not) | `bin` planned: no managed-env contribution; only a divergent per-call `tools/pre-execute` rewrite |
 | notification channel | present | `monitor` unsupported |
@@ -2330,8 +2334,8 @@ and `stopReason: 'completed'`.
 
 | face | state | evidence (test + observation) | reason |
 | --- | --- | --- | --- |
-| `model` | `unsupported` | S16 A: a top-level `model: sonnet` is accepted and ignored — the child request model is `fake-1`. S16 B: `agentOptions.model: 'sonnet'` reaches the provider as the **raw id** `sonnet`, with no alias resolution. `agent-faces.test.mjs` asserts the annotation. | A Claude alias names no provider model id, and DSH providers take ids, not aliases. Translating `sonnet` would guess a model the host does not serve. The escape layer (`docs/TODO.md`, "Escape layer"; delegate to the real client) is the only path. |
-| `effort` | `unsupported` | S16 A: top-level `effort: high` → no `reasoningEffort` on the child request. S16 B: `agentOptions.reasoningEffort: 'high'` passes only because the recording adapter advertises `high`; without advertising it the child turn dies `UNSUPPORTED_REASONING_EFFORT`. | The id space belongs to the provider (`LlmModelReasoningInfo.efforts`), not to Claude; there is no provider-neutral spelling, so any mapping would be a guess. Escape layer only. |
+| `model` | `derived` (mapped alias) / `unsupported` (unmapped) | S16 A: a top-level `model: sonnet` is accepted and ignored — the child request model is `fake-1`. S16 B: `agentOptions.model: 'sonnet'` reaches the provider as the **raw id** `sonnet`, with no alias resolution. The dialect now annotates a mapped alias `derived`; `agent-faces.test.mjs` asserts the annotation and `model-map-faces.test.mjs` pins the reason. | The host has no alias-to-provider-id mapping, so this layer declares one: a shipped, user-overridable model map (D91) resolves the alias to a provider route. The route is our policy, not a Claude semantic, and the materializer forwards it only when the session catalog advertises the id. An alias the map does not declare stays `unsupported` with the S16 reason. |
+| `effort` | `derived` (mapped alias) / `unsupported` (no mapped model or unknown name) | S16 A: top-level `effort: high` → no `reasoningEffort` on the child request. S16 B: `agentOptions.reasoningEffort: 'high'` passes only because the recording adapter advertises `high`; without advertising it the child turn dies `UNSUPPORTED_REASONING_EFFORT`. The mapped face is `derived`; the materializer forwards the effort only after `resolveModelInfo` confirms the selected provider advertises the exact id, and drops the effort with a gap otherwise. | The id space still belongs to the provider (`LlmModelReasoningInfo.efforts`), not to Claude. The map chooses a level for a mapped alias (D91), and an unadvertised level is never sent (S16: it kills the child turn). An effort without a mapped `model` stays `unsupported`: it has no route to attach to. |
 | `tools` / `disallowedTools` | `unsupported` | S16 A: a child declared `tools: [Read, Grep]` and `disallowedTools: [Bash]` still sees `echo` in its request. | `SubagentStartRequest` has no tool filter. `ctx.tools.restrict()` is agent-scoped, takes DSH global tool names, refuses unknown names and `run_code`, and denies whole tools; the only composition hook is `agentPreset`, which needs a host-registered preset, not emitted data. Claude names (`Read`, `Grep`, `mcp__*`) and specifiers (`Bash(git push *)`) have no one-to-one mapping, so forwarding the list would restrict the wrong set. |
 | `maxTurns` | `unsupported` | S16 C: `maxTurns: 1` child makes three requests (two tool calls and an answer) and ends `completed`, not partial. | Neither `SubagentStartRequest` nor the agent loop has a turn cap; the host has no "partial at the limit" outcome to map onto. |
 | `isolation` | `planned` | S16 A: `isolation: worktree` is ignored — the child header `cwd` equals the root's. | Named seam: add `isolation` to `SubagentStartRequest`, handled in `dsh-subagent` child composition by creating a `ctx.worktrees` checkout as the child cwd and reclaiming it at disposal. Today `worktrees.create` re-points the *calling* session, so using it from the materializer would move the parent, not isolate the child. |
@@ -2356,7 +2360,11 @@ directory; a skill from a user or project directory is not preloaded, and
 Claude's ability to invoke an unlisted skill through its Skill tool is not
 measured here. The `unsupported` states are facts about `0.2.2-rc.5`, not
 eternal impossibilities: `isolation` is the one with a named seam; it is
-`planned` rather than faked.
+`planned` rather than faked. `model`/`effort` are `derived` only when the
+dialect's overridable model map (D91) resolves the alias: S16 observes that the
+host has no alias resolution, and the map is this layer's declared policy, not
+an observed Claude semantic or a claim that the mapped route behaves like the
+Claude model.
 The spike must be re-run when the pin moves; the table, the annotations and
 `agent-faces.test.mjs` carry the pin's name.
 
@@ -3059,7 +3067,9 @@ path was not exercised.
   Contract covers the declared surfaces; adversarial host detection is out of
   scope and is documented as such.
 - Treating "delegate to a real Claude Code subagent" as the default path for
-  agents. It exists as an escape hatch for model identity only.
+  agents. It exists as an escape hatch for model identity only; the
+  overridable model map (D91) is the phase-1 route that resolves aliases in
+  place instead of delegating.
 
 ## 12. Roadmap
 
@@ -3578,11 +3588,14 @@ kernel would have to be rewritten — and would make mods structurally impossibl
   provider as the raw model id `sonnet` with the parent's provider, so a Claude
   alias names no route this deployment has; `agentOptions.reasoningEffort` is
   validated against the provider's advertised ids, so a Claude level can die
-  with `UNSUPPORTED_REASONING_EFFORT`. §10 S16 therefore records `model`,
-  `effort`, `tools` and `maxTurns` `unsupported`, `isolation` `planned` behind a
-  child-composition seam, and `skills` `equivalent` (resolved bodies prepended
-  to the child's first user message). The escape layer (`docs/TODO.md`,
-  "Escape layer") remains the only path for model identity.
+  with `UNSUPPORTED_REASONING_EFFORT`. §10 S16 therefore records `model` and
+  `effort` `derived` when the dialect's overridable model map (D91) resolves
+  them (the materializer forwards only an id and effort the session catalog
+  advertises) and `unsupported` when it cannot, `tools` and `maxTurns`
+  `unsupported`, `isolation` `planned` behind a child-composition seam, and
+  `skills` `equivalent` (resolved bodies prepended to the child's first user
+  message). The map's route is this layer's policy, not Claude identity;
+  delegating to a real client remains the only path for the latter.
 
   **What this buys, and what it does not.** Catalog face `exact` (name and
   description are what the model sees), invocation `equivalent` (N tools vs
