@@ -172,6 +172,10 @@ The agent model map (D91) raises the ceiling again to 200 KiB (D92): the same
 tarball carries the map resolver in `lib/index.js`, `lib/cli.js` and
 `lib/materialize/agents.js`, and `npm pack` measures 202,134 bytes in CI
 `check:pack`, +6,114 on the 196,020-byte merge base (`main` at `6855a57`).
+The derived client renderer bridge (D93) adds the bridge's client half to
+`lib/client.js` and raises the ceiling again to 213 KiB (D94): `npm pack`
+measures 212,994 bytes in CI `check:pack`, +10,723 on the 202,271-byte D92
+head (`main` at `953a4da`).
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).

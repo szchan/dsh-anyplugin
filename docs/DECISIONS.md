@@ -4425,3 +4425,40 @@ still proves the settings half and now the three registrations, the command and
 their disposal; the packed size and the ceiling that pays for it are recorded in
 D94. Basis: S25 at 0.2.2-rc.2 and 0.2.2-rc.5 (`spikes/s25-client-surface`, PR
 #287), Claude Code pin 2.1.329.
+
+## D94 — the registry tarball ceiling for the renderer bridge
+
+**Decided 2026-11-24** (#290 integration; D93, D92).
+
+The derived client renderer bridge (D93) ships in the same single root package
+as the panel (D77) and the agent model map (D91), so its cost lands on the one
+registry tarball ceiling `scripts/check-pack.mjs` asserts. Merged with a `main`
+that carries D92's 200 KiB ceiling, the integration head measures **212994
+bytes (208.0 KiB)** in CI `check:pack`; the `main` side it merges (`953a4da`,
+the #288 merge) measures 202271 bytes in CI `check:pack`, so the bridge costs
+**+10723 bytes** on the current base (the branch's own pre-merge head measured
+206831 bytes). The ceiling moves to **213 KiB (218112 bytes)**, leaving 5118
+bytes of headroom. D46's separate 128 KiB kernel ceiling is unchanged and the
+measured kernel stays 115532 bytes.
+
+1. **The cost is the shipped client half, not a second package.** The
+   translator, pacer, geometry probe, focus guard, snapshot store and the two
+   React seats are bundled into `lib/client.js` (D93 item 5), and the round
+   trip's host half is bundled into `lib/index.js`; a second published package
+   or an install-time fetch would be a second install surface for ~10.7 KiB.
+2. **One package, one ceiling.** D77's single-install rule means one tarball
+   with one budget; the bridge does not get its own ceiling, and the number
+   D92 ratified for its head only changes here.
+3. **A budget raise is a decision, not silent drift.** This entry cites its
+   measured byte count and the feature that caused it, as D65, D71, D77 and
+   D92 do; D62's "a ceiling is not raised to fit a feature" stands for every
+   boundary except the one a decision moves, and this entry moves the registry
+   tarball ceiling only.
+4. **The headroom is measured slack, not a guess.** 5118 bytes above the
+   shipped size means the next feature has to re-measure and take its own
+   decision rather than discover the ceiling by failing CI.
+
+**Consequences.** `scripts/check-pack.mjs` carries the 213 KiB constant and the
+measured byte count in its comment; `docs/ARCHITECTURE.md` §2 records the move;
+`AGENTS.md` keeps the ratified range current as D1–D94. No dependency, pin,
+workflow or kernel limit moved.
