@@ -84,16 +84,40 @@ const MUTANTS = [
     replacement: '',
   },
   {
-    name: 'register the slot without the inject handshake',
+    name: 'register the settings slot without the inject handshake',
     file: CLIENT,
-    find: `  return ctx.slots.inject('settings.section', () =>
+    find: `  mount('settings.section', () =>
+    ctx.slots.inject('settings.section', () =>
+      ctx.slots.register(
+        { name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' },
+        Panel,
+      ),
+    ),
+  )`,
+    replacement: `  mount('settings.section', () =>
     ctx.slots.register(
       { name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' },
       Panel,
     ),
   )`,
-    replacement:
-      "  return ctx.slots.register({ name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' }, Panel)",
+  },
+  {
+    name: 'register the keyed main pane without the inject handshake',
+    file: CLIENT,
+    find: `  mount('main', () =>
+    ctx.slots.inject('main', () =>
+      ctx.slots.register({ name: 'main', key: 'anyplugin.renderer' }, renderer.Pane),
+    ),
+  )`,
+    replacement: `  mount('main', () =>
+    ctx.slots.register({ name: 'main', key: 'anyplugin.renderer' }, renderer.Pane),
+  )`,
+  },
+  {
+    name: 'drop the bridge keyboard command',
+    file: CLIENT,
+    find: '  disposables.push(registerRendererKeyboard(ctx, { store: renderer.store, focus: renderer.focus }))\n',
+    replacement: '',
   },
   {
     name: 'report every record enabled at the user scope',

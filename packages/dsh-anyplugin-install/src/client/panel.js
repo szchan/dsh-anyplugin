@@ -13,10 +13,23 @@
  * `--dsw-alias-*` theme tokens and its own class-free inline styles; the Harness
  * Client packages are not imported (dsh-doc's ui-plugin rules), so a host that
  * changes its primitives cannot break the panel.
+ *
+ * The same bundle also mounts the derived renderer bridge of #281 slice 1
+ * (`./renderer.js`): a keyed `main` pane and an additive `shell.overlay` line,
+ * plus one declarable keyboard command through `ctx.shortcuts`. Every face it
+ * serves is class `derived` with a reason, and its vocabulary is deliberately
+ * Box/Text/Button/Input. The bridge is additive: its registrations are wrapped
+ * per seat so a host that drops one seat still gets the settings panel.
  */
 import { createElement, useEffect, useState } from 'react'
 
+import { createRendererBridge, registerRendererKeyboard } from './renderer.js'
+
 const PREFIX = '/anyplugin'
+
+// One bridge instance per loaded client module: one store, one round-trip
+// counter, one focus target shared by the main pane and the overlay line.
+const renderer = createRendererBridge({ createElement, useEffect, useState })
 
 const styles = {
   panel: {
@@ -202,17 +215,68 @@ function Panel() {
   )
 }
 
+// `slots` is the only hard requirement. The `main` and `shell.overlay` seats
+// and the keyboard service are optional: each is read/registered through a
+// guarded path, so a host that lacks one keeps the settings panel instead of
+// failing the whole module on an unmet injection.
 export const inject = ['slots']
 
 export function apply(ctx) {
+  const disposables = []
+
   // The handshake every shipped settings section uses: `inject` makes the
   // parent slot visible for this plugin fiber and hands the factory's cleanup
   // (the unregister) to that fiber. A bare `register` throws
   // `slot "settings.section" is not declared` on a fresh SlotCore.
-  return ctx.slots.inject('settings.section', () =>
-    ctx.slots.register(
-      { name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' },
-      Panel,
+  const mount = (label, open) => {
+    try {
+      const dispose = open()
+      if (typeof dispose === 'function') disposables.push(dispose)
+    } catch (error) {
+      // S25 measured both seats at both pins, but this bundle stays additive:
+      // a host without `main` or `shell.overlay` keeps the settings panel and
+      // gets a spoken reason instead of a failed module.
+      console.warn(`dsh-anyplugin: could not mount the ${label} seat: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  mount('settings.section', () =>
+    ctx.slots.inject('settings.section', () =>
+      ctx.slots.register(
+        { name: 'settings.section', id: 'anyplugin-ui', order: 45, label: () => 'AnyPlugin' },
+        Panel,
+      ),
     ),
   )
+  // The keyed `main` seat (S25 primitive 1): the host layout places this pane,
+  // we do not. One key, one pane.
+  mount('main', () =>
+    ctx.slots.inject('main', () =>
+      ctx.slots.register({ name: 'main', key: 'anyplugin.renderer' }, renderer.Pane),
+    ),
+  )
+  // The additive `shell.overlay` seat (S25 primitive 1): an extra line of ours,
+  // not a mod surface the host places or focuses.
+  mount('shell.overlay', () =>
+    ctx.slots.inject('shell.overlay', () =>
+      ctx.slots.register({ name: 'shell.overlay', id: 'anyplugin.renderer' }, renderer.Overlay),
+    ),
+  )
+  // Keyboard through the declarable-command service (S25 primitive 3), never a
+  // document listener of our own. The service is optional — `inject` lists only
+  // `slots` — and the registration is guarded like a seat: a host whose
+  // shortcuts service throws keeps the panel and gets a spoken reason.
+  mount('keyboard shortcut', () =>
+    registerRendererKeyboard(ctx, { store: renderer.store, focus: renderer.focus }),
+  )
+
+  return () => {
+    for (const dispose of disposables.reverse()) {
+      try {
+        if (typeof dispose === 'function') dispose()
+      } catch {
+        // A disposed seat must not stop the other seats' cleanup.
+      }
+    }
+  }
 }

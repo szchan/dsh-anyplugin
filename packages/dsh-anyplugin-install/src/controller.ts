@@ -33,6 +33,7 @@ import { readEnablements } from './enablements.ts'
 import { readInstalls } from './installs.ts'
 import { applyPanel } from './panel.ts'
 import { reconcile, type LoaderLike, type ReconcileResult } from './reconcile.ts'
+import { createRendererRegistry, rendererPayloadOf } from './renderer.ts'
 
 export const name = 'dsh-anyplugin'
 
@@ -127,6 +128,9 @@ interface ApplyContext {
   get?: (name: string) => unknown
   logger?: unknown
   inject?: (names: string[], callback: (scoped: PanelContext) => void) => unknown
+  /** Cordis reflection: provide a service owned by this fiber (optional for embedders). */
+  provide?: (name: string, value: unknown) => unknown
+  effect?: (setup: () => unknown, label: string) => void
 }
 
 export async function apply(ctx: ApplyContext, config: Config = {}): Promise<void> {
@@ -135,6 +139,24 @@ export async function apply(ctx: ApplyContext, config: Config = {}): Promise<voi
   const installsFile = config.installs ?? join(home, 'anyplugin', 'installs.yml')
   const projectDir = config.projectDir ?? process.cwd()
   const allowedHosts = config.allowedHosts
+
+  // The derived renderer bridge (#281 slice 1): one registry for the bridge's
+  // host half, provided as an optional service so the mod host's materializer
+  // can contribute the panes it holds. A missing/duplicated `provide` is not a
+  // boot failure — the panel route then serves `sources: 0`, a visible
+  // degradation rather than a hidden fallback. The registry draws nothing and
+  // owns no layout; see renderer.ts for the faces and the caps.
+  const rendererRegistry = createRendererRegistry()
+  const rendererReader = (): unknown => rendererPayloadOf(rendererRegistry)
+  if (typeof ctx.provide === 'function') {
+    try {
+      ctx.provide('anypluginRenderer', rendererRegistry)
+    } catch (error) {
+      log?.warn?.(
+        `renderer bridge: could not provide anypluginRenderer: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
 
   // The panel is part of this package, not a second bundle (D77). Mounting it
   // before the lock check is deliberate: a fresh profile has no installs.yml
@@ -146,6 +168,7 @@ export async function apply(ctx: ApplyContext, config: Config = {}): Promise<voi
         installs: installsFile,
         home,
         projectDir,
+        renderer: rendererReader,
         ...(allowedHosts === undefined ? {} : { allowedHosts }),
       })
     })

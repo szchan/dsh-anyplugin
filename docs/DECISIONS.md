@@ -4356,3 +4356,123 @@ unchanged.
 measured byte count in its comment, and `docs/ARCHITECTURE.md` §2 records the
 move. No dependency, pin, workflow or kernel limit moved.
 
+## D93 — the derived client renderer bridge
+
+**Decided 2026-11-24** (#281, slice 1 of #170's direction; S25 = #280).
+
+The mod host's element runtime is a headless sink: it validates and keeps the
+latest Pane tree per pane but draws nothing (D44). The client seam S25 measured
+offers a keyed `main` pane and an additive `shell.overlay` line, a same-origin
+client bundle, declarable keyboard commands and a page-realm `requestAnimationFrame`
+— and no geometry prop, no focus primitive and no host invalidate/pacing API.
+The direction agreed in #281 is option (b): draw foreign Pane trees inside our
+own client bundle, and classify the result honestly.
+
+1. **The bridge is `derived`, never `equivalent`.** Every face it serves is
+   classified at the source in `packages/dsh-anyplugin-install/src/renderer-faces.js`
+   with a non-empty reason; the table is the one source of truth shared by the
+   browser half, the host half and the tests. Reasons name the S25 measurement
+   they rest on (no geometry prop, no focus primitive, no host pacing, the pin's
+   `press` stamps recorded as data) and what S25 did not prove (Desktop
+   `file://` + IPC transport). Reclassifying a face requires editing that file
+   and a new decision entry.
+2. **Mount additively.** The client bundle registers a pane into `main` (keyed,
+   `key: 'anyplugin.renderer'`) and one line into `shell.overlay`, each through
+   `ctx.slots.inject` so a fresh SlotCore does not throw, and each guarded so a
+   missing seat degrades to no bridge while the settings panel and the
+   controller still load. The keyboard path is one declarable command through
+   the optional `shortcuts` service (read through `ctx.get`, registered under
+   the same mount guard, so a host without the service still loads the panel);
+   there is no second event path.
+3. **The element vocabulary is deliberately four tags: `Box`, `Text`, `Button`,
+   `Input`.** The pin's Pane trees can carry twelve to sixteen tags; every tag
+   outside the vocabulary is refused by name (`element.unsupported`) instead of
+   guessed, and every prop the translator cannot serve is reported as lost
+   through `onLost`. `Button`/`Input` are drawn faces only: the pin stamps their
+   press members as data handles and no press is dispatched, so nothing
+   round-trips to a mod callback.
+4. **The round trip is our own host half, not a new transport.**
+   `GET /anyplugin/render` answers from the controller's provided
+   `anypluginRenderer` registry; the materialiser registers its headless `mod_ui`
+   snapshot as one source under its own effect. The read is loopback-only and
+   bounded (64 panes, 96 KiB of UTF-8 JSON per tree, a tree over budget becomes
+   a named `pane-too-large` refusal; cyclic or over-deep trees are cut by the
+   seen-set and the live depth cap), and a pane or source that still throws is
+   recorded as a refusal while the other panes serve — one bad pane cannot cost
+   the route.
+5. **The bridge ships in the same single tarball's client half (D77), not a
+   second package.** `lib/client.js` grows by the translator, pacer, geometry
+   probe, focus guard, snapshot store and two React seats. The packed size that
+   costs is measured in CI `check:pack` on the shipped head, and the ceiling
+   that pays for it is recorded in D94; this entry moves no ceiling. The mods
+   kernel ceiling (D46) is untouched at its 128 KiB; the measured kernel stays
+   115,532 bytes.
+
+**Not claimed.** This is not the pin's drawing engine and nothing here is
+`equivalent`: host-owned layout, host-level focus routing, host `invalidate`
+throttling and the other 19 of 20 render sites stay `planned` (slice 3); the
+bridge's mount in a real browser/Electron renderer, including Desktop's
+`file://` + IPC transport, is a separate probe (slice 2) and is not proven by
+this decision; S25 ran a jsdom page and the loopback probe did not touch that
+transport. No button or input press is dispatched, and the four-tag vocabulary
+is a stated limit rather than a roadmap promise.
+
+**Evidence.** `packages/dsh-anyplugin-install/test/renderer.test.mjs` (33
+tests: face classes and reasons, the four-tag vocabulary, translation and lost
+props, depth/node caps, pacer coalescing and cancellation on unmount, paced
+`ResizeObserver` geometry, subtree-only focus pinned to a new snapshot, the
+round-trip store incl. failure visibility, registry merge/refusal/pane budget
+measured in UTF-8 bytes, the `/anyplugin/render` route incl. HEAD and the
+loopback host gate, a cyclic tree cut by the seen-set, a live depth cap on a
+200-level chain, one bad pane and one malformed envelope recorded as refusals
+while the other panes still serve, JSON-safe and bounded envelope
+`statuses`/`logs`/`refusals`, the real `createUiSink` → registry → store
+end-to-end paint, and the keyboard command through `ctx.get` with a bare
+`ctx.shortcuts` fallback); `packages/dsh-anyplugin-install/test/renderer-mutations.mjs`
+stays green on the unmutated suite and kills all 26 single-property mutants;
+`packages/dsh-anyplugin-install/test/panel.test.mjs` still proves the settings
+half and now the three registrations, the command and their disposal, plus a
+throwing `main` seat degrading with a recorded warning while the other seats
+stay registered; the packed size and the ceiling that pays for it are recorded
+in D94. Basis: S25 at 0.2.2-rc.2 and 0.2.2-rc.5
+(`spikes/s25-client-surface`, PR #287), Claude Code pin 2.1.329.
+
+## D94 — the registry tarball ceiling for the renderer bridge
+
+**Decided 2026-11-24** (#290 integration; D93, D92).
+
+The derived client renderer bridge (D93) ships in the same single root package
+as the panel (D77) and the agent model map (D91), so its cost lands on the one
+registry tarball ceiling `scripts/check-pack.mjs` asserts. Merged with a `main`
+that carries D92's 200 KiB ceiling, the shipped head measures **213626 bytes
+(208.6 KiB)** in CI `check:pack`; the `main` side it merges (`953a4da`, the #288
+merge) measures 202271 bytes in CI `check:pack`, so the bridge costs
+**+11355 bytes** on the current base (the branch's own pre-merge head measured
+206831 bytes, and the CHANGES-REQUESTED round that made the snapshot total and
+budgeted the tree in bytes added 621 bytes over the 213005-byte pre-review
+head). The ceiling moves to **213 KiB (218112 bytes)**, leaving 4486 bytes of
+headroom. D46's separate 128 KiB kernel ceiling is unchanged and the measured
+kernel stays 115532 bytes.
+
+1. **The cost is the shipped client half, not a second package.** The
+   translator, pacer, geometry probe, focus guard, snapshot store and the two
+   React seats are bundled into `lib/client.js` (D93 item 5), and the round
+   trip's host half is bundled into `lib/index.js`; a second published package
+   or an install-time fetch would be a second install surface for ~11 KiB.
+2. **One package, one ceiling.** D77's single-install rule means one tarball
+   with one budget; the bridge does not get its own ceiling, and the number
+   D92 ratified for its head only changes here.
+3. **A budget raise is a decision, not silent drift.** This entry cites its
+   measured byte count and the feature that caused it, as D65, D71, D77 and
+   D92 do; D62's "a ceiling is not raised to fit a feature" stands for every
+   boundary except the one a decision moves, and this entry moves the registry
+   tarball ceiling only.
+4. **The headroom is measured slack, not a guess.** 4486 bytes above the
+   shipped size means the next feature has to re-measure and take its own
+   decision rather than discover the ceiling by failing CI.
+
+**Consequences.** `scripts/check-pack.mjs` carries the 213 KiB constant and the
+measured byte count in its comment; `docs/ARCHITECTURE.md` §2 records the move;
+`AGENTS.md` keeps the ratified range current as D1–D94. No dependency, pin,
+workflow or kernel limit moved.
+

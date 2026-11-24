@@ -293,3 +293,61 @@ test('two mods cannot hold the same pane id: the second open is refused in the t
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// The optional renderer source is read through `ctx.get`, never through a bare
+// context property: a real Cordis context throws `cannot get property
+// "anypluginRenderer" without inject` for a read the fiber did not inject, and
+// an uncaught throw here fails the whole materializer child (that is how the
+// #281 slice-1 bridge first broke the install smoke). The fake ctx below models
+// exactly that — a throwing getter plus a supported `get` — so a regression to
+// the direct probe is red, not a silent no-op.
+test('the optional renderer source is read through ctx.get and a refusing context cannot fail the child', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anyplugin-ui-tool-'))
+  try {
+    writeFileSync(join(dir, 'panes.ts'), panesFixture)
+    const register = () => {
+      const sources = []
+      const registry = {
+        register(source) {
+          sources.push(source)
+          return () => {
+            const at = sources.indexOf(source)
+            if (at !== -1) sources.splice(at, 1)
+          }
+        },
+      }
+      return { sources, registry }
+    }
+
+    {
+      const { ctx, disposers, config } = harness()
+      const { sources, registry } = register()
+      Object.defineProperty(ctx, 'anypluginRenderer', {
+        configurable: true,
+        get() {
+          throw new Error('cannot get property "anypluginRenderer" without inject')
+        },
+      })
+      ctx.get = (name) => (name === 'anypluginRenderer' ? registry : undefined)
+      await apply(ctx, { ...config({}), mods: [pinnedMod(dir, 'panes.ts')], pluginRoot: dir })
+      assert.equal(sources.length, 1, 'the supported read registers one source')
+      assert.equal(sources[0]().kind, 'mod-ui-headless')
+      for (const dispose of disposers.splice(0)) dispose()
+      assert.equal(sources.length, 0, 'the source leaves with the plugin fiber')
+    }
+
+    {
+      const { ctx, config } = harness()
+      Object.defineProperty(ctx, 'anypluginRenderer', {
+        configurable: true,
+        get() {
+          throw new Error('cannot get property "anypluginRenderer" without inject')
+        },
+      })
+      ctx.get = () => undefined
+      await apply(ctx, { ...config({}), mods: [pinnedMod(dir, 'panes.ts')], pluginRoot: dir })
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

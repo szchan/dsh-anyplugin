@@ -668,10 +668,13 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   const client = await browser(harnessDir, registry, graph, { react })
   const exports = await client.import('dsh-anyplugin')
   // The array was built in the vm realm; compare its contents, not its prototype.
+  // `slots` is the only hard requirement: the keyboard service is optional and
+  // read through `ctx.get` with a guarded bare-property fallback.
   assert.deepEqual(Array.from(exports.inject), ['slots'])
 
   const declared = new Set()
   const registered = []
+  const shortcuts = []
   const slots = {
     register(options, component) {
       // The shipped SlotCore's rule: a bare register throws until a parent (or
@@ -694,13 +697,37 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
       }
     },
   }
-  const dispose = exports.apply({ slots })
-  assert.equal(registered.length, 1)
-  assert.equal(registered[0].options.name, 'settings.section')
-  assert.equal(registered[0].options.id, 'anyplugin-ui')
-  assert.equal(registered[0].options.order, 45)
-  assert.equal(registered[0].options.label(), 'AnyPlugin')
+  // The pin's declarable-command service: a register returns its disposer.
+  const shortcutsService = {
+    register(command) {
+      shortcuts.push(command)
+      return () => {
+        const index = shortcuts.indexOf(command)
+        if (index !== -1) shortcuts.splice(index, 1)
+      }
+    },
+  }
+  const dispose = exports.apply({ slots, shortcuts: shortcutsService })
+  // Three registrations: the settings section, the keyed `main` pane and the
+  // additive overlay line. The bridge is additive; it does not replace either.
+  assert.equal(registered.length, 3)
+  const settings = registered.find((row) => row.options.name === 'settings.section')
+  const pane = registered.find((row) => row.options.name === 'main')
+  const overlay = registered.find((row) => row.options.name === 'shell.overlay')
+  assert.ok(settings && pane && overlay)
+  assert.equal(settings.options.id, 'anyplugin-ui')
+  assert.equal(settings.options.order, 45)
+  assert.equal(settings.options.label(), 'AnyPlugin')
+  assert.equal(pane.options.key, 'anyplugin.renderer')
+  assert.equal(overlay.options.id, 'anyplugin.renderer')
   assert.ok(declared.has('settings.section'), 'the client declared the slot before registering')
+  assert.ok(declared.has('main') && declared.has('shell.overlay'), 'the bridge declared its two mounting slots')
+  // One keyboard command goes through the real `ctx.shortcuts` service shape.
+  assert.equal(shortcuts.length, 1)
+  assert.equal(shortcuts[0].id, 'anyplugin.renderer.request')
+  // Arrays built in the vm realm carry the vm's prototypes; compare contents.
+  assert.deepEqual(Array.from(shortcuts[0].regions), ['page'])
+  assert.equal(typeof shortcuts[0].resolve, 'function')
 
   // The panel's `fetch` is the server half's own dispatch: one JSON contract,
   // no second HTTP shape invented by the test.
@@ -714,11 +741,11 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
     globalThis.fetch = realFetch
   })
 
-  let tree = render(registered[0].component, true)
+  let tree = render(settings.component, true)
   assert.match(textOf(tree), /AnyPlugin/)
   assert.match(textOf(tree), /No foreign plugins installed\./)
   await sleep(20)
-  tree = render(registered[0].component)
+  tree = render(settings.component)
   assert.match(textOf(tree), /skills-only/)
   assert.match(textOf(tree), /claude-code/)
   assert.match(textOf(tree), /0\.0\.1/)
@@ -728,12 +755,12 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   const input = findAll(tree, (node) => node.type === 'input')[0]
   assert.ok(input, 'the panel renders the install path field')
   input.props.onChange({ target: { value: FIXTURE } })
-  tree = render(registered[0].component)
+  tree = render(settings.component)
   const form = findAll(tree, (node) => node.type === 'form')[0]
   assert.ok(form, 'the panel renders the install form')
   await form.props.onSubmit({ preventDefault() {} })
   await sleep(20)
-  tree = render(registered[0].component)
+  tree = render(settings.component)
   assert.match(textOf(tree), new RegExp(`installed ${ID}`))
   assert.deepEqual(calls.at(-1), [`${PREFIX}/install`, 'POST'])
 
@@ -754,11 +781,11 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   assert.equal(hooksBody.report.totals.refused, 1)
   assert.ok(refusing?.reason, 'the refused component carries a reason')
   input.props.onChange({ target: { value: hooksPath } })
-  tree = render(registered[0].component)
+  tree = render(settings.component)
   const hooksForm = findAll(tree, (node) => node.type === 'form')[0]
   await hooksForm.props.onSubmit({ preventDefault() {} })
   await sleep(20)
-  tree = render(registered[0].component)
+  tree = render(settings.component)
   assert.match(textOf(tree), /installed claude-code:hooks-mcp; 1 component refused/)
   assert.ok(textOf(tree).includes(refusing.reason), 'the panel shows the refusing reason')
   assert.deepEqual(calls.at(-1), [`${PREFIX}/install`, 'POST'])
@@ -766,5 +793,44 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   // Disposing the plugin runs the cleanup the inject handshake returned.
   assert.equal(typeof dispose, 'function')
   dispose()
-  assert.equal(registered.length, 0, 'the slot registration was removed on dispose')
+  assert.equal(registered.length, 0, 'the slot registrations were removed on dispose')
+  assert.equal(shortcuts.length, 0, 'the keyboard command was disposed with the plugin')
+
+  // A host that drops a seat must degrade to the remaining seats with a spoken
+  // reason, never fail the bundle: `main`'s inject throws (its slot is not
+  // declared) while settings.section and shell.overlay still register.
+  const declaredAfter = []
+  const surviving = []
+  const degradedSlots = {
+    register(options, component) {
+      surviving.push({ options, component })
+      return () => {
+        const index = surviving.findIndex((row) => row.options === options)
+        if (index !== -1) surviving.splice(index, 1)
+      }
+    },
+    inject(name, factory) {
+      if (name === 'main') throw new Error('slot "main" is not declared (a parent entry\'s children table must declare it)')
+      declaredAfter.push(name)
+      const cleanup = factory()
+      return () => {
+        cleanup?.()
+      }
+    },
+  }
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => warnings.push(args.map(String).join(' '))
+  try {
+    const degradedDispose = exports.apply({ slots: degradedSlots })
+    assert.deepEqual(declaredAfter, ['settings.section', 'shell.overlay'], 'the other seats were still declared')
+    assert.deepEqual(surviving.map((row) => row.options.name), ['settings.section', 'shell.overlay'])
+    assert.equal(warnings.length, 1, 'exactly the lost seat is spoken about')
+    assert.match(warnings[0], /could not mount the main seat/)
+    assert.match(warnings[0], /slot "main" is not declared/)
+    degradedDispose()
+    assert.equal(surviving.length, 0, 'the settings seat still disposes after the degraded apply')
+  } finally {
+    console.warn = originalWarn
+  }
 })

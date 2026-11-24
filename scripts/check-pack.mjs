@@ -44,9 +44,14 @@ const notes = []
  * is bundled into lib/index.js, lib/cli.js and lib/materialize/agents.js, and the packed size
  * measures 202,134 bytes (197.4 KiB) in CI check:pack (+6,114 bytes on the merge base, main at
  * 6855a57 measuring 196,020 bytes; D77's 195,992 predates that base). The ceiling moves
- * to 200 KiB, leaving 2,666 bytes of headroom.
+ * to 200 KiB, leaving 2,666 bytes of headroom. D94 ships the derived client renderer bridge
+ * (D93) in the same tarball: its client half is bundled into lib/client.js and the round
+ * trip's host half into lib/index.js, and the packed size measures 213,626 bytes (208.6 KiB)
+ * in CI check:pack on the shipped head (+11,355 bytes on the 202,271-byte D92 head, main at
+ * 953a4da; the branch's own pre-merge head measured 206,831 bytes). The ceiling moves to 213 KiB,
+ * leaving 4,486 bytes of headroom.
  */
-const TARBALL_CEILING_BYTES = 200 * 1024
+const TARBALL_CEILING_BYTES = 213 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }

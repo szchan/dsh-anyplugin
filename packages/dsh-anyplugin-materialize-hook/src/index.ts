@@ -1622,6 +1622,53 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     }
   })
 
+  // The derived renderer bridge (#281 slice 1): the same `readUi` snapshot is
+  // also offered as a *render source* to the controller's optional
+  // `anypluginRenderer` registry, which is what the panel's loopback read route
+  // answers from. This half stays transport-free: it publishes data and knows
+  // nothing about HTTP, React or layout. Optional by design — an embedder with
+  // no registry still gets `mod_ui` and pays nothing. The source lives as long
+  // as this plugin fiber: the registry's disposer is this effect's cleanup, so
+  // unloading the mods removes the producer instead of leaving a stale one.
+  //
+  // Read the optional service the Cordis way. A real context's proxy *throws*
+  // on a property read the fiber did not inject (`cannot get property
+  // "anypluginRenderer" without inject`), so probing `ctx.anypluginRenderer`
+  // directly takes the whole materializer child down on its first load:
+  // `ctx.get` is the supported read and needs no inject. The registry is
+  // optional by design, so a throwing probe degrades to "no source" instead of
+  // failing the child; the direct read stays only for plain embedder context
+  // objects that are not Cordis proxies.
+  const rendererRegistryOf = (): { register: (source: () => unknown) => unknown } | undefined => {
+    try {
+      const get = (ctx as { get?: unknown }).get
+      if (typeof get === 'function') {
+        const viaGet = (get as (name: string) => unknown)('anypluginRenderer')
+        if (isRecord(viaGet) && typeof viaGet.register === 'function') {
+          return viaGet as { register: (source: () => unknown) => unknown }
+        }
+      }
+    } catch {
+      // The service is optional; an embedder without it pays nothing.
+    }
+    try {
+      const direct = (ctx as { anypluginRenderer?: unknown }).anypluginRenderer
+      if (isRecord(direct) && typeof direct.register === 'function') {
+        return direct as { register: (source: () => unknown) => unknown }
+      }
+    } catch {
+      // A Cordis proxy refuses uninjected property reads; ctx.get above is the
+      // supported path, so there is nothing left to try.
+    }
+    return undefined
+  }
+  ctx.effect(() => {
+    const registry = rendererRegistryOf()
+    if (registry === undefined) return () => {}
+    const dispose = registry.register(() => readUi({}))
+    return typeof dispose === 'function' ? (dispose as () => void) : () => {}
+  })
+
   // A `ui.render`/`ui.resolve` dispatch is a chain on the one kernel, not a
   // second event path (AGENTS §3.6, D32): `ui.render` is a `$` member, not a
   // host event, so the adapter never maps it — the sink asks here, and this
