@@ -3087,8 +3087,9 @@ theme and locale are named stubs off every measured path; the
 two helpers the shortcuts bundle requires are loaded from the pinned authored
 source, executed in the page and asserted (check 22), and the module's other
 exports are not loaded. Forty checks — 13 source reads + 27 executing — run at
-both pins; every executing check was shown non-vacuous by a source mutation (the
-PR records the table). The fetched union gains `dsh-client-ui-slots`,
+both pins; seventeen of the 27 executing checks — the ones a review questioned —
+were shown non-vacuous by a source mutation (the PR records the table), and the
+other ten run without a mutation claim. The fetched union gains `dsh-client-ui-slots`,
 `dsh-client-ui-renderer`, `dsh-client-ui-primitives`, `dsh-client-store`,
 `dsh-client-shortcuts`, `dsh-host-webserver` (plus React/jsdom/zustand/immer
 support), and CI runs the spike at both pins; a run whose resolved tree is not

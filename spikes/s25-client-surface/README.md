@@ -128,9 +128,11 @@ outside what a client plugin can reach.
 **Run at both pins (`0.2.2-rc.5`, `0.2.2-rc.2`): 40 checks each — 13 source
 reads + 27 executing checks.**
 
-The 13 source reads are checks 1–12 and 21; every bullet below runs. Each
-executing check was shown to be non-vacuous by mutating the spike or its fixture
-and watching that check go red (the landing PR records the mutation table).
+The 13 source reads are checks 1–12 and 21; every bullet below runs. Seventeen
+of the 27 executing checks — the ones a review questioned — were shown to be
+non-vacuous by mutating the spike or its fixture and watching that check go red
+(the landing PR records the mutation table: M1–M9). The other ten execute but
+were not mutation-tested, so their non-vacuity is not claimed.
 What executes:
 
 - the host half's routes are real: `dsh-host-webserver` listens on an ephemeral
