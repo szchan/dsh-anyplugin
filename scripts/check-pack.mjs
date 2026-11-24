@@ -117,11 +117,13 @@ try {
     }
     check(has(manifest.dsh?.bundle?.patch?.replace(/^\.\//, '') ?? 'cordis.patch.yml'), 'the bundle patch is not in the tarball')
 
-    // The generated mod type surface is internal (#144, D59): shipping it would
-    // redistribute Anthropic's pinned declaration, which D14 forbids. The TODO
-    // Done entry says it is not shipped; this assertion is what makes that true.
-    const typeSurface = [...files].filter((path) => path === 'types/mod.d.ts' || path.startsWith('types/') || path.includes('/types/'))
-    check(typeSurface.length === 0, `the tarball ships the internal type surface: ${typeSurface.join(', ')}`)
+    // The author-facing declaration ships (D95): it is this layer's own authored
+    // surface, generated from the ledger, so shipping it redistributes nothing
+    // of the pinned declaration (D14). Assert both halves of that claim: the
+    // generated file is in the tarball, and the pin's file is not.
+    check(has('types/mod.d.ts'), 'the tarball does not ship the generated mod declaration types/mod.d.ts')
+    const vendored = [...files].filter((path) => path.endsWith('claude-code.d.ts') || path.includes('mods/types/'))
+    check(vendored.length === 0, `the tarball redistributes the pinned declaration: ${vendored.join(', ')}`)
 
     // 1. The built entry point and every published export target.
     check(manifest.main === './lib/index.js', `main is ${JSON.stringify(manifest.main)}, expected ./lib/index.js`)

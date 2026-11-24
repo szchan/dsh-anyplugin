@@ -1075,19 +1075,23 @@ What a faithful host needs, in dependency order:
    six `ui.*` members the ledger calls are served by the headless sink above);
    then http / mcp / model / agent / audio / theme … from the pinned
    `claude-code.d.ts`;
-5. **type generation** — *internal served subset landed* (#144): `npm run
-   gen:types` writes `packages/dsh-anyplugin-mod-host/types/mod.d.ts` from the
-   pin and the ledger. It declares only the ledger's served `$` members, with the
-   pin's own signature text (so `$.session.cwd` is `() => Promise<string>`,
-   #138), imports the named helper types from the pin instead of vendoring them,
-   and turns the refused members into one closed `ERR_MOD_HOST_*` union. It
-   names no absent member. The file is repository-side only — not shipped and
-   not author-facing: shipping it would require either redistributing
-   Anthropic's pinned declaration (D14 forbids vendoring the artifact, and the
-   licence does not grant redistribution) or a derived inline subset whose
-   shapes are no longer copied verbatim (a different claim under D57).
-   Author-facing types are `planned`; this file is the guard against shape drift
-   meanwhile.
+5. **type generation** — *author-facing served surface landed* (#282, D95):
+   `npm run gen:types` writes the root `types/mod.d.ts` from
+   `fixtures/mods/coverage.json` alone — the pin is named in the header and in
+   the ledger, but no pin text is read at generation time and no pin artifact is
+   redistributed (D14). It types the 9 served `$` namespaces and their 26
+   members (`fixtures/mods/coverage.json` `totals.namespaces`, `totals.methods`)
+   and the 24 served event routes (`fixtures/mods/coverage.json` `totals.events`)
+   with the payloads the mod host
+   returns (`$.session.cwd()` is `Promise<string>`); absent and refused members
+   are declared `never` with a `@deprecated` reason ("this layer does not serve
+   it: ..."), so using one is a compile error on the author's machine, and
+   unmodelled fields inside a served shape stay optional with a `planned` note
+   (D57). The file ships in the tarball, states that no Claude Code installation
+   is needed (D96), imports nothing from the pin, and is drift-gated by
+   `npm run check:types` (`npm run check` and a `verify.yml` step) with a 16 KiB
+   raw cap. It is our authored surface, not the pin's declaration, and makes no
+   shape-parity claim (D95); the ledger remains the authority.
 
 Items 3 and 4 are where DSH will fight back: the element runtime needs a
 terminal-grade layout model, and the session/model/tool bridges need the

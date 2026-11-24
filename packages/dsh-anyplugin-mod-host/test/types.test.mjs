@@ -1,259 +1,194 @@
-// The internal mod type surface (#144): `types/mod.d.ts` is generated from the
-// pinned declaration and the mod ledger, so it states only what the host
-// serves, and states it in the pin's own words. It is repository-side only: the
-// test proves the shape guard, not a shipped author-facing surface.
+// The author-facing mod declaration (#282): `types/mod.d.ts` is generated from
+// the coverage ledger alone, shipped in the tarball, and typed so that using a
+// member this host does not serve is a compile error on the author's machine.
 //
-// The test never rewrites the committed file: it regenerates into a temp
-// directory and compares. A skip here would report "0 skipped" while checking
-// nothing (D22/D24), so a missing pin fails with the fetch instruction instead.
+// This repository has no TypeScript dependency, so the type-level claim is
+// asserted on the generated text rather than by running `tsc`: the test reads
+// the declaration it ships and checks the shapes, the `never` members and the
+// event surface against the ledger. The drift gate and the raw-size cap are
+// exercised through the generator's own `checkTypes`/CLI so CI fails on a hand
+// edit instead of trusting reviewers to notice one.
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { ledgerPath, matchingIndex, parseDeclaration, parseMembers, readDeclaration } from '../../../scripts/mod-coverage.mjs'
-import {
-  assertImportsCoverTypeReferences,
-  localTypeParameters,
-  renderModTypes,
-  typesPath,
-} from '../../../scripts/gen-mod-types.mjs'
+import { checkTypes, ledgerPath, RAW_BYTE_CAP, renderModTypes, typesPath } from '../../../scripts/gen-mod-types.mjs'
 
 const generator = fileURLToPath(new URL('../../../scripts/gen-mod-types.mjs', import.meta.url))
 const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'))
 const committed = readFileSync(typesPath, 'utf8')
+const tempDir = () => mkdtempSync(join(tmpdir(), 'gen-mod-types-'))
 
-/** The body between an exported interface's braces, with its bracket indexes. */
+/** Run the CLI and return `{status, stdout, stderr}` instead of throwing. */
+const run = (...args) => {
+  try {
+    const stdout = execFileSync(process.execPath, [generator, ...args], { env: process.env, stdio: 'pipe', encoding: 'utf8' })
+    return { status: 0, stdout, stderr: '' }
+  } catch (error) {
+    return { status: error.status, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }
+  }
+}
+
+/** The `{ ... }` body of an exported interface, chosen by its exported name. */
 const interfaceBody = (text, name) => {
   const marker = `export interface ${name} {`
   const start = text.indexOf(marker)
-  assert.notEqual(start, -1, `missing exported interface ${name}`)
-  const open = start + marker.length - 1
-  const close = matchingIndex(text, open)
-  assert.notEqual(close, -1, `unterminated interface ${name}`)
-  return { body: text.slice(open + 1, close), start: open, end: close }
-}
-
-/** `Map<namespace, Set<member>>` as `ModDollar` declares them. */
-const declaredNamespaces = (text) => {
-  const { body } = interfaceBody(text, 'ModDollar')
-  const namespaces = new Map()
-  for (const member of parseMembers(`{${body}}`)) {
-    assert.equal(member.kind, 'property', `ModDollar.${member.name} is not a namespace property`)
-    assert.ok(member.type.startsWith('{'), `ModDollar.${member.name} is not an inline object type`)
-    const members = parseMembers(member.type).filter((entry) => entry.name !== undefined)
-    namespaces.set(member.name, new Set(members.map((entry) => entry.name)))
-  }
-  return namespaces
-}
-
-test('the committed types file is exactly what the generator renders', () => {
-  assert.equal(committed, renderModTypes())
-})
-
-test('two generator runs in a temp directory are byte-identical and match the committed file', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'gen-mod-types-'))
-  const paths = [join(dir, 'first.d.ts'), join(dir, 'second.d.ts')]
-  for (const out of paths) {
-    execFileSync(process.execPath, [generator, '--out', out], { env: process.env, stdio: 'pipe' })
-  }
-  assert.equal(readFileSync(paths[0], 'utf8'), readFileSync(paths[1], 'utf8'))
-  assert.equal(readFileSync(paths[0], 'utf8'), committed)
-})
-
-test('ModDollar declares exactly the served namespaces and members from the ledger', () => {
-  const actual = declaredNamespaces(committed)
-  const expected = new Map()
-  for (const namespace of ledger.served.namespaces) expected.set(namespace, new Set())
-  for (const entry of [...ledger.served.methods, ...ledger.served.properties]) {
-    const dot = entry.indexOf('.')
-    assert.notEqual(dot, -1, `${entry} is not a dotted member`)
-    const namespace = entry.slice(0, dot)
-    const member = entry.slice(dot + 1)
-    assert.ok(expected.has(namespace), `ledger serves ${entry} but does not list namespace ${namespace}`)
-    expected.get(namespace).add(member)
-  }
-  assert.deepEqual([...actual.keys()].sort(), [...expected.keys()].sort())
-  for (const [namespace, members] of expected) {
-    assert.deepEqual([...actual.get(namespace)].sort(), [...members].sort(), `ModDollar.${namespace} is not the served set`)
-  }
-  assert.match(committed, /^ {4}cwd: \(\) => Promise<string>;$/m, '$.session.cwd is not the pin text (#138)')
-})
-
-test('no absent member or namespace is named anywhere in the file', () => {
-  for (const name of [...ledger.absent.methods, ...ledger.absent.properties]) {
-    assert.equal(committed.includes(name), false, `absent member ${name} appears in the generated file`)
-  }
-  for (const namespace of ledger.absent.namespaces) {
-    assert.doesNotMatch(committed, new RegExp(`\\b${namespace}\\b`), `absent namespace ${namespace} appears in the generated file`)
-  }
-  // A bare member name inside its namespace block is only visible namespace by
-  // namespace: `session.identity` never appears as a dotted string in the file.
-  const declared = declaredNamespaces(committed)
-  for (const name of [...ledger.absent.methods, ...ledger.absent.properties]) {
-    const dot = name.indexOf('.')
-    if (dot === -1) continue
-    const namespace = name.slice(0, dot)
-    const member = name.slice(dot + 1)
-    if (!declared.has(namespace)) continue
-    assert.equal(declared.get(namespace).has(member), false, `absent member ${name} is declared under ${namespace}`)
-  }
-})
-
-test('every refused member is named once, only in the documented error union', () => {
-  const { body, start, end } = interfaceBody(committed, 'ModRefusedMemberCodes')
-  const actual = new Map()
-  for (const match of body.matchAll(/^\s*'([^']+)':\s*'(ERR_MOD_HOST_[A-Z0-9_]+)';$/gm)) actual.set(match[1], match[2])
-  const expected = new Map([...ledger.refused.methods, ...ledger.refused.properties].map((entry) => [entry.name, entry.code]))
-  assert.deepEqual([...actual.entries()].sort(), [...expected.entries()].sort())
-
-  for (const name of expected.keys()) {
-    const count = committed.split(name).length - 1
-    assert.equal(count, 1, `refused member ${name} occurs ${count} times; the union must name it exactly once`)
-    assert.ok(committed.indexOf(name) > start && committed.indexOf(name) < end, `refused member ${name} appears outside the union`)
-  }
-  for (const namespace of ledger.refused.namespaces) {
-    let index = committed.indexOf(namespace)
-    while (index !== -1) {
-      assert.ok(index > start && index < end, `refused namespace ${namespace} appears outside the union`)
-      index = committed.indexOf(namespace, index + 1)
+  assert.notEqual(start, -1, `the declaration has no exported interface ${name}`)
+  let depth = 0
+  for (let index = start + marker.length - 1; index < text.length; index++) {
+    if (text[index] === '{') depth++
+    if (text[index] === '}') {
+      depth--
+      if (depth === 0) return text.slice(start + marker.length, index)
     }
   }
+  throw new Error(`unterminated interface ${name}`)
+}
 
-  // A refused member must not also be declared in `ModDollar`. The dotted
-  // string never appears there, so this has to compare the bare member names.
-  const declared = declaredNamespaces(committed)
-  for (const name of expected.keys()) {
-    const dot = name.indexOf('.')
-    assert.notEqual(dot, -1, `${name} is not a dotted member`)
-    const namespace = name.slice(0, dot)
-    const member = name.slice(dot + 1)
-    assert.equal(
-      declared.get(namespace)?.has(member) ?? false,
-      false,
-      `refused member ${name} is also declared under ${namespace}`,
+const quotedUnion = (text, name) => {
+  const match = new RegExp(`export type ${name} = ([^\\n]+)\\n`).exec(text)
+  assert.notEqual(match, null, `the declaration has no exported type ${name}`)
+  return match[1]
+    .split(' | ')
+    .map((entry) => entry.trim().replace(/^'|'$/g, ''))
+    .sort()
+}
+
+test('the committed declaration is what the generator renders, under the raw-size cap', () => {
+  assert.equal(committed, renderModTypes(ledger))
+  assert.ok(Buffer.byteLength(committed) <= RAW_BYTE_CAP, 'the declaration outgrew the raw-size cap')
+  assert.equal(RAW_BYTE_CAP, 16 * 1024)
+  assert.match(committed, /Generated by scripts\/gen-mod-types\.mjs/)
+  assert.match(committed, /never edit/)
+  assert.match(committed, /fixtures\/mods\/coverage\.json/)
+  // The no-Claude-Code hard rule is visible where an author reads it (D96).
+  assert.match(committed, /No Claude Code installation is/)
+  assert.match(committed, /map the `claude-code` specifier/)
+})
+
+test('two generator runs write identical bytes, matching the committed file', () => {
+  const dir = tempDir()
+  const first = join(dir, 'first.d.ts')
+  const second = join(dir, 'second.d.ts')
+  assert.equal(run('--out', first).status, 0)
+  assert.equal(run('--out', second).status, 0)
+  assert.equal(readFileSync(first, 'utf8'), readFileSync(second, 'utf8'))
+  assert.equal(readFileSync(first, 'utf8'), committed)
+  const check = run('--check')
+  assert.equal(check.status, 0, check.stderr)
+  assert.match(check.stdout, /matches fixtures\/mods\/coverage\.json/)
+})
+
+test('--check fails when the committed file is hand-edited out of date', () => {
+  const dir = tempDir()
+  const edited = join(dir, 'mod.d.ts')
+  writeFileSync(edited, committed.replace('export interface Dollar {', 'export interface Dollar {\n  handEdited: never'))
+  const result = checkTypes({ typesFile: edited })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'drift')
+  assert.ok(result.line > 0, 'drift should name the first differing line')
+  const cli = run('--check', '--out', edited)
+  assert.equal(cli.status, 1)
+  assert.match(cli.stderr, /stale/)
+  assert.match(cli.stderr, /npm run gen:types/)
+})
+
+test('--check fails when the ledger and the committed file disagree', () => {
+  const dir = tempDir()
+  const variant = structuredClone(ledger)
+  // The same served routes in a different order: every set and every total still
+  // matches, but the rendered declaration changes, so the committed file drifts.
+  variant.served.events = [...variant.served.events].reverse()
+  const variantLedger = join(dir, 'coverage.json')
+  writeFileSync(variantLedger, `${JSON.stringify(variant, null, 2)}\n`)
+  const stale = checkTypes({ ledgerFile: variantLedger })
+  assert.equal(stale.ok, false)
+  assert.equal(stale.reason, 'drift')
+})
+
+test('--check enforces the raw-size cap, and the generator refuses a ledger with broken arithmetic', () => {
+  const capped = checkTypes({ cap: 1024 })
+  assert.equal(capped.ok, false)
+  assert.equal(capped.reason, 'cap')
+  assert.equal(capped.cap, 1024)
+  assert.ok(capped.bytes > 1024)
+
+  const broken = structuredClone(ledger)
+  broken.totals.methods.absent += 1
+  assert.throws(() => renderModTypes(broken), /totals\.methods\.absent/)
+
+  const unknown = structuredClone(ledger)
+  unknown.served.methods = [...unknown.served.methods, 'clock.spin']
+  assert.throws(() => renderModTypes(unknown), /clock\.spin/)
+})
+
+test('the $ surface declares every served member and marks absent/refused members never', () => {
+  const dollar = interfaceBody(committed, 'Dollar')
+  const namespaces = [...dollar.matchAll(/^ {2}(\w+):/gm)].map((match) => match[1]).sort()
+  assert.deepEqual(namespaces, [...ledger.served.namespaces].sort())
+
+  for (const member of ledger.served.methods) {
+    const name = member.slice(member.indexOf('.') + 1)
+    assert.match(dollar, new RegExp(`\\b${name}\\(|\\b${name}:`), `served member ${member} is not declared`)
+  }
+  for (const member of ledger.absent.methods) {
+    const namespace = member.slice(0, member.indexOf('.'))
+    // A namespace the host refuses or does not serve is declared `never` whole,
+    // so its members are covered by that declaration rather than listed again.
+    if (ledger.absent.namespaces.includes(namespace) || ledger.refused.namespaces.includes(namespace)) continue
+    const name = member.slice(member.indexOf('.') + 1)
+    assert.match(dollar, new RegExp(`@deprecated this layer does not serve it[^\\n]*\\*/ ${name}: never;`), `absent member ${member} is not a deprecated never`)
+  }
+  for (const member of ledger.refused.methods) {
+    const namespace = member.name.slice(0, member.name.indexOf('.'))
+    if (ledger.refused.namespaces.includes(namespace)) continue
+    const name = member.name.slice(member.name.indexOf('.') + 1)
+    assert.match(
+      dollar,
+      new RegExp(`@deprecated this layer does not serve it: ${member.name} is refused with ${member.code}[^\\n]*\\*/ ${name}: never;`),
+      `refused member ${member.name} is not a deprecated never naming ${member.code}`,
     )
   }
-})
-
-test('the header states the pin, the declaration hash, the ledger, and that the file is generated', () => {
-  assert.ok(committed.includes(`claude-code ${ledger.pin.version}`), 'pin version missing')
-  assert.ok(committed.includes(ledger.pin.commit), 'mods tree commit missing')
-  assert.ok(committed.includes(ledger.pin.sha256), 'declaration sha256 missing')
-  assert.ok(committed.includes(ledger.pin.bytes.toString()), 'declaration byte size missing')
-  assert.ok(committed.includes('fixtures/mods/coverage.json'), 'ledger path missing')
-  assert.ok(committed.includes('npm run gen:types'), 'generation command missing')
-  assert.match(committed, /generated/i)
-  assert.match(committed, /do not edit/i)
-  assert.match(committed, /not shipped and not author-facing/i)
-  assert.match(committed, /Author-facing types are[\s\S]*planned/i)
-})
-
-test('the imported helper types are all declarations in the pin', () => {
-  const parsed = parseDeclaration(readDeclaration().text)
-  const block = /^import type \{\n([\s\S]*?)\n\} from 'claude-code'$/m.exec(committed)
-  assert.notEqual(block, null, 'the pinned import block is missing')
-  const names = block[1]
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '')
-    .map((line) => line.replace(/,$/, ''))
-  assert.ok(names.length > 0)
-  for (const name of names) {
-    assert.notEqual(parsed.declaration(name), undefined, `${name} is imported but not declared by the pin`)
+  for (const namespace of [...ledger.absent.namespaces, ...ledger.refused.namespaces]) {
+    assert.match(dollar, new RegExp(`@deprecated [^\\n]*\\*/ ${namespace}: never;`), `unserved namespace ${namespace} is not a deprecated never`)
   }
 })
 
-test('generation fails naming a served member the pin does not declare', () => {
-  const mutated = structuredClone(ledger)
-  mutated.served.methods.push('session.nope')
-  assert.throws(() => renderModTypes({ ledger: mutated, verify: false }), /session\.nope/)
+test('the event surface is exactly the served routes, with the served payload shapes', () => {
+  const served = [...ledger.served.events].sort()
+  assert.deepEqual(quotedUnion(committed, 'ServedEvent'), served)
+  const start = committed.indexOf('export type Hook<')
+  const end = committed.indexOf('\nexport type Handler<')
+  assert.ok(start !== -1 && end > start, 'the declaration has no Hook conditional')
+  const hookEvents = [...committed.slice(start, end).matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()
+  assert.deepEqual(hookEvents, ['classic.PreToolUse', 'prompt.context', 'tool.call'])
+  assert.match(committed, /E extends 'classic\.PreToolUse' \| 'tool\.call' \? ToolEnvelope/)
+  assert.match(committed, /E extends 'prompt\.context' \? PromptContext/)
+  assert.match(committed, /: Payload\n/)
 })
 
-test('generation fails naming a member whose signature references an unknown type', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('after: TimerCall;', 'after: MysteryCall;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  assert.throws(
-    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
-    /clock\.after[\s\S]*MysteryCall|MysteryCall[\s\S]*clock\.after/,
-  )
+test('the declaration copies nothing from the pinned declaration', () => {
+  assert.equal(/from 'claude-code'/.test(committed), false, 'the shipped file imports from the pin')
+  assert.equal(/^\s*import\s/m.test(committed), false, 'the shipped file has an import statement')
+  const tracked = execFileSync('git', ['ls-files', 'types', 'packages'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../../..', import.meta.url)) })
+  assert.equal(tracked.split('\n').some((path) => path.endsWith('claude-code.d.ts')), false, 'the pin declaration is committed')
 })
 
-test('generation fails when the ledger lists a refused member as served', () => {
-  const mutated = structuredClone(ledger)
-  mutated.served.methods.push('ui.ask')
-  assert.throws(() => renderModTypes({ ledger: mutated, verify: false }), /ui\.ask/)
-})
-
-test('generation fails on a lowercase type the pin does not declare', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('after: TimerCall;', 'after: mysteryCall;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  assert.throws(
-    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
-    /clock\.after[\s\S]*mysteryCall|mysteryCall[\s\S]*clock\.after/,
-  )
-})
-
-test('generation fails on a signature with no type text', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd: ;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  assert.throws(() => renderModTypes({ declaration: { ...declaration, text }, verify: false }), /session\.cwd/)
-})
-
-test('generation fails on an unknown type in a method-form parameter', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd<T>(x: Mystery): T;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  assert.throws(
-    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
-    /session\.cwd[\s\S]*Mystery|Mystery[\s\S]*session\.cwd/,
-  )
-})
-
-test('generation fails on an unknown type in a type predicate', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd: (v: unknown) => asserts v is Mystery;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  assert.throws(
-    () => renderModTypes({ declaration: { ...declaration, text }, verify: false }),
-    /session\.cwd[\s\S]*Mystery|Mystery[\s\S]*session\.cwd/,
-  )
-})
-
-test('a method-form parameter type is imported and covered by reverse closure', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd<T>(x: EnvSetResult): T;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  const rendered = renderModTypes({ declaration: { ...declaration, text }, verify: false })
-  assert.ok(rendered.includes('  EnvSetResult,'), 'EnvSetResult was not imported')
-  assert.match(rendered, /cwd<T>\(x: EnvSetResult\): T;/)
-  const dropped = rendered.replace('\n  EnvSetResult,', '')
-  assert.throws(() => assertImportsCoverTypeReferences(dropped, text), /EnvSetResult/)
-})
-
-test('every type a signature references is imported (reverse closure)', () => {
-  const declarationText = readDeclaration().text
-  assert.doesNotThrow(() => assertImportsCoverTypeReferences(committed, declarationText))
-  const dropped = committed.replace('\n  CommandSpec,', '')
-  assert.notEqual(dropped, committed, 'CommandSpec was not in the import block')
-  assert.throws(() => assertImportsCoverTypeReferences(dropped, declarationText), /CommandSpec/)
-})
-
-test('method-form generics declare their own parameters', () => {
-  assert.deepEqual([...localTypeParameters('cwd<T>(handler: T): T;')], ['T'])
-  assert.deepEqual([...localTypeParameters('resolve: <E extends ResolveInput>(e: E) => E;')], ['E'])
-})
-
-test('generation refuses a declaration that does not match the ledger pin', () => {
-  const declaration = readDeclaration()
-  const text = declaration.text.replace('cwd: () => Promise<string>;', 'cwd: () => string;')
-  assert.notEqual(text, declaration.text, 'the probe signature was not found in the pin')
-  assert.throws(() => renderModTypes({ declaration: { ...declaration, text } }), /ledger pin (?:bytes|sha256)/)
+test('the drift gate is wired into the package scripts and CI', () => {
+  const root = fileURLToPath(new URL('../../..', import.meta.url))
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  assert.ok(manifest.files.includes('types'), 'the tarball files list does not ship types/')
+  assert.equal(manifest.scripts['check:types'], 'node scripts/gen-mod-types.mjs --check')
+  assert.match(manifest.scripts.check, /check:types/)
+  assert.match(manifest.scripts.verify, /check:types/)
+  const workflow = readFileSync(join(root, '.github', 'workflows', 'verify.yml'), 'utf8')
+  assert.match(workflow, /npm run check:types/, 'CI does not run the drift check')
+  const pack = readFileSync(join(root, 'scripts', 'check-pack.mjs'), 'utf8')
+  assert.match(pack, /types\/mod\.d\.ts/, 'check:pack does not assert the generated declaration ships')
+  assert.match(pack, /redistributes the pinned declaration/, 'check:pack does not assert the pin stays out of the tarball')
 })
