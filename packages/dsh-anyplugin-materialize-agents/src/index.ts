@@ -21,16 +21,31 @@
  * still listed (the catalog is real) and invocation fails with a message that
  * names the missing service instead of crashing the group at load time.
  *
- * Frontmatter faces (S16). `skills` is the one key the host can honour today:
- * every skill body the compiler resolved is prepended to the child's first user
- * message, which is where Claude starts the subagent with the full skill
- * content. The other keys are *not* forwarded. `startActivation` has no field
- * for tools, turns, isolation, memory, background, CLAUDE.md suppression,
- * colour or compaction, and forwarding `model`/`effort` through
- * `agentOptions` would put Claude's alias/levels into a provider id space that
- * observed them literally (S16). The IR annotation on each face says so; this
- * materializer must not pretend otherwise.
+ * Frontmatter faces (S16). `skills` and `model`/`effort` are the keys the host
+ * can honour today. Every skill body the compiler resolved is prepended to the
+ * child's first user message, which is where Claude starts the subagent with
+ * the full skill content. `model`/`effort` are not Claude semantics: the
+ * materializer resolves the alias through this layer's model map (D91), asks
+ * the session catalog which provider advertises the mapped model and effort,
+ * and forwards a provider route only when one does. A route the catalog cannot
+ * confirm is never sent — S16 observed an unexpected model or effort id fail
+ * the child turn — and the gap is logged per invocation. The other
+ * keys are *not* forwarded: `startActivation` has no field for tools, turns,
+ * isolation, memory, background, CLAUDE.md suppression, colour or compaction.
+ * The IR annotation on each face says so; this materializer must not pretend
+ * otherwise.
  */
+import {
+  EFFORT_NAMES,
+  findModelMapRoute,
+  isEffortName,
+  loadEffectiveModelMap,
+  modelMapRefusal,
+  resolveModelRoute,
+  type EffectiveModelMap,
+  type ModelCatalog,
+  type ModelRoute,
+} from '../../dsh-anyplugin-model-map/src/index.ts'
 export const name = 'anyplugin-materialize-agents'
 // No static `inject`: apply() runs even when `ctx.tools` is late or missing, so
 // the degradation is recorded instead of the plugin silently never applying.
@@ -75,6 +90,12 @@ export interface Config {
   agents?: MaterialAgent[]
   /** Subagent provider name; the in-process spawn provider registers as `spawn`. */
   provider?: string
+  /**
+   * The effective model map routes are resolved through. Omitted, the machine's
+   * user document over the shipped defaults is loaded per invocation; tests and
+   * an embedding caller pass one so resolution is deterministic.
+   */
+  modelMap?: EffectiveModelMap
 }
 
 /** Model-facing arguments of one agent tool. */
@@ -107,6 +128,87 @@ export function agentProblem(agent: MaterialAgent, plugin: string | undefined): 
  * The tool definition for one agent. Exported so the test can assert the exact
  * description (byte equality) without booting a harness.
  */
+/** The provider the calling session runs on, when the parent exposes its route. */
+function sessionProviderOf(parent: any): string | undefined {
+  const config = parent?.session?.requestHeader?.()?.config
+  if (typeof config?.provider === 'string' && config.provider.trim() !== '') return config.provider
+  const provider = parent?.options?.provider
+  return typeof provider === 'string' && provider.trim() !== '' ? provider : undefined
+}
+
+/** What one invocation forwards to the child, plus the gaps behind the calls it does not. */
+interface ForwardedRoute {
+  agentOptions?: { provider: string; model: string; reasoningEffort?: string }
+  gaps: string[]
+}
+
+/**
+ * Turn a Claude `model`/`effort` pair into provider `agentOptions`, or decide
+ * not to forward and say why. The map is this layer's policy (D91); the
+ * catalog is the session's. A route the catalog does not confirm is never
+ * sent: S16 observed an unexpected model or effort id fail the child turn.
+ */
+async function forwardedRoute(
+  agent: MaterialAgent,
+  parent: any,
+  modelMap: EffectiveModelMap,
+  catalog: ModelCatalog | undefined,
+): Promise<ForwardedRoute> {
+  const alias = typeof agent.model === 'string' ? agent.model.trim() : ''
+  const gaps: string[] = []
+  if (typeof agent.model === 'string' && alias === '') {
+    gaps.push('frontmatter `model:` is empty; nothing is forwarded and the agent runs on the session default')
+  }
+  if (alias === '') {
+    if (typeof agent.effort === 'string') {
+      gaps.push(
+        `frontmatter \`effort: ${agent.effort.trim()}\` has no mapped \`model\` alias to attach to; nothing is forwarded`,
+      )
+    }
+    return { gaps }
+  }
+  const entry = findModelMapRoute(modelMap, alias)
+  const refusal = modelMapRefusal(modelMap)
+  if (refusal !== undefined) {
+    gaps.push(`${refusal}; nothing is forwarded and the agent runs on the session default`)
+    return { gaps }
+  }
+  if (entry === undefined) {
+    gaps.push(
+      `the model alias ${JSON.stringify(alias)} is not in the model map (${modelMap.path}); nothing is forwarded and the agent runs on the session default`,
+    )
+    return { gaps }
+  }
+  const effortName = typeof agent.effort === 'string' ? agent.effort.trim() : ''
+  let route: ModelRoute = entry.route
+  if (effortName !== '') {
+    if (isEffortName(effortName)) {
+      route = { ...route, effort: effortName }
+    } else {
+      gaps.push(
+        `the effort ${JSON.stringify(effortName)} is not a provider effort id this layer accepts (${EFFORT_NAMES.join(', ')}); the mapped default effort is kept`,
+      )
+    }
+  }
+  if (catalog === undefined) {
+    gaps.push(
+      `the llm service is absent, so a provider route for ${JSON.stringify(route.model)} cannot be confirmed; nothing is forwarded and the agent runs on the session default`,
+    )
+    return { gaps }
+  }
+  const resolution = await resolveModelRoute(catalog, route, { sessionProvider: sessionProviderOf(parent) })
+  gaps.push(...resolution.gaps)
+  if (!resolution.forward || resolution.provider === undefined || resolution.model === undefined) return { gaps }
+  return {
+    agentOptions: {
+      provider: resolution.provider,
+      model: resolution.model,
+      ...(resolution.effort === undefined ? {} : { reasoningEffort: resolution.effort }),
+    },
+    gaps,
+  }
+}
+
 /** The provider label the host puts in a skill's `<skill_resources>` note. */
 const SKILL_PROVIDER = 'anyplugin'
 
@@ -209,14 +311,39 @@ export function agentTool(agent: MaterialAgent, ctx: any, config: Config): unkno
         blocks.push({ type: 'text', text: renderSkillEnvelope(preload) })
       }
       blocks.push({ type: 'text', text: prompt })
-      const started = await subagents.startActivation({
+      // Resolve the frontmatter faces into a provider route the session
+      // catalog confirms (D91). A gap never blocks the delegation: the child
+      // runs on the session default and the reason is logged.
+      const modelMap = config.modelMap ?? loadEffectiveModelMap()
+      const forwarded = await forwardedRoute(agent, parent, modelMap, ctx.get('llm'))
+      const spec = {
         provider: config.provider ?? 'spawn',
         label,
         prompt: blocks,
         parent,
         ...(exec.signal === undefined ? {} : { signal: exec.signal }),
-        delivery: 'parent',
-      })
+        delivery: 'parent' as const,
+      }
+      let started: { name?: string } | undefined
+      if (forwarded.agentOptions === undefined) {
+        started = await subagents.startActivation(spec)
+      } else {
+        try {
+          started = await subagents.startActivation({ ...spec, agentOptions: forwarded.agentOptions })
+        } catch (error) {
+          // The provider does not accept agentOptions; `assertCapabilities`
+          // throws before any child starts, so the retry is safe. This layer
+          // degrades to the session route rather than failing the delegation.
+          if ((error as { code?: unknown } | undefined)?.code !== 'UNSUPPORTED_CAPABILITY') throw error
+          forwarded.gaps.push(
+            `subagent provider ${JSON.stringify(spec.provider)} does not accept provider/model/reasoningEffort overrides; the agent runs on the session default route`,
+          )
+          started = await subagents.startActivation(spec)
+        }
+      }
+      for (const gap of forwarded.gaps) {
+        ctx.logger?.warn?.(`anyplugin-materialize-agents: ${JSON.stringify(toolName)}: ${gap}`)
+      }
       return { name: started?.name ?? 'agent' }
     },
   }

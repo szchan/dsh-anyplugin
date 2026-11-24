@@ -4256,3 +4256,67 @@ folded block as current, and still refuses a changed, a duplicated or an
 unreadable one` in `packages/dsh-anyplugin-guard/test/guard.test.mjs` (91 guard
 tests), with `verify` on the merge head.
 
+## D91 — agent `model`/`effort` resolve through an overridable model map
+
+**Decided 2026-11-24** (#283).
+
+Claude agent frontmatter names model aliases (`sonnet`, `opus`, `haiku`) and a
+provider-neutral effort; DSH providers take model ids and an advertised
+reasoning-effort id. S16 showed the host carries neither: a top-level value is
+ignored, and `agentOptions.model: 'sonnet'` reaches the provider as the raw
+alias. Translating an alias would be guessing a route the host does not serve
+unless the guess is declared and visible; that declaration is the escape layer
+built here.
+
+1. **The shipped map is this layer's policy, not a Claude semantic.** `opus`,
+   `sonnet` and `haiku` resolve to provider `deepseek-account` / model
+   `deepseek-flash` at effort `max`, `high` and `low`, because that is the
+   DeepSeek account route this layer chooses for them. A mapped face is
+   `derived`: Claude has no counterpart for the route, and the report reason
+   names the alias, the route and the decision rather than claiming Claude
+   semantics.
+2. **The map is user-overridable and visible.** `~/.config/dsh-anyplugin/model-map.json`
+   (or `ANYPLUGIN_MODEL_MAP` for tests) may replace any alias; unknown keys,
+   unknown effort names and bad route shapes reject the whole document rather
+   than apply half of it. `report` prints the effective mapping and its
+   provenance in text and as `effectiveMapping` in JSON, and
+   `dsh-anyplugin model-map get|set|reset` shows and edits it. Profile config
+   is never written.
+3. **An id or effort the session catalog does not advertise is never
+   forwarded.** The provider is resolved at runtime by model id: the session's
+   provider when it advertises the id, otherwise the declared provider,
+   otherwise any provider that does; an absent declared provider is substituted
+   and the substitution logged as a gap. Reading a plugin has no session
+   catalog, so the compile-time face names the declared policy (`derived`) and
+   the run time is where a route is confirmed. If no provider advertises the
+   model id, the materializer forwards nothing, logs the gap and the agent runs
+   on the session default; a malformed document is refused already at
+   annotation time (`unsupported` with the document problem). An unadvertised
+   effort id is dropped for the same reason (S16: it kills the child turn), and
+   a subagent provider that does not accept `agentOptions` is retried on the
+   session default with a logged gap.
+4. **An unmapped alias is still `unsupported`, never guessed.** The map
+   declares what it declares; a `model` key it does not list is annotated
+   `unsupported` with a reason naming the missing alias and the session
+   default.
+
+**Not claimed.** The route is this layer's policy, not Claude's model identity:
+a mapped face is `derived`, never `equivalent`. The effort forwarded is only
+the id the selected provider advertises, and confirmation at run time — not the
+annotation — is what makes forwarding honest; the map fixes which alias maps
+where, not that a real model behaves like the Claude one. Phase 2 (ticket #286)
+gives the map a UI; this entry covers the document, the CLI and the report.
+
+**Evidence.** The defaults, precedence, provider selection, absent-id gap,
+strict validation and CLI `get`/`set`/`reset` are pinned by
+`packages/dsh-anyplugin-model-map/test/model-map.test.mjs`,
+`packages/dsh-anyplugin-dialect-claude-code/test/model-map-faces.test.mjs` and
+the model-map cases in `packages/dsh-anyplugin-conformance/test/cli.test.mjs`;
+the face annotation and the report section by
+`packages/dsh-anyplugin-conformance/test/agent-faces.test.mjs` and
+`packages/dsh-anyplugin-conformance/test/report.test.mjs`; the runtime
+forwarding, the retry without `agentOptions` and the logged gaps by
+`packages/dsh-anyplugin-materialize-agents/test/materialize.test.mjs`. `verify`
+on the merge head re-runs the S16 observation, which still sees the raw-alias
+route when the map does not confirm a model id.
+

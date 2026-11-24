@@ -64,6 +64,13 @@ import {
   type Grants,
 } from '../../dsh-anyplugin-trust/src/index.ts'
 import { PROGRAM } from './program.ts'
+import {
+  formatEffectiveModelMap,
+  loadEffectiveModelMap,
+  modelMapReport,
+  resetModelMapDocument,
+  setModelMapDocument,
+} from '../../dsh-anyplugin-model-map/src/index.ts'
 
 interface Args {
   command: string
@@ -128,6 +135,9 @@ export const USAGE = `usage:
   ${PROGRAM} trace   --left <a.jsonl> --right <b.jsonl> [--root <plugin-dir>] [--verbose]
   ${PROGRAM} report  <plugin-dir> [--json] [--grants <grants.yml>]   what the transplant would do
   ${PROGRAM} report  --ir <file> [--json] [--grants <grants.yml>]    report a compiled IR instead
+  ${PROGRAM} model-map get                       the effective model map (JSON)
+  ${PROGRAM} model-map set <path-or-json>        validate and write the user document
+  ${PROGRAM} model-map reset                     remove the user document
   ${PROGRAM} grant   --plugin <dir> --grants <file> [--scope <s>] [--yes] [--replace-revoke] [--partial] [--json]
   ${PROGRAM} revoke  --plugin <dir> --grants <file> --target <t> [--scope <s>] [--json]
   ${PROGRAM} revoke  --grants <file> --plugin-id <marketplace:entry> --target <t> --capability network [--scope <s>] [--json]
@@ -163,6 +173,12 @@ export const USAGE = `usage:
   resolvedAt.
   --grants reads the hash-pinned exec grant store; without it the store is
   empty, so exec artifacts report refused:exec and are not emitted (D25).
+  model-map edits $HOME/.config/dsh-anyplugin/model-map.json, or the path in
+  ANYPLUGIN_MODEL_MAP: the user document that overrides the shipped
+  opus/sonnet/haiku -> provider route mapping (D91). \`get\` prints the merged
+  effective map as JSON; \`set\` validates strictly (an unknown key or effort
+  name is an error) and writes nothing on any problem; \`reset\` deletes the
+  user document. Profile config is never written.
   --scope is local, project, or user (default: user). \`grant\` prints every
   ungranted exec artifact and the exact command line, and writes only with
   --yes. It writes nothing if any artifact is unpinnable unless --partial is
@@ -374,9 +390,53 @@ export async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const verbose = args.options.get('verbose') === true
   const allowPinMismatch = args.options.get('allow-pin-mismatch') === true
-  const positionalCommands = new Set(['report', 'install', 'enable', 'disable', 'uninstall', 'marketplace'])
+  const positionalCommands = new Set(['report', 'model-map', 'install', 'enable', 'disable', 'uninstall', 'marketplace'])
   if (!positionalCommands.has(args.command) && args.positionals.length > 0) {
     throw new Error(`unexpected argument: ${args.positionals[0]}\n${USAGE}`)
+  }
+
+  if (args.command === 'model-map') {
+    assertOptions('model-map', args, ['help'])
+    if (args.options.get('help') === true) {
+      console.log(USAGE)
+      return 0
+    }
+    const [subcommand, ...rest] = args.positionals
+    if (subcommand === undefined) throw new Error(`missing model-map subcommand (get, set, reset)\n${USAGE}`)
+    if (subcommand === 'get') {
+      if (rest.length > 0) throw new Error(`unexpected argument: ${rest[0]}\n${USAGE}`)
+      const map = loadEffectiveModelMap()
+      console.log(JSON.stringify(modelMapReport(map), null, 2))
+      if (map.problems.length > 0) {
+        for (const problem of map.problems) console.error(`model-map: ${problem}`)
+        return 1
+      }
+      return 0
+    }
+    if (subcommand === 'set') {
+      if (rest.length !== 1) {
+        throw new Error(`model-map set takes exactly one <path-or-json> argument\n${USAGE}`)
+      }
+      const result = setModelMapDocument(rest[0])
+      if (!result.written) {
+        for (const problem of result.problems) console.error(`model-map: ${problem}`)
+        return 1
+      }
+      console.log(`model-map: wrote ${result.path}`)
+      console.log(formatEffectiveModelMap(loadEffectiveModelMap()))
+      return 0
+    }
+    if (subcommand === 'reset') {
+      if (rest.length > 0) throw new Error(`unexpected argument: ${rest[0]}\n${USAGE}`)
+      const result = resetModelMapDocument()
+      if (result.problems.length > 0) {
+        for (const problem of result.problems) console.error(`model-map: ${problem}`)
+        return 1
+      }
+      console.log(`model-map: removed ${result.path}; shipped defaults in force`)
+      return 0
+    }
+    throw new Error(`unknown model-map subcommand ${JSON.stringify(subcommand)} (get, set, reset)\n${USAGE}`)
   }
 
   if (args.command === 'report') {

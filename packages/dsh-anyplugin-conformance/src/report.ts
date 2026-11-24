@@ -23,6 +23,12 @@ import {
   type Grants,
 } from '../../dsh-anyplugin-trust/src/index.ts'
 import { requireRecordedMods, type InstalledMod } from '../../dsh-anyplugin-install/src/index.ts'
+import {
+  loadEffectiveModelMap,
+  modelMapReport,
+  type EffectiveModelMap,
+  type ModelMapReport,
+} from '../../dsh-anyplugin-model-map/src/index.ts'
 
 const STATUS_MARK: Record<DiffRow['status'], string> = {
   match: 'ok  ',
@@ -112,6 +118,13 @@ export interface TransplantReport {
    * is backed by the lock.
    */
   notRecorded: { name: string; reason: string }[]
+  /**
+   * The model map the agent `model`/`effort` faces were annotated against
+   * (D91): the shipped defaults merged with the user document, with provenance
+   * and validation problems. The same document the materializer resolves at
+   * run time, so a review sees the policy the IR was built on.
+   */
+  effectiveMapping: ModelMapReport
 }
 
 function identityKey(surface: string, name: string): string {
@@ -166,7 +179,13 @@ function facesByName(ir: ClaudePluginIr): Map<string, ReportFace[]> {
  */
 export function buildTransplantReport(
   ir: ClaudePluginIr,
-  options: EmitOptions & { grants?: Grants; recorded?: readonly InstalledMod[]; exclude?: readonly string[] },
+  options: EmitOptions & {
+    grants?: Grants
+    recorded?: readonly InstalledMod[]
+    exclude?: readonly string[]
+    /** The map the faces were annotated against; defaults to the machine document. */
+    modelMap?: EffectiveModelMap
+  },
 ): TransplantReport {
   // Trust runs before emission: refused hooks become `planned` pending nodes,
   // so the emitter cannot place them and the report can name the reason. An
@@ -248,6 +267,7 @@ export function buildTransplantReport(
   const emitted = components.filter((component) => component.carried).length
   const refused = components.filter((component) => component.refused !== undefined).length
   const problems = validateIr(installed)
+  const effectiveMapping = modelMapReport(options.modelMap ?? loadEffectiveModelMap())
   return {
     ok: problems.length === 0,
     plugin: summary.plugin,
@@ -262,7 +282,21 @@ export function buildTransplantReport(
     problems,
     mods,
     notRecorded: recording.refused,
+    effectiveMapping,
   }
+}
+
+/** One human line for the model map: document, provenance, and any problems. */
+function formatEffectiveMappingLine(report: ModelMapReport): string {
+  const routes = report.entries.map((entry) => {
+    const provider = entry.provider ?? 'session-provider'
+    const effort = entry.effort === null ? '' : ` @ ${entry.effort}`
+    return `${entry.alias} -> ${provider}/${entry.model}${effort} (${entry.source})`
+  })
+  const body = routes.length === 0 ? '(no aliases)' : routes.join('; ')
+  const problems =
+    report.problems.length === 0 ? '' : `; problems: ${report.problems.join('; ')}`
+  return `model-map: ${report.path} — ${body}${problems}`
 }
 
 /**
@@ -274,6 +308,7 @@ export function buildTransplantReport(
  */
 export function formatTransplantReport(report: TransplantReport): string {
   const lines: string[] = [`plugin: ${report.plugin}  pin: ${report.pin.tool}@${report.pin.version}`]
+  lines.push(formatEffectiveMappingLine(report.effectiveMapping))
   if (report.components.length === 0) lines.push('  (no components)')
   for (const component of report.components) {
     lines.push('')

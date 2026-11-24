@@ -4,5 +4,6 @@
   "private": true,
   "type": "module",
   "description": "DSH plugin that exposes one model-facing tool per Claude agent file; the catalog is data, the child is started through ctx.subagents (S10).",
-  "exports": { ".": "./src/index.ts" }
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "dsh-anyplugin-model-map": "*" }
 }

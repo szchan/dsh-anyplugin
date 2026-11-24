@@ -99,13 +99,21 @@ with the exact anchor so the proposal is reviewable without a checkout.
       #150 after #144 generated the file). D60's consequences name the only two
       exits: negotiate redistribution, or publish a derived subset under a new
       decision that says so.
-- [ ] **Escape layer** for model identity: `agents/*.md` naming `sonnet`/`opus`
-      cannot be reimplemented on this runtime; S16 annotates the faces
-      `unsupported`, and delegating the component to the real host is the only
-      path to honouring them.
+- [ ] **Model-map UI** (ticket #286): the effective map is visible through the
+      CLI and `report` only (D91); a settings surface that shows and edits it is
+      phase 2.
 
 ## Done
 
+- Agent model identity, phase 1 (ticket #283, D91): agent frontmatter
+  `model:`/`effort:` resolve through a shipped, overridable map
+  (`~/.config/dsh-anyplugin/model-map.json` or `ANYPLUGIN_MODEL_MAP`;
+  `dsh-anyplugin model-map get|set|reset`). The dialect annotates a mapped face
+  `derived` — this layer's policy, not Claude semantics — `report` prints the
+  effective mapping in text and as `effectiveMapping` in JSON, and the
+  materializer forwards only an id and effort the session catalog advertises,
+  recording every gap and running the session default when nothing resolves.
+  Phase 2 UI is ticket #286.
 - The installer is the published `bin` (ticket #146):
   `dsh-anyplugin` to `lib/cli.js`, which the build emits from the conformance
   rig's own `cli.ts`; `npx dsh-anyplugin install <dir> --dry-run` needs no DSH

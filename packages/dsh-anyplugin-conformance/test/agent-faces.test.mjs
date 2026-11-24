@@ -40,8 +40,8 @@ const SKILL_PROVIDER = 'anyplugin'
 const FACES = {
   catalog: 'exact',
   invocation: 'equivalent',
-  model: 'unsupported',
-  effort: 'unsupported',
+  model: 'derived',
+  effort: 'derived',
   tools: 'unsupported',
   maxTurns: 'unsupported',
   isolation: 'planned',
@@ -136,6 +136,16 @@ test(
     for (const [face, annotation] of Object.entries(agent.faces)) {
       assert.ok(annotation.reason.trim().length > 0, `${face} carries a reason`)
     }
+    // D91: a mapped alias is this layer's policy, never a Claude semantic. The
+    // reason has to name both the alias it read and the route it chose, or a
+    // reviewer cannot tell what was mapped.
+    for (const face of ['model', 'effort']) {
+      assert.match(agent.faces[face].reason, /policy \(D91\)/, `${face} names D91`)
+      assert.match(agent.faces[face].reason, /not a Claude semantic/, `${face} denies Claude semantics`)
+    }
+    assert.match(agent.faces.model.reason, /`model: sonnet`/, 'the model face names the alias it mapped')
+    assert.match(agent.faces.model.reason, /deepseek-flash/, 'the model face names the route it chose')
+    assert.match(agent.faces.effort.reason, /`effort: high`/, 'the effort face names the declared effort')
     assert.deepEqual(agent.skillContents, [{ name: SKILL_NAME, content: `${SKILL_MARKER}\n` }])
 
     const { entry } = emitPlugin(ir, { materializers })
