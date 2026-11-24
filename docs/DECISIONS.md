@@ -4320,3 +4320,34 @@ forwarding, the retry without `agentOptions` and the logged gaps by
 on the merge head re-runs the S16 observation, which still sees the raw-alias
 route when the map does not confirm a model id.
 
+## D92 — The registry tarball ceiling moves to 200 KiB
+
+**Decided 2026-11-24** (#283). Shipping the agent model map (D91) adds its
+resolver, its strict document validator and its `get`/`set`/`reset` paths to
+the root package's shipped `lib/`; `npm pack` measures the registry tarball at
+**202134 bytes (197.4 KiB)** in CI `check:pack`, above D77's 197632-byte
+(193 KiB) ceiling — 6142 bytes more than D77's measurement. The ceiling moves
+to **200 KiB (204800 bytes)**, leaving 2666 bytes of headroom; D46's separate
+128 KiB kernel ceiling is unchanged.
+
+1. **The cost is the shipped surface, not the source tree.** The
+   `dsh-anyplugin-model-map` module is bundled into `lib/index.js`, `lib/cli.js`
+   and `lib/materialize/agents.js`. The resolver, the validator and the CLI
+   document paths are the payload; trimming comments or moving them to another
+   module would hide the policy the report has to show without shrinking the
+   payload materially.
+2. **The map has to ship.** Without it the dialect cannot annotate `model` and
+   `effort` `derived`, `report` cannot print `effectiveMapping`, and the
+   materializer cannot forward a catalog-confirmed route. A second package or
+   an install-time fetch would be a second install surface for less than 6 KiB.
+3. **A budget raise is a decision, not a silent drift.** The next raise cites
+   its measured byte count and the feature that caused it, as D65, D71, D77 and
+   this entry do. D62's "a ceiling is not raised to fit a feature" stands for
+   every boundary except the one a decision moves; this entry moves the root
+   tarball ceiling only.
+4. **The kernel budget is untouched.** D46's 128 KiB limit and the kernel bytes
+   are unchanged; this entry only bounds the registry tarball the CLI serves.
+
+**Consequences.** `scripts/check-pack.mjs` carries the new constant and the
+measured byte count in its comment, and `docs/ARCHITECTURE.md` §2 records the
+move. No dependency, pin, workflow or kernel limit moved.
