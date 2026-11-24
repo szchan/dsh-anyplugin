@@ -40,9 +40,15 @@ const notes = []
  * is bundled into lib/index.js and its client bundle becomes lib/client.js, and the packed size
  * measures 195,992 bytes (191.4 KiB) in CI check:pack (+5,735 bytes on D71). The ceiling moves to 193 KiB — the
  * measured cost plus one doc paragraph of headroom — instead of a second package carrying its
- * own 64 KiB budget.
+ * own 64 KiB budget. D91 adds the derived renderer bridge (#281 slice 1): the
+ * client half grows lib/client.js by the translator, the pacer, the geometry
+ * probe, the focus guard, the snapshot store and the two React seats, and the
+ * packed size measures 205,818 bytes (201.0 KiB) in CI check:pack (+9,826
+ * bytes on D77). The ceiling moves to 205 KiB — the measured cost plus one doc
+ * paragraph of headroom; the bridge is the same tarball's client half, not a
+ * second package.
  */
-const TARBALL_CEILING_BYTES = 193 * 1024
+const TARBALL_CEILING_BYTES = 205 * 1024
 const check = (ok, message) => {
   if (!ok) failures.push(message)
 }

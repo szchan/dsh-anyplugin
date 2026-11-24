@@ -82,11 +82,16 @@ with the exact anchor so the proposal is reviewable without a checkout.
 - [ ] **Mod host** (D3, ARCHITECTURE §7.3) — four of that section's five items
       are landed: the static scanner (`dsh-anyplugin-mod-scan`, D21), the chain
       engine (D32), the element runtime's headless sink (#75, D44), and the
-      internal type subset (#144, D60). What remains is what §7.3 names as where
-      DSH fights back: the element runtime's drawing, host-owned layout, focus
-      routing and redraw throttling, and the namespace bridges beyond the
-      measured set (`fixtures/mods/coverage.json`: 13 of 24 namespaces and 67 of
-      100 methods are declared but absent, 19 of 20 render sites absent).
+      internal type subset (#144, D60). Drawing is partially served: the derived
+      renderer bridge (#281 slice 1, D91) draws the single `Pane` render site in
+      our client bundle for a four-tag vocabulary, with every face class
+      `derived` and its reason. What remains is what §7.3 names as where DSH
+      fights back: host-owned layout, host-level focus routing and host redraw
+      throttling (slice 3), the namespace bridges beyond the measured set
+      (`fixtures/mods/coverage.json`: 13 of 24 namespaces and 67 of 100 methods
+      are declared but absent), and 19 of 20 render sites absent; the bridge's
+      mount in a real browser/Electron renderer (Desktop `file://` + IPC) is the
+      separate slice 2 probe, not yet proven.
 - [ ] **Author-facing mod types** (ARCHITECTURE §7.3) — `planned`. The generated
       `types/mod.d.ts` is an internal shape guard, not a consumer surface.
       Shipping types needs a ratified choice: either redistribute Anthropic's

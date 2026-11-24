@@ -8,10 +8,18 @@
  * never writes a file itself — one writer per store (D49) stays true, and a
  * refusal is the same typed `InstallCliError` the CLI prints.
  *
- * The route answers only two things:
+ * The route answers only three things:
  *
  *   GET  /anyplugin/installs  what the lock and the enabled layers say today
  *   POST /anyplugin/install   install one plugin from a local directory
+ *   GET  /anyplugin/render    the derived renderer bridge's host-half snapshot
+ *
+ * The render read is the request/response round trip of the bridge built for
+ * #281 slice 1 (S25 primitive 6): the browser half polls this route, the host
+ * half answers from the `anypluginRenderer` registry the mod host's materializer
+ * contributes to, and every face it serves is class `derived` with its reason
+ * in `renderer-faces.js`. This route draws nothing, paces nothing and owns no
+ * layout — it normalises and caps data (`renderer.ts`).
  *
  * The request comes from a browser, so the trust boundary is narrow: the only
  * client input is a path, the path is read through `installPlugin` (realpath,
@@ -23,6 +31,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+
+import { rendererPayloadOf, RENDERER_PATH } from './renderer.ts'
 
 export interface PanelConfig {
   /** The lock file. Default `$DSH_HOME/anyplugin/installs.yml`. */
@@ -37,6 +47,12 @@ export interface PanelConfig {
    * name, so a browser on `http://evil.example` must never match by default.
    */
   allowedHosts?: string[]
+  /**
+   * The derived renderer bridge's host-half reader. The controller passes the
+   * `anypluginRenderer` registry's normalised snapshot; absent means no
+   * producer is attached yet and the route serves an empty payload.
+   */
+  renderer?: () => unknown
 }
 
 const PREFIX = '/anyplugin'
@@ -281,9 +297,22 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * The render read: the registry's normalised snapshot, or the empty shape when
+ * no producer is attached. A reader that throws becomes a 500 with its reason —
+ * a broken bridge must be visible in the pane, not silently empty.
+ */
+function render(config: PanelConfig): Response {
+  if (config.renderer === undefined) return json(rendererPayloadOf(undefined))
+  try {
+    return json(config.renderer())
+  } catch (error) {
+    return json({ ok: false, code: 'render-failed', reason: error instanceof Error ? error.message : String(error) }, 500)
+  }
+}
+
 /** One Fetch request in, one Fetch response out; the host's resource route uses this directly. */
-export async function dispatchPanel(request: Request, config: PanelConfig = {}): Promise<Response> {
-  const url = new URL(request.url, 'http://anyplugin.invalid')
+export async function dispatchPanel(request: Request, config: PanelConfig = {}): Promise<Response> {  const url = new URL(request.url, 'http://anyplugin.invalid')
   const hostRefusal = hostAllowed(request, config)
     ? null
     : json({ ok: false, code: 'host-not-allowed', reason: 'the panel answers loopback hosts only' }, 403)
@@ -291,6 +320,13 @@ export async function dispatchPanel(request: Request, config: PanelConfig = {}):
     if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD')
     if (hostRefusal !== null) return hostRefusal
     return list(config)
+  }
+  if (url.pathname === RENDERER_PATH) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD')
+    if (hostRefusal !== null) return hostRefusal
+    const answer = render(config)
+    // HEAD carries the same status and headers but no body.
+    return request.method === 'HEAD' ? new Response(null, { status: answer.status, headers: answer.headers }) : answer
   }
   if (url.pathname === INSTALL) {
     if (request.method !== 'POST') return methodNotAllowed('POST')

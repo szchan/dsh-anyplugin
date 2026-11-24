@@ -201,9 +201,11 @@ at a build step:
   `ctx.inject(['webServer'], …)` before the lock check, so the panel mounts
   whenever the profile has a web server and a fresh profile (no `installs.yml`
   yet) can install its first plugin from it; a headless profile never
-  activates the injection. It registers `GET /anyplugin/installs` (a
-  `webServer` resource) and `POST /anyplugin/install` (a full-lifecycle
-  handler). The list re-reads `installs.yml` and the enablement layers on every
+  activates the injection. When mounted, the panel registers `GET
+  /anyplugin/installs` (a `webServer` resource), `POST /anyplugin/install` (a
+  full-lifecycle handler) and `GET /anyplugin/render` (the derived renderer
+  bridge's request/response read, below). The list re-reads `installs.yml` and
+  the enablement layers on every
   request through `listPlugins`. The mutation calls `dsh-anyplugin/install` —
   the same `installPlugin` the CLI calls (D49) — so the manifest, version,
   compile and grant checks are the CLI's. The client's path is the only field
@@ -228,6 +230,20 @@ at a build step:
   renders into the `settings.section` slot. S21 (§10) proves the host composes
   the boot row and serves that shape without a harness rebuild at both pins;
   registration and rendering were exercised against stubs, not a real browser.
+  The same bundle also carries the derived renderer bridge (#281 slice 1):
+  `src/client/renderer.js` translates a small element tree into React,
+  registers a pane into the keyed `main` slot and one additive line into
+  `shell.overlay`, paces its own redraws with `requestAnimationFrame`,
+  measures its own box with `ResizeObserver`, keeps focus inside its subtree
+  and registers one declarable command through `ctx.shortcuts` (§7.3, §8,
+  D91). The pane's data comes from `GET /anyplugin/render`, which the host
+  half answers from the controller's `anypluginRenderer` registry; the
+  materialiser's headless `mod_ui` snapshot is registered as one source, so
+  the read is a request/response round trip over the same loopback route, not
+  a second event path. Every face the bridge serves is class `derived` with
+  its reason written at the source (`src/renderer-faces.js`); the element
+  vocabulary is deliberately four tags (`Box`, `Text`, `Button`, `Input`) and
+  every other pinned tag is refused by name.
 
 There is nothing to opt into beyond installing `dsh-anyplugin`: the row that
 reconciles the lock is the row that mounts the panel. The root tarball ceiling
@@ -1020,8 +1036,27 @@ What a faithful host needs, in dependency order:
    unmapped), and `ui.render` for the other components (`ToolUse`,
    `ContextMenu`, …) is planned. `isPlaced: false` means open but never drawn
    (a first draw that produced no tree); a later invalid redraw keeps the last
-   good tree and its revision. Drawing, host-owned layout, focus routing and
-   `invalidate` throttling are still ahead. Two behaviours are `derived` because
+   good tree and its revision. Drawing is partially served against a declared
+   limit: the derived renderer bridge (#281 slice 1, D91) mounts a keyed `main`
+   pane and an additive `shell.overlay` line from our client bundle and draws a
+   Pane tree translated into React for four tags — `Box`, `Text`, `Button`,
+   `Input` — with every served face class `derived` and its reason written at
+   the source (`packages/dsh-anyplugin-install/src/renderer-faces.js`). The
+   reasons are measured, not stylistic: the host hands a keyed seat no geometry
+   (S25 primitive 4), has no focus primitive (S25 primitive 3) and no
+   invalidate/pacing API (S25 primitive 5), and the pin's `press` stamps are
+   recorded as data with no dispatch, so no button or input press round-trips to
+   a mod callback. Geometry is the pane's own `ResizeObserver` measurement,
+   pacing is the page realm's `requestAnimationFrame`, focus is kept inside the
+   pane's own subtree (not routed by the host), and the keyboard path is one
+   declarable command through `ctx.shortcuts`. The four-tag vocabulary is
+   deliberate: every other pinned tag is refused by name (`element.unsupported`)
+   instead of guessed, and the pane states the vocabulary and its face lines.
+   Host-owned layout, host-level focus routing, host `invalidate` throttling and
+   the other 19 of 20 render sites stay `planned` (slice 3); the mount in a real
+   browser/Electron renderer, including Desktop's `file://` + IPC transport, is
+   not proven yet (slice 2 probe, S25 ran jsdom and the loopback probe did not
+   touch that transport). Two host-side behaviours are `derived` because
    this host has no drawing engine: the refusal sentence is ours (the pin draws
    the engine's own component instead) and an invalid redraw keeps the last
    good tree;
@@ -1498,6 +1533,7 @@ run degraded *by design*.
 | shell env PATH | managed-env `register()` accepts a `PATH` key (S19: it does not) | `bin` planned: no managed-env contribution; only a divergent per-call `tools/pre-execute` rewrite |
 | notification channel | present | `monitor` unsupported |
 | theme `ctx.theme` | present | alias-token CSS themes; the terminal consumes two mapped roles (fg/bg); no ANSI-16 palette (F2 `planned`, D74) |
+| client render surface (keyed `main` + `shell.overlay`) | S25 measured at 0.2.2-rc.2 and 0.2.2-rc.5: `dsh-client-ui-layout` declares `'main': { kind: 'keyed', scope: 'root' }` and `'shell.overlay': { kind: 'list', scope: 'root' }`, and `AppFrame` renders both outlets; a same-origin client bundle registers through `ctx.slots.inject`/`register`, but the seat gives a React component only — no container/DOM node prop, no geometry, no focus primitive, no invalidate/pacing API, and the pin's `press` stamps are data with no dispatch | the derived renderer bridge mounts a pane and one overlay line only when the slots exist; a missing seat degrades to no bridge while the settings panel and the controller still load; geometry/pacing/focus are then the pane's own page-realm fallbacks, never a host claim (D91) |
 | dynamic package runner | present | `planned`/`mod` unavailable as well |
 
 ### The repository guard: a consumer of the two seams

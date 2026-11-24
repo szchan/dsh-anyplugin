@@ -1622,6 +1622,30 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
     }
   })
 
+  // The derived renderer bridge (#281 slice 1): the same `readUi` snapshot is
+  // also offered as a *render source* to the controller's optional
+  // `anypluginRenderer` registry, which is what the panel's loopback read route
+  // answers from. This half stays transport-free: it publishes data and knows
+  // nothing about HTTP, React or layout. Optional by design — an embedder with
+  // no registry still gets `mod_ui` and pays nothing. The source lives as long
+  // as this plugin fiber: the registry's disposer is this effect's cleanup, so
+  // unloading the mods removes the producer instead of leaving a stale one.
+  const rendererRegistryOf = (): { register: (source: () => unknown) => unknown } | undefined => {
+    const direct = (ctx as { anypluginRenderer?: unknown }).anypluginRenderer
+    if (isRecord(direct) && typeof direct.register === 'function') return direct as { register: (source: () => unknown) => unknown }
+    const get = (ctx as { get?: unknown }).get
+    if (typeof get !== 'function') return undefined
+    const viaGet = (get as (name: string) => unknown)('anypluginRenderer')
+    if (isRecord(viaGet) && typeof viaGet.register === 'function') return viaGet as { register: (source: () => unknown) => unknown }
+    return undefined
+  }
+  ctx.effect(() => {
+    const registry = rendererRegistryOf()
+    if (registry === undefined) return () => {}
+    const dispose = registry.register(() => readUi({}))
+    return typeof dispose === 'function' ? (dispose as () => void) : () => {}
+  })
+
   // A `ui.render`/`ui.resolve` dispatch is a chain on the one kernel, not a
   // second event path (AGENTS §3.6, D32): `ui.render` is a `$` member, not a
   // host event, so the adapter never maps it — the sink asks here, and this

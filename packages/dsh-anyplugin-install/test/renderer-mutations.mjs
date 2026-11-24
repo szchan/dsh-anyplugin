@@ -1,0 +1,176 @@
+#!/usr/bin/env node
+/**
+ * The derived renderer bridge's mutations, as a runnable audit rather than a
+ * claim in a PR.
+ *
+ * Each entry breaks exactly one property `renderer.test.mjs` asserts, runs that
+ * test file, and requires the run to fail. A mutation that stays green means
+ * the test is not proving that property. The files here are plain modules the
+ * test imports directly, so no bundle rebuild is needed; every mutated file is
+ * restored in `finally`.
+ *
+ *   node packages/dsh-anyplugin-install/test/renderer-mutations.mjs
+ *
+ * This file deliberately does not match `*.test.mjs`: it mutates the working
+ * tree, so it must not run inside `npm test`.
+ */
+import { execFileSync } from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+const FACES = 'packages/dsh-anyplugin-install/src/renderer-faces.js'
+const CLIENT = 'packages/dsh-anyplugin-install/src/client/renderer.js'
+const HOST = 'packages/dsh-anyplugin-install/src/renderer.ts'
+const PANEL = 'packages/dsh-anyplugin-install/src/panel.ts'
+const TEST = 'packages/dsh-anyplugin-install/test/renderer.test.mjs'
+
+function replaceOnce(text, find, replacement, occurrence = 0) {
+  let index = -1
+  for (let seen = 0; seen <= occurrence; seen += 1) {
+    index = text.indexOf(find, index + 1)
+    if (index === -1) throw new Error(`mutation anchor not found (occurrence ${occurrence}): ${find.slice(0, 60)}`)
+  }
+  return text.slice(0, index) + replacement + text.slice(index + find.length)
+}
+
+const MUTANTS = [
+  {
+    name: 'claim one served face is equivalent instead of derived',
+    file: FACES,
+    find: "    class: 'derived',\n    reason:\n      'registered into the host layout",
+    replacement: "    class: 'equivalent',\n    reason:\n      'registered into the host layout",
+  },
+  {
+    name: 'ship a face with an empty reason',
+    file: FACES,
+    find: 'export const RENDERER_FACES = Object.freeze([\n',
+    replacement: "export const RENDERER_FACES = Object.freeze([\n  Object.freeze({ face: 'mutant', class: 'derived', reason: '' }),\n",
+  },
+  {
+    name: 'widen the vocabulary to a fifth pinned tag',
+    file: FACES,
+    find: "export const ELEMENT_VOCABULARY = Object.freeze(['Box', 'Text', 'Button', 'Input'])",
+    replacement: "export const ELEMENT_VOCABULARY = Object.freeze(['Box', 'Text', 'Button', 'Input', 'Select'])",
+  },
+  {
+    name: 'translate an unknown tag instead of naming it unsupported',
+    file: CLIENT,
+    find: '    if (!ELEMENT_VOCABULARY.includes(node.type)) {',
+    replacement: '    if (false && !ELEMENT_VOCABULARY.includes(node.type)) {',
+  },
+  {
+    name: 'run paced work immediately instead of on a frame',
+    file: CLIENT,
+    find: '      pending = true\n      frame(flush)',
+    replacement: '      pending = true\n      flush()',
+  },
+  {
+    name: 'measure synchronously on every observation instead of inside the paced callback',
+    file: CLIENT,
+    find: '  const observer = new Observer(() => {\n    pacer.schedule(measure)\n  })',
+    replacement: '  const observer = new Observer(() => {\n    measure()\n  })',
+  },
+  {
+    name: 'record focus from outside the pane subtree',
+    file: CLIENT,
+    find: '    if (contains(target)) last = target',
+    replacement: '    last = target',
+  },
+  {
+    name: 'accept a failed round trip as a good snapshot',
+    file: CLIENT,
+    find: '      if (response.ok !== true || isRecord(body) === false || body.ok !== true) {',
+    replacement: '      if (false) {',
+  },
+  {
+    name: 'let a throwing render source vanish without a refusal',
+    file: HOST,
+    find: '        } catch (error) {\n          refusals.push({',
+    replacement: '        } catch (error) {\n          if (false) refusals.push({',
+  },
+  {
+    name: 'drop the pane wire-budget refusal',
+    file: HOST,
+    find: '    if (bytes > paneBytes) {',
+    replacement: '    if (false && bytes > paneBytes) {',
+  },
+  {
+    name: 'let POST through the render read route',
+    file: PANEL,
+    find: "  if (url.pathname === RENDERER_PATH) {\n    if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD')",
+    replacement: "  if (url.pathname === RENDERER_PATH) {\n    if (false) return methodNotAllowed('GET, HEAD')",
+  },
+  {
+    name: 'answer a throwing renderer with an empty 200 instead of a 500',
+    file: PANEL,
+    find: "    return json({ ok: false, code: 'render-failed', reason: error instanceof Error ? error.message : String(error) }, 500)",
+    replacement: '    return json(rendererPayloadOf(undefined))',
+  },
+  {
+    name: 'send a HEAD body',
+    file: PANEL,
+    find: '    return request.method === '
+      + "'HEAD' ? new Response(null, { status: answer.status, headers: answer.headers }) : answer",
+    replacement: '    return answer',
+  },
+  {
+    name: 'drop the refresh from the keyboard command',
+    file: CLIENT,
+    find: '        focus()\n        if (store !== null && store !== undefined && typeof store.refresh === \'function\') store.refresh()',
+    replacement: '        focus()',
+  },
+  {
+    name: 'register the keyboard command under a different id',
+    file: CLIENT,
+    find: "    id: 'anyplugin.renderer.request',",
+    replacement: "    id: 'anyplugin.renderer.other',",
+  },
+]
+
+const originals = new Map()
+for (const file of new Set(MUTANTS.map((mutant) => mutant.file))) {
+  originals.set(file, readFileSync(join(REPO, file), 'utf8'))
+}
+
+const restore = () => {
+  for (const [file, text] of originals) writeFileSync(join(REPO, file), text)
+}
+
+const testFails = () => {
+  try {
+    execFileSync(process.execPath, ['--experimental-vm-modules', '--test', TEST], {
+      cwd: REPO,
+      stdio: 'pipe',
+      env: process.env,
+    })
+    return false
+  } catch {
+    return true
+  }
+}
+
+let survived = 0
+try {
+  for (const mutant of MUTANTS) {
+    const original = originals.get(mutant.file)
+    writeFileSync(join(REPO, mutant.file), replaceOnce(original, mutant.find, mutant.replacement))
+    const killed = testFails()
+    if (killed) {
+      console.log(`killed: ${mutant.name}`)
+    } else {
+      survived += 1
+      console.log(`SURVIVED: ${mutant.name} (${mutant.file})`)
+    }
+  }
+} finally {
+  restore()
+}
+
+if (survived > 0) {
+  console.error(`${survived} mutant(s) stayed green; the tests do not prove those properties`)
+  process.exitCode = 1
+} else {
+  console.log(`all ${MUTANTS.length} mutants killed`)
+}

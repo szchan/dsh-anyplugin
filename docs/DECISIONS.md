@@ -4256,3 +4256,72 @@ folded block as current, and still refuses a changed, a duplicated or an
 unreadable one` in `packages/dsh-anyplugin-guard/test/guard.test.mjs` (91 guard
 tests), with `verify` on the merge head.
 
+## D91 — a derived renderer bridge, not a second drawing engine
+
+**Decided 2026-11-24** (#281, slice 1 of #170's direction; S25 = #280).
+
+The mod host's element runtime is a headless sink: it validates and keeps the
+latest Pane tree per pane but draws nothing (D44). The client seam S25 measured
+offers a keyed `main` pane and an additive `shell.overlay` line, a same-origin
+client bundle, declarable keyboard commands and a page-realm `requestAnimationFrame`
+— and no geometry prop, no focus primitive and no host invalidate/pacing API.
+The direction agreed in #281 is option (b): draw foreign Pane trees inside our
+own client bundle, and classify the result honestly.
+
+1. **The bridge is `derived`, never `equivalent`.** Every face it serves is
+   classified at the source in `packages/dsh-anyplugin-install/src/renderer-faces.js`
+   with a non-empty reason; the table is the one source of truth shared by the
+   browser half, the host half and the tests. Reasons name the S25 measurement
+   they rest on (no geometry prop, no focus primitive, no host pacing, the pin's
+   `press` stamps recorded as data) and what S25 did not prove (Desktop
+   `file://` + IPC transport). Reclassifying a face requires editing that file
+   and a new decision entry.
+2. **Mount additively.** The client bundle registers a pane into `main` (keyed,
+   `key: 'anyplugin.renderer'`) and one line into `shell.overlay`, each through
+   `ctx.slots.inject` so a fresh SlotCore does not throw, and each guarded so a
+   missing seat degrades to no bridge while the settings panel and the
+   controller still load. The keyboard path is one declarable command through
+   `ctx.shortcuts`; there is no second event path.
+3. **The element vocabulary is deliberately four tags: `Box`, `Text`, `Button`,
+   `Input`.** The pin's Pane trees can carry twelve to sixteen tags; every tag
+   outside the vocabulary is refused by name (`element.unsupported`) instead of
+   guessed, and every prop the translator cannot serve is reported as lost
+   through `onLost`. `Button`/`Input` are drawn faces only: the pin stamps their
+   press members as data handles and no press is dispatched, so nothing
+   round-trips to a mod callback.
+4. **The round trip is our own host half, not a new transport.**
+   `GET /anyplugin/render` answers from the controller's provided
+   `anypluginRenderer` registry; the materialiser registers its headless `mod_ui`
+   snapshot as one source under its own effect. The read is loopback-only and
+   bounded (64 panes, 96 KiB per tree, a tree over budget becomes a named
+   `pane-too-large` refusal), and a throwing source or reader is visible as a
+   refusal/500 rather than silently empty.
+5. **The tarball ceiling moves from 193 KiB to 205 KiB (209,920 bytes).** The
+   bridge ships in the same single tarball's client half (D77), not a second
+   package: `lib/client.js` grows by the translator, pacer, geometry probe,
+   focus guard, snapshot store and two React seats, and the packed size measures
+   205,818 bytes (201.0 KiB) in CI `check:pack` (+9,826 bytes on D77). The
+   ceiling is the measured cost plus one doc paragraph. The mods kernel ceiling
+   (D46) is untouched at its 128 KiB; the measured kernel stays 115,532 bytes.
+
+**Not claimed.** This is not the pin's drawing engine and nothing here is
+`equivalent`: host-owned layout, host-level focus routing, host `invalidate`
+throttling and the other 19 of 20 render sites stay `planned` (slice 3); the
+bridge's mount in a real browser/Electron renderer, including Desktop's
+`file://` + IPC transport, is a separate probe (slice 2) and is not proven by
+this decision; S25 ran a jsdom page and the loopback probe did not touch that
+transport. No button or input press is dispatched, and the four-tag vocabulary
+is a stated limit rather than a roadmap promise.
+
+**Evidence.** `packages/dsh-anyplugin-install/test/renderer.test.mjs` (24 tests:
+face classes and reasons, the four-tag vocabulary, translation and lost props,
+depth/node caps, pacer coalescing, paced `ResizeObserver` geometry, subtree-only
+focus, the round-trip store incl. failure visibility, registry merge/refusal/pane
+budget, the `/anyplugin/render` route incl. HEAD and the loopback host gate, the
+real `createUiSink` → registry → store end-to-end paint, and the keyboard
+command); `packages/dsh-anyplugin-install/test/renderer-mutations.mjs` kills all
+15 single-property mutants; `packages/dsh-anyplugin-install/test/panel.test.mjs`
+still proves the settings half and now the three registrations, the command and
+their disposal; the packed size comes from CI `check:pack`. Basis: S25 at
+0.2.2-rc.2 and 0.2.2-rc.5 (`spikes/s25-client-surface`, PR #287), Claude Code
+pin 2.1.329.
