@@ -4300,7 +4300,7 @@ own client bundle, and classify the result honestly.
    bridge ships in the same single tarball's client half (D77), not a second
    package: `lib/client.js` grows by the translator, pacer, geometry probe,
    focus guard, snapshot store and two React seats, and the packed size measures
-   205,818 bytes (201.0 KiB) in CI `check:pack` (+9,826 bytes on D77). The
+   205,865 bytes (201.0 KiB) in CI `check:pack` (+9,873 bytes on D77). The
    ceiling is the measured cost plus one doc paragraph. The mods kernel ceiling
    (D46) is untouched at its 128 KiB; the measured kernel stays 115,532 bytes.
 
@@ -4325,3 +4325,4 @@ still proves the settings half and now the three registrations, the command and
 their disposal; the packed size comes from CI `check:pack`. Basis: S25 at
 0.2.2-rc.2 and 0.2.2-rc.5 (`spikes/s25-client-surface`, PR #287), Claude Code
 pin 2.1.329.
+

@@ -1630,13 +1630,36 @@ export async function apply(ctx: any, config: Config = {}): Promise<void> {
   // no registry still gets `mod_ui` and pays nothing. The source lives as long
   // as this plugin fiber: the registry's disposer is this effect's cleanup, so
   // unloading the mods removes the producer instead of leaving a stale one.
+  //
+  // Read the optional service the Cordis way. A real context's proxy *throws*
+  // on a property read the fiber did not inject (`cannot get property
+  // "anypluginRenderer" without inject`), so probing `ctx.anypluginRenderer`
+  // directly takes the whole materializer child down on its first load:
+  // `ctx.get` is the supported read and needs no inject. The registry is
+  // optional by design, so a throwing probe degrades to "no source" instead of
+  // failing the child; the direct read stays only for plain embedder context
+  // objects that are not Cordis proxies.
   const rendererRegistryOf = (): { register: (source: () => unknown) => unknown } | undefined => {
-    const direct = (ctx as { anypluginRenderer?: unknown }).anypluginRenderer
-    if (isRecord(direct) && typeof direct.register === 'function') return direct as { register: (source: () => unknown) => unknown }
-    const get = (ctx as { get?: unknown }).get
-    if (typeof get !== 'function') return undefined
-    const viaGet = (get as (name: string) => unknown)('anypluginRenderer')
-    if (isRecord(viaGet) && typeof viaGet.register === 'function') return viaGet as { register: (source: () => unknown) => unknown }
+    try {
+      const get = (ctx as { get?: unknown }).get
+      if (typeof get === 'function') {
+        const viaGet = (get as (name: string) => unknown)('anypluginRenderer')
+        if (isRecord(viaGet) && typeof viaGet.register === 'function') {
+          return viaGet as { register: (source: () => unknown) => unknown }
+        }
+      }
+    } catch {
+      // The service is optional; an embedder without it pays nothing.
+    }
+    try {
+      const direct = (ctx as { anypluginRenderer?: unknown }).anypluginRenderer
+      if (isRecord(direct) && typeof direct.register === 'function') {
+        return direct as { register: (source: () => unknown) => unknown }
+      }
+    } catch {
+      // A Cordis proxy refuses uninjected property reads; ctx.get above is the
+      // supported path, so there is nothing left to try.
+    }
     return undefined
   }
   ctx.effect(() => {

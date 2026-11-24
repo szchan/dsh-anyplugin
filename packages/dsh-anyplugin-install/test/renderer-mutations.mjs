@@ -25,6 +25,8 @@ const CLIENT = 'packages/dsh-anyplugin-install/src/client/renderer.js'
 const HOST = 'packages/dsh-anyplugin-install/src/renderer.ts'
 const PANEL = 'packages/dsh-anyplugin-install/src/panel.ts'
 const TEST = 'packages/dsh-anyplugin-install/test/renderer.test.mjs'
+const HOOK = 'packages/dsh-anyplugin-materialize-hook/src/index.ts'
+const HOOK_TEST = 'packages/dsh-anyplugin-materialize-hook/test/ui-tool.test.mjs'
 
 function replaceOnce(text, find, replacement, occurrence = 0) {
   let index = -1
@@ -127,6 +129,21 @@ const MUTANTS = [
     find: "    id: 'anyplugin.renderer.request',",
     replacement: "    id: 'anyplugin.renderer.other',",
   },
+  {
+    // The bridge's optional-service read once took a real Cordis context down:
+    // a direct property probe throws `cannot get property "anypluginRenderer"
+    // without inject`, so the materializer child never became active (install
+    // smoke). The mutant restores that reach-in ahead of ctx.get; the fake ctx
+    // in ui-tool.test.mjs models the refusal.
+    name: 'probe the optional service as a bare context property before ctx.get',
+    file: HOOK,
+    test: HOOK_TEST,
+    find: '    try {\n      const get = (ctx as { get?: unknown }).get',
+    replacement:
+      '    try {\n      const first = (ctx as { anypluginRenderer?: unknown }).anypluginRenderer\n'
+      + '      if (first !== undefined) return first as { register: (source: () => unknown) => unknown }\n'
+      + '      const get = (ctx as { get?: unknown }).get',
+  },
 ]
 
 const originals = new Map()
@@ -138,9 +155,9 @@ const restore = () => {
   for (const [file, text] of originals) writeFileSync(join(REPO, file), text)
 }
 
-const testFails = () => {
+const testFails = (mutant) => {
   try {
-    execFileSync(process.execPath, ['--experimental-vm-modules', '--test', TEST], {
+    execFileSync(process.execPath, ['--experimental-vm-modules', '--test', mutant.test ?? TEST], {
       cwd: REPO,
       stdio: 'pipe',
       env: process.env,
@@ -156,7 +173,7 @@ try {
   for (const mutant of MUTANTS) {
     const original = originals.get(mutant.file)
     writeFileSync(join(REPO, mutant.file), replaceOnce(original, mutant.find, mutant.replacement))
-    const killed = testFails()
+    const killed = testFails(mutant)
     if (killed) {
       console.log(`killed: ${mutant.name}`)
     } else {

@@ -43,7 +43,7 @@ const notes = []
  * own 64 KiB budget. D91 adds the derived renderer bridge (#281 slice 1): the
  * client half grows lib/client.js by the translator, the pacer, the geometry
  * probe, the focus guard, the snapshot store and the two React seats, and the
- * packed size measures 205,818 bytes (201.0 KiB) in CI check:pack (+9,826
+ * packed size measures 205,865 bytes (201.0 KiB) in CI check:pack (+9,873
  * bytes on D77). The ceiling moves to 205 KiB — the measured cost plus one doc
  * paragraph of headroom; the bridge is the same tarball's client half, not a
  * second package.
