@@ -171,7 +171,7 @@ The panel moves the packed size from D71's 190,257 bytes to 195,992 bytes (191.4
 The agent model map (D91) raises the ceiling again to 200 KiB (D92): the same
 tarball carries the map resolver in `lib/index.js`, `lib/cli.js` and
 `lib/materialize/agents.js`, and `npm pack` measures 202,134 bytes in CI
-`check:pack`.
+`check:pack`, +6,114 on the 196,020-byte merge base (`main` at `6855a57`).
 Since 0.2.0 the published `lib/materialize/hook.js` also carries the mods
 kernel and the two Babel packages it needs for the one classic-pragma
 transform (`D34`; §7.8).

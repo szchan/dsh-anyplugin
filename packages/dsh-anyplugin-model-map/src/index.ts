@@ -431,15 +431,20 @@ export async function resolveModelRoute(
       gaps.push(`the catalog cannot report reasoning efforts; dropped effort "${route.effort}" rather than send an unverified id`)
     } else {
       let advertised: string[] | undefined
+      let confirmed = false
       try {
         const info = await catalog.resolveModelInfo(selected, route.model, options.signal)
         advertised = info.reasoning?.efforts?.map((candidate) => candidate.id)
+        confirmed = true
       } catch (error) {
         gaps.push(
           `could not confirm whether provider "${selected}" advertises effort "${route.effort}" for "${route.model}" (${messageOf(error)}); dropped the effort rather than risk an unknown reasoning-effort id`,
         )
       }
-      if (advertised === undefined && gaps.length === 0) {
+      // The no-reasoning gap must not depend on `gaps.length`: an unrelated
+      // provider failing earlier in the walk would otherwise make the dropped
+      // effort silent.
+      if (confirmed && advertised === undefined) {
         gaps.push(`provider "${selected}" reports no reasoning efforts for "${route.model}"; dropped effort "${route.effort}"`)
       } else if (advertised !== undefined) {
         if (advertised.includes(route.effort)) effort = route.effort

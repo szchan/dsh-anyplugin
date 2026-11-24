@@ -296,6 +296,34 @@ test('an effort that cannot be confirmed is dropped rather than guessed', async 
   assert.ok(failed.gaps.some((gap) => /effort/.test(gap)))
 })
 
+test('a provider that reports no reasoning efforts drops the effort visibly even after another provider fails', async () => {
+  // Regression: the gap used to require `gaps.length === 0`, so an unrelated
+  // catalog failure earlier in the provider walk made the dropped effort
+  // silent — the returned route lost its effort with nothing logged.
+  const llm = {
+    listProviders: () => [
+      { id: 'broken-provider', name: 'broken-provider' },
+      { id: 'deepseek-account', name: 'deepseek-account' },
+    ],
+    listModels: async (provider) => {
+      if (provider === 'broken-provider') throw new Error('catalog unavailable for broken-provider')
+      return [{ provider, id: 'deepseek-flash', name: 'deepseek-flash' }]
+    },
+    resolveModelInfo: async (provider, model) => ({ provider, id: model, name: model }),
+  }
+  const resolution = await resolveModelRoute(
+    llm,
+    { provider: 'deepseek-account', model: 'deepseek-flash', effort: 'high' },
+    { sessionProvider: 'broken-provider' },
+  )
+  assert.equal(resolution.forward, true)
+  assert.equal(resolution.effort, undefined)
+  assert.equal(resolution.gaps.length, 2)
+  assert.match(resolution.gaps[0], /did not expose a model catalog/)
+  assert.match(resolution.gaps[1], /reports no reasoning efforts/)
+  assert.match(resolution.gaps[1], /dropped effort "high"/)
+})
+
 test('an unknown effort name is never sent to the catalog and never forwarded', async () => {
   const llm = catalog({
     providers: ['deepseek-account'],

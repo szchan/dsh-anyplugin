@@ -4326,9 +4326,12 @@ route when the map does not confirm a model id.
 resolver, its strict document validator and its `get`/`set`/`reset` paths to
 the root package's shipped `lib/`; `npm pack` measures the registry tarball at
 **202134 bytes (197.4 KiB)** in CI `check:pack`, above D77's 197632-byte
-(193 KiB) ceiling — 6142 bytes more than D77's measurement. The ceiling moves
-to **200 KiB (204800 bytes)**, leaving 2666 bytes of headroom; D46's separate
-128 KiB kernel ceiling is unchanged.
+(193 KiB) ceiling. The delta is **6114 bytes**, not 6142: the merge base this
+branch adds to (`main` at `6855a57`) measures **196020 bytes** in CI
+`check:pack` (run 45269811343), 28 bytes above D77's 195992-byte measurement,
+which predates this branch. The ceiling moves to **200 KiB (204800 bytes)**,
+leaving 2666 bytes of headroom; D46's separate 128 KiB kernel ceiling is
+unchanged.
 
 1. **The cost is the shipped surface, not the source tree.** The
    `dsh-anyplugin-model-map` module is bundled into `lib/index.js`, `lib/cli.js`
@@ -4338,8 +4341,9 @@ to **200 KiB (204800 bytes)**, leaving 2666 bytes of headroom; D46's separate
    payload materially.
 2. **The map has to ship.** Without it the dialect cannot annotate `model` and
    `effort` `derived`, `report` cannot print `effectiveMapping`, and the
-   materializer cannot forward a catalog-confirmed route. A second package or
-   an install-time fetch would be a second install surface for less than 6 KiB.
+   materializer cannot forward a catalog-confirmed route. A second published
+   package or an install-time fetch would be a second install surface for less
+   than 6 KiB.
 3. **A budget raise is a decision, not a silent drift.** The next raise cites
    its measured byte count and the feature that caused it, as D65, D71, D77 and
    this entry do. D62's "a ceiling is not raised to fit a feature" stands for
@@ -4351,3 +4355,4 @@ to **200 KiB (204800 bytes)**, leaving 2666 bytes of headroom; D46's separate
 **Consequences.** `scripts/check-pack.mjs` carries the new constant and the
 measured byte count in its comment, and `docs/ARCHITECTURE.md` §2 records the
 move. No dependency, pin, workflow or kernel limit moved.
+

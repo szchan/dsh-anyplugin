@@ -122,7 +122,12 @@ export interface TransplantReport {
    * The model map the agent `model`/`effort` faces were annotated against
    * (D91): the shipped defaults merged with the user document, with provenance
    * and validation problems. The same document the materializer resolves at
-   * run time, so a review sees the policy the IR was built on.
+   * run time, so a review sees the policy in force.
+   *
+   * Known gap: the IR does not record the map it was annotated against.
+   * `report <plugin-dir>` annotates and reports in one run, but `report --ir`
+   * loads the ambient document at report time; the CLI names that in its
+   * preview line rather than presenting it as provenance of the checked IR.
    */
   effectiveMapping: ModelMapReport
 }

@@ -572,7 +572,7 @@ export function agentFaces(
         fidelity: 'unsupported',
         reason:
           `Frontmatter \`effort: ${effortName}\` is not one of the effort ids this layer accepts (${EFFORT_NAMES.join(', ')}). ` +
-          'S16 observed an unadvertised reasoning-effort id fail the child turn, so nothing is forwarded; the agent runs on the mapped model without an effort override.',
+          'S16 observed an unadvertised reasoning-effort id fail the child turn, so the frontmatter effort is not forwarded: the agent runs on the mapped route with that route\'s default effort, and the materializer logs the dropped effort (D91).',
       }
     }
   }

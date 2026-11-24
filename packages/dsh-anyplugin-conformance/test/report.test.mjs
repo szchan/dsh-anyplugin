@@ -113,6 +113,11 @@ test('rig report prints the compile-side report as JSON', () => {
   const report = JSON.parse(result.stdout)
   assert.equal(report.ok, true)
   assert.equal(report.pin.version, CLAUDE_CODE_PIN.version)
+  // A plugin-directory report annotates and reports in one run, so its map is
+  // the map the IR was built against; the `--ir` provenance caveat must not leak
+  // into this path.
+  assert.equal(typeof report.preview, 'string')
+  assert.doesNotMatch(report.preview, /ambient model map/)
   assert.deepEqual(report.totals, { declared: 2, emitted: 2, refused: 0, skipped: 0 })
   assert.deepEqual(
     report.components.map((component) => [component.name, component.class, component.carried]),
@@ -171,6 +176,10 @@ test('rig report fails on an IR that violates the contract', () => {
     const result = runRig(['report', '--ir', irPath])
 
     assert.equal(result.status, 1, result.stderr)
+    // The IR carries no model-map provenance, so the CLI has to say that the
+    // effectiveMapping it prints is the ambient document, not the map this IR
+    // was annotated against (known gap; see report.ts).
+    assert.match(result.stdout, /^preview only: .*--ir: effectiveMapping is the ambient model map at report time/m)
     assert.match(result.stdout, /^skills\/migrate {2}class=planned {2}carry=skipped$/m)
     assert.match(result.stdout, /^skills\/review {2}class=planned {2}carry=emitted$/m)
     assert.match(result.stdout, /^totals: 2 declared, 1 emitted, 0 refused, 1 skipped$/m)

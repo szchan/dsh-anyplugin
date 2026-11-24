@@ -273,15 +273,10 @@ test('a model id no provider advertises is never forwarded; the child starts on 
 })
 
 test('a malformed user document refuses to forward anything, visibly', async () => {
-  const { ctx, tools, warnings } = fakeContext()
-  const malformed = loadEffectiveModelMap({
-    env: { ANYPLUGIN_MODEL_MAP: '/tmp/anyplugin-model-map-test-broken.json' },
-    homedir: '/tmp',
-  })
-  apply(ctx, { plugin: PLUGIN, agents: [MAPPED_SONNET], modelMap: malformed })
-  // Point the loader at a real malformed file by giving the map a document and problem.
-  const broken = { ...malformed, document: '/tmp/anyplugin-model-map-test-broken.json', problems: ['unknown effort "turbo"'] }
-  apply(ctx, { plugin: PLUGIN, agents: [MAPPED_SONNET], modelMap: broken })
+  // No loader call is needed: a map carrying a document plus a problem is what
+  // the materializer refuses, and the shipped defaults carry the rest of the
+  // route this test inspects.
+  const broken = { ...MODEL_MAP, document: '/tmp/anyplugin-model-map-test-broken.json', problems: ['unknown effort "turbo"'] }
   const started = []
   const subagents = {
     startActivation(spec) {
@@ -339,9 +334,12 @@ test('an unknown frontmatter effort keeps the mapped default effort and says so'
   await tools.get(`${PLUGIN}:reviewer`).execute({ prompt: 'review' }, { agent: sessionParent('acme') })
 
   // The shipped sonnet route asks for `high`; `turbo` is not an effort id, so
-  // the mapped effort stays in force rather than being guessed.
+  // the mapped effort stays in force rather than being guessed. The dialect's
+  // reason says the same thing (dialect-claude-code test), so pin the warning
+  // that carries it too.
   assert.equal(started[0].agentOptions.reasoningEffort, 'high')
   assert.ok(warnings.some((warning) => /turbo" is not a provider effort id/.test(warning)))
+  assert.ok(warnings.some((warning) => /the mapped default effort is kept/.test(warning)))
 })
 
 test('a provider that does not accept agentOptions is retried on the session default', async () => {

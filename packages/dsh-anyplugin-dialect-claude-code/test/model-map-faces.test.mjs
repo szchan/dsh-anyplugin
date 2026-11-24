@@ -88,6 +88,13 @@ test('an effort name outside the vocabulary is unsupported and lists what is acc
   assert.equal(agent.faces.effort.fidelity, 'unsupported')
   assert.match(agent.faces.effort.reason, /turbo/)
   for (const effort of EFFORT_NAMES) assert.match(agent.faces.effort.reason, new RegExp(effort))
+  // The materializer drops the unknown name but keeps the mapped route, so it
+  // still forwards that route's default effort (`high` for sonnet; pinned
+  // end-to-end in materialize-agents/test/materialize.test.mjs). The reason has
+  // to describe that, or it drifts from what the child is actually started with.
+  assert.match(agent.faces.effort.reason, /the frontmatter effort is not forwarded/)
+  assert.match(agent.faces.effort.reason, /runs on the mapped route with that route's default effort/)
+  assert.doesNotMatch(agent.faces.effort.reason, /without an effort override/)
 })
 
 test('a malformed user document is unsupported, with the document problem in the reason', () => {

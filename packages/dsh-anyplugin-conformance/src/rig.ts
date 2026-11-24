@@ -464,8 +464,14 @@ export async function main(argv: string[]): Promise<number> {
     })
     // Pass-through by design: `report` reads a plugin directory, not the lock.
     // Say so, so a preview cannot be read as the controller's install decision.
+    // The IR does not record the model map it was annotated against, so `--ir`
+    // resolves the ambient document at report time; name that gap instead of
+    // letting `effectiveMapping` pass for provenance of the checked IR.
     const preview =
-      `preview only: ${PROGRAM} report does not read installs.yml, so "not recorded" is not enforced here (the controller decides at boot)`
+      `preview only: ${PROGRAM} report does not read installs.yml, so "not recorded" is not enforced here (the controller decides at boot)` +
+      (typeof irPath === 'string'
+        ? '; --ir: effectiveMapping is the ambient model map at report time, not the map the IR was annotated against (the IR does not record it)'
+        : '')
     console.log(
       args.options.get('json') === true
         ? JSON.stringify({ preview, ...report }, null, 2)
