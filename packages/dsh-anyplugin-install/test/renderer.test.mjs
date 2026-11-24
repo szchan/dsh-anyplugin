@@ -279,6 +279,30 @@ test('the pacer coalesces a burst to one frame and runs the latest work', () => 
   assert.deepEqual(ran, ['third', 'fourth'])
 })
 
+test('the pacer cancels a queued frame when the pane unmounts', () => {
+  const frames = []
+  const cancelled = []
+  const pacer = createPacer(
+    (run) => {
+      frames.push(run)
+      return frames.length - 1
+    },
+    (handle) => cancelled.push(handle),
+  )
+  let ran = 0
+  pacer.schedule(() => {
+    ran += 1
+  })
+  assert.equal(pacer.pending(), true)
+  assert.equal(pacer.dispose(), true, 'a queued frame is reported as cancelled')
+  assert.deepEqual(cancelled, [0])
+  assert.equal(pacer.pending(), false)
+  // Even if the platform still runs a cancelled frame, nothing is left to do.
+  frames[0]()
+  assert.equal(ran, 0)
+  assert.equal(pacer.dispose(), false, 'disposing with nothing queued is a no-op')
+})
+
 // ---- measured geometry ------------------------------------------------------
 
 test('geometry observes with ResizeObserver but measures inside the paced frame', () => {
@@ -457,6 +481,67 @@ test('a pane tree above the wire budget becomes a named refusal, not a clipped t
   assert.equal(snapshot.panes[0].refusal.code, 'pane-too-large')
 })
 
+test('the pane budget is a byte budget: multibyte text under the code-unit count is still refused', () => {
+  // 40,000 CJK characters are 40,000 UTF-16 code units but 120,000 UTF-8 bytes.
+  // A `JSON.stringify(tree).length` measure accepted this under a 98,304-unit
+  // budget while the wire carried 120,001+ bytes.
+  const multibyte = { type: 'Text', props: { value: '界'.repeat(40000) } }
+  const serialised = JSON.stringify(multibyte)
+  const utf8Bytes = Buffer.byteLength(serialised, 'utf8')
+  assert.ok(serialised.length < MAX_PANE_BYTES, 'the code-unit count is under the cap')
+  assert.ok(utf8Bytes > MAX_PANE_BYTES, 'the byte count is over the cap')
+  const normalized = normalizeRendererPane({ id: 'wide', tree: multibyte })
+  assert.equal(normalized.tree, undefined)
+  assert.equal(normalized.refusal.code, 'pane-too-large')
+  assert.match(normalized.refusal.reason, new RegExp(`${utf8Bytes} bytes`))
+  assert.match(normalized.refusal.reason, new RegExp(`${MAX_PANE_BYTES}-byte wire budget`))
+
+  // The same number of code units in ASCII is accepted, so the test measures
+  // bytes and not non-ASCII-ness.
+  const ascii = normalizeRendererPane({ id: 'narrow', tree: { type: 'Text', props: { value: 'x'.repeat(serialised.length) } } })
+  assert.notEqual(ascii.tree, undefined)
+  assert.equal(ascii.refusal, undefined)
+})
+
+test('a self-cyclic tree is cut by the seen-set instead of overflowing the stack', () => {
+  const cyclic = { type: 'Box', props: {} }
+  cyclic.props.self = cyclic
+  let normalized
+  assert.doesNotThrow(() => {
+    normalized = normalizeRendererPane({ id: 'cyclic', tree: cyclic })
+  })
+  assert.equal(normalized.refusal, undefined, 'the cut tree is small enough for the budget')
+  assert.equal(normalized.tree.type, 'Box')
+  assert.equal(normalized.tree.props.self, undefined, 'the repeated object is dropped at the cycle')
+  assert.ok(JSON.stringify(normalized.tree).length < 200)
+
+  // A DAG is not a cycle: one shared object at two sibling positions survives.
+  const shared = { type: 'Text', children: ['shared'] }
+  const dag = normalizeRendererPane({ id: 'dag', tree: { type: 'Box', children: [shared, shared] } })
+  assert.deepEqual(dag.tree.children, [
+    { type: 'Text', children: ['shared'] },
+    { type: 'Text', children: ['shared'] },
+  ])
+})
+
+test('the live JSON depth cap bounds a deep chain instead of recursing forever', () => {
+  let deep = { leaf: true }
+  for (let index = 0; index < 200; index += 1) deep = { child: deep }
+  let normalized
+  assert.doesNotThrow(() => {
+    normalized = normalizeRendererPane({ id: 'deep', tree: deep })
+  })
+  assert.equal(normalized.refusal, undefined)
+  let level = 0
+  let cursor = normalized.tree
+  while (cursor !== null && typeof cursor === 'object' && cursor.child !== undefined) {
+    level += 1
+    cursor = cursor.child
+  }
+  assert.ok(level <= 64, `a 200-level chain is cut at the live depth cap (got ${level})`)
+  assert.doesNotThrow(() => JSON.stringify(normalized.tree))
+})
+
 test('a malformed or function-bearing pane is reduced to JSON-safe data', () => {
   const registry = createRendererRegistry()
   registry.register(() => ({
@@ -472,6 +557,31 @@ test('a malformed or function-bearing pane is reduced to JSON-safe data', () => 
   assert.equal(snapshot.truncated, true)
   assert.equal(JSON.stringify(snapshot.panes[0].tree).includes('onClick'), false)
   assert.doesNotThrow(() => JSON.stringify(snapshot))
+})
+
+test('the envelope statuses/logs/refusals are JSON-safe and bounded like the panes', () => {
+  const statuses = Array.from({ length: 100 }, (_, index) => `status ${index}`)
+  const cyclicLog = { name: 'cyclic' }
+  cyclicLog.self = cyclicLog
+  const registry = createRendererRegistry({ now: () => 1234 })
+  registry.register(() => ({
+    panes: [],
+    statuses,
+    logs: [{ big: 10n, bad: Number.POSITIVE_INFINITY, fn: () => {} }, cyclicLog, new Error('boom')],
+    refusals: [{ big: 10n, good: 'kept' }],
+  }))
+  const payload = registry.snapshot()
+  assert.equal(payload.statuses.length, 64, 'statuses are bounded per source')
+  assert.equal(payload.statuses[0], 'status 0')
+  assert.doesNotThrow(() => JSON.stringify(payload), 'BigInt, cycles and non-finite numbers are normalised away')
+  assert.equal(payload.logs.length, 3)
+  assert.equal(payload.logs[0].big, undefined)
+  assert.equal(payload.logs[0].fn, undefined)
+  assert.equal(payload.logs[0].bad, null)
+  assert.equal(payload.logs[1].name, 'cyclic')
+  assert.equal(payload.logs[1].self, undefined)
+  assert.deepEqual(payload.refusals, [{ good: 'kept' }])
+  assert.equal(payload.servedAt, 1234, 'servedAt is part of the payload contract')
 })
 
 // ---- the loopback read route ----------------------------------------------
@@ -534,6 +644,67 @@ test('an absent renderer serves sources:0, and a throwing reader is a 500 with i
   assert.equal(brokenBody.ok, false)
   assert.equal(brokenBody.code, 'render-failed')
   assert.match(brokenBody.reason, /reader exploded/)
+})
+
+test('a cyclic pane is a served pane, not a 500, and does not cost the other panes', async () => {
+  const cyclic = { type: 'Box', props: {} }
+  cyclic.props.self = cyclic
+  const registry = createRendererRegistry()
+  registry.register(() => ({
+    panes: [
+      { id: 'cyclic', title: 'Cyclic', tree: cyclic },
+      { id: 'plain', title: 'Plain', tree: { type: 'Text', children: ['plain'] } },
+    ],
+  }))
+  const response = await dispatchPanel(new Request('http://127.0.0.1:4123/anyplugin/render'), { renderer: () => rendererPayloadOf(registry) })
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.panes.map((pane) => pane.id), ['cyclic', 'plain'])
+  assert.equal(body.panes[0].tree.props.self, undefined)
+  assert.doesNotThrow(() => JSON.stringify(body))
+})
+
+test('a pane whose normalisation throws is a recorded refusal while the good panes still serve', async () => {
+  const exploding = { id: 'exploding', title: 'Exploding' }
+  Object.defineProperty(exploding, 'tree', {
+    enumerable: true,
+    get() {
+      throw new TypeError('tree getter exploded')
+    },
+  })
+  const registry = createRendererRegistry()
+  registry.register(() => ({
+    panes: [
+      { id: 'good', title: 'Good', tree: { type: 'Text', children: ['still served'] } },
+      exploding,
+    ],
+  }))
+  const response = await dispatchPanel(new Request('http://127.0.0.1:4123/anyplugin/render'), { renderer: () => rendererPayloadOf(registry) })
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.panes.map((pane) => pane.id), ['good'])
+  assert.equal(body.truncated, true, 'the lost pane is declared, not silent')
+  const refusal = body.refusals.find((entry) => entry.code === 'pane-normalization-failed')
+  assert.ok(refusal, 'the bad pane is recorded, not silently lost')
+  assert.match(refusal.reason, /tree getter exploded/)
+})
+
+test('a source whose envelope throws is a recorded refusal, not a 500', async () => {
+  const registry = createRendererRegistry()
+  registry.register(() => ({
+    get panes() {
+      throw new Error('envelope exploded')
+    },
+  }))
+  registry.register(() => ({ panes: [{ id: 'kept', title: 'Kept' }] }))
+  const response = await dispatchPanel(new Request('http://127.0.0.1:4123/anyplugin/render'), { renderer: () => rendererPayloadOf(registry) })
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.panes.map((pane) => pane.id), ['kept'])
+  assert.ok(body.refusals.some((entry) => entry.code === 'source-malformed' && /envelope exploded/.test(entry.reason)))
 })
 
 // ---- both halves together --------------------------------------------------
@@ -660,6 +831,36 @@ test('the pane measures itself through the page realm and reports the geometry',
   assert.equal(element.props['data-anyplugin-geometry'], '640x200')
 })
 
+test('the focus restore is pinned to a new snapshot, so a plain render cannot steal focus', async () => {
+  const react = hookRuntime()
+  let requests = 0
+  const store = createRendererStore({
+    fetchImpl: async () => {
+      requests += 1
+      return new Response(JSON.stringify({ ok: true, kind: 'anyplugin-renderer', sources: 0, panes: [], truncated: false, vocabulary: [...ELEMENT_VOCABULARY], faces: rendererFaces(), servedAt: 1 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  const bridge = createRendererBridge(react, { store, env: { requestAnimationFrame: (run) => run, document: null } })
+  const { node, focused } = fakeNode()
+  let element = react.render(bridge.Pane)
+  element.props.ref(node)
+  react.flush()
+  assert.deepEqual(focused, ['node'], 'the mount restores focus into the pane once')
+
+  element = react.render(bridge.Pane)
+  react.flush()
+  assert.deepEqual(focused, ['node'], 'a later render with the same snapshot must not run the restore again')
+
+  await store.refresh()
+  assert.equal(requests >= 1, true)
+  element = react.render(bridge.Pane)
+  react.flush()
+  assert.deepEqual(focused, ['node', 'node'], 'a redraw is the only reason to restore focus')
+})
+
 test('the overlay line is an additive click target that requests a fresh snapshot', async () => {
   const react = hookRuntime()
   let requests = 0
@@ -724,4 +925,25 @@ test('keyboard registers one declarable command through ctx.shortcuts and hands 
   const missing = registerRendererKeyboard({}, { store })
   assert.equal(typeof missing, 'function')
   missing()
+
+  // The service is optional and read through ctx.get first: a context that did
+  // not inject `shortcuts` throws on the bare property, and neither read may
+  // abort apply.
+  const viaGet = []
+  const getCtx = {
+    get: (name) => (name === 'shortcuts' ? { register: (command) => { viaGet.push(command); return () => {} } } : undefined),
+    get shortcuts() {
+      throw new Error('shortcuts is not injected')
+    },
+  }
+  registerRendererKeyboard(getCtx, { store })
+  assert.equal(viaGet.length, 1, 'ctx.get is consulted before the bare property')
+  const throwingCtx = {
+    get shortcuts() {
+      throw new Error('shortcuts is not injected')
+    },
+  }
+  const noop = registerRendererKeyboard(throwingCtx, { store })
+  assert.equal(typeof noop, 'function')
+  noop()
 })

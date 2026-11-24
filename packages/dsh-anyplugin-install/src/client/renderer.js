@@ -397,16 +397,21 @@ const inputStyle = (props) => ({
 
 /**
  * Coalesce redraws to one callback per animation frame. `schedule` keeps the
- * latest work item and requests exactly one frame until it runs. This is the
- * page realm's own pacing (S25 primitive 5) — it is *not* the host's invalidate
- * pacing, which has no exposed API.
+ * latest work item and requests exactly one frame until it runs; `dispose`
+ * cancels that frame, so a pane that unmounted cannot measure a detached node
+ * or set state after its tree is gone. This is the page realm's own pacing
+ * (S25 primitive 5) — it is *not* the host's invalidate pacing, which has no
+ * exposed API.
  */
-export function createPacer(requestFrame) {
+export function createPacer(requestFrame, cancelFrame) {
   const frame = typeof requestFrame === 'function' ? requestFrame : (run) => run()
+  const cancel = typeof cancelFrame === 'function' ? cancelFrame : null
   let queued = null
   let pending = false
+  let handle = null
   const flush = () => {
     pending = false
+    handle = null
     const run = queued
     queued = null
     if (typeof run === 'function') run()
@@ -416,10 +421,19 @@ export function createPacer(requestFrame) {
       queued = run
       if (pending) return false
       pending = true
-      frame(flush)
+      handle = frame(flush)
       return true
     },
     pending: () => pending,
+    /** Cancel a queued frame; returns true when there was one. */
+    dispose() {
+      const had = pending
+      if (had && cancel !== null && handle !== null) cancel(handle)
+      queued = null
+      pending = false
+      handle = null
+      return had
+    },
   }
 }
 
@@ -680,7 +694,7 @@ export function createRendererBridge(react, options = {}) {
     const [snapshot, setSnapshot] = useState(store.getSnapshot())
     const [node] = useState(() => ({ current: null }))
     const [geometry, setGeometry] = useState(null)
-    const [pacer] = useState(() => createPacer(env.requestAnimationFrame))
+    const [pacer] = useState(() => createPacer(env.requestAnimationFrame, env.cancelAnimationFrame))
     const [guard] = useState(() => ({ current: null }))
 
     useEffect(() => {
@@ -709,12 +723,16 @@ export function createRendererBridge(react, options = {}) {
         guard.current = null
         tracker.dispose()
         focusGuard.dispose()
+        pacer.dispose()
       }
     }, [])
 
     useEffect(() => {
+      // Restore focus only after a redraw: with no dependency list this effect
+      // ran on every render and could pull focus out of whatever the user was
+      // doing elsewhere in the page. A new snapshot is the only redraw we own.
       if (guard.current !== null) guard.current.restore()
-    })
+    }, [snapshot])
 
     const panes = Array.isArray(snapshot.panes) ? snapshot.panes : []
     return h(
@@ -774,13 +792,37 @@ export function createRendererBridge(react, options = {}) {
 // ---- keyboard --------------------------------------------------------------
 
 /**
- * Register the bridge's one keyboard command through `ctx.shortcuts` (S25
- * primitive 3): declarable, labelled, and handled in `resolve`. The command
- * requests a fresh snapshot and brings focus into the pane's own subtree.
- * There is deliberately no second key path and no host focus claim.
+ * The shortcuts service, if this host context offers it. `shortcuts` is an
+ * optional service (the module injects `slots` only): a host without it keeps
+ * the panel and its settings seat. The read goes through `ctx.get` first
+ * because a bare property probe can throw on a context that did not declare
+ * the service, and every probe is guarded — a missing keyboard is a
+ * degradation, never a reason for `apply` to throw.
+ */
+const shortcutsOf = (ctx) => {
+  if (ctx === null || ctx === undefined) return undefined
+  let declared
+  try {
+    declared = typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined
+  } catch {
+    declared = undefined
+  }
+  if (declared !== null && declared !== undefined) return declared
+  try {
+    return ctx.shortcuts
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Register the bridge's one keyboard command through the shortcuts service
+ * (S25 primitive 3): declarable, labelled, and handled in `resolve`. The
+ * command requests a fresh snapshot and brings focus into the pane's own
+ * subtree. There is deliberately no second key path and no host focus claim.
  */
 export function registerRendererKeyboard(ctx, options = {}) {
-  const shortcuts = ctx !== null && ctx !== undefined ? ctx.shortcuts : undefined
+  const shortcuts = shortcutsOf(ctx)
   if (shortcuts === null || shortcuts === undefined || typeof shortcuts.register !== 'function') {
     return () => {}
   }

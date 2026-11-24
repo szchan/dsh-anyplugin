@@ -65,7 +65,7 @@ const MUTANTS = [
   {
     name: 'run paced work immediately instead of on a frame',
     file: CLIENT,
-    find: '      pending = true\n      frame(flush)',
+    find: '      pending = true\n      handle = frame(flush)',
     replacement: '      pending = true\n      flush()',
   },
   {
@@ -144,6 +144,81 @@ const MUTANTS = [
       + '      if (first !== undefined) return first as { register: (source: () => unknown) => unknown }\n'
       + '      const get = (ctx as { get?: unknown }).get',
   },
+  {
+    // MUST 1: the wire budget is stated in bytes. A code-unit measure accepts
+    // 40,000 CJK characters (40,031 code units) whose JSON is 120,031 bytes.
+    name: 'measure the pane budget in UTF-16 code units instead of UTF-8 bytes',
+    file: HOST,
+    find: "      bytes = Buffer.byteLength(serialised, 'utf8')",
+    replacement: '      bytes = serialised.length',
+  },
+  {
+    // MUST 2: a self-cycle recurses until the stack dies when only the depth
+    // cap is left.
+    name: 'drop the seen-set so a cyclic tree recurses to the stack limit',
+    file: HOST,
+    find: '  if (budget.depth >= MAX_JSON_DEPTH || budget.seen.has(value)) return undefined',
+    replacement: '  if (budget.depth >= MAX_JSON_DEPTH) return undefined',
+  },
+  {
+    // MUST 2: without the live depth cap a 200-level chain is normalised whole
+    // and keeps recursing for anything deeper; MAX_JSON_DEPTH becomes dead again.
+    name: 'drop the live JSON depth cap',
+    file: HOST,
+    find: '  if (budget.depth >= MAX_JSON_DEPTH || budget.seen.has(value)) return undefined',
+    replacement: '  if (budget.seen.has(value)) return undefined',
+  },
+  {
+    // The seen-set must be a path, not a visited set: a DAG keeps one shared
+    // object at both sibling positions.
+    name: 'keep the seen-set global instead of per path',
+    file: HOST,
+    find: '    budget.seen.delete(value)\n',
+    replacement: '\n',
+  },
+  {
+    // MUST 2: one pane whose normalisation throws must become a refusal, not
+    // abort the whole snapshot and with it every other pane.
+    name: 'rethrow a pane normalisation failure and lose the whole snapshot',
+    file: HOST,
+    find: "            refusals.push({ code: 'pane-normalization-failed', reason: messageOf(error) })",
+    replacement: '            throw error',
+  },
+  {
+    // MUST 2: a source whose envelope getter throws is a refusal too, never a 500.
+    name: 'rethrow a malformed source envelope and take the route down',
+    file: HOST,
+    find: "          refusals.push({ code: 'source-malformed', reason: messageOf(error) })",
+    replacement: '          throw error',
+  },
+  {
+    // SHOULD 5: a BigInt in a log line must not make JSON.stringify throw.
+    name: 'leave the envelope logs un-normalised',
+    file: HOST,
+    find: '          sourceLogs = jsonSafe(logsOf(answer)) as unknown[]',
+    replacement: '          sourceLogs = logsOf(answer) as unknown[]',
+  },
+  {
+    // SHOULD 5: statuses were the one unbounded envelope list.
+    name: 'leave the envelope statuses unbounded',
+    file: HOST,
+    find: ".filter((entry): entry is string => typeof entry === 'string').slice(0, MAX_SOURCE_STATUSES)",
+    replacement: ".filter((entry): entry is string => typeof entry === 'string')",
+  },
+  {
+    // SHOULD 6: the focus restore used to run every render and could steal focus.
+    name: 'restore the focus steal on every render',
+    file: CLIENT,
+    find: '    }, [snapshot])',
+    replacement: '    })',
+  },
+  {
+    // NIT: an unmounted pane must cancel its queued frame.
+    name: 'leave a queued pacer frame running after unmount',
+    file: CLIENT,
+    find: '      if (had && cancel !== null && handle !== null) cancel(handle)',
+    replacement: '      if (false && had && cancel !== null && handle !== null) cancel(handle)',
+  },
 ]
 
 const originals = new Map()
@@ -153,6 +228,19 @@ for (const file of new Set(MUTANTS.map((mutant) => mutant.file))) {
 
 const restore = () => {
   for (const [file, text] of originals) writeFileSync(join(REPO, file), text)
+}
+
+// Baseline first: a mutation run proves nothing while the unmutated test file
+// already fails, because every mutant would be "killed" by that failure.
+try {
+  execFileSync(process.execPath, ['--experimental-vm-modules', '--test', TEST], {
+    cwd: REPO,
+    stdio: 'inherit',
+    env: process.env,
+  })
+} catch {
+  console.error('baseline renderer.test.mjs is not green; the mutation run would prove nothing')
+  process.exit(1)
 }
 
 const testFails = (mutant) => {

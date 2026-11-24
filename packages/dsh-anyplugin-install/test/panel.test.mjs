@@ -668,7 +668,9 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   const client = await browser(harnessDir, registry, graph, { react })
   const exports = await client.import('dsh-anyplugin')
   // The array was built in the vm realm; compare its contents, not its prototype.
-  assert.deepEqual(Array.from(exports.inject), ['slots', 'shortcuts'])
+  // `slots` is the only hard requirement: the keyboard service is optional and
+  // read through `ctx.get` with a guarded bare-property fallback.
+  assert.deepEqual(Array.from(exports.inject), ['slots'])
 
   const declared = new Set()
   const registered = []
@@ -793,4 +795,42 @@ test('client half is a served dsh.client bundle and renders the lock', async (t)
   dispose()
   assert.equal(registered.length, 0, 'the slot registrations were removed on dispose')
   assert.equal(shortcuts.length, 0, 'the keyboard command was disposed with the plugin')
+
+  // A host that drops a seat must degrade to the remaining seats with a spoken
+  // reason, never fail the bundle: `main`'s inject throws (its slot is not
+  // declared) while settings.section and shell.overlay still register.
+  const declaredAfter = []
+  const surviving = []
+  const degradedSlots = {
+    register(options, component) {
+      surviving.push({ options, component })
+      return () => {
+        const index = surviving.findIndex((row) => row.options === options)
+        if (index !== -1) surviving.splice(index, 1)
+      }
+    },
+    inject(name, factory) {
+      if (name === 'main') throw new Error('slot "main" is not declared (a parent entry\'s children table must declare it)')
+      declaredAfter.push(name)
+      const cleanup = factory()
+      return () => {
+        cleanup?.()
+      }
+    },
+  }
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => warnings.push(args.map(String).join(' '))
+  try {
+    const degradedDispose = exports.apply({ slots: degradedSlots })
+    assert.deepEqual(declaredAfter, ['settings.section', 'shell.overlay'], 'the other seats were still declared')
+    assert.deepEqual(surviving.map((row) => row.options.name), ['settings.section', 'shell.overlay'])
+    assert.equal(warnings.length, 1, 'exactly the lost seat is spoken about')
+    assert.match(warnings[0], /could not mount the main seat/)
+    assert.match(warnings[0], /slot "main" is not declared/)
+    degradedDispose()
+    assert.equal(surviving.length, 0, 'the settings seat still disposes after the degraded apply')
+  } finally {
+    console.warn = originalWarn
+  }
 })

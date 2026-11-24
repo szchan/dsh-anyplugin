@@ -215,7 +215,11 @@ function Panel() {
   )
 }
 
-export const inject = ['slots', 'shortcuts']
+// `slots` is the only hard requirement. The `main` and `shell.overlay` seats
+// and the keyboard service are optional: each is read/registered through a
+// guarded path, so a host that lacks one keeps the settings panel instead of
+// failing the whole module on an unmet injection.
+export const inject = ['slots']
 
 export function apply(ctx) {
   const disposables = []
@@ -259,8 +263,12 @@ export function apply(ctx) {
     ),
   )
   // Keyboard through the declarable-command service (S25 primitive 3), never a
-  // document listener of our own.
-  disposables.push(registerRendererKeyboard(ctx, { store: renderer.store, focus: renderer.focus }))
+  // document listener of our own. The service is optional — `inject` lists only
+  // `slots` — and the registration is guarded like a seat: a host whose
+  // shortcuts service throws keeps the panel and gets a spoken reason.
+  mount('keyboard shortcut', () =>
+    registerRendererKeyboard(ctx, { store: renderer.store, focus: renderer.focus }),
+  )
 
   return () => {
     for (const dispose of disposables.reverse()) {

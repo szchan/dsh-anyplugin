@@ -4381,7 +4381,9 @@ own client bundle, and classify the result honestly.
    `ctx.slots.inject` so a fresh SlotCore does not throw, and each guarded so a
    missing seat degrades to no bridge while the settings panel and the
    controller still load. The keyboard path is one declarable command through
-   `ctx.shortcuts`; there is no second event path.
+   the optional `shortcuts` service (read through `ctx.get`, registered under
+   the same mount guard, so a host without the service still loads the panel);
+   there is no second event path.
 3. **The element vocabulary is deliberately four tags: `Box`, `Text`, `Button`,
    `Input`.** The pin's Pane trees can carry twelve to sixteen tags; every tag
    outside the vocabulary is refused by name (`element.unsupported`) instead of
@@ -4393,16 +4395,18 @@ own client bundle, and classify the result honestly.
    `GET /anyplugin/render` answers from the controller's provided
    `anypluginRenderer` registry; the materialiser registers its headless `mod_ui`
    snapshot as one source under its own effect. The read is loopback-only and
-   bounded (64 panes, 96 KiB per tree, a tree over budget becomes a named
-   `pane-too-large` refusal), and a throwing source or reader is visible as a
-   refusal/500 rather than silently empty.
+   bounded (64 panes, 96 KiB of UTF-8 JSON per tree, a tree over budget becomes
+   a named `pane-too-large` refusal; cyclic or over-deep trees are cut by the
+   seen-set and the live depth cap), and a pane or source that still throws is
+   recorded as a refusal while the other panes serve — one bad pane cannot cost
+   the route.
 5. **The bridge ships in the same single tarball's client half (D77), not a
    second package.** `lib/client.js` grows by the translator, pacer, geometry
    probe, focus guard, snapshot store and two React seats. The packed size that
-   costs is measured in CI `check:pack` on the integration head, and the ceiling
+   costs is measured in CI `check:pack` on the shipped head, and the ceiling
    that pays for it is recorded in D94; this entry moves no ceiling. The mods
-   kernel ceiling (D46) is untouched
-   at its 128 KiB; the measured kernel stays 115,532 bytes.
+   kernel ceiling (D46) is untouched at its 128 KiB; the measured kernel stays
+   115,532 bytes.
 
 **Not claimed.** This is not the pin's drawing engine and nothing here is
 `equivalent`: host-owned layout, host-level focus routing, host `invalidate`
@@ -4413,18 +4417,25 @@ this decision; S25 ran a jsdom page and the loopback probe did not touch that
 transport. No button or input press is dispatched, and the four-tag vocabulary
 is a stated limit rather than a roadmap promise.
 
-**Evidence.** `packages/dsh-anyplugin-install/test/renderer.test.mjs` (24 tests:
-face classes and reasons, the four-tag vocabulary, translation and lost props,
-depth/node caps, pacer coalescing, paced `ResizeObserver` geometry, subtree-only
-focus, the round-trip store incl. failure visibility, registry merge/refusal/pane
-budget, the `/anyplugin/render` route incl. HEAD and the loopback host gate, the
-real `createUiSink` → registry → store end-to-end paint, and the keyboard
-command); `packages/dsh-anyplugin-install/test/renderer-mutations.mjs` kills all
-16 single-property mutants; `packages/dsh-anyplugin-install/test/panel.test.mjs`
-still proves the settings half and now the three registrations, the command and
-their disposal; the packed size and the ceiling that pays for it are recorded in
-D94. Basis: S25 at 0.2.2-rc.2 and 0.2.2-rc.5 (`spikes/s25-client-surface`, PR
-#287), Claude Code pin 2.1.329.
+**Evidence.** `packages/dsh-anyplugin-install/test/renderer.test.mjs` (33
+tests: face classes and reasons, the four-tag vocabulary, translation and lost
+props, depth/node caps, pacer coalescing and cancellation on unmount, paced
+`ResizeObserver` geometry, subtree-only focus pinned to a new snapshot, the
+round-trip store incl. failure visibility, registry merge/refusal/pane budget
+measured in UTF-8 bytes, the `/anyplugin/render` route incl. HEAD and the
+loopback host gate, a cyclic tree cut by the seen-set, a live depth cap on a
+200-level chain, one bad pane and one malformed envelope recorded as refusals
+while the other panes still serve, JSON-safe and bounded envelope
+`statuses`/`logs`/`refusals`, the real `createUiSink` → registry → store
+end-to-end paint, and the keyboard command through `ctx.get` with a bare
+`ctx.shortcuts` fallback); `packages/dsh-anyplugin-install/test/renderer-mutations.mjs`
+stays green on the unmutated suite and kills all 26 single-property mutants;
+`packages/dsh-anyplugin-install/test/panel.test.mjs` still proves the settings
+half and now the three registrations, the command and their disposal, plus a
+throwing `main` seat degrading with a recorded warning while the other seats
+stay registered; the packed size and the ceiling that pays for it are recorded
+in D94. Basis: S25 at 0.2.2-rc.2 and 0.2.2-rc.5
+(`spikes/s25-client-surface`, PR #287), Claude Code pin 2.1.329.
 
 ## D94 — the registry tarball ceiling for the renderer bridge
 

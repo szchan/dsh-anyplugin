@@ -312,7 +312,8 @@ function render(config: PanelConfig): Response {
 }
 
 /** One Fetch request in, one Fetch response out; the host's resource route uses this directly. */
-export async function dispatchPanel(request: Request, config: PanelConfig = {}): Promise<Response> {  const url = new URL(request.url, 'http://anyplugin.invalid')
+export async function dispatchPanel(request: Request, config: PanelConfig = {}): Promise<Response> {
+  const url = new URL(request.url, 'http://anyplugin.invalid')
   const hostRefusal = hostAllowed(request, config)
     ? null
     : json({ ok: false, code: 'host-not-allowed', reason: 'the panel answers loopback hosts only' }, 403)

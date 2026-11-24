@@ -37,6 +37,7 @@ export const MAX_PANE_BYTES = 96 * 1024
 /** Per-source snapshot caps, so one broken source cannot exhaust the merge. */
 const MAX_SOURCE_LOG_ENTRIES = 64
 const MAX_SOURCE_REFUSALS = 32
+const MAX_SOURCE_STATUSES = 64
 const MAX_JSON_NODES = 8192
 const MAX_JSON_DEPTH = 64
 
@@ -63,6 +64,15 @@ export interface RendererPayload {
   truncated: boolean
   vocabulary: readonly string[]
   faces: ReadonlyArray<{ face: string; class: string; reason: string }>
+  /** Milliseconds since the epoch when this snapshot was taken. */
+  servedAt: number
+}
+
+/** One walk's JSON-safety state: node budget, live depth, and the cycle path. */
+interface JsonBudget {
+  nodes: number
+  depth: number
+  seen: WeakSet<object>
 }
 
 /** A render source answers with a mod-host snapshot or a pane list; both are data. */
@@ -93,36 +103,49 @@ const stringOf = (value: unknown, fallback: string): string => (typeof value ===
 
 /**
  * Convert arbitrary source output into JSON-safe data, dropping functions,
- * symbols, undefined members and cycles. The sink should already hand plain
- * descriptors; this is the defence that keeps a malformed producer a measured
- * refusal instead of `JSON.stringify` throwing on the route.
+ * symbols, undefined members, non-finite numbers and cycles. Totality is the
+ * point: a source that hands back a self-cycle, a 100,000-deep chain or a
+ * BigInt must not make `JSON.stringify` throw anywhere above this function.
+ * `seen` is a path, not a global visited set, so a shared sub-object (a DAG)
+ * still serialises at both positions while a true cycle is cut at the repeat.
+ * The depth cap is live, so runaway nesting stops even when it never repeats a
+ * node; the node budget bounds breadth.
  */
-const jsonSafe = (value: unknown, budget = { nodes: 0 }): unknown => {
+const jsonSafe = (value: unknown, budget: JsonBudget = { nodes: 0, depth: 0, seen: new WeakSet() }): unknown => {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number') return Number.isFinite(value) ? value : null
   if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'undefined' || typeof value === 'bigint') {
     return undefined
   }
+  if (typeof value !== 'object') return undefined
   if (budget.nodes >= MAX_JSON_NODES) return undefined
-  if (Array.isArray(value)) {
-    const out: unknown[] = []
-    for (const entry of value) {
-      budget.nodes += 1
-      const cleaned = jsonSafe(entry, budget)
-      if (cleaned !== undefined) out.push(cleaned)
+  if (budget.depth >= MAX_JSON_DEPTH || budget.seen.has(value)) return undefined
+  budget.seen.add(value)
+  budget.depth += 1
+  try {
+    if (Array.isArray(value)) {
+      const out: unknown[] = []
+      for (const entry of value) {
+        budget.nodes += 1
+        const cleaned = jsonSafe(entry, budget)
+        if (cleaned !== undefined) out.push(cleaned)
+      }
+      return out
     }
-    return out
-  }
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [key, entry] of Object.entries(value)) {
-      budget.nodes += 1
-      const cleaned = jsonSafe(entry, budget)
-      if (cleaned !== undefined) out[key] = cleaned
+    if (typeof value === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [key, entry] of Object.entries(value)) {
+        budget.nodes += 1
+        const cleaned = jsonSafe(entry, budget)
+        if (cleaned !== undefined) out[key] = cleaned
+      }
+      return out
     }
-    return out
+    return undefined
+  } finally {
+    budget.depth -= 1
+    budget.seen.delete(value)
   }
-  return undefined
 }
 
 /** A `mod-ui-headless` sink snapshot, a materializer `readUi` answer, or a bare pane array. */
@@ -134,7 +157,9 @@ const panesOf = (answer: unknown): unknown[] => {
 
 const statusesOf = (answer: unknown): string[] => {
   if (!isRecord(answer)) return []
-  if (Array.isArray(answer.statuses)) return answer.statuses.filter((entry): entry is string => typeof entry === 'string')
+  if (Array.isArray(answer.statuses)) {
+    return answer.statuses.filter((entry): entry is string => typeof entry === 'string').slice(0, MAX_SOURCE_STATUSES)
+  }
   return []
 }
 
@@ -148,6 +173,12 @@ const refusalText = (refusal: unknown): string => {
   if (isRecord(refusal) && typeof refusal.reason === 'string') return refusal.reason
   return typeof refusal === 'object' && refusal !== null ? JSON.stringify(refusal) : String(refusal)
 }
+
+/** The message of a thrown value, as a string, never throwing itself. */
+const messageOf = (error: unknown): string =>
+  typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
+    ? (error as { message: string }).message
+    : String(error)
 
 /**
  * One source pane, normalised and capped. A tree above the wire budget is
@@ -171,7 +202,11 @@ export const normalizeRendererPane = (pane: unknown, paneBytes = MAX_PANE_BYTES)
     const tree = jsonSafe(pane.tree)
     let bytes = 0
     try {
-      bytes = JSON.stringify(tree).length
+      // The budget is a byte budget because it is stated in bytes: a JavaScript
+      // string length counts UTF-16 code units, so non-ASCII text would slip
+      // through at up to three times the stated wire size.
+      const serialised = JSON.stringify(tree)
+      bytes = Buffer.byteLength(serialised, 'utf8')
     } catch {
       bytes = paneBytes + 1
     }
@@ -223,17 +258,38 @@ export const createRendererRegistry = (options: RendererRegistryOptions = {}): R
         } catch (error) {
           refusals.push({
             code: 'source-threw',
-            reason: typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
-              ? (error as { message: string }).message
-              : String(error),
+            reason: messageOf(error),
           })
           continue
         }
-        statuses.push(...statusesOf(answer))
-        logs.push(...logsOf(answer))
-        refusals.push(...refusalsOf(answer))
-        for (const rawPane of panesOf(answer)) {
-          const pane = normalizeRendererPane(rawPane, paneBytes)
+        // The envelope is a source's output too: one throwing getter, one BigInt
+        // in a log line or a cyclic refusal entry must degrade this source, not
+        // make the whole route throw and lose every other pane.
+        let sourceStatuses: string[] = []
+        let sourceLogs: unknown[] = []
+        let sourceRefusals: unknown[] = []
+        let rawPanes: unknown[] = []
+        try {
+          sourceStatuses = statusesOf(answer)
+          sourceLogs = jsonSafe(logsOf(answer)) as unknown[]
+          sourceRefusals = jsonSafe(refusalsOf(answer)) as unknown[]
+          rawPanes = panesOf(answer)
+        } catch (error) {
+          refusals.push({ code: 'source-malformed', reason: messageOf(error) })
+          continue
+        }
+        statuses.push(...sourceStatuses)
+        logs.push(...sourceLogs)
+        refusals.push(...sourceRefusals)
+        for (const rawPane of rawPanes) {
+          let pane: RendererPane | undefined
+          try {
+            pane = normalizeRendererPane(rawPane, paneBytes)
+          } catch (error) {
+            refusals.push({ code: 'pane-normalization-failed', reason: messageOf(error) })
+            truncated = true
+            continue
+          }
           if (pane === undefined) {
             truncated = true
             continue
