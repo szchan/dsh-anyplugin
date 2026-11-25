@@ -338,7 +338,7 @@ edit.
 ```json
 {
   "version": 1,
-  "updated": "2026-11-23",
+  "updated": "2026-11-24",
   "entries": [
     {
       "id": "F1",
@@ -654,6 +654,38 @@ edit.
         "D73 (the cap is the window) and D88 (the ledger vocabulary)"
       ],
       "proof": "scripts/audit-evidence.test.mjs"
+    },
+    {
+      "id": "F23",
+      "title": "A failed verify is reported as a skipped test",
+      "mechanism": "ci",
+      "status": "open",
+      "artifact": ".github/workflows/verify.yml",
+      "tracking": "#292",
+      "rationale": "The workflow treats the absence of the test runner's `ℹ skipped 0` line as proof that a test was skipped. When `npm run verify` exits non-zero before the suite (for example `check:pack`), that line is absent for a different reason, and the workflow adds `verify skipped at least one test` as a second error. The claim is false and it points a reader at a missing environment variable instead of the real failure. Fix: emit the skip error only when verify exited 0 but the line is absent, or grep for an actual `ℹ skipped [1-9]` count; a failed run should keep its real first error.",
+      "evidence": [
+        "2026-11-24 run 45383959106 (head 85b5040): check:pack failed at 212,994 bytes against the then-204,800 ceiling; the log then printed `verify skipped at least one test` for both pins",
+        "2026-11-24 run 45376277941 (head 06cab40): install smoke failed with `child anyplugin.claude-code~3askill-smoke#hook is not active`; the same skip sentence followed",
+        "`.github/workflows/verify.yml:187-192` runs verify, prints the log, then greps for `^ℹ skipped 0$` regardless of the exit status"
+      ],
+      "owner": "the master",
+      "reviewBy": "2026-11-30"
+    },
+    {
+      "id": "F24",
+      "title": "check:pack fails a local verify when the live profile writes a plugin cache log",
+      "mechanism": "ci",
+      "status": "open",
+      "artifact": "scripts/profile-boot.mjs",
+      "tracking": "#295",
+      "rationale": "The profile-boot fingerprint compares the real `$DSH_HOME` and `$DSH_PROFILE_DIR` before and after the boot, excluding only the live host's top-level `sessions` and `storages` under the home. A live plugin now writes `profiles/desktop/.dsh-mattskillsdeck-cache/logs/2026-11-24.log` while the boot runs, so the invariant reports a change the boot did not make and a local `npm run verify` stops at `check:pack` before the suite. CI has no live profile and is green, but the audit's required local verify cannot complete. Fix the exclusion or fingerprint an isolated profile; keep the guard against writes the packed boot could make.",
+      "evidence": [
+        "2026-11-24 local verify attempts at ~17:14Z: `the real DSH_HOME /home/szchan/.dsh changed during the boot: 2 path(s), e.g. profiles/desktop/.dsh-mattskillsdeck-cache/logs, .../2026-11-24.log`; two consecutive attempts failed on the same path",
+        "`scripts/profile-boot.mjs:67` excludes only `sessions` and `storages` under the home; the profile fingerprint excludes nothing",
+        "same tree: check:arch 21 packages/74 files, check:features 6 tables/72 paths, check:decisions 94, check:audit 23 entries/3 reports; main CI run 45420314557 green"
+      ],
+      "owner": "the master",
+      "reviewBy": "2026-11-30"
     }
   ]
 }
