@@ -3160,8 +3160,8 @@ region `page`, target `BODY`, consumed; fixed `F9` delivered to
 (real `dsh-host-webserver`: the probe asserts the listening socket over raw TCP,
 the host half's two exact registrations and the 200/405/echo responses, and the
 fixture's client half fetches its own route from the page realm; the shipped
-panel already does the host half at
-`packages/dsh-anyplugin-install/src/panel.ts:355`).
+panel's `applyPanel` already does the host half
+(`packages/dsh-anyplugin-install/src/panel.ts`).
 
 The missing primitives are the ones that would make a *host-owned* drawing
 bridge: a mounted `main` pane receives standard hooks and a factory-children
