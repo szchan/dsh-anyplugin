@@ -338,7 +338,7 @@ edit.
 ```json
 {
   "version": 1,
-  "updated": "2026-11-24",
+  "updated": "2026-11-27",
   "entries": [
     {
       "id": "F1",
@@ -666,7 +666,8 @@ edit.
       "evidence": [
         "2026-11-24 run 45383959106 (head 85b5040): check:pack failed at 212,994 bytes against the then-204,800 ceiling; the log then printed `verify skipped at least one test` for both pins",
         "2026-11-24 run 45376277941 (head 06cab40): install smoke failed with `child anyplugin.claude-code~3askill-smoke#hook is not active`; the same skip sentence followed",
-        "`.github/workflows/verify.yml:187-192` runs verify, prints the log, then greps for `^ℹ skipped 0$` regardless of the exit status"
+        "`.github/workflows/verify.yml:187-192` runs verify, prints the log, then greps for `^ℹ skipped 0$` regardless of the exit status",
+        "2026-11-27: still open; #292 unchanged; no fix in the window and no new failed run to add"
       ],
       "owner": "the master",
       "reviewBy": "2026-11-30"
@@ -682,7 +683,8 @@ edit.
       "evidence": [
         "2026-11-24 local verify attempts at ~17:14Z: `the real DSH_HOME /home/szchan/.dsh changed during the boot: 2 path(s), e.g. profiles/desktop/.dsh-mattskillsdeck-cache/logs, .../2026-11-24.log`; two consecutive attempts failed on the same path",
         "`scripts/profile-boot.mjs:67` excludes only `sessions` and `storages` under the home; the profile fingerprint excludes nothing",
-        "same tree: check:arch 21 packages/74 files, check:features 6 tables/72 paths, check:decisions 94, check:audit 23 entries/3 reports; main CI run 45420314557 green"
+        "same tree: check:arch 21 packages/74 files, check:features 6 tables/72 paths, check:decisions 94, check:audit 23 entries/3 reports; main CI run 45420314557 green",
+        "2026-11-27: still open; #295 unchanged; `npm run verify` failed at the same gate on `.../logs/2026-11-27.log`; the suite alone passed with 0 skipped"
       ],
       "owner": "the master",
       "reviewBy": "2026-11-30"
